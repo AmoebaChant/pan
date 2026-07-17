@@ -1,0 +1,20 @@
+{
+  "name": "@amoebachant/pan",
+  "version": "0.1.0",
+  "description": "Shared GitHub-backed store contract for PAN orchestrators and runners.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "schema",
+    "docs"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
