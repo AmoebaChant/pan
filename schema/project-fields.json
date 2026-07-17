@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "fields": [
+    {
+      "key": "owner",
+      "name": "owner",
+      "type": "single_select",
+      "options": ["unassigned", "human", "agent"]
+    },
+    {
+      "key": "status",
+      "name": "Status",
+      "type": "single_select",
+      "options": [
+        "untriaged",
+        "needs-detail",
+        "ready",
+        "in-progress",
+        "in-review",
+        "done",
+        "blocked"
+      ]
+    },
+    {
+      "key": "priority",
+      "name": "priority",
+      "type": "single_select",
+      "options": ["urgent", "high", "normal", "low"]
+    },
+    {
+      "key": "requirements",
+      "name": "requirements",
+      "type": "text",
+      "format": "newline-delimited capability requirements"
+    },
+    {
+      "key": "autonomy",
+      "name": "autonomy",
+      "type": "single_select",
+      "options": ["manual", "full-auto", "agent-reviewer"]
+    },
+    {
+      "key": "leaseUntil",
+      "name": "lease-until",
+      "type": "text",
+      "format": "RFC 3339 UTC timestamp"
+    },
+    {
+      "key": "claimedBy",
+      "name": "claimed-by",
+      "type": "text",
+      "format": "stable runner identity"
+    },
+    {
+      "key": "workstream",
+      "name": "workstream",
+      "type": "text",
+      "format": "path relative to workstreams/"
+    }
+  ]
+}
