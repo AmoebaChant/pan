@@ -9,9 +9,8 @@ separate private data repositories.
 
 ## Status
 
-The repository and initial store contract are established. The next walking
-skeleton step is the Node schema module that reads and writes Issues and GitHub
-Project fields through the `gh` CLI.
+The repository, store contract, and shared Node schema module are established.
+The next walking skeleton step is the runner daemon and capability profile.
 
 ## Store model
 
@@ -25,3 +24,18 @@ Project fields through the `gh` CLI.
 
 See [the store contract](docs/store-schema.md) and its
 [machine-readable field manifest](schema/project-fields.json).
+
+## Node module
+
+The package exports:
+
+- `GhClient`, a safe subprocess wrapper around the authenticated `gh` CLI.
+- `PanStore`, with helpers to create Issue-backed items, set Project fields,
+  list by filter, and claim, heartbeat, or release leases.
+
+The implementation has no runtime dependencies and requires Node 22 or newer.
+See the [schema module contract](docs/schema-module.md) for API usage.
+
+```powershell
+npm test
+```
