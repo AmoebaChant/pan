@@ -140,6 +140,24 @@ export class PanStore {
     return (await this.#listItems()).find((item) => item.id === itemId);
   }
 
+  async addComment(item, body) {
+    if (!item?.number || !item.repository) {
+      throw new TypeError("an Issue-backed item is required");
+    }
+    if (!body?.trim()) {
+      throw new TypeError("comment body is required");
+    }
+    return this.gh.run([
+      "issue",
+      "comment",
+      String(item.number),
+      "--repo",
+      item.repository,
+      "--body",
+      body,
+    ]);
+  }
+
   async claimWithLease({
     itemId,
     runner,
@@ -175,7 +193,30 @@ export class PanStore {
       };
     }
     if (assignee) {
-      await this.#editAssignee(confirmed, "--add-assignee", assignee);
+      try {
+        await this.#editAssignee(confirmed, "--add-assignee", assignee);
+      } catch (error) {
+        let rollback;
+        try {
+          rollback = await this.release({
+            itemId,
+            runner,
+            status: "ready",
+          });
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            "Issue assignment failed and the claim rollback errored",
+          );
+        }
+        if (!rollback.released) {
+          throw new AggregateError(
+            [error, new Error(`Claim rollback failed: ${rollback.reason}`)],
+            "Issue assignment failed after claiming the item",
+          );
+        }
+        throw error;
+      }
     }
     return { claimed: true, item: confirmed };
   }

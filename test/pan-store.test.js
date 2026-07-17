@@ -200,6 +200,28 @@ test("does not steal an active lease from another runner", async () => {
   assert.equal(result.item.fields.claimedBy, "runner-a");
 });
 
+test("rolls back a claim when Issue assignment fails", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    failAssignee: true,
+  });
+
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /assignment failed/,
+  );
+
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.status, "ready");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+});
+
 test("allows an expired lease to be reclaimed", async () => {
   const { store } = fixture({
     items: [
@@ -274,8 +296,23 @@ test("releases the owning runner and returns the item to ready", async () => {
   ]);
 });
 
-function fixture({ items = [makeItem()] } = {}) {
-  const gh = new FakeGh(items);
+test("adds a comment to an Issue-backed item", async () => {
+  const { store, gh } = fixture();
+  const item = await store.getItem("item-1");
+
+  await store.addComment(item, "Runner update");
+
+  assert.deepEqual(gh.issueComments, [
+    {
+      number: 1,
+      repository: "AmoebaChant/pan-work",
+      body: "Runner update",
+    },
+  ]);
+});
+
+function fixture({ items = [makeItem()], failAssignee = false } = {}) {
+  const gh = new FakeGh(items, { failAssignee });
   return {
     gh,
     store: new PanStore({
@@ -291,10 +328,12 @@ function fixture({ items = [makeItem()] } = {}) {
 }
 
 class FakeGh {
-  constructor(items) {
+  constructor(items, { failAssignee = false } = {}) {
     this.items = structuredClone(items);
+    this.failAssignee = failAssignee;
     this.issueCreates = [];
     this.issueEdits = [];
+    this.issueComments = [];
     this.projectEdits = 0;
     this.nextIssue = 2;
   }
@@ -324,7 +363,18 @@ class FakeGh {
         flag,
         assignee: valueAfter(args, flag),
       });
+      if (this.failAssignee && flag === "--add-assignee") {
+        throw new Error("assignment failed");
+      }
       return "";
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      this.issueComments.push({
+        number: Number(args[2]),
+        repository: valueAfter(args, "--repo"),
+        body: valueAfter(args, "--body"),
+      });
+      return "https://github.com/AmoebaChant/pan-work/issues/1#issuecomment-1";
     }
     throw new Error(`Unexpected gh command: ${args.join(" ")}`);
   }

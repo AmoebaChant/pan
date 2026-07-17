@@ -61,6 +61,9 @@ Each item contains Issue metadata, a `fields` object keyed by the manifest keys,
 and a parsed `requirements` array. Available boolean filters are `unclaimed`,
 `leaseExpired`, and `claimable`.
 
+`addComment(item, body)` appends an audit or attention record to an Issue-backed
+item.
+
 ## Leases
 
 Claims use the design's optimistic read-update-confirm protocol. GitHub Projects
