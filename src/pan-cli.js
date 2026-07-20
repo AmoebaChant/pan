@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { AttentionService } from "./attention-service.js";
+import { loadDomainConfig } from "./domain-config.js";
 import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { PanDaemon } from "./pan-daemon.js";
@@ -14,19 +15,33 @@ export async function runPanCli(
   {
     env = process.env,
     stdout = process.stdout,
+    stderr = process.stderr,
     gh = new GhClient(),
     pid = process.pid,
+    domainConfigLoader = loadDomainConfig,
+    runnerProfileLoader = loadRunnerProfile,
+    storeFactory = (options) => new PanStore(options),
+    attentionFactory = (options) => new AttentionService(options),
   } = {},
 ) {
   const parsed = parseArgs(args, env);
-  const profile = await loadRunnerProfile(parsed.profile);
-  const store = new PanStore({
-    repository: profile.store.repository,
-    projectOwner: profile.store.projectOwner,
-    projectNumber: profile.store.projectNumber,
+  const configuration = await loadCliConfiguration(parsed, {
+    domainConfigLoader,
+    runnerProfileLoader,
+  });
+  if (configuration.deprecated) {
+    write(
+      stderr,
+      "Warning: --profile and PAN_PROFILE are deprecated for PAN commands; use --config or PAN_CONFIG.",
+    );
+  }
+  const store = storeFactory({
+    repository: configuration.store.repository,
+    projectOwner: configuration.store.projectOwner,
+    projectNumber: configuration.store.projectNumber,
     gh,
   });
-  const attention = new AttentionService({ store });
+  const attention = attentionFactory({ store });
 
   if (parsed.command === "inbox") {
     const entries = await attention.inbox();
@@ -49,26 +64,25 @@ export async function runPanCli(
     return result;
   }
   if (parsed.command === "daemon") {
-    const leaderLeaseSeconds = Math.max(
-      120,
-      profile.pollIntervalSeconds * 4,
-    );
+    const leaderLeaseSeconds = configuration.runtime.leaderLeaseSeconds;
     const leaderLease = new LeaderLease({
       stateFile: new GitHubStateFile({
         gh,
-        repository: profile.store.repository,
+        repository: configuration.store.repository,
+        branch: configuration.runtime.stateBranch,
+        filePath: configuration.runtime.leaderPath,
       }),
-      holder: `${profile.machine}/pan-${pid}`,
+      holder: `${configuration.runtime.machine}/pan-${pid}`,
       leaseSeconds: leaderLeaseSeconds,
     });
     const daemon = new PanDaemon({
       store,
       leaderLease,
       profileSource: new RunnerProfileSource({
-        directory: path.join(profile.store.path, "runners"),
+        directory: configuration.runtime.runnerProfileDirectory,
       }),
-      pollIntervalSeconds: profile.pollIntervalSeconds,
-      leaderHeartbeatSeconds: Math.min(30, leaderLeaseSeconds / 3),
+      pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
+      leaderHeartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
     });
     if (parsed.once) {
       const result = await daemon.runOnce();
@@ -85,12 +99,19 @@ export async function runPanCli(
 
 export function parseArgs(args, env = process.env) {
   const remaining = [...args];
+  const config = takeOption(remaining, "--config") ?? env.PAN_CONFIG;
   const profile = takeOption(remaining, "--profile") ?? env.PAN_PROFILE;
-  if (!profile) {
+  if (config && profile) {
     throw new TypeError(
-      "Set PAN_PROFILE or pass --profile <runner-profile.json>",
+      "PAN domain config and runner profile inputs cannot be used together",
     );
   }
+  if (!config && !profile) {
+    throw new TypeError(
+      "Set PAN_CONFIG or pass --config <domain-config.json> (legacy: PAN_PROFILE or --profile)",
+    );
+  }
+  const configuration = { config, profile };
   const json = takeFlag(remaining, "--json");
   const command = remaining.shift();
   if (!["daemon", "inbox", "answer", "add"].includes(command)) {
@@ -99,18 +120,18 @@ export function parseArgs(args, env = process.env) {
   if (command === "daemon") {
     const once = takeFlag(remaining, "--once");
     requireNoArgs(remaining);
-    return { command, profile, once };
+    return { command, ...configuration, once };
   }
   if (command === "inbox") {
     requireNoArgs(remaining);
-    return { command, profile, json };
+    return { command, ...configuration, json };
   }
   if (command === "answer") {
     const [identifier, text, ...extra] = remaining;
     if (!identifier || !text || extra.length > 0) {
       throw new TypeError("Usage: pan answer <id> <text> [--json]");
     }
-    return { command, profile, json, identifier, text };
+    return { command, ...configuration, json, identifier, text };
   }
 
   const body = takeOption(remaining, "--body") ?? "";
@@ -140,7 +161,7 @@ export function parseArgs(args, env = process.env) {
   );
   return {
     command,
-    profile,
+    ...configuration,
     json,
     title,
     body,
@@ -150,6 +171,52 @@ export function parseArgs(args, env = process.env) {
     priority,
     autonomy,
     requirements: [...new Set(requirements)],
+  };
+}
+
+async function loadCliConfiguration(
+  parsed,
+  { domainConfigLoader, runnerProfileLoader },
+) {
+  if (parsed.config) {
+    const config = await domainConfigLoader(parsed.config);
+    return {
+      deprecated: false,
+      store: {
+        repository: config.domain.repository,
+        projectOwner: config.domain.projectOwner,
+        projectNumber: config.domain.projectNumber,
+        path: config.domain.path,
+      },
+      runtime: {
+        machine: "pan-runtime",
+        pollIntervalSeconds: config.cadences.activePollSeconds,
+        leaderLeaseSeconds: config.cadences.leaderLeaseSeconds,
+        leaderHeartbeatSeconds: config.cadences.leaderHeartbeatSeconds,
+        stateBranch: config.state.branch,
+        leaderPath: config.state.leaderPath,
+        runnerProfileDirectory: path.join(config.domain.path, "runners"),
+      },
+    };
+  }
+
+  const profile = await runnerProfileLoader(parsed.profile);
+  const leaderLeaseSeconds = Math.max(
+    120,
+    profile.pollIntervalSeconds * 4,
+  );
+  return {
+    deprecated: true,
+    store: profile.store,
+    runtime: {
+      machine: profile.machine,
+      pollIntervalSeconds: profile.pollIntervalSeconds,
+      leaderLeaseSeconds,
+      leaderHeartbeatSeconds: Math.min(30, leaderLeaseSeconds / 3),
+      stateBranch: undefined,
+      leaderPath: undefined,
+      runnerProfileDirectory: path.join(profile.store.path, "runners"),
+    },
   };
 }
 
@@ -238,9 +305,9 @@ function write(stdout, value) {
 function usage() {
   return [
     "Usage:",
-    "  pan daemon [--once] --profile <path>",
-    "  pan inbox [--json] --profile <path>",
-    "  pan answer <id> <text> [--json] --profile <path>",
-    "  pan add <title> [options] --profile <path>",
+    "  pan daemon [--once] --config <path>",
+    "  pan inbox [--json] --config <path>",
+    "  pan answer <id> <text> [--json] --config <path>",
+    "  pan add <title> [options] --config <path>",
   ].join("\n");
 }

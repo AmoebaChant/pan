@@ -82,16 +82,22 @@ the PAN runtime: polling and synchronizing the domain, invoking the PAN agent fo
 portfolio reasoning, and applying validated changes to the canonical Project.
 `pan inbox`, `pan answer`, and `pan add` provide the human attention surface.
 
-Both CLIs use a runner profile from the private domain repository. Pass
-`--profile <path>` or set `PAN_PROFILE`.
+PAN commands use an independent domain configuration. Pass
+`--config <path>` or set `PAN_CONFIG`. `pan-runner` continues to use its machine
+runner profile independently.
 
 ```powershell
+$env:PAN_CONFIG = "C:\path\to\domain-config.json"
 pan daemon --once
 pan inbox
 pan answer 42 "Use the existing API."
 pan add "Implement the feature" --body "Acceptance criteria..." `
   --workstream orchestration/pan --repo example/tool
 ```
+
+`--profile` and `PAN_PROFILE` remain as deprecated PAN-command compatibility
+options during migration. Do not combine domain configuration and runner profile
+inputs.
 
 See [PAN triage and attention](docs/triage-and-attention.md).
 
