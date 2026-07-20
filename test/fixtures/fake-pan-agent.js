@@ -70,7 +70,34 @@ if (prompt) {
       console.error("Fixture process failed after a confirmed tool effect.");
       process.exitCode = 7;
     } else {
-      emit("assistant.message", finalResponse(request));
+      const response = finalResponse(request);
+      if (scenario === "wrong-identity") {
+        response.snapshotId = "wrong-snapshot";
+      }
+      if (scenario === "invalid-citation") {
+        response.facts = [
+          {
+            statement: "Unsupported claim.",
+            citations: [{ kind: "made-up", locator: "" }],
+          },
+        ];
+      }
+      if (scenario === "missing-action-evidence") {
+        response.proposedActions = [
+          {
+            version: 1,
+            actionId: "unsafe-action",
+            kind: "canonical-reorder",
+            rationale: "Reorder the queue based on an unsupported assertion.",
+            confidence: 0.9,
+            evidence: [],
+            idempotencyKey: "unsafe-reorder",
+            expectedState: { snapshotId: request.snapshot.id },
+            target: { orderedItemIds: ["item-1"] },
+          },
+        ];
+      }
+      emit("assistant.message", response);
       emit("result", {
         sessionId:
           argument("--session-id") ??

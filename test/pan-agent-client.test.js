@@ -207,6 +207,37 @@ test("enforces the configured output bound", async () => {
   );
 });
 
+test("rejects response identity and citation fabrication", async () => {
+  await assert.rejects(
+    fixtureClient({ scenario: "wrong-identity" }).review(
+      turn("autonomous-review"),
+    ),
+    (error) =>
+      error.state === "malformed-response" &&
+      /identity does not match/i.test(error.message),
+  );
+  await assert.rejects(
+    fixtureClient({ scenario: "invalid-citation" }).review(
+      turn("autonomous-review"),
+    ),
+    (error) =>
+      error.state === "malformed-response" &&
+      /citation/i.test(error.message),
+  );
+});
+
+test("rejects mutation proposals that omit durable evidence", async () => {
+  const result = await fixtureClient({
+    scenario: "missing-action-evidence",
+  }).review(turn("autonomous-review"));
+
+  assert.deepEqual(result.response.proposedActions, []);
+  assert.match(
+    result.response.rejectedActions[0].reason,
+    /evidence must be a non-empty array/i,
+  );
+});
+
 function fixtureClient(options = {}) {
   const {
     agent,

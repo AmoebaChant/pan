@@ -192,12 +192,13 @@ export class PanStore {
     labels = [],
     assignees = [],
     fields = {},
-  }) {
+  }, { signal } = {}) {
     if (!title?.trim()) {
       throw new TypeError("title is required");
     }
     const schema = await this.getSchema();
     validateFieldValues(fields, schema);
+    signal?.throwIfAborted();
 
     const issueArgs = [
       "issue",
@@ -216,48 +217,20 @@ export class PanStore {
       issueArgs.push("--assignee", assignee);
     }
 
-    const issueUrl = lastNonEmptyLine(await this.gh.run(issueArgs));
+    const issueUrl = lastNonEmptyLine(
+      await this.gh.run(issueArgs, { signal }),
+    );
     if (!isIssueUrl(issueUrl)) {
       throw new Error(`gh issue create returned an invalid Issue URL: ${issueUrl}`);
     }
-    let added;
     try {
-      added = await this.gh.runJson([
-        "project",
-        "item-add",
-        String(this.projectNumber),
-        "--owner",
-        this.projectOwner,
-        "--url",
-        issueUrl,
-        "--format",
-        "json",
-      ]);
-      if (!added.id) {
-        throw new Error("gh project item-add returned no Project item ID");
-      }
-
-      if (Object.keys(fields).length > 0) {
-        await this.setFields(added.id, fields);
-      }
-      return this.#confirmItem(added.id);
+      signal?.throwIfAborted();
+      return await this.addIssueToProject(issueUrl, fields, { signal });
     } catch (error) {
-      const cleanupErrors = [];
-      if (added?.id) {
-        try {
-          await this.gh.run([
-            "project",
-            "item-delete",
-            String(this.projectNumber),
-            "--owner",
-            this.projectOwner,
-            "--id",
-            added.id,
-          ]);
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
+      if (signal?.aborted) {
+        throw signal.reason ?? error;
       }
+      const cleanupErrors = [];
       try {
         await this.gh.run([
           "issue",
@@ -280,7 +253,57 @@ export class PanStore {
     }
   }
 
-  async setFields(itemId, values) {
+  async addIssueToProject(issueUrl, fields = {}, { signal } = {}) {
+    if (!isIssueUrl(issueUrl)) {
+      throw new TypeError("a GitHub Issue URL is required");
+    }
+    const schema = await this.getSchema();
+    validateFieldValues(fields, schema);
+    signal?.throwIfAborted();
+    const added = await this.gh.runJson([
+      "project",
+      "item-add",
+      String(this.projectNumber),
+      "--owner",
+      this.projectOwner,
+      "--url",
+      issueUrl,
+      "--format",
+      "json",
+    ], { signal });
+    if (!added.id) {
+      throw new Error("gh project item-add returned no Project item ID");
+    }
+    try {
+      if (Object.keys(fields).length > 0) {
+        await this.setFields(added.id, fields, { signal });
+      }
+      return this.#confirmItem(added.id);
+    } catch (error) {
+      if (signal?.aborted) {
+        throw signal.reason ?? error;
+      }
+      try {
+        await this.gh.run([
+          "project",
+          "item-delete",
+          String(this.projectNumber),
+          "--owner",
+          this.projectOwner,
+          "--id",
+          added.id,
+        ]);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "PAN Project insertion failed and cleanup was incomplete",
+        );
+      }
+      throw error;
+    }
+  }
+
+  async setFields(itemId, values, { signal } = {}) {
     if (!itemId) {
       throw new TypeError("itemId is required");
     }
@@ -288,6 +311,7 @@ export class PanStore {
     const schema = await this.getSchema();
     validateFieldValues(values, schema);
     for (const [key, value] of Object.entries(values)) {
+      signal?.throwIfAborted();
       const field = schema.fields[key];
 
       const args = [
@@ -313,7 +337,7 @@ export class PanStore {
         args.push("--text", serializeTextField(key, value));
       }
       try {
-        await this.gh.run(args);
+        await this.gh.run(args, { signal });
       } catch (error) {
         if (!isNoChanges(error)) {
           throw error;
@@ -396,13 +420,14 @@ export class PanStore {
     return normalizeGraphQlItem(result.data?.node, schema, this.repository);
   }
 
-  async addComment(item, body) {
+  async addComment(item, body, { signal } = {}) {
     if (!item?.number || !item.repository) {
       throw new TypeError("an Issue-backed item is required");
     }
     if (!body?.trim()) {
       throw new TypeError("comment body is required");
     }
+    signal?.throwIfAborted();
     return this.gh.run([
       "issue",
       "comment",
@@ -411,7 +436,7 @@ export class PanStore {
       item.repository,
       "--body",
       body,
-    ]);
+    ], { signal });
   }
 
   async listComments(item) {
@@ -439,7 +464,28 @@ export class PanStore {
     }));
   }
 
-  async reorderItems(itemIds) {
+  async findIssueByMarker(marker) {
+    if (!marker?.trim()) {
+      throw new TypeError("marker is required");
+    }
+    const issues = await this.gh.runJson([
+      "issue",
+      "list",
+      "--repo",
+      this.repository,
+      "--state",
+      "all",
+      "--limit",
+      String(ISSUE_LIST_LIMIT),
+      "--search",
+      `${marker} in:body`,
+      "--json",
+      "number,title,body,url,state",
+    ]);
+    return issues.find((issue) => issue.body?.includes(marker));
+  }
+
+  async reorderItems(itemIds, { signal } = {}) {
     if (!Array.isArray(itemIds) || itemIds.some((id) => !id)) {
       throw new TypeError("itemIds must be an array of Project item IDs");
     }
@@ -448,6 +494,7 @@ export class PanStore {
       "mutation($projectId:ID!,$itemId:ID!,$afterId:ID){updateProjectV2ItemPosition(input:{projectId:$projectId,itemId:$itemId,afterId:$afterId}){clientMutationId}}";
     let afterId;
     for (const itemId of itemIds) {
+      signal?.throwIfAborted();
       const args = [
         "api",
         "graphql",
@@ -461,7 +508,7 @@ export class PanStore {
       if (afterId) {
         args.push("-f", `afterId=${afterId}`);
       }
-      await this.gh.run(args);
+      await this.gh.run(args, { signal });
       afterId = itemId;
     }
   }

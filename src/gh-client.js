@@ -21,22 +21,26 @@ export class GhClient {
     this.env = env;
   }
 
-  async run(args) {
+  async run(args, { signal } = {}) {
     try {
       const { stdout } = await execFileAsync(this.executable, args, {
         encoding: "utf8",
         env: this.env,
         maxBuffer: 10 * 1024 * 1024,
+        signal,
         windowsHide: true,
       });
       return stdout.trim();
     } catch (error) {
+      if (signal?.aborted) {
+        throw signal.reason ?? error;
+      }
       throw new GhCommandError(args, error);
     }
   }
 
-  async runJson(args) {
-    const output = await this.run(args);
+  async runJson(args, options) {
+    const output = await this.run(args, options);
     if (!output) {
       throw new Error(`gh ${args.join(" ")} returned no JSON`);
     }

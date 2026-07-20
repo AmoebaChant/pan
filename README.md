@@ -57,13 +57,24 @@ PAN's reusable personality, complete-portfolio reasoning standards, authority
 boundaries, versioned output expectations, and named PAN-only tools without
 embedding domain or machine values.
 
-The local PAN runtime will poll and synchronize one configured domain, schedule
-PAN turns, host conversation, validate proposed actions, and maintain the
-singleton lease. The runtime supplies private domain context and implements the
-constrained tools; the agent definition remains reusable.
+The local PAN runtime polls and synchronizes one configured domain, schedules
+PAN turns, hosts conversation, validates proposed actions, and maintains the
+singleton lease. The runtime supplies private domain context; the agent
+definition remains reusable.
 
 The runtime decides when PAN should think; PAN decides how the portfolio should
 change. See [the target architecture](docs/architecture.md).
+
+```powershell
+pan review --config C:\path\to\domain-config.json
+pan review --apply --config C:\path\to\domain-config.json
+pan chat "What should I work on next?" --config C:\path\to\domain-config.json
+pan daemon --config C:\path\to\domain-config.json
+```
+
+`review` is a dry run unless `--apply` is present. `chat` applies validated
+proposals by default; add `--dry-run` for advice only. Reviews, conversation,
+and the daemon use the same generic PAN agent and complete domain snapshot.
 
 ## Runner daemon
 
@@ -77,9 +88,10 @@ See the [runner contract and profile format](docs/runner.md).
 
 ## Triage and attention
 
-`pan daemon` currently applies deterministic triage rules. It will evolve into
-the PAN runtime: polling and synchronizing the domain, invoking the PAN agent for
-portfolio reasoning, and applying validated changes to the canonical Project.
+With domain configuration, `pan daemon` is the reasoning runtime: it polls and
+synchronizes the domain, invokes PAN, and applies validated changes to the
+canonical Project. Legacy runner-profile mode retains deterministic triage for
+compatibility.
 `pan inbox`, `pan answer`, and `pan add` provide the human attention surface.
 
 PAN commands use an independent domain configuration. Pass

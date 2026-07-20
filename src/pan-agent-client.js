@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 import {
+  validatePanAction,
   validatePanFinalResponse,
   validatePanToolMessage,
   validatePanTurnRequest,
@@ -227,7 +228,9 @@ export class PanAgentClient {
             try {
               const value = parseAssistantJson(candidate);
               if (value?.type === "final-response") {
-                response = validatePanFinalResponse(value);
+                response = validatePanFinalResponse(
+                  coerceFinalResponse(value, turn),
+                );
               }
             } catch (error) {
               if (candidate.trim().startsWith("{")) {
@@ -345,6 +348,59 @@ function parseAssistantJson(content) {
     }
     return JSON.parse(unfenced.slice(start, end + 1));
   }
+}
+
+function coerceFinalResponse(value, turn) {
+  if (
+    value.turnId !== turn.turnId ||
+    value.mode !== turn.mode ||
+    value.snapshotId !== turn.snapshot.id
+  ) {
+    throw new TypeError(
+      "PAN response identity does not match the requested reasoning turn",
+    );
+  }
+  const invalidActions = [];
+  const proposedActions = [];
+  for (const [index, candidate] of (value.proposedActions ?? []).entries()) {
+    try {
+      proposedActions.push(validatePanAction(candidate));
+    } catch (error) {
+      invalidActions.push({
+        actionId:
+          typeof candidate?.actionId === "string" && candidate.actionId.trim()
+            ? candidate.actionId
+            : `invalid-proposal-${index + 1}`,
+        reason: `PAN returned an invalid proposal: ${error.message}`,
+      });
+    }
+  }
+  return {
+    ...value,
+    interpretations: normalizeTextList(value.interpretations),
+    assumptions: normalizeTextList(value.assumptions),
+    uncertainties: normalizeTextList(value.uncertainties),
+    proposedActions,
+    appliedActions: [],
+    rejectedActions: invalidActions,
+    effects: { confirmed: [], incomplete: [] },
+  };
+}
+
+function normalizeTextList(values) {
+  return (Array.isArray(values) ? values : [])
+    .map((value) =>
+      text(
+        typeof value === "object"
+          ? value.statement ?? value.text ?? value.description
+          : value,
+      ),
+    )
+    .filter(Boolean);
+}
+
+function text(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function validateToolExchange(turn, message, pendingRequests) {

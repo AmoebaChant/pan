@@ -19,6 +19,12 @@ const domainConfig = {
     leaderLeaseSeconds: 120,
     leaderHeartbeatSeconds: 30,
   },
+  reviewPolicy: {
+    higherRisk: {
+      enabled: true,
+      actionKinds: ["canonical-reorder"],
+    },
+  },
 };
 
 const runnerProfile = {
@@ -153,6 +159,7 @@ test("preserves answer and add result shapes through injected composition", asyn
     id: 42,
     issueUrl: "https://github.com/example/domain/issues/42",
   });
+
   assert.deepEqual(added, {
     id: 43,
     issueUrl: "https://github.com/example/domain/issues/43",
@@ -165,6 +172,116 @@ test("preserves answer and add result shapes through injected composition", asyn
     "env:local",
     "repo:example/tool",
   ]);
+});
+
+test("exposes review and chat through the injected reasoning service", async () => {
+  const calls = [];
+  let receivedConfiguration;
+  const result = {
+    applied: false,
+    response: {
+      recommendation: "Do the commitment first.",
+      proposedActions: [],
+      appliedActions: [],
+      rejectedActions: [],
+    },
+  };
+  const dependencies = {
+    stdout: capture(),
+    stderr: capture(),
+    domainConfigLoader: async () => domainConfig,
+    storeFactory: () => ({}),
+    attentionFactory: () => ({}),
+    reviewServiceFactory: ({ configuration }) => {
+      receivedConfiguration = configuration;
+      return {
+      run: async (options) => {
+        calls.push(options);
+        return result;
+      },
+      };
+    },
+  };
+
+  await runPanCli(
+    ["review", "--config", "domain.json"],
+    dependencies,
+  );
+  await runPanCli(
+    ["chat", "What next?", "--dry-run", "--config", "domain.json"],
+    dependencies,
+  );
+
+  assert.deepEqual(calls, [
+    { apply: false },
+    { apply: false, userInput: "What next?" },
+  ]);
+  assert.deepEqual(receivedConfiguration.reviewPolicy, domainConfig.reviewPolicy);
+});
+
+test("reports incomplete reasoning effects as command failures", async () => {
+  const stdout = capture();
+  const dependencies = {
+    stdout,
+    stderr: capture(),
+    domainConfigLoader: async () => domainConfig,
+    storeFactory: () => ({}),
+    attentionFactory: () => ({}),
+    reviewServiceFactory: () => ({
+      run: async () => ({
+        applied: true,
+        response: {
+          recommendation: "Move B before A.",
+          proposedActions: [],
+          appliedActions: [],
+          rejectedActions: [],
+          effects: {
+            confirmed: [],
+            incomplete: [
+              {
+                summary: "PAN could not confirm the Project reorder.",
+              },
+            ],
+          },
+        },
+      }),
+    }),
+    runtimeFactory: ({ reviewService }) => ({
+      runOnce: async () => {
+        const result = await reviewService.run({ apply: true });
+        const error = new Error("incomplete mutation");
+        error.result = result;
+        throw error;
+      },
+    }),
+  };
+
+  await assert.rejects(
+    runPanCli(["review", "--apply", "--config", "domain.json"], dependencies),
+    /could not safely complete/i,
+  );
+  assert.match(stdout.value, /INCOMPLETE:/);
+});
+
+test("reports normal live-command lease contention", async () => {
+  const stdout = capture();
+  const result = await runPanCli(
+    ["review", "--apply", "--config", "domain.json"],
+    {
+      stdout,
+      stderr: capture(),
+      domainConfigLoader: async () => domainConfig,
+      storeFactory: () => ({}),
+      attentionFactory: () => ({}),
+      reviewServiceFactory: () => ({ run: async () => assert.fail("not run") }),
+      runtimeFactory: () => ({
+        runOnce: async () => ({ leader: false, reason: "leased" }),
+      }),
+    },
+  );
+
+  assert.equal(result.leader, false);
+  assert.match(stdout.value, /already running elsewhere/i);
 });
 
 function capture() {

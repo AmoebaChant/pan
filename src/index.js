@@ -16,6 +16,8 @@ export {
 } from "./needs-human.js";
 export { PanDaemon } from "./pan-daemon.js";
 export { PanAgentClient } from "./pan-agent-client.js";
+export { PanReviewService } from "./pan-review-service.js";
+export { PanRuntime } from "./pan-runtime.js";
 export { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 export {
   ActionPolicy,
@@ -27,11 +29,6 @@ export {
   PanToolError,
   PanToolRegistry,
 } from "./pan-tools.js";
-export {
-  REASONING_TOOL_OPERATIONS,
-  ReasoningService,
-  ReasoningTurnError,
-} from "./reasoning-service.js";
 export { parseArgs as parsePanArgs, runPanCli } from "./pan-cli.js";
 export { PanStore } from "./pan-store.js";
 export {

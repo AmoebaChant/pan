@@ -1,5 +1,8 @@
 # Task Board: reasoning-first-pan
 
+> Superseded on 2026-07-20 by the lean reasoning-first vertical slice. The
+> remaining plugin-generated queue is not an active implementation commitment.
+
 ## Queue
 
 | M | ID | Task | Skill | Notes |

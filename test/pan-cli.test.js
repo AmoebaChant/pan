@@ -112,3 +112,31 @@ test("rejects simultaneous domain and runner configuration", () => {
 test("requires explicit store configuration", () => {
   assert.throws(() => parsePanArgs(["inbox"], {}), /PAN_CONFIG/);
 });
+
+test("parses reasoning review and conversational commands", () => {
+  assert.deepEqual(
+    parsePanArgs(["review", "--apply", "--json"], {
+      PAN_CONFIG: "domain.json",
+    }),
+    {
+      command: "review",
+      config: "domain.json",
+      profile: undefined,
+      json: true,
+      apply: true,
+    },
+  );
+  assert.deepEqual(
+    parsePanArgs(["chat", "What", "next?", "--dry-run"], {
+      PAN_CONFIG: "domain.json",
+    }),
+    {
+      command: "chat",
+      config: "domain.json",
+      profile: undefined,
+      json: false,
+      apply: false,
+      text: "What next?",
+    },
+  );
+});

@@ -63,6 +63,10 @@ Use only these PAN operations:
 - `pan-tools/read_runner_availability`
 - `pan-tools/propose_actions`
 
+When the turn request embeds a complete `portfolio` snapshot, reason directly
+from it and do not call tools. Return proposed actions in the final protocol
+response for the runtime to validate and apply.
+
 Do not use shell commands, arbitrary filesystem access, direct GitHub mutation,
 or any operation outside this list.
 
