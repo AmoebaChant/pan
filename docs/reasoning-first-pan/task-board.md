@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-10 | Execute implementation_plan/01_05_pan_agent_client.md | execute-implementation-plan | |
 | | T-11 | Execute implementation_plan/01_06_cli_configuration_split.md | execute-implementation-plan | |
 | | T-12 | Execute implementation_plan/02_01_complete_project_read_model.md | execute-implementation-plan | |
 | | T-13 | Execute implementation_plan/02_02_confined_workstream_store.md | execute-implementation-plan | |
@@ -47,5 +46,6 @@
 | | T-07 | Execute implementation_plan/01_02_pan_turn_protocol.md | execute-implementation-plan | done 2026-07-20 · 2ff25f0 |
 | | T-08 | Execute implementation_plan/01_03_domain_configuration.md | execute-implementation-plan | done 2026-07-20 · 5aaa1a7 |
 | | T-09 | Execute implementation_plan/01_04_generic_pan_agent.md | execute-implementation-plan | done 2026-07-20 · 9c9b395 |
+| | T-10 | Execute implementation_plan/01_05_pan_agent_client.md | execute-implementation-plan | done 2026-07-20 · 5452c04 |
 
 ## Untriaged
