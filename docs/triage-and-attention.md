@@ -37,6 +37,12 @@ Only the instance holding the renewable lease on the data repository's
 PAN preserves `in-progress`, `in-review`, and `done` items. It also preserves
 blocks created by runners or humans.
 
+When no lifecycle state changes, polling backs off to five minutes. A GitHub
+rate-limit failure pauses polling for fifteen minutes before retrying. Project
+board reads use 20-item GraphQL pages and are bounded to 100 items so idle
+polling has predictable cost; PAN fails explicitly if a board outgrows that MVP
+limit.
+
 ### Triage directives
 
 An Issue body or `pan answer` can include explicit directives:

@@ -8,6 +8,12 @@ import {
   deriveTriage,
   matchingRunner,
 } from "./triage-policy.js";
+import {
+  isRateLimitError,
+  nextPollDelaySeconds,
+  rateLimitBackoffSeconds,
+  waitForNextPoll,
+} from "./polling.js";
 
 export class PanDaemon {
   constructor({
@@ -59,29 +65,81 @@ export class PanDaemon {
   }
 
   async run({ signal } = {}) {
-    const acquisition = await this.leaderLease.acquire();
-    if (!acquisition.acquired) {
-      throw new Error(
-        `PAN leader lease is held by ${acquisition.lease?.holder ?? "another instance"}`,
-      );
-    }
-    const guard = startLeaderGuard(
-      this.leaderLease,
-      this.leaderHeartbeatSeconds * 1_000,
-    );
-    try {
-      while (!signal?.aborted) {
-        await guard.assert();
-        try {
-          await this.tick({ assertLeader: guard.assert });
-        } catch (error) {
-          this.logger.error("PAN triage poll failed", error);
+    while (!signal?.aborted) {
+      let acquisition;
+      try {
+        acquisition = await this.leaderLease.acquire();
+      } catch (error) {
+        if (!isRateLimitError(error)) {
+          throw error;
         }
-        await this.sleep(this.pollIntervalSeconds * 1_000);
+        this.logger.error("PAN leader acquisition rate limited", error);
+        await waitForNextPoll({
+          sleep: this.sleep,
+          milliseconds: rateLimitBackoffSeconds() * 1_000,
+          signal,
+        });
+        continue;
       }
-    } finally {
-      await guard.stop();
-      await this.leaderLease.release();
+      if (!acquisition.acquired) {
+        throw new Error(
+          `PAN leader lease is held by ${acquisition.lease?.holder ?? "another instance"}`,
+        );
+      }
+      const guard = startLeaderGuard(
+        this.leaderLease,
+        this.leaderHeartbeatSeconds * 1_000,
+      );
+      let idlePolls = 0;
+      let rateLimited = false;
+      try {
+        while (!signal?.aborted) {
+          try {
+            await guard.assert();
+          } catch (error) {
+            if (!isRateLimitError(error)) {
+              throw error;
+            }
+            this.logger.error("PAN leader heartbeat rate limited", error);
+            rateLimited = true;
+            break;
+          }
+          let summary;
+          try {
+            summary = await this.tick({ assertLeader: guard.assert });
+          } catch (error) {
+            this.logger.error("PAN triage poll failed", error);
+            if (isRateLimitError(error)) {
+              rateLimited = true;
+              break;
+            }
+          }
+          idlePolls = hasActivity(summary) ? 0 : idlePolls + 1;
+          await waitForNextPoll({
+            sleep: this.sleep,
+            milliseconds:
+              nextPollDelaySeconds(this.pollIntervalSeconds, idlePolls) * 1_000,
+            signal,
+          });
+        }
+      } finally {
+        await guard.stop();
+        try {
+          await this.leaderLease.release();
+        } catch (error) {
+          if (!rateLimited || !isRateLimitError(error)) {
+            throw error;
+          }
+          this.logger.error("PAN leader release rate limited", error);
+        }
+      }
+      if (rateLimited && !signal?.aborted) {
+        await waitForNextPoll({
+          sleep: this.sleep,
+          milliseconds: rateLimitBackoffSeconds() * 1_000,
+          signal,
+        });
+      }
     }
   }
 
@@ -315,6 +373,16 @@ export class PanDaemon {
     item.fields.status = status;
     return true;
   }
+}
+
+function hasActivity(summary) {
+  return Boolean(
+    summary &&
+      (summary.triaged > 0 ||
+        summary.blocked > 0 ||
+        summary.unblocked > 0 ||
+        summary.reordered),
+  );
 }
 
 function changedFields(current, desired) {

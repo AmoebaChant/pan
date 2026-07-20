@@ -65,6 +65,21 @@ test("loads and validates the live Project schema", async () => {
   assert.equal(schema.fields.workstream.id, "field-workstream");
 });
 
+test("retries schema loading after a transient failure", async () => {
+  const { store, gh } = fixture({ failSchemaOnce: true });
+
+  await assert.rejects(store.getSchema(), /rate limit exceeded/i);
+  const schema = await store.getSchema();
+
+  assert.equal(schema.projectId, "project-id");
+  assert.equal(
+    gh.jsonCalls.filter(
+      (args) => args[0] === "project" && args[1] === "view",
+    ).length,
+    2,
+  );
+});
+
 test("creates an Issue, adds it to the Project, and sets fields", async () => {
   const { store, gh } = fixture();
   const item = await store.createItem({
@@ -178,6 +193,50 @@ test("filters canonical items by fields, requirements, and lease state", async (
     ).map((item) => item.id),
     ["ready"],
   );
+});
+
+test("bounds board reads and fetches individual items directly", async () => {
+  const { store, gh } = fixture();
+
+  await store.listItems();
+  const boardRead = gh.jsonCalls.find(
+    (args) =>
+      args[0] === "api" &&
+      args[1] === "graphql" &&
+      valueAfterAssignment(args, "query")?.includes("items(first: 20"),
+  );
+  assert.ok(boardRead);
+  assert.equal(
+    gh.jsonCalls.some(
+      (args) =>
+        args[0] === "project" &&
+        ["field-list", "item-list"].includes(args[1]),
+    ),
+    false,
+  );
+
+  gh.jsonCalls.length = 0;
+  const item = await store.getItem("item-1");
+
+  assert.equal(item.id, "item-1");
+  assert.equal(
+    gh.jsonCalls.some(
+      (args) => args[0] === "project" && args[1] === "item-list",
+    ),
+    false,
+  );
+  assert.equal(
+    gh.jsonCalls.some(
+      (args) => args[0] === "api" && args[1] === "graphql",
+    ),
+    true,
+  );
+});
+
+test("fails closed when an item has unpaged field values", async () => {
+  const { store } = fixture({ truncatedFieldValues: true });
+
+  await assert.rejects(store.getItem("item-1"), /cannot be read safely/);
 });
 
 test("claims an available item and confirms lease ownership", async () => {
@@ -403,11 +462,15 @@ function fixture({
   failAssignee = false,
   failProjectEdit = false,
   openIssues = [],
+  truncatedFieldValues = false,
+  failSchemaOnce = false,
 } = {}) {
   const gh = new FakeGh(items, {
     failAssignee,
     failProjectEdit,
     openIssues,
+    truncatedFieldValues,
+    failSchemaOnce,
   });
   return {
     gh,
@@ -430,12 +493,16 @@ class FakeGh {
       failAssignee = false,
       failProjectEdit = false,
       openIssues = [],
+      truncatedFieldValues = false,
+      failSchemaOnce = false,
     } = {},
   ) {
     this.items = structuredClone(items);
     this.failAssignee = failAssignee;
     this.failProjectEdit = failProjectEdit;
     this.openIssues = structuredClone(openIssues);
+    this.truncatedFieldValues = truncatedFieldValues;
+    this.schemaFailures = failSchemaOnce ? 1 : 0;
     this.issueCreates = [];
     this.issueEdits = [];
     this.issueComments = [];
@@ -444,6 +511,7 @@ class FakeGh {
     this.deletedIssues = [];
     this.projectEdits = 0;
     this.nextIssue = 2;
+    this.jsonCalls = [];
   }
 
   async run(args) {
@@ -507,27 +575,13 @@ class FakeGh {
   }
 
   async runJson(args) {
+    this.jsonCalls.push(args);
     if (args[0] === "project" && args[1] === "view") {
+      if (this.schemaFailures > 0) {
+        this.schemaFailures -= 1;
+        throw new Error("API rate limit exceeded for user");
+      }
       return { id: "project-id", number: 2 };
-    }
-    if (args[0] === "project" && args[1] === "field-list") {
-      return {
-        fields: MANIFEST.fields.map((field) => ({
-          id: `field-${field.key}`,
-          name: field.name,
-          type:
-            field.type === "single_select"
-              ? "ProjectV2SingleSelectField"
-              : "ProjectV2Field",
-          options: (field.options ?? []).map((option) => ({
-            id: `${field.key}-${option}`,
-            name: option,
-          })),
-        })),
-      };
-    }
-    if (args[0] === "project" && args[1] === "item-list") {
-      return { items: structuredClone(this.items) };
     }
     if (args[0] === "issue" && args[1] === "list") {
       return structuredClone(this.openIssues);
@@ -556,6 +610,53 @@ class FakeGh {
       this.nextIssue = Math.max(this.nextIssue, number + 1);
       return { id: item.id };
     }
+    if (args[0] === "api" && args[1] === "graphql") {
+      const query = valueAfterAssignment(args, "query");
+      if (valueAfterAssignment(args, "projectId") && query.includes("fields(first:")) {
+        return {
+          data: {
+            node: {
+              fields: {
+                nodes: MANIFEST.fields.map((field) => ({
+                  __typename:
+                    field.type === "single_select"
+                      ? "ProjectV2SingleSelectField"
+                      : "ProjectV2Field",
+                  id: `field-${field.key}`,
+                  name: field.name,
+                  options: (field.options ?? []).map((option) => ({
+                    id: `${field.key}-${option}`,
+                    name: option,
+                  })),
+                })),
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        };
+      }
+      if (valueAfterAssignment(args, "projectId") && query.includes("items(first:")) {
+        return {
+          data: {
+            node: {
+              items: {
+                totalCount: this.items.length,
+                nodes: this.items.map((item) => this.#graphQlItem(item)),
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        };
+      }
+      const item = this.items.find(
+        (candidate) => candidate.id === valueAfterAssignment(args, "itemId"),
+      );
+      return {
+        data: {
+          node: item ? this.#graphQlItem(item) : null,
+        },
+      };
+    }
     throw new Error(`Unexpected gh JSON command: ${args.join(" ")}`);
   }
 
@@ -579,6 +680,29 @@ class FakeGh {
       return;
     }
     item[field.name] = valueAfter(args, "--text");
+  }
+
+  #graphQlItem(item) {
+    return {
+      id: item.id,
+      fieldValues: {
+        nodes: MANIFEST.fields
+          .map((field) => ({
+            field: { name: field.name },
+            ...(field.type === "single_select"
+              ? { name: item[field.name] }
+              : { text: item[field.name] }),
+          }))
+          .filter((value) => (value.name ?? value.text) !== ""),
+        pageInfo: { hasNextPage: this.truncatedFieldValues },
+      },
+      content: {
+        ...item.content,
+        repository: { nameWithOwner: item.repository },
+        assignees: { nodes: [] },
+        labels: { nodes: [] },
+      },
+    };
   }
 }
 
