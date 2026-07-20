@@ -75,26 +75,64 @@ export class PanStore {
     if (!isIssueUrl(issueUrl)) {
       throw new Error(`gh issue create returned an invalid Issue URL: ${issueUrl}`);
     }
+    let added;
+    try {
+      added = await this.gh.runJson([
+        "project",
+        "item-add",
+        String(this.projectNumber),
+        "--owner",
+        this.projectOwner,
+        "--url",
+        issueUrl,
+        "--format",
+        "json",
+      ]);
+      if (!added.id) {
+        throw new Error("gh project item-add returned no Project item ID");
+      }
 
-    const added = await this.gh.runJson([
-      "project",
-      "item-add",
-      String(this.projectNumber),
-      "--owner",
-      this.projectOwner,
-      "--url",
-      issueUrl,
-      "--format",
-      "json",
-    ]);
-    if (!added.id) {
-      throw new Error("gh project item-add returned no Project item ID");
+      if (Object.keys(fields).length > 0) {
+        await this.setFields(added.id, fields);
+      }
+      return this.#confirmItem(added.id);
+    } catch (error) {
+      const cleanupErrors = [];
+      if (added?.id) {
+        try {
+          await this.gh.run([
+            "project",
+            "item-delete",
+            String(this.projectNumber),
+            "--owner",
+            this.projectOwner,
+            "--id",
+            added.id,
+          ]);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      try {
+        await this.gh.run([
+          "issue",
+          "delete",
+          issueUrl,
+          "--repo",
+          this.repository,
+          "--yes",
+        ]);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          "PAN item creation failed and cleanup was incomplete",
+        );
+      }
+      throw error;
     }
-
-    if (Object.keys(fields).length > 0) {
-      await this.setFields(added.id, fields);
-    }
-    return this.#confirmItem(added.id);
   }
 
   async setFields(itemId, values) {
@@ -117,20 +155,74 @@ export class PanStore {
         "--field-id",
         field.id,
       ];
-      if (value === null || value === undefined || value === "") {
+      if (
+        value === null ||
+        value === undefined ||
+        value === "" ||
+        (key === "requirements" && Array.isArray(value) && value.length === 0)
+      ) {
         args.push("--clear");
       } else if (field.type === "single_select") {
         args.push("--single-select-option-id", field.options[value]);
       } else {
         args.push("--text", serializeTextField(key, value));
       }
-      await this.gh.run(args);
+      try {
+        await this.gh.run(args);
+      } catch (error) {
+        if (!isNoChanges(error)) {
+          throw error;
+        }
+      }
     }
   }
 
   async listByFilter(filters = {}) {
     const items = await this.#listItems();
     return items.filter((item) => matchesFilters(item, filters, this.now()));
+  }
+
+  async listItems() {
+    return this.#listItems();
+  }
+
+  async syncOpenIssues({ beforeMutation = async () => {} } = {}) {
+    const [issues, items] = await Promise.all([
+      this.gh.runJson([
+        "issue",
+        "list",
+        "--repo",
+        this.repository,
+        "--state",
+        "open",
+        "--limit",
+        String(DEFAULT_LIST_LIMIT),
+        "--json",
+        "number,title,body,url,state,updatedAt,labels,assignees",
+      ]),
+      this.#listItems(),
+    ]);
+    const knownUrls = new Set(items.map((item) => item.url));
+    let added = 0;
+    for (const issue of issues) {
+      if (knownUrls.has(issue.url)) {
+        continue;
+      }
+      await beforeMutation();
+      await this.gh.runJson([
+        "project",
+        "item-add",
+        String(this.projectNumber),
+        "--owner",
+        this.projectOwner,
+        "--url",
+        issue.url,
+        "--format",
+        "json",
+      ]);
+      added += 1;
+    }
+    return added > 0 ? this.#listItems() : items;
   }
 
   async getItem(itemId) {
@@ -156,6 +248,58 @@ export class PanStore {
       "--body",
       body,
     ]);
+  }
+
+  async listComments(item) {
+    if (!item?.number || !item.repository) {
+      throw new TypeError("an Issue-backed item is required");
+    }
+    const result = await this.gh.runJson([
+      "issue",
+      "view",
+      String(item.number),
+      "--repo",
+      item.repository,
+      "--json",
+      "comments",
+    ]);
+    return (result.comments ?? []).map((comment) => ({
+      id: comment.id,
+      body: comment.body ?? "",
+      url: comment.url,
+      createdAt: comment.createdAt,
+      author:
+        typeof comment.author === "string"
+          ? comment.author
+          : comment.author?.login,
+    }));
+  }
+
+  async reorderItems(itemIds) {
+    if (!Array.isArray(itemIds) || itemIds.some((id) => !id)) {
+      throw new TypeError("itemIds must be an array of Project item IDs");
+    }
+    const schema = await this.getSchema();
+    const mutation =
+      "mutation($projectId:ID!,$itemId:ID!,$afterId:ID){updateProjectV2ItemPosition(input:{projectId:$projectId,itemId:$itemId,afterId:$afterId}){clientMutationId}}";
+    let afterId;
+    for (const itemId of itemIds) {
+      const args = [
+        "api",
+        "graphql",
+        "-f",
+        `query=${mutation}`,
+        "-f",
+        `projectId=${schema.projectId}`,
+        "-f",
+        `itemId=${itemId}`,
+      ];
+      if (afterId) {
+        args.push("-f", `afterId=${afterId}`);
+      }
+      await this.gh.run(args);
+      afterId = itemId;
+    }
   }
 
   async claimWithLease({
@@ -613,4 +757,8 @@ function isIssueUrl(value) {
   } catch {
     return false;
   }
+}
+
+function isNoChanges(error) {
+  return /no changes to make/i.test(error.stderr ?? error.message);
 }

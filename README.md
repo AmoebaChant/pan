@@ -9,8 +9,8 @@ separate private data repositories.
 
 ## Status
 
-The repository, store contract, shared Node schema module, and local runner
-daemon are established.
+The walking skeleton includes the shared store, local runner, singleton triage
+daemon, and attention CLI.
 
 ## Store model
 
@@ -45,6 +45,25 @@ reports needs-human locators, and always hands completed work off as
 `in-review`.
 
 See the [runner contract and profile format](docs/runner.md).
+
+## Triage and attention
+
+`pan daemon` enriches new and changed Issues, requests missing details, blocks
+agent work that no online runner can service, and maintains Project ordering.
+`pan inbox`, `pan answer`, and `pan add` provide the human attention surface.
+
+Both CLIs use a runner profile from the private data repository. Pass
+`--profile <path>` or set `PAN_PROFILE`.
+
+```powershell
+pan daemon --once
+pan inbox
+pan answer 42 "Use the existing API."
+pan add "Implement the feature" --body "Acceptance criteria..." `
+  --workstream orchestration/pan --repo example/tool
+```
+
+See [PAN triage and attention](docs/triage-and-attention.md).
 
 ```powershell
 npm test

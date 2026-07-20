@@ -134,7 +134,7 @@ function buildPrompt(taskContextPath, task) {
     "You are a PAN worker daemon executing one GitHub Issue.",
     "",
     `Read the complete task context from ${taskContextPath}.`,
-    "It contains the Issue, target worktree, branch, and workstream README.",
+    "It contains the Issue, its comments and answers, target worktree, branch, and workstream README.",
     "",
     "Guardrails:",
     "- Work only in the provided worktree and remain on the provided task branch.",

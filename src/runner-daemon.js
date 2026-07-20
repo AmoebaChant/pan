@@ -1,3 +1,5 @@
+import { formatNeedsHuman } from "./needs-human.js";
+
 const PRIORITY = new Map([
   ["urgent", 0],
   ["high", 1],
@@ -112,15 +114,16 @@ export class RunnerDaemon {
     });
     let prUrl;
     try {
+      const comments = await this.store.listComments(item);
       handle = await this.executor.start({
-        item,
+        item: { ...item, comments },
         repository,
         runner,
         deadline,
       });
       const result = await handle.wait({
         onNeedsHuman: (record) =>
-          this.store.addComment(item, needsHumanComment(record)),
+          this.store.addComment(item, formatNeedsHuman(record)),
       });
 
       if (result.status === "completed") {
@@ -157,7 +160,7 @@ export class RunnerDaemon {
         prompt: result.summary,
         locator: handle.locator(result.localUrl),
       };
-      await this.store.addComment(item, needsHumanComment(record));
+      await this.store.addComment(item, formatNeedsHuman(record));
       const release = await this.store.release({
         itemId: item.id,
         runner,
@@ -176,7 +179,7 @@ export class RunnerDaemon {
           await retry(() =>
             this.store.addComment(
               item,
-              needsHumanComment({
+              formatNeedsHuman({
                 kind: "question",
                 prompt: `Pull request ${prUrl} was created, but final Project updates failed: ${error.message}`,
                 locator,
@@ -195,7 +198,7 @@ export class RunnerDaemon {
       try {
         await this.store.addComment(
           item,
-          needsHumanComment({
+          formatNeedsHuman({
             kind: "question",
             prompt: `Runner failure: ${error.message}`,
             locator,
@@ -352,17 +355,6 @@ function startHeartbeat({
     renewNow,
     stop: () => clearInterval(timer),
   };
-}
-
-function needsHumanComment(record) {
-  return [
-    "<!-- pan:needs-human -->",
-    "### Needs human",
-    "",
-    "```json",
-    JSON.stringify(record, null, 2),
-    "```",
-  ].join("\n");
 }
 
 function completedComment(prUrl, result) {

@@ -1,5 +1,24 @@
 export { GhClient, GhCommandError } from "./gh-client.js";
+export { AttentionService } from "./attention-service.js";
+export { GitHubStateFile, LeaderLease } from "./leader-lease.js";
+export {
+  answerTexts,
+  formatAnswer,
+  formatNeedsHuman,
+  formatNeedsHumanResolved,
+  latestAnswer,
+  latestNeedsHuman,
+  pullRequestUrl,
+} from "./needs-human.js";
+export { PanDaemon } from "./pan-daemon.js";
+export { parseArgs as parsePanArgs, runPanCli } from "./pan-cli.js";
 export { PanStore } from "./pan-store.js";
+export { RunnerProfileSource } from "./runner-profile-source.js";
+export {
+  compareBacklogItems,
+  deriveTriage,
+  matchingRunner,
+} from "./triage-policy.js";
 export {
   loadRunnerProfile,
   validateRunnerProfile,

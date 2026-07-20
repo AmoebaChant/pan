@@ -91,6 +91,21 @@ test("creates an Issue, adds it to the Project, and sets fields", async () => {
   assert.deepEqual(gh.issueCreates[0].assignees, ["octocat"]);
 });
 
+test("cleans up a partially created item when field setup fails", async () => {
+  const { store, gh } = fixture({ failProjectEdit: true });
+
+  await assert.rejects(
+    store.createItem({
+      title: "Broken item",
+      fields: { owner: "agent" },
+    }),
+    /project edit failed/,
+  );
+
+  assert.equal(gh.items.some((item) => item.id === "item-2"), false);
+  assert.deepEqual(gh.deletedIssues, [2]);
+});
+
 test("rejects unknown fields and invalid select options", async () => {
   const { store, gh } = fixture();
 
@@ -111,6 +126,16 @@ test("rejects unknown fields and invalid select options", async () => {
   );
   assert.equal(gh.issueCreates.length, 0);
   assert.equal(gh.projectEdits, 0);
+});
+
+test("clears an empty requirements array", async () => {
+  const { store } = fixture({
+    items: [makeItem({ requirements: "repo:example/tool" })],
+  });
+
+  await store.setFields("item-1", { requirements: [] });
+
+  assert.equal((await store.getItem("item-1")).fields.requirements, "");
 });
 
 test("filters canonical items by fields, requirements, and lease state", async () => {
@@ -311,8 +336,79 @@ test("adds a comment to an Issue-backed item", async () => {
   ]);
 });
 
-function fixture({ items = [makeItem()], failAssignee = false } = {}) {
-  const gh = new FakeGh(items, { failAssignee });
+test("reads Issue comments", async () => {
+  const { store, gh } = fixture();
+  gh.commentsByIssue.set(1, [
+    {
+      id: "comment-1",
+      body: "Question",
+      url: "comment-url",
+      createdAt: "2026-07-20T16:00:00Z",
+      author: { login: "octocat" },
+    },
+  ]);
+
+  const comments = await store.listComments(await store.getItem("item-1"));
+
+  assert.deepEqual(comments, [
+    {
+      id: "comment-1",
+      body: "Question",
+      url: "comment-url",
+      createdAt: "2026-07-20T16:00:00Z",
+      author: "octocat",
+    },
+  ]);
+});
+
+test("adds open repository Issues missing from the Project", async () => {
+  const { store, gh } = fixture({
+    openIssues: [
+      {
+        number: 1,
+        title: "Task",
+        body: "",
+        url: "https://github.com/AmoebaChant/pan-work/issues/1",
+        state: "OPEN",
+      },
+      {
+        number: 2,
+        title: "New task",
+        body: "Details",
+        url: "https://github.com/AmoebaChant/pan-work/issues/2",
+        state: "OPEN",
+      },
+    ],
+  });
+
+  const items = await store.syncOpenIssues();
+
+  assert.equal(items.length, 2);
+  assert.equal(items[1].number, 2);
+});
+
+test("updates Project item ordering", async () => {
+  const { store, gh } = fixture();
+
+  await store.reorderItems(["item-2", "item-1"]);
+
+  assert.deepEqual(gh.projectOrders, [
+    { itemId: "item-2", afterId: undefined },
+    { itemId: "item-1", afterId: "item-2" },
+  ]);
+});
+
+function fixture({
+  items = [makeItem()],
+  failAssignee = false,
+  failProjectEdit = false,
+  openIssues = [],
+} = {}) {
+  const gh = new FakeGh(items, {
+    failAssignee,
+    failProjectEdit,
+    openIssues,
+  });
   return {
     gh,
     store: new PanStore({
@@ -328,12 +424,24 @@ function fixture({ items = [makeItem()], failAssignee = false } = {}) {
 }
 
 class FakeGh {
-  constructor(items, { failAssignee = false } = {}) {
+  constructor(
+    items,
+    {
+      failAssignee = false,
+      failProjectEdit = false,
+      openIssues = [],
+    } = {},
+  ) {
     this.items = structuredClone(items);
     this.failAssignee = failAssignee;
+    this.failProjectEdit = failProjectEdit;
+    this.openIssues = structuredClone(openIssues);
     this.issueCreates = [];
     this.issueEdits = [];
     this.issueComments = [];
+    this.commentsByIssue = new Map();
+    this.projectOrders = [];
+    this.deletedIssues = [];
     this.projectEdits = 0;
     this.nextIssue = 2;
   }
@@ -350,6 +458,9 @@ class FakeGh {
       return `https://github.com/AmoebaChant/pan-work/issues/${this.nextIssue}`;
     }
     if (args[0] === "project" && args[1] === "item-edit") {
+      if (this.failProjectEdit) {
+        throw new Error("project edit failed");
+      }
       this.projectEdits += 1;
       this.#editProjectItem(args);
       return "";
@@ -375,6 +486,22 @@ class FakeGh {
         body: valueAfter(args, "--body"),
       });
       return "https://github.com/AmoebaChant/pan-work/issues/1#issuecomment-1";
+    }
+    if (args[0] === "api" && args[1] === "graphql") {
+      this.projectOrders.push({
+        itemId: valueAfterAssignment(args, "itemId"),
+        afterId: valueAfterAssignment(args, "afterId"),
+      });
+      return "";
+    }
+    if (args[0] === "project" && args[1] === "item-delete") {
+      const itemId = valueAfter(args, "--id");
+      this.items = this.items.filter((item) => item.id !== itemId);
+      return "";
+    }
+    if (args[0] === "issue" && args[1] === "delete") {
+      this.deletedIssues.push(Number(args[2].match(/\/issues\/(\d+)$/)[1]));
+      return "";
     }
     throw new Error(`Unexpected gh command: ${args.join(" ")}`);
   }
@@ -402,16 +529,31 @@ class FakeGh {
     if (args[0] === "project" && args[1] === "item-list") {
       return { items: structuredClone(this.items) };
     }
+    if (args[0] === "issue" && args[1] === "list") {
+      return structuredClone(this.openIssues);
+    }
+    if (args[0] === "issue" && args[1] === "view") {
+      return {
+        comments: structuredClone(
+          this.commentsByIssue.get(Number(args[2])) ?? [],
+        ),
+      };
+    }
     if (args[0] === "project" && args[1] === "item-add") {
-      const number = this.nextIssue;
+      const issueUrl = valueAfter(args, "--url");
+      const number = Number(issueUrl.match(/\/issues\/(\d+)$/)[1]);
+      const created = this.issueCreates.find(
+        (_issue, index) => index + 2 === number,
+      );
+      const openIssue = this.openIssues.find((issue) => issue.number === number);
       const item = makeItem({
         id: `item-${number}`,
         number,
-        title: this.issueCreates.at(-1).title,
-        body: this.issueCreates.at(-1).body,
+        title: created?.title ?? openIssue?.title,
+        body: created?.body ?? openIssue?.body,
       });
       this.items.push(item);
-      this.nextIssue += 1;
+      this.nextIssue = Math.max(this.nextIssue, number + 1);
       return { id: item.id };
     }
     throw new Error(`Unexpected gh JSON command: ${args.join(" ")}`);
@@ -481,4 +623,9 @@ function valueAfter(args, flag) {
 
 function valuesAfter(args, flag) {
   return args.flatMap((arg, index) => (arg === flag ? [args[index + 1]] : []));
+}
+
+function valueAfterAssignment(args, name) {
+  const assignment = args.find((arg) => arg.startsWith(`${name}=`));
+  return assignment?.slice(name.length + 1);
 }
