@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AmoebaChant/pan/schema/pan-tool-message.json",
+  "title": "PAN tool message",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/result"
+    }
+  ],
+  "$defs": {
+    "effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actionId",
+        "summary"
+      ],
+      "properties": {
+        "actionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "$ref": "pan-action.json#/$defs/citation"
+          }
+        },
+        "remainingSteps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "base": {
+      "type": "object",
+      "required": [
+        "version",
+        "type",
+        "requestId",
+        "turnId",
+        "operation"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "type": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "request": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": [
+            "arguments"
+          ],
+          "properties": {
+            "type": {
+              "const": "tool-request"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      ]
+    },
+    "result": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "type": {
+              "const": "tool-result"
+            },
+            "status": {
+              "enum": [
+                "confirmed",
+                "rejected",
+                "incomplete",
+                "failed"
+              ]
+            },
+            "data": true,
+            "error": {
+              "type": "string",
+              "minLength": 1
+            },
+            "confirmedEffects": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/effect"
+              }
+            },
+            "incompleteEffects": {
+              "type": "array",
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/effect"
+                  },
+                  {
+                    "required": [
+                      "remainingSteps"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "rejected",
+                      "failed"
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "error"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "incomplete"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "incompleteEffects"
+                ],
+                "properties": {
+                  "incompleteEffects": {
+                    "minItems": 1
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
