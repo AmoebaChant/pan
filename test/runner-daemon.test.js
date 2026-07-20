@@ -147,6 +147,20 @@ test("releases failed work even when its needs-human comment fails", async () =>
   assert.equal(store.releases[0].status, "blocked");
 });
 
+test("surfaces claim rate limits to the polling loop", async () => {
+  const store = new FakeStore([makeItem()], {
+    claimFailure: new Error("API rate limit exceeded for user"),
+  });
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(new FakeHandle()),
+    logger: silentLogger,
+  });
+
+  await assert.rejects(daemon.runOnce(), /rate limit exceeded/i);
+});
+
 class FakeStore {
   constructor(
     items,
@@ -154,12 +168,14 @@ class FakeStore {
       heartbeat = { renewed: true },
       commentFailures = 0,
       issueComments = [],
+      claimFailure,
     } = {},
   ) {
     this.items = items;
     this.heartbeatResult = heartbeat;
     this.commentFailures = commentFailures;
     this.issueComments = issueComments;
+    this.claimFailure = claimFailure;
     this.claims = [];
     this.comments = [];
     this.releases = [];
@@ -171,6 +187,9 @@ class FakeStore {
 
   async claimWithLease(claim) {
     this.claims.push(claim);
+    if (this.claimFailure) {
+      throw this.claimFailure;
+    }
     return { claimed: true, item: this.items[0] };
   }
 

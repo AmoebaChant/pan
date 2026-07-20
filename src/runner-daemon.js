@@ -1,4 +1,10 @@
 import { formatNeedsHuman } from "./needs-human.js";
+import {
+  isRateLimitError,
+  nextPollDelaySeconds,
+  rateLimitBackoffSeconds,
+  waitForNextPoll,
+} from "./polling.js";
 
 const PRIORITY = new Map([
   ["urgent", 0],
@@ -32,13 +38,25 @@ export class RunnerDaemon {
   }
 
   async run({ signal } = {}) {
+    let idlePolls = 0;
     while (!signal?.aborted) {
+      let started = 0;
+      let rateLimited = false;
       try {
-        await this.tick();
+        started = await this.tick();
       } catch (error) {
         this.logger.error("PAN runner poll failed", error);
+        rateLimited = isRateLimitError(error);
       }
-      await this.sleep(this.profile.pollIntervalSeconds * 1_000);
+      idlePolls = started > 0 || this.active.size > 0 ? 0 : idlePolls + 1;
+      const delaySeconds = rateLimited
+        ? rateLimitBackoffSeconds()
+        : nextPollDelaySeconds(this.profile.pollIntervalSeconds, idlePolls);
+      await waitForNextPoll({
+        sleep: this.sleep,
+        milliseconds: delaySeconds * 1_000,
+        signal,
+      });
     }
     await Promise.all([...this.active.values()]);
   }
@@ -78,6 +96,9 @@ export class RunnerDaemon {
           leaseUntil: this.#leaseUntil(),
         });
       } catch (error) {
+        if (isRateLimitError(error)) {
+          throw error;
+        }
         this.logger.error(`Unable to claim PAN task #${item.number}`, error);
         continue;
       }

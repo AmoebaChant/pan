@@ -1,8 +1,114 @@
 import { readFile } from "node:fs/promises";
 
-const DEFAULT_LIST_LIMIT = 1_000;
+const ISSUE_LIST_LIMIT = 1_000;
+const PROJECT_ITEM_LIST_LIMIT = 100;
+const PROJECT_PAGE_SIZE = 20;
 const CONFIRM_ATTEMPTS = 3;
 const CONFIRM_DELAY_MS = 250;
+const PROJECT_ITEM_SELECTION = `
+  id
+  fieldValues(first: 20) {
+    nodes {
+      ... on ProjectV2ItemFieldSingleSelectValue {
+        name
+        field {
+          ... on ProjectV2SingleSelectField {
+            name
+          }
+        }
+      }
+      ... on ProjectV2ItemFieldTextValue {
+        text
+        field {
+          ... on ProjectV2Field {
+            name
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+    }
+  }
+  content {
+    ... on Issue {
+      number
+      title
+      body
+      url
+      state
+      repository {
+        nameWithOwner
+      }
+      assignees(first: 20) {
+        nodes {
+          login
+        }
+      }
+      labels(first: 20) {
+        nodes {
+          name
+        }
+      }
+    }
+  }
+`;
+const PROJECT_ITEM_QUERY = `
+  query($itemId: ID!) {
+    node(id: $itemId) {
+      ... on ProjectV2Item {
+        ${PROJECT_ITEM_SELECTION}
+      }
+    }
+  }
+`;
+const PROJECT_ITEMS_QUERY = `
+  query($projectId: ID!, $cursor: String) {
+    node(id: $projectId) {
+      ... on ProjectV2 {
+        items(first: ${PROJECT_PAGE_SIZE}, after: $cursor) {
+          totalCount
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            ${PROJECT_ITEM_SELECTION}
+          }
+        }
+      }
+    }
+  }
+`;
+const PROJECT_FIELDS_QUERY = `
+  query($projectId: ID!, $cursor: String) {
+    node(id: $projectId) {
+      ... on ProjectV2 {
+        fields(first: ${PROJECT_PAGE_SIZE}, after: $cursor) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            __typename
+            ... on ProjectV2Field {
+              id
+              name
+            }
+            ... on ProjectV2SingleSelectField {
+              id
+              name
+              options {
+                id
+                name
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
 
 export class PanStore {
   constructor({
@@ -36,7 +142,13 @@ export class PanStore {
 
   async getSchema({ refresh = false } = {}) {
     if (refresh || !this.schemaPromise) {
-      this.schemaPromise = this.#loadSchema();
+      const loading = this.#loadSchema();
+      this.schemaPromise = loading;
+      void loading.catch(() => {
+        if (this.schemaPromise === loading) {
+          this.schemaPromise = undefined;
+        }
+      });
     }
     return this.schemaPromise;
   }
@@ -196,7 +308,7 @@ export class PanStore {
         "--state",
         "open",
         "--limit",
-        String(DEFAULT_LIST_LIMIT),
+        String(ISSUE_LIST_LIMIT),
         "--json",
         "number,title,body,url,state,updatedAt,labels,assignees",
       ]),
@@ -229,7 +341,16 @@ export class PanStore {
     if (!itemId) {
       throw new TypeError("itemId is required");
     }
-    return (await this.#listItems()).find((item) => item.id === itemId);
+    const schema = await this.getSchema();
+    const result = await this.gh.runJson([
+      "api",
+      "graphql",
+      "-f",
+      `query=${PROJECT_ITEM_QUERY}`,
+      "-f",
+      `itemId=${itemId}`,
+    ]);
+    return normalizeGraphQlItem(result.data?.node, schema, this.repository);
   }
 
   async addComment(item, body) {
@@ -440,33 +561,23 @@ export class PanStore {
           "utf8",
         ),
       );
-    const [project, fieldList] = await Promise.all([
-      this.gh.runJson([
-        "project",
-        "view",
-        String(this.projectNumber),
-        "--owner",
-        this.projectOwner,
-        "--format",
-        "json",
-      ]),
-      this.gh.runJson([
-        "project",
-        "field-list",
-        String(this.projectNumber),
-        "--owner",
-        this.projectOwner,
-        "--format",
-        "json",
-      ]),
+    const project = await this.gh.runJson([
+      "project",
+      "view",
+      String(this.projectNumber),
+      "--owner",
+      this.projectOwner,
+      "--format",
+      "json",
     ]);
     if (!project.id) {
       throw new Error("gh project view returned no Project ID");
     }
+    const fieldList = await this.#listProjectFields(project.id);
 
     const fields = {};
     for (const expected of manifest.fields) {
-      const actual = fieldList.fields.find(
+      const actual = fieldList.find(
         (field) => field.name.toLowerCase() === expected.name.toLowerCase(),
       );
       if (!actual) {
@@ -474,10 +585,12 @@ export class PanStore {
       }
 
       const actualType =
-        actual.type === "ProjectV2SingleSelectField" ? "single_select" : "text";
+        actual.__typename === "ProjectV2SingleSelectField"
+          ? "single_select"
+          : "text";
       if (actualType !== expected.type) {
         throw new Error(
-          `Project field "${expected.name}" has type ${actual.type}, expected ${expected.type}`,
+          `Project field "${expected.name}" has type ${actual.__typename}, expected ${expected.type}`,
         );
       }
 
@@ -510,25 +623,65 @@ export class PanStore {
 
   async #listItems() {
     const schema = await this.getSchema();
-    const result = await this.gh.runJson([
-      "project",
-      "item-list",
-      String(this.projectNumber),
-      "--owner",
-      this.projectOwner,
-      "--limit",
-      String(DEFAULT_LIST_LIMIT),
-      "--format",
-      "json",
-    ]);
-    if (result.totalCount > result.items.length) {
-      throw new Error(
-        `Project has ${result.totalCount} items, exceeding the ${DEFAULT_LIST_LIMIT}-item read limit`,
-      );
-    }
-    return result.items.map((item) =>
-      normalizeItem(item, schema, this.repository),
+    const items = await this.#readProjectConnection({
+      query: PROJECT_ITEMS_QUERY,
+      projectId: schema.projectId,
+      connectionName: "items",
+      limit: PROJECT_ITEM_LIST_LIMIT,
+    });
+    return items.map((item) =>
+      normalizeGraphQlItem(item, schema, this.repository),
     );
+  }
+
+  async #listProjectFields(projectId) {
+    return this.#readProjectConnection({
+      query: PROJECT_FIELDS_QUERY,
+      projectId,
+      connectionName: "fields",
+      limit: 100,
+    });
+  }
+
+  async #readProjectConnection({
+    query,
+    projectId,
+    connectionName,
+    limit,
+  }) {
+    const nodes = [];
+    let cursor;
+    do {
+      const args = [
+        "api",
+        "graphql",
+        "-f",
+        `query=${query}`,
+        "-f",
+        `projectId=${projectId}`,
+      ];
+      if (cursor) {
+        args.push("-f", `cursor=${cursor}`);
+      }
+      const result = await this.gh.runJson(args);
+      const connection = result.data?.node?.[connectionName];
+      if (!connection) {
+        throw new Error(
+          `GitHub returned no Project ${connectionName} connection`,
+        );
+      }
+      const totalCount = connection.totalCount ?? nodes.length + connection.nodes.length;
+      if (totalCount > limit) {
+        throw new Error(
+          `Project has ${totalCount} ${connectionName}, exceeding the ${limit}-entry read limit`,
+        );
+      }
+      nodes.push(...connection.nodes);
+      cursor = connection.pageInfo?.hasNextPage
+        ? connection.pageInfo.endCursor
+        : undefined;
+    } while (cursor);
+    return nodes;
   }
 
   async #requireItem(itemId) {
@@ -586,26 +739,38 @@ export class PanStore {
   }
 }
 
-function normalizeItem(item, schema, defaultRepository) {
-  const content = item.content ?? {};
-  const fields = {};
-  for (const field of Object.values(schema.fields)) {
-    const value = getCaseInsensitive(item, field.name, field.key);
-    fields[field.key] = value ?? "";
+function normalizeGraphQlItem(item, schema, defaultRepository) {
+  if (!item) {
+    return undefined;
   }
-
+  if (item.fieldValues?.pageInfo?.hasNextPage) {
+    throw new Error(
+      `Project item ${item.id} has more than 20 field values and cannot be read safely`,
+    );
+  }
+  const fields = Object.fromEntries(
+    Object.values(schema.fields).map((field) => [field.key, ""]),
+  );
+  for (const value of item.fieldValues?.nodes ?? []) {
+    const field = Object.values(schema.fields).find(
+      (candidate) =>
+        candidate.name.toLowerCase() === value.field?.name?.toLowerCase(),
+    );
+    if (field) {
+      fields[field.key] = value.name ?? value.text ?? "";
+    }
+  }
+  const content = item.content ?? {};
   return {
     id: item.id,
-    number: content.number ?? item.number,
-    title: content.title ?? item.title ?? "",
-    body: content.body ?? item.body ?? "",
-    url: content.url ?? item.url ?? "",
-    state: (content.state ?? item.state ?? "").toLowerCase(),
-    repository:
-      normalizeRepository(content.repository ?? item.repository) ??
-      defaultRepository,
-    assignees: normalizeNames(content.assignees ?? item.assignees),
-    labels: normalizeNames(content.labels ?? item.labels),
+    number: content.number,
+    title: content.title ?? "",
+    body: content.body ?? "",
+    url: content.url ?? "",
+    state: (content.state ?? "").toLowerCase(),
+    repository: content.repository?.nameWithOwner ?? defaultRepository,
+    assignees: (content.assignees?.nodes ?? []).map((entry) => entry.login),
+    labels: (content.labels?.nodes ?? []).map((entry) => entry.name),
     fields,
     requirements: parseRequirements(fields.requirements),
   };
@@ -709,37 +874,6 @@ function isExpired(leaseUntil, now) {
   }
   const parsed = Date.parse(leaseUntil);
   return !Number.isFinite(parsed) || parsed <= now.getTime();
-}
-
-function getCaseInsensitive(object, ...keys) {
-  for (const key of keys) {
-    if (Object.hasOwn(object, key)) {
-      return object[key];
-    }
-    const match = Object.keys(object).find(
-      (candidate) => candidate.toLowerCase() === key.toLowerCase(),
-    );
-    if (match) {
-      return object[match];
-    }
-  }
-  return undefined;
-}
-
-function normalizeNames(values = []) {
-  return values.map((value) =>
-    typeof value === "string" ? value : value.login ?? value.name,
-  );
-}
-
-function normalizeRepository(repository) {
-  if (!repository) {
-    return undefined;
-  }
-  if (typeof repository === "string") {
-    return repository;
-  }
-  return repository.nameWithOwner ?? repository.name;
 }
 
 function lastNonEmptyLine(value) {

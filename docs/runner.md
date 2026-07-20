@@ -83,6 +83,8 @@ node .\bin\pan-runner.js --profile C:\path\to\runner.json --once
 ```
 
 Omit `--once` to keep polling until the process receives `SIGINT` or `SIGTERM`.
+The configured interval is used while work is active. Idle polling backs off to
+five minutes, and GitHub rate-limit failures pause polling for fifteen minutes.
 
 When `pan answer` resolves blocked work, PAN returns the item to triage. The
 next runner attempt receives the marked answer comment in its task context.
