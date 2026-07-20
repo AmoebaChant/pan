@@ -27,6 +27,11 @@ export {
   PanToolError,
   PanToolRegistry,
 } from "./pan-tools.js";
+export {
+  REASONING_TOOL_OPERATIONS,
+  ReasoningService,
+  ReasoningTurnError,
+} from "./reasoning-service.js";
 export { parseArgs as parsePanArgs, runPanCli } from "./pan-cli.js";
 export { PanStore } from "./pan-store.js";
 export {

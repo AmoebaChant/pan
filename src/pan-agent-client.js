@@ -27,6 +27,7 @@ export class PanAgentClient {
     this.cwd = options.cwd ?? process.cwd();
     this.env = options.env ?? process.env;
     this.onToolMessage = options.onToolMessage;
+    this.inlinePortfolio = options.inlinePortfolio ?? false;
     this.allowedCredentialEnvironment = new Set(
       options.allowedCredentialEnvironment ?? [],
     );
@@ -52,7 +53,12 @@ export class PanAgentClient {
       throw new TypeError("Resumed PAN turns require a sessionId");
     }
     const sessionId = options.sessionId ?? randomUUID();
-    const args = this.#buildArguments(turn, sessionId, options.resume);
+    const args = this.#buildArguments(
+      turn,
+      sessionId,
+      options.resume,
+      options.inlinePortfolio ?? this.inlinePortfolio,
+    );
     const env = this.#buildEnvironment();
     let execution;
     try {
@@ -139,7 +145,7 @@ export class PanAgentClient {
     };
   }
 
-  #buildArguments(turn, sessionId, resume) {
+  #buildArguments(turn, sessionId, resume, inlinePortfolio) {
     const args = [
       ...this.executableArgs,
       "-C",
@@ -155,11 +161,13 @@ export class PanAgentClient {
       "--disallow-temp-dir",
     ];
 
-    for (const operation of turn.toolChannel.allowedOperations) {
-      args.push(
-        `--available-tools=${turn.toolChannel.server}-${operation}`,
-        `--allow-tool=${turn.toolChannel.server}(${operation})`,
-      );
+    if (!inlinePortfolio) {
+      for (const operation of turn.toolChannel.allowedOperations) {
+        args.push(
+          `--available-tools=${turn.toolChannel.server}-${operation}`,
+          `--allow-tool=${turn.toolChannel.server}(${operation})`,
+        );
+      }
     }
     args.push("--output-format", "json", "--stream", "off");
     if (this.model) {
@@ -217,7 +225,7 @@ export class PanAgentClient {
           const candidate = readAssistantContent(event);
           if (typeof candidate === "string") {
             try {
-              const value = JSON.parse(candidate);
+              const value = parseAssistantJson(candidate);
               if (value?.type === "final-response") {
                 response = validatePanFinalResponse(value);
               }
@@ -249,12 +257,94 @@ export class PanAgentClient {
 }
 
 function buildPrompt(turn) {
+  const inline = turn.portfolio
+    ? [
+        "The complete portfolio snapshot is embedded in this request.",
+        "Do not call tools. Reason only from this snapshot.",
+      ]
+    : ["Process this PAN turn request using only the allowed PAN tools."];
+  const evidenceCitation = {
+    kind: "issue",
+    locator: "durable locator from the snapshot",
+  };
+  const responseShape = {
+    version: 1,
+    type: "final-response",
+    turnId: turn.turnId,
+    mode: turn.mode,
+    timestamp: turn.timestamp,
+    snapshotId: turn.snapshot.id,
+    recommendation: "Concise recommendation.",
+    facts: [
+      {
+        statement: "Fact supported by durable evidence.",
+        citations: [evidenceCitation],
+      },
+    ],
+    interpretations: [],
+    assumptions: [],
+    uncertainties: [],
+    citations: [],
+    ...(turn.responseRequirements
+      ? {
+          classifications: (turn.portfolio?.canonicalOrder ?? []).map(
+            (itemId) => ({
+              itemId,
+              classification: "Explicit portfolio classification.",
+              rationale: "Evidence-based classification rationale.",
+              citations: [evidenceCitation],
+            }),
+          ),
+          humanNextAction: {
+            itemId: "eligible Project item ID",
+            recommendation: "Clear human next action.",
+            citations: [evidenceCitation],
+          },
+          agentQueueRecommendation: {
+            orderedItemIds: [],
+            recommendation: "Canonical-order agent queue view.",
+            citations: [evidenceCitation],
+          },
+        }
+      : {}),
+    proposedActions: [],
+    appliedActions: [],
+    rejectedActions: [],
+    effects: { confirmed: [], incomplete: [] },
+  };
   return [
-    "Process this PAN turn request using only the allowed PAN tools:",
+    ...inline,
     JSON.stringify(turn),
     "",
-    "Return the final PAN protocol response as one JSON object with no Markdown fencing.",
+    "Return one JSON object with no Markdown fencing using this shape:",
+    JSON.stringify(responseShape),
+    ...(turn.responseRequirements
+      ? [
+          "Follow responseRequirements exactly. Omit a conditional recommendation field only when the portfolio has no eligible item for it.",
+        ]
+      : []),
+    "For a canonical-reorder action, include every current Project item ID exactly once.",
+    "Use expectedState.snapshotId equal to the supplied snapshot ID.",
+    "Citation kind must be exactly one of: issue, issue-comment, project-field, workstream, runner, domain-record.",
+    "Only propose an action when it is useful. A no-op recommendation is valid.",
   ].join("\n");
+}
+
+function parseAssistantJson(content) {
+  const trimmed = content.trim();
+  const unfenced = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  try {
+    return JSON.parse(unfenced);
+  } catch (firstError) {
+    const start = unfenced.indexOf("{");
+    const end = unfenced.lastIndexOf("}");
+    if (start === -1 || end <= start) {
+      throw firstError;
+    }
+    return JSON.parse(unfenced.slice(start, end + 1));
+  }
 }
 
 function validateToolExchange(turn, message, pendingRequests) {

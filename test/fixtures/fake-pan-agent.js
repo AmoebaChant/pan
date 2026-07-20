@@ -5,7 +5,11 @@ function argument(name) {
 
 const prompt = argument("-p");
 if (prompt) {
-  const request = JSON.parse(prompt.split("\n")[1]);
+  const request = JSON.parse(
+    prompt
+      .split("\n")
+      .find((line) => line.trim().startsWith('{"version":1,"type":"request"')),
+  );
   const scenario = process.env.PAN_FAKE_SCENARIO ?? "success";
   const leakedCredential = [
     "GH_TOKEN",

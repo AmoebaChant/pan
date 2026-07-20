@@ -117,6 +117,32 @@
             },
             "toolChannel": {
               "$ref": "#/$defs/toolChannel"
+            },
+            "portfolio": {
+              "type": "object"
+            },
+            "responseRequirements": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "classifications",
+                "humanNextAction",
+                "agentQueueRecommendation"
+              ],
+              "properties": {
+                "classifications": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "humanNextAction": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "agentQueueRecommendation": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
             }
           },
           "allOf": [
@@ -252,6 +278,97 @@
               "type": "array",
               "items": {
                 "$ref": "pan-action.json#/$defs/citation"
+              }
+            },
+            "classifications": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "itemId",
+                  "classification",
+                  "rationale",
+                  "citations"
+                ],
+                "properties": {
+                  "itemId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "classification": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "citations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "$ref": "pan-action.json#/$defs/citation"
+                    }
+                  }
+                }
+              }
+            },
+            "humanNextAction": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "itemId",
+                "recommendation",
+                "citations"
+              ],
+              "properties": {
+                "itemId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "recommendation": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "citations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "pan-action.json#/$defs/citation"
+                  }
+                }
+              }
+            },
+            "agentQueueRecommendation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "orderedItemIds",
+                "recommendation",
+                "citations"
+              ],
+              "properties": {
+                "orderedItemIds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "recommendation": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "citations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "pan-action.json#/$defs/citation"
+                  }
+                }
               }
             },
             "proposedActions": {

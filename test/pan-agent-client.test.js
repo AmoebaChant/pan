@@ -13,6 +13,7 @@ test("uses one custom agent for review and chat turns", async () => {
     extraArgs: ["--max-ai-credits", "5"],
     model: "fixture-model",
   });
+
   const review = await client.review(turn("autonomous-review"));
   const sessionId = randomUUID();
   const chat = await client.chat(
@@ -53,6 +54,22 @@ test("uses one custom agent for review and chat turns", async () => {
   assert.equal(chat.result.data.arguments.at(-1), `--resume=${sessionId}`);
 });
 
+test("supports an inline portfolio without exposing unavailable tools", async () => {
+  const client = fixtureClient();
+  const result = await client.review(
+    {
+      ...turn("autonomous-review"),
+      portfolio: { project: { items: ["item-1"] } },
+    },
+    { inlinePortfolio: true },
+  );
+
+  const args = result.result.data.arguments;
+  assert.ok(!args.some((argument) => argument.startsWith("--available-tools")));
+  assert.ok(!args.some((argument) => argument.startsWith("--allow-tool")));
+  assert.match(args[3], /complete portfolio snapshot is embedded/i);
+});
+
 test("validates and reports multiple bounded tool exchanges", async () => {
   const messages = [];
   const client = fixtureClient({
@@ -76,6 +93,30 @@ test("validates and reports multiple bounded tool exchanges", async () => {
       "tool-result:propose_actions",
     ],
   );
+});
+
+test("includes reasoning response requirements in the agent prompt", async () => {
+  const client = fixtureClient();
+  const result = await client.review({
+    ...turn("autonomous-review"),
+    portfolio: {
+      canonicalOrder: ["item-1"],
+      dossiers: [],
+      manualConstraints: [],
+      authority: {},
+    },
+    responseRequirements: {
+      classifications: "Classify every item.",
+      humanNextAction: "Recommend human work.",
+      agentQueueRecommendation: "Recommend agent work.",
+    },
+  });
+  const prompt = result.result.data.arguments[3];
+
+  assert.match(prompt, /"classifications":\[\{"itemId":"item-1"/);
+  assert.match(prompt, /"humanNextAction":/);
+  assert.match(prompt, /"agentQueueRecommendation":/);
+  assert.match(prompt, /Follow responseRequirements exactly/);
 });
 
 test("rejects unknown tools before invoking the callback", async () => {
@@ -174,6 +215,7 @@ function fixtureClient(options = {}) {
     maxBuffer,
     model,
     onToolMessage,
+    inlinePortfolio = false,
     scenario = "success",
     timeout = 2_000,
   } = options;
@@ -188,6 +230,7 @@ function fixtureClient(options = {}) {
     model,
     timeout,
     onToolMessage,
+    inlinePortfolio,
   });
 }
 
