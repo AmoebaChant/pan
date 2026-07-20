@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-13 | Execute implementation_plan/02_02_confined_workstream_store.md | execute-implementation-plan | |
 | | T-14 | Execute implementation_plan/02_03_runner_availability_snapshot.md | execute-implementation-plan | |
 | | T-15 | Execute implementation_plan/02_04_complete_portfolio_snapshot.md | execute-implementation-plan | |
 | | T-16 | Execute implementation_plan/02_05_constrained_pan_tools.md | execute-implementation-plan | |
@@ -47,5 +46,6 @@
 | | T-10 | Execute implementation_plan/01_05_pan_agent_client.md | execute-implementation-plan | done 2026-07-20 · 5452c04 |
 | | T-11 | Execute implementation_plan/01_06_cli_configuration_split.md | execute-implementation-plan | done 2026-07-20 · b792ae3 |
 | | T-12 | Execute implementation_plan/02_01_complete_project_read_model.md | execute-implementation-plan | done 2026-07-20 · b8e8856 |
+| | T-13 | Execute implementation_plan/02_02_confined_workstream_store.md | execute-implementation-plan | done 2026-07-20 · 3842a16 |
 
 ## Untriaged
