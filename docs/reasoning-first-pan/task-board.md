@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-16 | Execute implementation_plan/02_05_constrained_pan_tools.md | execute-implementation-plan | |
 | | T-17 | Execute implementation_plan/03_01_reasoning_dry_run_service.md | execute-implementation-plan | |
 | | T-18 | Execute implementation_plan/03_02_review_dry_run_cli.md | execute-implementation-plan | |
 | | T-19 | Execute implementation_plan/03_03_rationale_and_review_fields.md | execute-implementation-plan | |
@@ -47,5 +46,6 @@
 | | T-13 | Execute implementation_plan/02_02_confined_workstream_store.md | execute-implementation-plan | done 2026-07-20 · 3842a16 |
 | | T-14 | Execute implementation_plan/02_03_runner_availability_snapshot.md | execute-implementation-plan | done 2026-07-20 · 998754f |
 | | T-15 | Execute implementation_plan/02_04_complete_portfolio_snapshot.md | execute-implementation-plan | done 2026-07-20 · 077165d |
+| | T-16 | Execute implementation_plan/02_05_constrained_pan_tools.md | execute-implementation-plan | done 2026-07-20 · b226440 |
 
 ## Untriaged
