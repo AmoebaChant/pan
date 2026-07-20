@@ -15,6 +15,7 @@ export {
   pullRequestUrl,
 } from "./needs-human.js";
 export { PanDaemon } from "./pan-daemon.js";
+export { PanAgentClient } from "./pan-agent-client.js";
 export { parseArgs as parsePanArgs, runPanCli } from "./pan-cli.js";
 export { PanStore } from "./pan-store.js";
 export { RunnerProfileSource } from "./runner-profile-source.js";
