@@ -18,6 +18,10 @@ export { PanDaemon } from "./pan-daemon.js";
 export { PanAgentClient } from "./pan-agent-client.js";
 export { parseArgs as parsePanArgs, runPanCli } from "./pan-cli.js";
 export { PanStore } from "./pan-store.js";
+export {
+  buildRunnerAvailability,
+  normalizeRunnerAvailability,
+} from "./runner-availability.js";
 export { RunnerProfileSource } from "./runner-profile-source.js";
 export {
   compareBacklogItems,
