@@ -1,12 +1,17 @@
 # Runner daemon
 
-The runner is a pull-based local worker. It reads a capability profile from a
-private PAN data repository, claims compatible ready Issues with a lease, and
-runs each task in an isolated git worktree.
+The runner is a pull-based local worker. It reads its current capability profile,
+claims compatible ready Issues with a lease, and runs each task in an isolated
+git worktree. It is a lightweight non-AI process; no Copilot session waits idle
+in each repository.
+
+The capability profile below documents the current implementation. The target
+architecture replaces flat matching with shared playbooks and local machine
+settings while preserving the same atomic claim and worktree isolation.
 
 ## Capability profile
 
-Profiles live at `runners/<machine>.json` in the private data repository. The
+Profiles live at `runners/<machine>.json` in the private domain repository. The
 public schema is [`schema/runner-profile.json`](../schema/runner-profile.json).
 Capabilities are exact strings, and every configured repository must have a
 matching `repo:<owner/name>` capability.
@@ -46,7 +51,7 @@ matching `repo:<owner/name>` capability.
 }
 ```
 
-When the profile is loaded from `runners/<machine>.json`, the data repository
+When the profile is loaded from `runners/<machine>.json`, the domain repository
 path is inferred from the profile location. `store.path` can override it when a
 profile is stored elsewhere.
 
@@ -88,3 +93,28 @@ five minutes, and GitHub rate-limit failures pause polling for fifteen minutes.
 
 When `pan answer` resolves blocked work, PAN returns the item to triage. The
 next runner attempt receives the marked answer comment in its task context.
+
+## Target playbook model
+
+A shared playbook in the private domain repository defines:
+
+- the task, repository, environment, and tool requirements it matches;
+- common pickup, setup, validation, and cleanup instructions;
+- the worker-agent definition, skills, and prompt context;
+- the reporting protocol; and
+- default execution limits.
+
+Local machine settings enable installed playbooks and provide repository paths,
+installed tools, credentials, terminal configuration, and per-playbook capacity.
+The runner publishes only a sanitized advertisement containing playbook IDs,
+capabilities, online state, and free capacity.
+
+For each available slot, the runner selects the highest-ranked compatible
+Project item, confirms its atomic claim, creates a unique worktree, and launches
+a headed worker session. Global and playbook-specific limits allow two tasks in
+the same repository to run concurrently without sharing a branch or worktree.
+
+The runner owns the task lease and heartbeat independently of the Copilot
+session. Worker sessions report progress, questions, results, and failures
+through the versioned protocol described in
+[the architecture](architecture.md#reporting-protocol).

@@ -1,8 +1,12 @@
-# PAN triage and attention
+# PAN runtime and attention
 
-The PAN daemon keeps a private GitHub Issue backlog ready for humans and
-runners. It is a local process, while its leader lease and all backlog state
-remain in the private data repository.
+The current PAN daemon keeps a private GitHub Issue backlog ready for humans and
+runners through deterministic triage rules. It is the walking-skeleton precursor
+to the PAN runtime described in [the target architecture](architecture.md).
+
+The target runtime polls and synchronizes one domain repository, invokes the PAN
+custom agent for complete portfolio reasoning, hosts conversation, and applies
+validated changes directly to the canonical GitHub Project.
 
 ## Configuration
 
@@ -12,18 +16,18 @@ Commands load the same private runner profile used by `pan-runner`.
 $env:PAN_PROFILE = "C:\path\to\data\runners\machine-a.json"
 ```
 
-The profile supplies the repository, Project, local data-repository path, poll
+The profile supplies the repository, Project, local domain-repository path, poll
 interval, and machine identity. Pass `--profile <path>` to override the
 environment variable.
 
-## Triage daemon
+## Current triage daemon
 
 ```powershell
 pan daemon
 pan daemon --once
 ```
 
-Only the instance holding the renewable lease on the data repository's
+Only the instance holding the renewable lease on the domain repository's
 `pan-state` branch performs a poll. Each poll:
 
 1. adds open repository Issues that are missing from the Project;
@@ -36,6 +40,11 @@ Only the instance holding the renewable lease on the data repository's
 
 PAN preserves `in-progress`, `in-review`, and `done` items. It also preserves
 blocks created by runners or humans.
+
+The fixed triage and ordering policy is transitional. In the target design,
+deterministic code continues to validate lifecycle transitions and leases, but
+the PAN agent reasons about owner, requirements, commitments, and Project
+ordering using all actionable tasks and relevant workstream narrative.
 
 When no lifecycle state changes, polling backs off to five minutes. A GitHub
 rate-limit failure pauses polling for fifteen minutes before retrying. Project
@@ -95,3 +104,13 @@ pan add "Implement the feature" `
 `--body-file` can replace `--body`; `--repo` and `--requirement` are
 repeatable. New items start as `untriaged` so the daemon can validate and
 enrich them. Add `--json` for machine-readable output.
+
+## Target conversation
+
+The target `pan chat` interface attaches to the same PAN personality and domain
+context used for scheduled planning. It reads and changes the same GitHub
+Project exposed by the UI, so there is no separate conversational queue.
+
+PAN can explain ordering, accept relative-order overrides, add or reschedule
+work, answer worker questions, and promote durable conversational outcomes into
+Issues, Project fields, or workstream markdown.
