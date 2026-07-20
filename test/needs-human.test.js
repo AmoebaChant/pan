@@ -41,4 +41,3 @@ test("finds the pull request in a runner result comment", () => {
     "https://github.com/example/tool/pull/42",
   );
 });
-

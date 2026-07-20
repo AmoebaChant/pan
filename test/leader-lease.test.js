@@ -83,4 +83,3 @@ class MemoryStateFile {
     return this.version;
   }
 }
-

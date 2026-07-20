@@ -65,4 +65,3 @@ test("parses add fields and repeatable requirements", () => {
 test("requires explicit store configuration", () => {
   assert.throws(() => parsePanArgs(["inbox"], {}), /PAN_PROFILE/);
 });
-

@@ -28,4 +28,3 @@ export class RunnerProfileSource {
     return Promise.all(files.map((file) => loadRunnerProfile(file)));
   }
 }
-

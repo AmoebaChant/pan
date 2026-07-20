@@ -245,4 +245,3 @@ function isConflict(error) {
     error.stderr ?? error.message,
   );
 }
-
