@@ -1,4 +1,8 @@
 export { GhClient, GhCommandError } from "./gh-client.js";
+export {
+  loadDomainConfig,
+  validateDomainConfig,
+} from "./domain-config.js";
 export { AttentionService } from "./attention-service.js";
 export { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 export {
