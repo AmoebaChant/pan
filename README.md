@@ -49,13 +49,18 @@ The package exports:
 The implementation has no runtime dependencies and requires Node 22 or newer.
 See the [schema module contract](docs/schema-module.md) for API usage.
 
-## Target PAN agent and runtime
+## PAN agent and target runtime
 
-The target design adds a generic `.github/agents/pan.agent.md` custom-agent
-definition that owns personality, goals, reasoning standards, responsibilities,
-and allowed tools. Its local PAN runtime will poll and synchronize one domain,
-schedule autonomous PAN turns, host conversation, validate actions, and maintain
-the singleton lease.
+The package ships a generic `.github/agents/pan.agent.md` custom-agent definition
+for both autonomous portfolio reviews and interactive conversation. It defines
+PAN's reusable personality, complete-portfolio reasoning standards, authority
+boundaries, versioned output expectations, and named PAN-only tools without
+embedding domain or machine values.
+
+The local PAN runtime will poll and synchronize one configured domain, schedule
+PAN turns, host conversation, validate proposed actions, and maintain the
+singleton lease. The runtime supplies private domain context and implements the
+constrained tools; the agent definition remains reusable.
 
 The runtime decides when PAN should think; PAN decides how the portfolio should
 change. See [the target architecture](docs/architecture.md).
