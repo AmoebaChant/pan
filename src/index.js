@@ -17,6 +17,16 @@ export {
 export { PanDaemon } from "./pan-daemon.js";
 export { PanAgentClient } from "./pan-agent-client.js";
 export { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
+export {
+  ActionPolicy,
+  lifecycleViolations,
+  PAN_PROTECTED_STATUSES,
+} from "./action-policy.js";
+export {
+  PAN_TOOL_OPERATIONS,
+  PanToolError,
+  PanToolRegistry,
+} from "./pan-tools.js";
 export { parseArgs as parsePanArgs, runPanCli } from "./pan-cli.js";
 export { PanStore } from "./pan-store.js";
 export {
