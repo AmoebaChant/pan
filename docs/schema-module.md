@@ -17,7 +17,7 @@ const store = new PanStore({
 });
 ```
 
-The active `gh` account needs read-write access to the data repository and its
+The active `gh` account needs read-write access to the domain repository and its
 Project, including the `project` OAuth scope. `getSchema()` reads the Project and
 validates every field and single-select option against
 `schema/project-fields.json`.
