@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-07 | Execute implementation_plan/01_02_pan_turn_protocol.md | execute-implementation-plan | |
 | | T-08 | Execute implementation_plan/01_03_domain_configuration.md | execute-implementation-plan | |
 | | T-09 | Execute implementation_plan/01_04_generic_pan_agent.md | execute-implementation-plan | |
 | | T-10 | Execute implementation_plan/01_05_pan_agent_client.md | execute-implementation-plan | |
@@ -47,5 +46,6 @@
 | | T-04 | Architecture | write-architecture | done 2026-07-20 · ../architecture.md |
 | | T-05 | Implementation plan | write-implementation-plan | done 2026-07-20 · implementation_plan/00_overview.md |
 | | T-06 | Execute implementation_plan/01_01_copilot_cli_invocation_spike.md | execute-implementation-plan | done 2026-07-20 · 3a56eef |
+| | T-07 | Execute implementation_plan/01_02_pan_turn_protocol.md | execute-implementation-plan | done 2026-07-20 · 2ff25f0 |
 
 ## Untriaged
