@@ -1,0 +1,94 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+  loadRunnerProfile,
+  validateRunnerProfile,
+} from "../src/index.js";
+
+test("loads a capability profile and applies runner defaults", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pan-profile-"));
+  const runnersDirectory = path.join(directory, "runners");
+  const profilePath = path.join(runnersDirectory, "runner.json");
+  const source = makeProfile(directory);
+  delete source.store.path;
+  await mkdir(runnersDirectory);
+  await writeFile(profilePath, JSON.stringify(source));
+
+  try {
+    const profile = await loadRunnerProfile(profilePath);
+
+    assert.equal(profile.pollIntervalSeconds, 30);
+    assert.equal(profile.leaseSeconds, 600);
+    assert.equal(profile.heartbeatSeconds, 120);
+    assert.equal(profile.taskBudget.maxAiCredits, 30);
+    assert.equal(profile.terminal.executable, "wt");
+    assert.equal(profile.profilePath, profilePath);
+    assert.equal(profile.store.path, directory);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("requires a repository capability for every local repository", () => {
+  const root = path.resolve("runner-root");
+  const profile = makeProfile(root);
+  profile.capabilities = ["env:local"];
+
+  assert.throws(
+    () => validateRunnerProfile(profile),
+    /capabilities must include repo:example\/tool/,
+  );
+});
+
+test("rejects a heartbeat cadence that can outlive the lease", () => {
+  const profile = makeProfile(path.resolve("runner-root"));
+  profile.leaseSeconds = 30;
+  profile.heartbeatSeconds = 30;
+
+  assert.throws(
+    () => validateRunnerProfile(profile),
+    /heartbeatSeconds must be less than leaseSeconds/,
+  );
+});
+
+test("rejects Copilot credit budgets below the CLI minimum", () => {
+  const profile = makeProfile(path.resolve("runner-root"));
+  profile.taskBudget = { maxAiCredits: 29 };
+
+  assert.throws(
+    () => validateRunnerProfile(profile),
+    /maxAiCredits must be at least 30/,
+  );
+});
+
+function makeProfile(root) {
+  return {
+    version: 1,
+    id: "runner-a",
+    machine: "machine-a",
+    online: true,
+    maxConcurrentDaemons: 1,
+    capabilities: ["env:local", "repo:example/tool"],
+    store: {
+      repository: "example/data",
+      projectOwner: "example",
+      projectNumber: 1,
+      path: path.join(root, "data"),
+    },
+    repositories: {
+      "example/tool": {
+        path: path.join(root, "tool"),
+        defaultBranch: "main",
+      },
+    },
+    workspaceRoot: path.join(root, "worktrees"),
+    stateDirectory: path.join(root, "state"),
+    terminal: {
+      type: "windows-terminal",
+    },
+  };
+}

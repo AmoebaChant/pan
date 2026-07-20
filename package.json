@@ -6,7 +6,11 @@
   "exports": {
     ".": "./src/index.js"
   },
+  "bin": {
+    "pan-runner": "./bin/pan-runner.js"
+  },
   "files": [
+    "bin",
     "src",
     "schema",
     "docs"

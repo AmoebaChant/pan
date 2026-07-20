@@ -9,8 +9,8 @@ separate private data repositories.
 
 ## Status
 
-The repository, store contract, and shared Node schema module are established.
-The next walking skeleton step is the runner daemon and capability profile.
+The repository, store contract, shared Node schema module, and local runner
+daemon are established.
 
 ## Store model
 
@@ -35,6 +35,16 @@ The package exports:
 
 The implementation has no runtime dependencies and requires Node 22 or newer.
 See the [schema module contract](docs/schema-module.md) for API usage.
+
+## Runner daemon
+
+`pan-runner` loads a private machine capability profile, pulls compatible ready
+work, claims it with a renewable lease, and launches a headed Copilot CLI task
+in an isolated worktree. The runner owns branch push and pull-request creation,
+reports needs-human locators, and always hands completed work off as
+`in-review`.
+
+See the [runner contract and profile format](docs/runner.md).
 
 ```powershell
 npm test
