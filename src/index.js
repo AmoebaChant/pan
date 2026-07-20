@@ -16,6 +16,7 @@ export {
 } from "./needs-human.js";
 export { PanDaemon } from "./pan-daemon.js";
 export { PanAgentClient } from "./pan-agent-client.js";
+export { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 export { parseArgs as parsePanArgs, runPanCli } from "./pan-cli.js";
 export { PanStore } from "./pan-store.js";
 export {
