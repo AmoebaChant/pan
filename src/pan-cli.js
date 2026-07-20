@@ -1,32 +1,61 @@
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { AttentionService } from "./attention-service.js";
+import { ActionPolicy } from "./action-policy.js";
+import { loadDomainConfig } from "./domain-config.js";
 import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
+import { PanAgentClient } from "./pan-agent-client.js";
 import { PanDaemon } from "./pan-daemon.js";
+import { PanReviewService } from "./pan-review-service.js";
+import { PanRuntime } from "./pan-runtime.js";
 import { PanStore } from "./pan-store.js";
+import { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 import { loadRunnerProfile } from "./runner-profile.js";
 import { RunnerProfileSource } from "./runner-profile-source.js";
+import { WorkstreamStore } from "./workstream-store.js";
+
+const TOOL_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 
 export async function runPanCli(
   args,
   {
     env = process.env,
     stdout = process.stdout,
+    stderr = process.stderr,
     gh = new GhClient(),
     pid = process.pid,
+    domainConfigLoader = loadDomainConfig,
+    runnerProfileLoader = loadRunnerProfile,
+    storeFactory = (options) => new PanStore(options),
+    attentionFactory = (options) => new AttentionService(options),
+    reviewServiceFactory,
+    runtimeFactory = (options) => new PanRuntime(options),
   } = {},
 ) {
   const parsed = parseArgs(args, env);
-  const profile = await loadRunnerProfile(parsed.profile);
-  const store = new PanStore({
-    repository: profile.store.repository,
-    projectOwner: profile.store.projectOwner,
-    projectNumber: profile.store.projectNumber,
+  const configuration = await loadCliConfiguration(parsed, {
+    domainConfigLoader,
+    runnerProfileLoader,
+  });
+  if (configuration.deprecated) {
+    write(
+      stderr,
+      "Warning: --profile and PAN_PROFILE are deprecated for PAN commands; use --config or PAN_CONFIG.",
+    );
+  }
+  const store = storeFactory({
+    repository: configuration.store.repository,
+    projectOwner: configuration.store.projectOwner,
+    projectNumber: configuration.store.projectNumber,
     gh,
   });
-  const attention = new AttentionService({ store });
+  const attention = attentionFactory({ store });
 
   if (parsed.command === "inbox") {
     const entries = await attention.inbox();
@@ -48,28 +77,84 @@ export async function runPanCli(
     write(stdout, parsed.json ? JSON.stringify(result, null, 2) : item.url);
     return result;
   }
-  if (parsed.command === "daemon") {
-    const leaderLeaseSeconds = Math.max(
-      120,
-      profile.pollIntervalSeconds * 4,
+  if (parsed.command === "review" || parsed.command === "chat") {
+    const reviewService =
+      reviewServiceFactory?.({ store, configuration, env }) ??
+      createReviewService({ store, configuration, env });
+    const userInput = parsed.command === "chat" ? parsed.text : undefined;
+    let result;
+    try {
+      result = parsed.apply
+        ? await runtimeFactory({
+            reviewService,
+            leaderLease: createLeaderLease({
+              configuration,
+              gh,
+              pid,
+            }),
+            heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
+          }).runOnce({ userInput })
+        : await reviewService.run({
+            apply: false,
+            ...(userInput ? { userInput } : {}),
+          });
+    } catch (error) {
+      if (error.result) {
+        write(
+          stdout,
+          parsed.json
+            ? JSON.stringify(error.result, null, 2)
+            : formatReasoningResult(error.result),
+        );
+        throw new Error(
+          "PAN could not safely complete the requested mutation",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    if (result.leader === false) {
+      write(
+        stdout,
+        parsed.json
+          ? JSON.stringify(result, null, 2)
+          : `PAN is already running elsewhere: ${result.reason}`,
+      );
+      return result;
+    }
+    write(
+      stdout,
+      parsed.json ? JSON.stringify(result, null, 2) : formatReasoningResult(result),
     );
-    const leaderLease = new LeaderLease({
-      stateFile: new GitHubStateFile({
-        gh,
-        repository: profile.store.repository,
-      }),
-      holder: `${profile.machine}/pan-${pid}`,
-      leaseSeconds: leaderLeaseSeconds,
+    if (result.response.effects?.incomplete?.length > 0) {
+      throw new Error("PAN could not safely complete the requested mutation");
+    }
+    return result;
+  }
+  if (parsed.command === "daemon") {
+    const leaderLease = createLeaderLease({
+      configuration,
+      gh,
+      pid,
     });
-    const daemon = new PanDaemon({
-      store,
-      leaderLease,
-      profileSource: new RunnerProfileSource({
-        directory: path.join(profile.store.path, "runners"),
-      }),
-      pollIntervalSeconds: profile.pollIntervalSeconds,
-      leaderHeartbeatSeconds: Math.min(30, leaderLeaseSeconds / 3),
-    });
+    const daemon = parsed.config
+      ? runtimeFactory({
+          reviewService:
+            reviewServiceFactory?.({ store, configuration, env }) ??
+            createReviewService({ store, configuration, env }),
+          leaderLease,
+          pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
+          heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
+        })
+      : new PanDaemon({
+          store,
+          leaderLease,
+          profileSource: new RunnerProfileSource({
+            directory: configuration.runtime.runnerProfileDirectory,
+          }),
+          pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
+          leaderHeartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
+        });
     if (parsed.once) {
       const result = await daemon.runOnce();
       write(stdout, JSON.stringify(result, null, 2));
@@ -85,32 +170,58 @@ export async function runPanCli(
 
 export function parseArgs(args, env = process.env) {
   const remaining = [...args];
+  const config = takeOption(remaining, "--config") ?? env.PAN_CONFIG;
   const profile = takeOption(remaining, "--profile") ?? env.PAN_PROFILE;
-  if (!profile) {
+  if (config && profile) {
     throw new TypeError(
-      "Set PAN_PROFILE or pass --profile <runner-profile.json>",
+      "PAN domain config and runner profile inputs cannot be used together",
     );
   }
+  if (!config && !profile) {
+    throw new TypeError(
+      "Set PAN_CONFIG or pass --config <domain-config.json> (legacy: PAN_PROFILE or --profile)",
+    );
+  }
+  const configuration = { config, profile };
   const json = takeFlag(remaining, "--json");
   const command = remaining.shift();
-  if (!["daemon", "inbox", "answer", "add"].includes(command)) {
+  if (!["daemon", "review", "chat", "inbox", "answer", "add"].includes(command)) {
     throw new TypeError(usage());
   }
   if (command === "daemon") {
     const once = takeFlag(remaining, "--once");
     requireNoArgs(remaining);
-    return { command, profile, once };
+    return { command, ...configuration, once };
   }
   if (command === "inbox") {
     requireNoArgs(remaining);
-    return { command, profile, json };
+    return { command, ...configuration, json };
+  }
+  if (command === "review") {
+    const apply = takeFlag(remaining, "--apply");
+    requireNoArgs(remaining);
+    return { command, ...configuration, json, apply };
+  }
+  if (command === "chat") {
+    const dryRun = takeFlag(remaining, "--dry-run");
+    const text = remaining.join(" ").trim();
+    if (!text) {
+      throw new TypeError("Usage: pan chat <message> [--dry-run] [--json]");
+    }
+    return {
+      command,
+      ...configuration,
+      json,
+      apply: !dryRun,
+      text,
+    };
   }
   if (command === "answer") {
     const [identifier, text, ...extra] = remaining;
     if (!identifier || !text || extra.length > 0) {
       throw new TypeError("Usage: pan answer <id> <text> [--json]");
     }
-    return { command, profile, json, identifier, text };
+    return { command, ...configuration, json, identifier, text };
   }
 
   const body = takeOption(remaining, "--body") ?? "";
@@ -140,7 +251,7 @@ export function parseArgs(args, env = process.env) {
   );
   return {
     command,
-    profile,
+    ...configuration,
     json,
     title,
     body,
@@ -151,6 +262,144 @@ export function parseArgs(args, env = process.env) {
     autonomy,
     requirements: [...new Set(requirements)],
   };
+}
+
+async function loadCliConfiguration(
+  parsed,
+  { domainConfigLoader, runnerProfileLoader },
+) {
+  if (parsed.config) {
+    const config = await domainConfigLoader(parsed.config);
+    return {
+      deprecated: false,
+      store: {
+        repository: config.domain.repository,
+        projectOwner: config.domain.projectOwner,
+        projectNumber: config.domain.projectNumber,
+        path: config.domain.path,
+      },
+      runtime: {
+        machine: "pan-runtime",
+        pollIntervalSeconds: config.cadences.activePollSeconds,
+        leaderLeaseSeconds: config.cadences.leaderLeaseSeconds,
+        leaderHeartbeatSeconds: config.cadences.leaderHeartbeatSeconds,
+        stateBranch: config.state.branch,
+        leaderPath: config.state.leaderPath,
+        runnerProfileDirectory: path.join(config.domain.path, "runners"),
+      },
+      agent: config.agent,
+      reviewPolicy: config.reviewPolicy,
+    };
+  }
+
+  const profile = await runnerProfileLoader(parsed.profile);
+  const leaderLeaseSeconds = Math.max(
+    120,
+    profile.pollIntervalSeconds * 4,
+  );
+  return {
+    deprecated: true,
+    store: profile.store,
+    runtime: {
+      machine: profile.machine,
+      pollIntervalSeconds: profile.pollIntervalSeconds,
+      leaderLeaseSeconds,
+      leaderHeartbeatSeconds: Math.min(30, leaderLeaseSeconds / 3),
+      stateBranch: undefined,
+      leaderPath: undefined,
+      runnerProfileDirectory: path.join(profile.store.path, "runners"),
+    },
+    agent: {
+      name: "pan",
+      executable: "copilot",
+      model: undefined,
+      turnTimeoutSeconds: 600,
+      maxAiCredits: 30,
+    },
+  };
+}
+
+function createReviewService({ store, configuration, env }) {
+  const runnerSource = new RunnerProfileSource({
+    directory: configuration.runtime.runnerProfileDirectory,
+  });
+  const snapshotSource = new PortfolioSnapshotBuilder({
+    projectSource: store,
+    workstreamSource: new WorkstreamStore({
+      repositoryPath: configuration.store.path,
+    }),
+    runnerSource,
+  });
+  return new PanReviewService({
+    snapshotSource,
+    store,
+    actionPolicy: new ActionPolicy({
+      approvalRequired: configuration.reviewPolicy?.higherRisk.enabled
+        ? configuration.reviewPolicy.higherRisk.actionKinds
+        : [],
+    }),
+    agentClient: new PanAgentClient({
+      executable: configuration.agent.executable,
+      agent: configuration.agent.name,
+      model: configuration.agent.model,
+      timeout: configuration.agent.turnTimeoutSeconds * 1_000,
+      cwd: TOOL_ROOT,
+      env,
+      inlinePortfolio: true,
+      extraArgs: [
+        "--max-ai-credits",
+        String(configuration.agent.maxAiCredits),
+      ],
+    }),
+  });
+}
+
+function createLeaderLease({ configuration, gh, pid }) {
+  return new LeaderLease({
+    stateFile: new GitHubStateFile({
+      gh,
+      repository: configuration.store.repository,
+      branch: configuration.runtime.stateBranch,
+      filePath: configuration.runtime.leaderPath,
+    }),
+    holder: `${configuration.runtime.machine}/pan-${pid}`,
+    leaseSeconds: configuration.runtime.leaderLeaseSeconds,
+  });
+}
+
+function formatReasoningResult(result) {
+  const lines = [result.response.recommendation];
+  if (result.response.appliedActions.length > 0) {
+    lines.push(
+      "",
+      ...result.response.appliedActions.map(
+        (action) => `Applied: ${action.summary}`,
+      ),
+    );
+  }
+  if (result.response.rejectedActions.length > 0) {
+    lines.push(
+      "",
+      ...result.response.rejectedActions.map(
+        (action) => `Not applied: ${action.reason}`,
+      ),
+    );
+  }
+  if (result.response.effects?.incomplete?.length > 0) {
+    lines.push(
+      "",
+      ...result.response.effects.incomplete.map(
+        (effect) => `INCOMPLETE: ${effect.summary}`,
+      ),
+    );
+  }
+  if (!result.applied && result.response.proposedActions.length > 0) {
+    lines.push(
+      "",
+      `${result.response.proposedActions.length} proposed action(s); rerun with --apply to apply them.`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function inboxTable(entries) {
@@ -238,9 +487,11 @@ function write(stdout, value) {
 function usage() {
   return [
     "Usage:",
-    "  pan daemon [--once] --profile <path>",
-    "  pan inbox [--json] --profile <path>",
-    "  pan answer <id> <text> [--json] --profile <path>",
-    "  pan add <title> [options] --profile <path>",
+    "  pan daemon [--once] --config <path>",
+    "  pan review [--apply] [--json] --config <path>",
+    "  pan chat <message> [--dry-run] [--json] --config <path>",
+    "  pan inbox [--json] --config <path>",
+    "  pan answer <id> <text> [--json] --config <path>",
+    "  pan add <title> [options] --config <path>",
   ].join("\n");
 }

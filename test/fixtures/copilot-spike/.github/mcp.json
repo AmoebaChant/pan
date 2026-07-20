@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "pan-spike": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "tools/pan-tools.js"
+      ],
+      "env": {
+        "PAN_MCP_SERVER": "1"
+      },
+      "tools": [
+        "read_portfolio",
+        "malformed_result"
+      ]
+    }
+  }
+}

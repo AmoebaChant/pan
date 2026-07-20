@@ -1,0 +1,458 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AmoebaChant/pan/schema/pan-turn.json",
+  "title": "PAN turn envelope",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/finalResponse"
+    }
+  ],
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "required": [
+        "version",
+        "type",
+        "turnId",
+        "mode",
+        "timestamp"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "type": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "autonomous-review",
+            "interactive-chat"
+          ]
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "capturedAt",
+        "complete"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capturedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "complete": {
+          "const": true
+        }
+      }
+    },
+    "toolChannel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transport",
+        "server",
+        "allowedOperations"
+      ],
+      "properties": {
+        "transport": {
+          "const": "mcp-stdio"
+        },
+        "server": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowedOperations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "request": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/identity"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": [
+            "snapshot",
+            "toolChannel"
+          ],
+          "properties": {
+            "type": {
+              "const": "request"
+            },
+            "snapshot": {
+              "$ref": "#/$defs/snapshot"
+            },
+            "userInput": {
+              "type": "string",
+              "minLength": 1
+            },
+            "toolChannel": {
+              "$ref": "#/$defs/toolChannel"
+            },
+            "portfolio": {
+              "type": "object"
+            },
+            "responseRequirements": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "classifications",
+                "humanNextAction",
+                "agentQueueRecommendation"
+              ],
+              "properties": {
+                "classifications": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "humanNextAction": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "agentQueueRecommendation": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "mode": {
+                    "const": "interactive-chat"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "userInput"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actionId",
+        "summary"
+      ],
+      "properties": {
+        "actionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "$ref": "pan-action.json#/$defs/citation"
+          }
+        },
+        "remainingSteps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "finalResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/identity"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": [
+            "snapshotId",
+            "recommendation",
+            "facts",
+            "interpretations",
+            "assumptions",
+            "uncertainties",
+            "citations",
+            "proposedActions",
+            "appliedActions",
+            "rejectedActions",
+            "effects"
+          ],
+          "properties": {
+            "type": {
+              "const": "final-response"
+            },
+            "snapshotId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recommendation": {
+              "type": "string",
+              "minLength": 1
+            },
+            "facts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "statement",
+                  "citations"
+                ],
+                "properties": {
+                  "statement": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "citations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "$ref": "pan-action.json#/$defs/citation"
+                    }
+                  }
+                }
+              }
+            },
+            "interpretations": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "assumptions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "uncertainties": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "$ref": "pan-action.json#/$defs/citation"
+              }
+            },
+            "classifications": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "itemId",
+                  "classification",
+                  "rationale",
+                  "citations"
+                ],
+                "properties": {
+                  "itemId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "classification": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "citations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "$ref": "pan-action.json#/$defs/citation"
+                    }
+                  }
+                }
+              }
+            },
+            "humanNextAction": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "itemId",
+                "recommendation",
+                "citations"
+              ],
+              "properties": {
+                "itemId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "recommendation": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "citations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "pan-action.json#/$defs/citation"
+                  }
+                }
+              }
+            },
+            "agentQueueRecommendation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "orderedItemIds",
+                "recommendation",
+                "citations"
+              ],
+              "properties": {
+                "orderedItemIds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "recommendation": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "citations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "pan-action.json#/$defs/citation"
+                  }
+                }
+              }
+            },
+            "proposedActions": {
+              "type": "array",
+              "items": {
+                "$ref": "pan-action.json"
+              }
+            },
+            "appliedActions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionId",
+                  "summary"
+                ],
+                "properties": {
+                  "actionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "summary": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "rejectedActions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionId",
+                  "reason"
+                ],
+                "properties": {
+                  "actionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "effects": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "confirmed",
+                "incomplete"
+              ],
+              "properties": {
+                "confirmed": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/effect"
+                  }
+                },
+                "incomplete": {
+                  "type": "array",
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/effect"
+                      },
+                      {
+                        "required": [
+                          "remainingSteps"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

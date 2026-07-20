@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 const ISSUE_LIST_LIMIT = 1_000;
-const PROJECT_ITEM_LIST_LIMIT = 100;
+const DEFAULT_PROJECT_ITEM_SAFETY_LIMIT = 1_000;
 const PROJECT_PAGE_SIZE = 20;
 const CONFIRM_ATTEMPTS = 3;
 const CONFIRM_DELAY_MS = 250;
@@ -31,12 +32,15 @@ const PROJECT_ITEM_SELECTION = `
     }
   }
   content {
+    __typename
     ... on Issue {
       number
       title
       body
       url
       state
+      createdAt
+      updatedAt
       repository {
         nameWithOwner
       }
@@ -44,10 +48,31 @@ const PROJECT_ITEM_SELECTION = `
         nodes {
           login
         }
+        pageInfo {
+          hasNextPage
+        }
       }
       labels(first: 20) {
         nodes {
           name
+        }
+        pageInfo {
+          hasNextPage
+        }
+      }
+      comments(first: 100) {
+        nodes {
+          id
+          body
+          url
+          createdAt
+          updatedAt
+          author {
+            login
+          }
+        }
+        pageInfo {
+          hasNextPage
         }
       }
     }
@@ -117,6 +142,7 @@ export class PanStore {
     projectNumber,
     gh,
     manifest,
+    projectItemSafetyLimit = DEFAULT_PROJECT_ITEM_SAFETY_LIMIT,
     now = () => new Date(),
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -129,12 +155,19 @@ export class PanStore {
     if (!gh?.run || !gh?.runJson) {
       throw new TypeError("gh must provide run() and runJson() methods");
     }
+    if (
+      !Number.isInteger(projectItemSafetyLimit) ||
+      projectItemSafetyLimit < 1
+    ) {
+      throw new TypeError("projectItemSafetyLimit must be a positive integer");
+    }
 
     this.repository = repository;
     this.projectOwner = projectOwner;
     this.projectNumber = projectNumber;
     this.gh = gh;
     this.manifest = manifest;
+    this.projectItemSafetyLimit = projectItemSafetyLimit;
     this.now = now;
     this.sleep = sleep;
     this.schemaPromise = undefined;
@@ -159,12 +192,13 @@ export class PanStore {
     labels = [],
     assignees = [],
     fields = {},
-  }) {
+  }, { signal } = {}) {
     if (!title?.trim()) {
       throw new TypeError("title is required");
     }
     const schema = await this.getSchema();
     validateFieldValues(fields, schema);
+    signal?.throwIfAborted();
 
     const issueArgs = [
       "issue",
@@ -183,48 +217,20 @@ export class PanStore {
       issueArgs.push("--assignee", assignee);
     }
 
-    const issueUrl = lastNonEmptyLine(await this.gh.run(issueArgs));
+    const issueUrl = lastNonEmptyLine(
+      await this.gh.run(issueArgs, { signal }),
+    );
     if (!isIssueUrl(issueUrl)) {
       throw new Error(`gh issue create returned an invalid Issue URL: ${issueUrl}`);
     }
-    let added;
     try {
-      added = await this.gh.runJson([
-        "project",
-        "item-add",
-        String(this.projectNumber),
-        "--owner",
-        this.projectOwner,
-        "--url",
-        issueUrl,
-        "--format",
-        "json",
-      ]);
-      if (!added.id) {
-        throw new Error("gh project item-add returned no Project item ID");
-      }
-
-      if (Object.keys(fields).length > 0) {
-        await this.setFields(added.id, fields);
-      }
-      return this.#confirmItem(added.id);
+      signal?.throwIfAborted();
+      return await this.addIssueToProject(issueUrl, fields, { signal });
     } catch (error) {
-      const cleanupErrors = [];
-      if (added?.id) {
-        try {
-          await this.gh.run([
-            "project",
-            "item-delete",
-            String(this.projectNumber),
-            "--owner",
-            this.projectOwner,
-            "--id",
-            added.id,
-          ]);
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
+      if (signal?.aborted) {
+        throw signal.reason ?? error;
       }
+      const cleanupErrors = [];
       try {
         await this.gh.run([
           "issue",
@@ -247,7 +253,57 @@ export class PanStore {
     }
   }
 
-  async setFields(itemId, values) {
+  async addIssueToProject(issueUrl, fields = {}, { signal } = {}) {
+    if (!isIssueUrl(issueUrl)) {
+      throw new TypeError("a GitHub Issue URL is required");
+    }
+    const schema = await this.getSchema();
+    validateFieldValues(fields, schema);
+    signal?.throwIfAborted();
+    const added = await this.gh.runJson([
+      "project",
+      "item-add",
+      String(this.projectNumber),
+      "--owner",
+      this.projectOwner,
+      "--url",
+      issueUrl,
+      "--format",
+      "json",
+    ], { signal });
+    if (!added.id) {
+      throw new Error("gh project item-add returned no Project item ID");
+    }
+    try {
+      if (Object.keys(fields).length > 0) {
+        await this.setFields(added.id, fields, { signal });
+      }
+      return this.#confirmItem(added.id);
+    } catch (error) {
+      if (signal?.aborted) {
+        throw signal.reason ?? error;
+      }
+      try {
+        await this.gh.run([
+          "project",
+          "item-delete",
+          String(this.projectNumber),
+          "--owner",
+          this.projectOwner,
+          "--id",
+          added.id,
+        ]);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "PAN Project insertion failed and cleanup was incomplete",
+        );
+      }
+      throw error;
+    }
+  }
+
+  async setFields(itemId, values, { signal } = {}) {
     if (!itemId) {
       throw new TypeError("itemId is required");
     }
@@ -255,6 +311,7 @@ export class PanStore {
     const schema = await this.getSchema();
     validateFieldValues(values, schema);
     for (const [key, value] of Object.entries(values)) {
+      signal?.throwIfAborted();
       const field = schema.fields[key];
 
       const args = [
@@ -280,7 +337,7 @@ export class PanStore {
         args.push("--text", serializeTextField(key, value));
       }
       try {
-        await this.gh.run(args);
+        await this.gh.run(args, { signal });
       } catch (error) {
         if (!isNoChanges(error)) {
           throw error;
@@ -296,6 +353,16 @@ export class PanStore {
 
   async listItems() {
     return this.#listItems();
+  }
+
+  async readCanonicalProject() {
+    const items = await this.#listItems();
+    return {
+      id: canonicalSnapshotId(items),
+      capturedAt: this.now().toISOString(),
+      complete: true,
+      items,
+    };
   }
 
   async syncOpenIssues({ beforeMutation = async () => {} } = {}) {
@@ -353,13 +420,14 @@ export class PanStore {
     return normalizeGraphQlItem(result.data?.node, schema, this.repository);
   }
 
-  async addComment(item, body) {
+  async addComment(item, body, { signal } = {}) {
     if (!item?.number || !item.repository) {
       throw new TypeError("an Issue-backed item is required");
     }
     if (!body?.trim()) {
       throw new TypeError("comment body is required");
     }
+    signal?.throwIfAborted();
     return this.gh.run([
       "issue",
       "comment",
@@ -368,7 +436,7 @@ export class PanStore {
       item.repository,
       "--body",
       body,
-    ]);
+    ], { signal });
   }
 
   async listComments(item) {
@@ -396,7 +464,28 @@ export class PanStore {
     }));
   }
 
-  async reorderItems(itemIds) {
+  async findIssueByMarker(marker) {
+    if (!marker?.trim()) {
+      throw new TypeError("marker is required");
+    }
+    const issues = await this.gh.runJson([
+      "issue",
+      "list",
+      "--repo",
+      this.repository,
+      "--state",
+      "all",
+      "--limit",
+      String(ISSUE_LIST_LIMIT),
+      "--search",
+      `${marker} in:body`,
+      "--json",
+      "number,title,body,url,state",
+    ]);
+    return issues.find((issue) => issue.body?.includes(marker));
+  }
+
+  async reorderItems(itemIds, { signal } = {}) {
     if (!Array.isArray(itemIds) || itemIds.some((id) => !id)) {
       throw new TypeError("itemIds must be an array of Project item IDs");
     }
@@ -405,6 +494,7 @@ export class PanStore {
       "mutation($projectId:ID!,$itemId:ID!,$afterId:ID){updateProjectV2ItemPosition(input:{projectId:$projectId,itemId:$itemId,afterId:$afterId}){clientMutationId}}";
     let afterId;
     for (const itemId of itemIds) {
+      signal?.throwIfAborted();
       const args = [
         "api",
         "graphql",
@@ -418,7 +508,7 @@ export class PanStore {
       if (afterId) {
         args.push("-f", `afterId=${afterId}`);
       }
-      await this.gh.run(args);
+      await this.gh.run(args, { signal });
       afterId = itemId;
     }
   }
@@ -627,11 +717,21 @@ export class PanStore {
       query: PROJECT_ITEMS_QUERY,
       projectId: schema.projectId,
       connectionName: "items",
-      limit: PROJECT_ITEM_LIST_LIMIT,
+      limit: this.projectItemSafetyLimit,
     });
-    return items.map((item) =>
-      normalizeGraphQlItem(item, schema, this.repository),
-    );
+    return items.map((item) => {
+      const normalized = normalizeGraphQlItem(
+        item,
+        schema,
+        this.repository,
+      );
+      if (!normalized) {
+        throw new Error(
+          "Project items connection included a redacted or null item",
+        );
+      }
+      return normalized;
+    });
   }
 
   async #listProjectFields(projectId) {
@@ -651,6 +751,8 @@ export class PanStore {
   }) {
     const nodes = [];
     let cursor;
+    let expectedTotal;
+    const cursors = new Set();
     do {
       const args = [
         "api",
@@ -670,17 +772,47 @@ export class PanStore {
           `GitHub returned no Project ${connectionName} connection`,
         );
       }
-      const totalCount = connection.totalCount ?? nodes.length + connection.nodes.length;
-      if (totalCount > limit) {
+      if (!Array.isArray(connection.nodes)) {
         throw new Error(
-          `Project has ${totalCount} ${connectionName}, exceeding the ${limit}-entry read limit`,
+          `GitHub returned an invalid Project ${connectionName} connection`,
         );
       }
+      if (Number.isInteger(connection.totalCount)) {
+        expectedTotal ??= connection.totalCount;
+        if (connection.totalCount !== expectedTotal) {
+          throw new Error(
+            `Project ${connectionName} changed while the complete read was in progress`,
+          );
+        }
+        if (connection.totalCount > limit) {
+          throw new Error(
+            `Project has ${connection.totalCount} ${connectionName}, exceeding the ${limit}-entry read limit`,
+          );
+        }
+      }
       nodes.push(...connection.nodes);
-      cursor = connection.pageInfo?.hasNextPage
-        ? connection.pageInfo.endCursor
-        : undefined;
+      if (nodes.length > limit) {
+        throw new Error(
+          `Project ${connectionName} exceeded the ${limit}-entry read limit`,
+        );
+      }
+      if (connection.pageInfo?.hasNextPage) {
+        cursor = connection.pageInfo.endCursor;
+        if (!cursor || cursors.has(cursor)) {
+          throw new Error(
+            `GitHub returned incomplete pagination for Project ${connectionName}`,
+          );
+        }
+        cursors.add(cursor);
+      } else {
+        cursor = undefined;
+      }
     } while (cursor);
+    if (expectedTotal !== undefined && nodes.length !== expectedTotal) {
+      throw new Error(
+        `GitHub returned ${nodes.length} of ${expectedTotal} Project ${connectionName}`,
+      );
+    }
     return nodes;
   }
 
@@ -743,15 +875,41 @@ function normalizeGraphQlItem(item, schema, defaultRepository) {
   if (!item) {
     return undefined;
   }
-  if (item.fieldValues?.pageInfo?.hasNextPage) {
+  const content = item.content;
+  if (!content || content.__typename !== "Issue") {
     throw new Error(
-      `Project item ${item.id} has more than 20 field values and cannot be read safely`,
+      `Project item ${item.id} has unsupported content ${content?.__typename ?? "redacted or inaccessible"}`,
     );
   }
+  requireIssueEvidence(item.id, content);
+  const fieldValues = requireCompleteConnection(
+    item.id,
+    "field values",
+    item.fieldValues,
+    20,
+  );
+  const assignees = requireCompleteConnection(
+    item.id,
+    "assignees",
+    content.assignees,
+    20,
+  );
+  const labels = requireCompleteConnection(
+    item.id,
+    "labels",
+    content.labels,
+    20,
+  );
+  const comments = requireCompleteConnection(
+    item.id,
+    "comments",
+    content.comments,
+    100,
+  );
   const fields = Object.fromEntries(
     Object.values(schema.fields).map((field) => [field.key, ""]),
   );
-  for (const value of item.fieldValues?.nodes ?? []) {
+  for (const value of fieldValues) {
     const field = Object.values(schema.fields).find(
       (candidate) =>
         candidate.name.toLowerCase() === value.field?.name?.toLowerCase(),
@@ -760,7 +918,6 @@ function normalizeGraphQlItem(item, schema, defaultRepository) {
       fields[field.key] = value.name ?? value.text ?? "";
     }
   }
-  const content = item.content ?? {};
   return {
     id: item.id,
     number: content.number,
@@ -768,12 +925,92 @@ function normalizeGraphQlItem(item, schema, defaultRepository) {
     body: content.body ?? "",
     url: content.url ?? "",
     state: (content.state ?? "").toLowerCase(),
+    createdAt: content.createdAt,
+    updatedAt: content.updatedAt,
     repository: content.repository?.nameWithOwner ?? defaultRepository,
-    assignees: (content.assignees?.nodes ?? []).map((entry) => entry.login),
-    labels: (content.labels?.nodes ?? []).map((entry) => entry.name),
+    assignees: assignees.map((entry) =>
+      requireEvidenceString(item.id, "assignee login", entry?.login),
+    ),
+    labels: labels.map((entry) =>
+      requireEvidenceString(item.id, "label name", entry?.name),
+    ),
+    comments: comments.map((comment) =>
+      normalizeComment(item.id, comment),
+    ),
     fields,
     requirements: parseRequirements(fields.requirements),
   };
+}
+
+function normalizeComment(itemId, comment) {
+  if (
+    !comment ||
+    typeof comment.body !== "string" ||
+    !Number.isFinite(Date.parse(comment.createdAt)) ||
+    !Number.isFinite(Date.parse(comment.updatedAt))
+  ) {
+    throw new Error(
+      `Project item ${itemId} has incomplete comment evidence`,
+    );
+  }
+  return {
+    id: requireEvidenceString(itemId, "comment ID", comment.id),
+    body: comment.body,
+    url: requireEvidenceString(itemId, "comment URL", comment.url),
+    createdAt: comment.createdAt,
+    updatedAt: comment.updatedAt,
+    author: comment.author?.login,
+  };
+}
+
+function requireEvidenceString(itemId, name, value) {
+  if (typeof value !== "string" || !value) {
+    throw new Error(`Project item ${itemId} has incomplete ${name} evidence`);
+  }
+  return value;
+}
+
+function requireIssueEvidence(itemId, content) {
+  if (
+    !Number.isInteger(content.number) ||
+    typeof content.title !== "string" ||
+    typeof content.body !== "string" ||
+    typeof content.url !== "string" ||
+    !content.url ||
+    typeof content.state !== "string" ||
+    typeof content.createdAt !== "string" ||
+    typeof content.updatedAt !== "string" ||
+    typeof content.repository?.nameWithOwner !== "string"
+  ) {
+    throw new Error(
+      `Project item ${itemId} is missing required Issue evidence`,
+    );
+  }
+}
+
+function requireCompleteConnection(itemId, name, connection, limit) {
+  if (
+    !connection ||
+    !Array.isArray(connection.nodes) ||
+    typeof connection.pageInfo?.hasNextPage !== "boolean"
+  ) {
+    throw new Error(
+      `Project item ${itemId} has incomplete ${name} metadata`,
+    );
+  }
+  if (connection.pageInfo.hasNextPage) {
+    throw new Error(
+      `Project item ${itemId} has more than ${limit} ${name} and cannot be read safely`,
+    );
+  }
+  return connection.nodes;
+}
+
+function canonicalSnapshotId(items) {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(items))
+    .digest("hex");
+  return `sha256:${digest}`;
 }
 
 function matchesFilters(item, filters, now) {

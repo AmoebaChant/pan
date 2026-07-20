@@ -233,10 +233,119 @@ test("bounds board reads and fetches individual items directly", async () => {
   );
 });
 
+test("reads every Project page in canonical order with complete Issue evidence", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-3",
+        number: 3,
+        assignees: ["octocat"],
+        labels: ["urgent"],
+        comments: [
+          {
+            id: "comment-3",
+            body: "Commitment confirmed.",
+            url: "comment-url",
+            createdAt: "2026-07-19T10:00:00Z",
+            updatedAt: "2026-07-19T11:00:00Z",
+            author: "octocat",
+          },
+        ],
+      }),
+      makeItem({ id: "item-1", number: 1 }),
+      makeItem({ id: "item-2", number: 2 }),
+    ],
+    projectPageSize: 2,
+  });
+
+  const snapshot = await store.readCanonicalProject();
+
+  assert.equal(snapshot.complete, true);
+  assert.match(snapshot.id, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(snapshot.capturedAt, NOW.toISOString());
+  assert.deepEqual(
+    snapshot.items.map((item) => item.id),
+    ["item-3", "item-1", "item-2"],
+  );
+  assert.equal(snapshot.items[0].createdAt, "2026-07-17T18:00:00Z");
+  assert.equal(snapshot.items[0].updatedAt, "2026-07-17T19:00:00Z");
+  assert.deepEqual(snapshot.items[0].assignees, ["octocat"]);
+  assert.deepEqual(snapshot.items[0].labels, ["urgent"]);
+  assert.equal(snapshot.items[0].comments[0].author, "octocat");
+  assert.equal(
+    gh.jsonCalls.filter(
+      (args) =>
+        valueAfterAssignment(args, "projectId") &&
+        valueAfterAssignment(args, "query")?.includes("items(first:"),
+    ).length,
+    2,
+  );
+});
+
+test("derives a stable identity from ordered mutable evidence", async () => {
+  const { store, gh } = fixture();
+
+  const first = await store.readCanonicalProject();
+  const unchanged = await store.readCanonicalProject();
+  gh.items[0].content.updatedAt = "2026-07-17T19:30:00Z";
+  const changed = await store.readCanonicalProject();
+
+  assert.equal(first.id, unchanged.id);
+  assert.notEqual(first.id, changed.id);
+});
+
+test("fails closed at the configurable Project safety ceiling", async () => {
+  const { store } = fixture({
+    items: [
+      makeItem({ id: "item-1" }),
+      makeItem({ id: "item-2" }),
+      makeItem({ id: "item-3" }),
+    ],
+    projectItemSafetyLimit: 2,
+  });
+
+  await assert.rejects(
+    store.readCanonicalProject(),
+    /exceeding the 2-entry read limit/,
+  );
+});
+
 test("fails closed when an item has unpaged field values", async () => {
   const { store } = fixture({ truncatedFieldValues: true });
 
   await assert.rejects(store.getItem("item-1"), /cannot be read safely/);
+});
+
+test("rejects truncated nested evidence and unsupported Project content", async () => {
+  for (const option of [
+    "truncatedAssignees",
+    "truncatedLabels",
+    "truncatedComments",
+  ]) {
+    const { store } = fixture({ [option]: true });
+    await assert.rejects(
+      store.readCanonicalProject(),
+      /cannot be read safely/,
+      option,
+    );
+  }
+
+  const { store } = fixture({
+    items: [makeItem({ id: "draft-1", contentType: "DraftIssue" })],
+  });
+  await assert.rejects(
+    store.readCanonicalProject(),
+    /Project item draft-1 has unsupported content DraftIssue/,
+  );
+});
+
+test("preserves Project read failures without fabricating comments", async () => {
+  const { store } = fixture({ failProjectRead: true });
+
+  await assert.rejects(
+    store.readCanonicalProject(),
+    /API rate limit exceeded while reading Project items/,
+  );
 });
 
 test("claims an available item and confirms lease ownership", async () => {
@@ -463,14 +572,25 @@ function fixture({
   failProjectEdit = false,
   openIssues = [],
   truncatedFieldValues = false,
+  truncatedAssignees = false,
+  truncatedLabels = false,
+  truncatedComments = false,
   failSchemaOnce = false,
+  failProjectRead = false,
+  projectPageSize,
+  projectItemSafetyLimit,
 } = {}) {
   const gh = new FakeGh(items, {
     failAssignee,
     failProjectEdit,
     openIssues,
     truncatedFieldValues,
+    truncatedAssignees,
+    truncatedLabels,
+    truncatedComments,
     failSchemaOnce,
+    failProjectRead,
+    projectPageSize,
   });
   return {
     gh,
@@ -480,6 +600,7 @@ function fixture({
       projectNumber: 2,
       gh,
       manifest: MANIFEST,
+      projectItemSafetyLimit,
       now: () => NOW,
       sleep: async () => {},
     }),
@@ -494,7 +615,12 @@ class FakeGh {
       failProjectEdit = false,
       openIssues = [],
       truncatedFieldValues = false,
+      truncatedAssignees = false,
+      truncatedLabels = false,
+      truncatedComments = false,
       failSchemaOnce = false,
+      failProjectRead = false,
+      projectPageSize,
     } = {},
   ) {
     this.items = structuredClone(items);
@@ -502,7 +628,12 @@ class FakeGh {
     this.failProjectEdit = failProjectEdit;
     this.openIssues = structuredClone(openIssues);
     this.truncatedFieldValues = truncatedFieldValues;
+    this.truncatedAssignees = truncatedAssignees;
+    this.truncatedLabels = truncatedLabels;
+    this.truncatedComments = truncatedComments;
     this.schemaFailures = failSchemaOnce ? 1 : 0;
+    this.failProjectRead = failProjectRead;
+    this.projectPageSize = projectPageSize;
     this.issueCreates = [];
     this.issueEdits = [];
     this.issueComments = [];
@@ -636,13 +767,27 @@ class FakeGh {
         };
       }
       if (valueAfterAssignment(args, "projectId") && query.includes("items(first:")) {
+        if (this.failProjectRead) {
+          throw new Error(
+            "API rate limit exceeded while reading Project items",
+          );
+        }
+        const start = Number(valueAfterAssignment(args, "cursor") ?? 0);
+        const end = this.projectPageSize
+          ? Math.min(start + this.projectPageSize, this.items.length)
+          : this.items.length;
         return {
           data: {
             node: {
               items: {
                 totalCount: this.items.length,
-                nodes: this.items.map((item) => this.#graphQlItem(item)),
-                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: this.items
+                  .slice(start, end)
+                  .map((item) => this.#graphQlItem(item)),
+                pageInfo: {
+                  hasNextPage: end < this.items.length,
+                  endCursor: end < this.items.length ? String(end) : null,
+                },
               },
             },
           },
@@ -697,10 +842,28 @@ class FakeGh {
         pageInfo: { hasNextPage: this.truncatedFieldValues },
       },
       content: {
-        ...item.content,
-        repository: { nameWithOwner: item.repository },
-        assignees: { nodes: [] },
-        labels: { nodes: [] },
+        ...(item.contentType === null
+          ? null
+          : {
+              __typename: item.contentType,
+              ...item.content,
+              repository: { nameWithOwner: item.repository },
+              assignees: {
+                nodes: item.assignees.map((login) => ({ login })),
+                pageInfo: { hasNextPage: this.truncatedAssignees },
+              },
+              labels: {
+                nodes: item.labels.map((name) => ({ name })),
+                pageInfo: { hasNextPage: this.truncatedLabels },
+              },
+              comments: {
+                nodes: item.comments.map((comment) => ({
+                  ...comment,
+                  author: comment.author ? { login: comment.author } : null,
+                })),
+                pageInfo: { hasNextPage: this.truncatedComments },
+              },
+            }),
       },
     };
   }
@@ -719,6 +882,12 @@ function makeItem({
   leaseUntil = "",
   claimedBy = "",
   workstream = "lab/pan",
+  assignees = [],
+  labels = [],
+  comments = [],
+  contentType = "Issue",
+  createdAt = "2026-07-17T18:00:00Z",
+  updatedAt = "2026-07-17T19:00:00Z",
 } = {}) {
   return {
     id,
@@ -728,8 +897,14 @@ function makeItem({
       body,
       state: "OPEN",
       url: `https://github.com/AmoebaChant/pan-work/issues/${number}`,
+      createdAt,
+      updatedAt,
     },
+    contentType,
     repository: "AmoebaChant/pan-work",
+    assignees,
+    labels,
+    comments,
     owner,
     Status: status,
     priority,

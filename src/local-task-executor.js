@@ -8,6 +8,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ProcessClient } from "./process-client.js";
+import {
+  resolveConfinedWorkstreamReadme,
+  resolveWorkstreamReadme,
+} from "./workstream-store.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./task-worker.js", import.meta.url));
 const RESULT_POLL_MS = 1_000;
@@ -77,7 +81,7 @@ export class LocalTaskExecutor {
       `origin/${repositoryConfig.defaultBranch}`,
     ]);
 
-    const workstreamPath = resolveWorkstreamReadme(
+    const workstreamPath = await resolveConfinedWorkstreamReadme(
       this.profile.store.path,
       item.fields.workstream,
     );
@@ -437,32 +441,7 @@ function remainingMilliseconds(deadline) {
   return remaining;
 }
 
-export function resolveWorkstreamReadme(storePath, workstream) {
-  if (
-    typeof workstream !== "string" ||
-    !workstream ||
-    path.isAbsolute(workstream) ||
-    workstream.includes("\\")
-  ) {
-    throw new Error("Workstream must be a relative path using / separators");
-  }
-  const segments = workstream.split("/");
-  if (
-    segments.some(
-      (segment) => !segment || segment === "." || segment === "..",
-    )
-  ) {
-    throw new Error("Workstream path contains an invalid segment");
-  }
-
-  const root = path.resolve(storePath, "workstreams");
-  const candidate = path.resolve(root, ...segments, "README.md");
-  const relative = path.relative(root, candidate);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Workstream path escapes the data repository");
-  }
-  return candidate;
-}
+export { resolveWorkstreamReadme };
 
 export function normalizeGitHubRepositoryUrl(remote) {
   const scp = /^git@github\.com:(.+?)(?:\.git)?$/i.exec(remote.trim());

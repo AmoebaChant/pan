@@ -10,15 +10,21 @@ validated changes directly to the canonical GitHub Project.
 
 ## Configuration
 
-Commands load the same private runner profile used by `pan-runner`.
+PAN commands load the private domain configuration described in
+[PAN domain configuration](domain-configuration.md).
 
 ```powershell
-$env:PAN_PROFILE = "C:\path\to\data\runners\machine-a.json"
+$env:PAN_CONFIG = "C:\path\to\domain-config.json"
 ```
 
-The profile supplies the repository, Project, local domain-repository path, poll
-interval, and machine identity. Pass `--profile <path>` to override the
-environment variable.
+The configuration supplies the repository, Project, local domain-repository
+path, runtime cadence, and state namespace without requiring machine, terminal,
+repository checkout, or runner capability settings. Pass `--config <path>` to
+override the environment variable.
+
+`--profile` and `PAN_PROFILE` remain available as deprecated compatibility
+inputs and emit a warning. Do not provide them together with `--config` or
+`PAN_CONFIG`. `pan-runner` remains independently profile-based.
 
 ## Current triage daemon
 

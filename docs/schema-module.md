@@ -61,6 +61,25 @@ Each item contains Issue metadata, a `fields` object keyed by the manifest keys,
 and a parsed `requirements` array. Available boolean filters are `unclaimed`,
 `leaseExpired`, and `claimable`.
 
+`readCanonicalProject()` is the fail-closed portfolio read:
+
+```js
+const snapshot = await store.readCanonicalProject();
+console.log(snapshot.id, snapshot.items.map((item) => item.id));
+```
+
+It preserves Project connection order and includes Issue creation/update times,
+state, repository, labels, assignees, comments, and every configured Project
+field. `snapshot.id` is a stable SHA-256 identity over that ordered mutable
+evidence; `capturedAt` records the read time and `complete` is true only for a
+successful complete read.
+
+Project items paginate to completion up to the configurable
+`projectItemSafetyLimit` constructor option (default 1,000). Reads fail rather
+than return partial evidence when that ceiling is exceeded, nested field,
+assignee, label, or comment connections are truncated, pagination is
+inconsistent, or an item is not backed by a readable Issue.
+
 `addComment(item, body)` appends an audit or attention record to an Issue-backed
 item.
 

@@ -49,16 +49,32 @@ The package exports:
 The implementation has no runtime dependencies and requires Node 22 or newer.
 See the [schema module contract](docs/schema-module.md) for API usage.
 
-## Target PAN agent and runtime
+## PAN agent and target runtime
 
-The target design adds a generic `.github/agents/pan.agent.md` custom-agent
-definition that owns personality, goals, reasoning standards, responsibilities,
-and allowed tools. Its local PAN runtime will poll and synchronize one domain,
-schedule autonomous PAN turns, host conversation, validate actions, and maintain
-the singleton lease.
+The package ships a generic `.github/agents/pan.agent.md` custom-agent definition
+for both autonomous portfolio reviews and interactive conversation. It defines
+PAN's reusable personality, complete-portfolio reasoning standards, authority
+boundaries, versioned output expectations, and named PAN-only tools without
+embedding domain or machine values.
+
+The local PAN runtime polls and synchronizes one configured domain, schedules
+PAN turns, hosts conversation, validates proposed actions, and maintains the
+singleton lease. The runtime supplies private domain context; the agent
+definition remains reusable.
 
 The runtime decides when PAN should think; PAN decides how the portfolio should
 change. See [the target architecture](docs/architecture.md).
+
+```powershell
+pan review --config C:\path\to\domain-config.json
+pan review --apply --config C:\path\to\domain-config.json
+pan chat "What should I work on next?" --config C:\path\to\domain-config.json
+pan daemon --config C:\path\to\domain-config.json
+```
+
+`review` is a dry run unless `--apply` is present. `chat` applies validated
+proposals by default; add `--dry-run` for advice only. Reviews, conversation,
+and the daemon use the same generic PAN agent and complete domain snapshot.
 
 ## Runner daemon
 
@@ -72,21 +88,28 @@ See the [runner contract and profile format](docs/runner.md).
 
 ## Triage and attention
 
-`pan daemon` currently applies deterministic triage rules. It will evolve into
-the PAN runtime: polling and synchronizing the domain, invoking the PAN agent for
-portfolio reasoning, and applying validated changes to the canonical Project.
+With domain configuration, `pan daemon` is the reasoning runtime: it polls and
+synchronizes the domain, invokes PAN, and applies validated changes to the
+canonical Project. Legacy runner-profile mode retains deterministic triage for
+compatibility.
 `pan inbox`, `pan answer`, and `pan add` provide the human attention surface.
 
-Both CLIs use a runner profile from the private domain repository. Pass
-`--profile <path>` or set `PAN_PROFILE`.
+PAN commands use an independent domain configuration. Pass
+`--config <path>` or set `PAN_CONFIG`. `pan-runner` continues to use its machine
+runner profile independently.
 
 ```powershell
+$env:PAN_CONFIG = "C:\path\to\domain-config.json"
 pan daemon --once
 pan inbox
 pan answer 42 "Use the existing API."
 pan add "Implement the feature" --body "Acceptance criteria..." `
   --workstream orchestration/pan --repo example/tool
 ```
+
+`--profile` and `PAN_PROFILE` remain as deprecated PAN-command compatibility
+options during migration. Do not combine domain configuration and runner profile
+inputs.
 
 See [PAN triage and attention](docs/triage-and-attention.md).
 

@@ -3,22 +3,24 @@ import test from "node:test";
 
 import { parsePanArgs } from "../src/index.js";
 
-test("parses attention commands from PAN_PROFILE", () => {
+test("parses attention commands from PAN_CONFIG", () => {
   assert.deepEqual(
-    parsePanArgs(["inbox", "--json"], { PAN_PROFILE: "runner.json" }),
+    parsePanArgs(["inbox", "--json"], { PAN_CONFIG: "domain.json" }),
     {
       command: "inbox",
-      profile: "runner.json",
+      config: "domain.json",
+      profile: undefined,
       json: true,
     },
   );
   assert.deepEqual(
     parsePanArgs(["answer", "42", "Use option A."], {
-      PAN_PROFILE: "runner.json",
+      PAN_CONFIG: "domain.json",
     }),
     {
       command: "answer",
-      profile: "runner.json",
+      config: "domain.json",
+      profile: undefined,
       json: false,
       identifier: "42",
       text: "Use option A.",
@@ -31,8 +33,8 @@ test("parses add fields and repeatable requirements", () => {
     parsePanArgs([
       "add",
       "Implement it",
-      "--profile",
-      "runner.json",
+      "--config",
+      "domain.json",
       "--body",
       "Acceptance criteria.",
       "--workstream",
@@ -48,7 +50,8 @@ test("parses add fields and repeatable requirements", () => {
     ]),
     {
       command: "add",
-      profile: "runner.json",
+      config: "domain.json",
+      profile: undefined,
       json: false,
       title: "Implement it",
       body: "Acceptance criteria.",
@@ -62,6 +65,78 @@ test("parses add fields and repeatable requirements", () => {
   );
 });
 
+test("prefers explicit paths and retains legacy profile parsing", () => {
+  assert.deepEqual(
+    parsePanArgs(["inbox", "--config", "explicit.json"], {
+      PAN_CONFIG: "environment.json",
+    }),
+    {
+      command: "inbox",
+      config: "explicit.json",
+      profile: undefined,
+      json: false,
+    },
+  );
+  assert.deepEqual(
+    parsePanArgs(["daemon", "--once"], { PAN_PROFILE: "runner.json" }),
+    {
+      command: "daemon",
+      config: undefined,
+      profile: "runner.json",
+      once: true,
+    },
+  );
+});
+
+test("rejects simultaneous domain and runner configuration", () => {
+  assert.throws(
+    () =>
+      parsePanArgs(["inbox", "--config", "domain.json"], {
+        PAN_PROFILE: "runner.json",
+      }),
+    /cannot be used together/,
+  );
+  assert.throws(
+    () =>
+      parsePanArgs([
+        "inbox",
+        "--config",
+        "domain.json",
+        "--profile",
+        "runner.json",
+      ]),
+    /cannot be used together/,
+  );
+});
+
 test("requires explicit store configuration", () => {
-  assert.throws(() => parsePanArgs(["inbox"], {}), /PAN_PROFILE/);
+  assert.throws(() => parsePanArgs(["inbox"], {}), /PAN_CONFIG/);
+});
+
+test("parses reasoning review and conversational commands", () => {
+  assert.deepEqual(
+    parsePanArgs(["review", "--apply", "--json"], {
+      PAN_CONFIG: "domain.json",
+    }),
+    {
+      command: "review",
+      config: "domain.json",
+      profile: undefined,
+      json: true,
+      apply: true,
+    },
+  );
+  assert.deepEqual(
+    parsePanArgs(["chat", "What", "next?", "--dry-run"], {
+      PAN_CONFIG: "domain.json",
+    }),
+    {
+      command: "chat",
+      config: "domain.json",
+      profile: undefined,
+      json: false,
+      apply: false,
+      text: "What next?",
+    },
+  );
 });

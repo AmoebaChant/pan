@@ -1,0 +1,374 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AmoebaChant/pan/schema/pan-action.json",
+  "title": "PAN proposed action",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/fieldUpdate"
+    },
+    {
+      "$ref": "#/$defs/canonicalReorder"
+    },
+    {
+      "$ref": "#/$defs/relativePrecedence"
+    },
+    {
+      "$ref": "#/$defs/issueCreate"
+    },
+    {
+      "$ref": "#/$defs/issueComment"
+    },
+    {
+      "$ref": "#/$defs/needsHuman"
+    },
+    {
+      "$ref": "#/$defs/noOp"
+    }
+  ],
+  "$defs": {
+    "citation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "locator"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "issue",
+            "issue-comment",
+            "project-field",
+            "workstream",
+            "runner",
+            "domain-record"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "base": {
+      "type": "object",
+      "required": [
+        "version",
+        "actionId",
+        "kind",
+        "evidence",
+        "rationale",
+        "confidence"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "actionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/citation"
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "mutation": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "idempotencyKey",
+            "expectedState",
+            "target"
+          ],
+          "properties": {
+            "idempotencyKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedState": {
+              "type": "object",
+              "minProperties": 1
+            },
+            "target": {
+              "type": "object"
+            }
+          }
+        }
+      ]
+    },
+    "fieldUpdate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/mutation"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "properties": {
+            "kind": {
+              "const": "field-update"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "itemId",
+                "field",
+                "value"
+              ],
+              "properties": {
+                "itemId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "field": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "value": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    "canonicalReorder": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/mutation"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "properties": {
+            "kind": {
+              "const": "canonical-reorder"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "orderedItemIds"
+              ],
+              "properties": {
+                "orderedItemIds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "relativePrecedence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/mutation"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "properties": {
+            "kind": {
+              "const": "relative-precedence"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "beforeItemId",
+                "afterItemId"
+              ],
+              "properties": {
+                "beforeItemId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "afterItemId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "issueCreate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/mutation"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "properties": {
+            "kind": {
+              "const": "issue-create"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "repository",
+                "title"
+              ],
+              "properties": {
+                "repository": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workstream": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "issueComment": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/mutation"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "properties": {
+            "kind": {
+              "const": "issue-comment"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "issueUrl",
+                "body"
+              ],
+              "properties": {
+                "issueUrl": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "needsHuman": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/mutation"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "properties": {
+            "kind": {
+              "const": "needs-human"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "issueUrl",
+                "prompt",
+                "kind"
+              ],
+              "properties": {
+                "issueUrl": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "prompt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "enum": [
+                    "question",
+                    "approval",
+                    "local-ui"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "noOp": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": [
+            "recommendation"
+          ],
+          "properties": {
+            "kind": {
+              "const": "no-op"
+            },
+            "recommendation": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}
