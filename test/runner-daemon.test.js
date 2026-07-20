@@ -50,6 +50,24 @@ test("does not claim work with unsupported requirements", async () => {
   assert.equal(store.claims.length, 0);
 });
 
+test("passes Issue comments to the task executor", async () => {
+  const item = makeItem();
+  const store = new FakeStore([item], {
+    issueComments: [{ body: "<!-- pan:answer -->\n### Answer\n\nUse option A." }],
+  });
+  const executor = new FakeExecutor(new FakeHandle());
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.match(executor.started.item.comments[0].body, /Use option A/);
+});
+
 test("records a needs-human locator and blocks an incomplete task", async () => {
   const item = makeItem();
   const store = new FakeStore([item]);
@@ -135,11 +153,13 @@ class FakeStore {
     {
       heartbeat = { renewed: true },
       commentFailures = 0,
+      issueComments = [],
     } = {},
   ) {
     this.items = items;
     this.heartbeatResult = heartbeat;
     this.commentFailures = commentFailures;
+    this.issueComments = issueComments;
     this.claims = [];
     this.comments = [];
     this.releases = [];
@@ -162,6 +182,10 @@ class FakeStore {
     this.comments.push(body);
   }
 
+  async listComments() {
+    return this.issueComments;
+  }
+
   async release(release) {
     this.releases.push(release);
     return { released: true };
@@ -177,7 +201,8 @@ class FakeExecutor {
     this.handle = handle;
   }
 
-  async start() {
+  async start(context) {
+    this.started = context;
     return this.handle;
   }
 }

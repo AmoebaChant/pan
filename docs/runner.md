@@ -64,8 +64,8 @@ For each task it:
 
 1. claims the Project item and starts a renewable lease;
 2. creates a non-default task branch in a dedicated worktree;
-3. opens a visible Windows Terminal tab running Copilot CLI with the Issue and
-   workstream README as context;
+3. opens a visible Windows Terminal tab running Copilot CLI with the Issue, its
+   comments and answers, and workstream README as context;
 4. posts structured needs-human records, including the machine, terminal title,
    and optional local URL;
 5. commits any remaining changes, pushes only the task branch, opens a pull
@@ -83,3 +83,6 @@ node .\bin\pan-runner.js --profile C:\path\to\runner.json --once
 ```
 
 Omit `--once` to keep polling until the process receives `SIGINT` or `SIGTERM`.
+
+When `pan answer` resolves blocked work, PAN returns the item to triage. The
+next runner attempt receives the marked answer comment in its task context.

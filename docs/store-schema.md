@@ -42,3 +42,12 @@ lifecycle.
 The public tool repository must not contain workstream content, Issues, runner
 profiles, leases, locators, credentials, or other user-specific state. A PAN
 installation points the tool at its own private data repository.
+
+## Orchestrator leader lease
+
+The singleton PAN orchestrator stores its renewable leader lease at
+`.pan/leader.json` on a dedicated `pan-state` branch in the private data
+repository. Updates use the GitHub Contents API's expected blob SHA, so
+competing instances cannot both renew from the same version. Keeping the lease
+on a state branch avoids heartbeat commits on the data repository's default
+branch.

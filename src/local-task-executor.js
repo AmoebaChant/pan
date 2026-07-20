@@ -91,6 +91,7 @@ export class LocalTaskExecutor {
         body: item.body,
         url: item.url,
         repository: item.repository,
+        comments: item.comments ?? [],
       },
       target: {
         repository,
