@@ -71,7 +71,6 @@ export { buildTaskPrompt } from "./task-prompt.js";
 export {
   buildTaskCopilotArgs,
   buildTaskCopilotSpawnOptions,
-  UNATTENDED_AUTOPILOT_CONTINUES,
 } from "./task-command.js";
 export {
   resolveConfinedWorkstreamReadme,

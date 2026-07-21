@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   buildTaskCopilotArgs,
   buildTaskCopilotSpawnOptions,
-  UNATTENDED_AUTOPILOT_CONTINUES,
 } from "../src/index.js";
 
 test("keeps Copilot attached to the worker terminal", () => {
@@ -18,28 +17,31 @@ test("keeps Copilot attached to the worker terminal", () => {
   });
 });
 
-test("omits AI credit limits and uses a long-running autopilot ceiling", () => {
-  const args = buildTaskCopilotArgs(makeTask(), "Do the task.");
+test("opens an interactive Copilot shell with the initial task", () => {
+  const prompt = "Do the task.";
+  const args = buildTaskCopilotArgs(makeTask(), prompt);
 
   assert.ok(!args.includes("--max-ai-credits"));
-  assert.equal(
-    args[args.indexOf("--max-autopilot-continues") + 1],
-    String(UNATTENDED_AUTOPILOT_CONTINUES),
-  );
-  assert.deepEqual(args.slice(-2), ["--model", "gpt-5.6-sol"]);
+  assert.ok(!args.includes("-p"));
+  assert.ok(!args.includes("--autopilot"));
+  assert.ok(!args.includes("--no-ask-user"));
+  assert.ok(!args.includes("--max-autopilot-continues"));
+  assert.deepEqual(args.slice(-4), [
+    "--model",
+    "gpt-5.6-sol",
+    "-i",
+    prompt,
+  ]);
 });
 
-test("preserves explicit optional task limits", () => {
+test("preserves supported optional task limits without enabling autopilot", () => {
   const task = makeTask();
   task.copilot.maxAiCredits = 50;
   task.copilot.maxAutopilotContinues = 20;
   const args = buildTaskCopilotArgs(task, "Do the task.");
 
   assert.equal(args[args.indexOf("--max-ai-credits") + 1], "50");
-  assert.equal(
-    args[args.indexOf("--max-autopilot-continues") + 1],
-    "20",
-  );
+  assert.ok(!args.includes("--max-autopilot-continues"));
 });
 
 function makeTask() {

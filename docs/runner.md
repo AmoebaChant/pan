@@ -110,7 +110,8 @@ For each task it:
 1. claims the Project item and starts a renewable lease;
 2. creates a non-default task branch in a dedicated worktree;
 3. opens a visible Windows Terminal tab running Copilot CLI with the Issue, its
-   comments and answers, and workstream README as context;
+   comments and answers, and workstream README as the initial interactive
+   prompt;
 4. posts structured needs-human records, including the machine, terminal title,
    and optional local URL;
 5. commits any remaining changes and follows the playbook delivery policy:
@@ -125,11 +126,11 @@ Machine-wide concurrency, per-playbook concurrency, and lease limits come from
 the profile. Tasks using another playbook do not consume the selected
 playbook's slots. `copilot.model` selects the coding model deterministically.
 
-`taskBudget.wallClockMinutes`, `taskBudget.maxAiCredits`, and
-`taskBudget.maxAutopilotContinues` are optional safeguards. Omitting the first
-two removes PAN's wall-clock and AI-credit caps. Copilot CLI requires a finite
-autopilot continuation count, so PAN uses a high default of 1,000 for unattended
-tasks when no explicit value is configured.
+`taskBudget.wallClockMinutes` and `taskBudget.maxAiCredits` are optional
+safeguards. Omitting them removes PAN's wall-clock and AI-credit caps.
+`taskBudget.maxAutopilotContinues` remains accepted for compatibility with
+existing profiles but is not applied because runner tasks now start in
+interactive mode instead of autopilot.
 
 Run one polling cycle and wait for its selected tasks:
 
@@ -144,11 +145,14 @@ The foreground runner prints normal lifecycle activity and tees it to
 `<stateDirectory>\runner.log`; each visible worker terminal also writes worker
 lifecycle details to `copilot.log` under its task state directory. Copilot
 remains attached directly to that terminal so its interactive chrome and
-steering controls are available. The configured terminal `profile` defaults to
-`PowerShell`. `Ctrl+C` stops active workers before releasing their leases;
-interrupted tasks move to `blocked` with their local locator so partial work is
-not silently discarded. A lost lease also stops its worker immediately to
-prevent duplicate execution.
+steering controls are available, including `/model` and session commands. The
+configured model is shown in the worker's visible startup line and lifecycle
+log. PAN does not redirect or consume Copilot's stdin; the terminal remains
+usable for follow-up instructions until Copilot exits. The configured terminal
+`profile` defaults to `PowerShell`. `Ctrl+C` stops active workers before
+releasing their leases; interrupted tasks move to `blocked` with their local
+locator so partial work is not silently discarded. A lost lease also stops its
+worker immediately to prevent duplicate execution.
 
 When `pan answer` resolves blocked work, PAN returns the item to triage. The
 next runner attempt receives the marked answer comment in its task context.

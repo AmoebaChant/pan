@@ -1,5 +1,3 @@
-export const UNATTENDED_AUTOPILOT_CONTINUES = 1_000;
-
 export function buildTaskCopilotSpawnOptions(task, env) {
   return {
     cwd: task.target.worktreePath,
@@ -13,19 +11,10 @@ export function buildTaskCopilotArgs(task, taskPrompt) {
   const args = [
     "-C",
     task.target.worktreePath,
-    "-p",
-    taskPrompt,
-    "--autopilot",
     "--allow-all-tools",
-    "--no-ask-user",
     "--disable-builtin-mcps",
     "--no-remote",
     "--no-auto-update",
-    "--max-autopilot-continues",
-    String(
-      task.copilot.maxAutopilotContinues ??
-        UNATTENDED_AUTOPILOT_CONTINUES,
-    ),
     "--add-dir",
     task.paths.statePath,
     "--deny-tool=shell(git:*)",
@@ -43,5 +32,6 @@ export function buildTaskCopilotArgs(task, taskPrompt) {
   if (task.copilot.model) {
     args.push("--model", task.copilot.model);
   }
+  args.push("-i", taskPrompt);
   return args;
 }
