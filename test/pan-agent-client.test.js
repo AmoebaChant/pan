@@ -90,6 +90,29 @@ test("streams large inline portfolios without placing them in process arguments"
   assert.match(result.result.data.prompt, new RegExp(marker));
 });
 
+test("classifies untagged overlong launches without exposing launch values", async () => {
+  const executable = "private-agent-executable";
+  const error = await captureRejection(
+    fixtureClient({
+      executable,
+      spawnProcess: () => untaggedLaunchFailure("ENAMETOOLONG"),
+      timeout: 0,
+    }).review(turn("autonomous-review")),
+  );
+
+  assert.equal(error.state, "spawn-error");
+  assert.equal(error.confirmedSideEffects, false);
+  assert.equal(error.cause.code, "ENAMETOOLONG");
+  assert.match(
+    error.message,
+    /Copilot process launch exceeded an operating-system length limit/,
+  );
+  assert.match(error.message, /prompt is sent through stdin/);
+  assert.equal(error.launchDiagnostics.executableCharacters, executable.length);
+  assert.ok(error.launchDiagnostics.stdinBytes > 0);
+  assert.ok(!error.message.includes(executable));
+});
+
 test("reports actionable diagnostics for oversized process launch inputs", async () => {
   const oversizedValue = "private-value".repeat(4_000);
   const client = fixtureClient({
@@ -288,17 +311,18 @@ function fixtureClient(options = {}) {
   const {
     agent,
     env = process.env,
+    executable = process.execPath,
     extraArgs,
     maxBuffer,
     model,
     onToolMessage,
+    spawnProcess,
     inlinePortfolio = false,
     scenario = "success",
-    spawnProcess,
     timeout = 2_000,
   } = options;
   return new PanAgentClient({
-    executable: process.execPath,
+    executable,
     executableArgs: [FIXTURE],
     cwd: path.resolve("."),
     env: { ...env, PAN_FAKE_SCENARIO: scenario },
@@ -308,9 +332,24 @@ function fixtureClient(options = {}) {
     model,
     timeout,
     onToolMessage,
-    inlinePortfolio,
     spawnProcess,
+    inlinePortfolio,
   });
+}
+
+function untaggedLaunchFailure(code) {
+  const child = new EventEmitter();
+  child.stdin = Object.assign(new EventEmitter(), {
+    end: () => {
+      throw Object.assign(new Error(`spawn ${code}`), {
+        code,
+        syscall: "spawn",
+      });
+    },
+  });
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  return child;
 }
 
 function failedSpawn(error) {

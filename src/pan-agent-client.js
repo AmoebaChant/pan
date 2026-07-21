@@ -75,14 +75,24 @@ export class PanAgentClient {
         timeout: this.timeout,
       });
     } catch (error) {
+      const processError = diagnoseProcessError(error, {
+        executable: this.executable,
+        args,
+        cwd: this.cwd,
+        env,
+        input: prompt,
+      });
       throw turnError(
         turn.turnId,
-        error.state ?? "transport",
-        hasConfirmedToolSideEffects(turn, error.stdout),
-        error,
+        processError.state ?? "transport",
+        hasConfirmedToolSideEffects(turn, processError.stdout),
+        processError,
         {
-          exitCode: error.exitCode,
-          signal: error.signal,
+          exitCode: processError.exitCode,
+          signal: processError.signal,
+          ...(processError.launchDiagnostics
+            ? { launchDiagnostics: processError.launchDiagnostics }
+            : {}),
         },
       );
     }
@@ -531,6 +541,91 @@ function stateError(state, message) {
   return Object.assign(new Error(message), { state });
 }
 
+function diagnoseProcessError(error, launch) {
+  if (!hasErrorCode(error, "ENAMETOOLONG")) {
+    return error;
+  }
+  if (error.state && error.state !== "stdin-error") {
+    return error;
+  }
+  const diagnostics = launchDiagnostics(launch);
+  return Object.assign(
+    new Error(
+      "Copilot process launch exceeded an operating-system length limit " +
+        `(${formatLaunchDiagnostics(diagnostics)}). ` +
+        "The PAN turn prompt is sent through stdin and is not part of the launch command. " +
+        "Check agent.executable, agent model/options, the PAN working directory, and inherited environment size before retrying.",
+      { cause: error },
+    ),
+    {
+      state: "spawn-error",
+      code: "ENAMETOOLONG",
+      launchDiagnostics: diagnostics,
+      exitCode: error.exitCode,
+      signal: error.signal,
+      stdout: error.stdout,
+      stderr: error.stderr,
+    },
+  );
+}
+
+function hasErrorCode(error, code, seen = new Set()) {
+  if (!error || typeof error !== "object" || seen.has(error)) {
+    return false;
+  }
+  seen.add(error);
+  if (error.code === code) {
+    return true;
+  }
+  if (
+    error instanceof AggregateError &&
+    error.errors.some((candidate) => hasErrorCode(candidate, code, seen))
+  ) {
+    return true;
+  }
+  return hasErrorCode(error.cause, code, seen);
+}
+
+function launchDiagnostics({ executable, args, cwd, env, input }) {
+  const environment = Object.entries(env).filter(
+    ([, value]) => value !== undefined,
+  );
+  return {
+    executableCharacters: String(executable).length,
+    workingDirectoryCharacters: String(cwd ?? "").length,
+    argumentCount: args.length,
+    argumentCharacters: args.reduce(
+      (total, argument) => total + String(argument).length,
+      0,
+    ),
+    longestArgumentCharacters: args.reduce(
+      (longest, argument) => Math.max(longest, String(argument).length),
+      0,
+    ),
+    environmentEntries: environment.length,
+    environmentCharacters: environment.reduce(
+      (total, [name, value]) =>
+        total + name.length + 1 + String(value).length + 1,
+      1,
+    ),
+    largestEnvironmentValueCharacters: environment.reduce(
+      (largest, [, value]) => Math.max(largest, String(value).length),
+      0,
+    ),
+    stdinBytes: Buffer.byteLength(input, "utf8"),
+  };
+}
+
+function formatLaunchDiagnostics(diagnostics) {
+  return [
+    `executable: ${diagnostics.executableCharacters} characters`,
+    `working directory: ${diagnostics.workingDirectoryCharacters} characters`,
+    `arguments: ${diagnostics.argumentCount} entries/${diagnostics.argumentCharacters} characters/${diagnostics.longestArgumentCharacters} longest`,
+    `environment: ${diagnostics.environmentEntries} entries/${diagnostics.environmentCharacters} characters/${diagnostics.largestEnvironmentValueCharacters} largest value`,
+    `stdin prompt: ${diagnostics.stdinBytes} bytes`,
+  ].join("; ");
+}
+
 function turnError(turnId, state, confirmedSideEffects, cause, details = {}) {
   return Object.assign(
     new Error(
@@ -630,7 +725,14 @@ async function runProcess(executable, args, options) {
     child.once("close", (exitCode, signal) => {
       void finish(exitCode, signal);
     });
-    child.stdin.end(options.input, "utf8");
+    try {
+      child.stdin.end(options.input, "utf8");
+    } catch (error) {
+      failAndTerminate(
+        Object.assign(error, { state: error.state ?? "stdin-error" }),
+      );
+      void finish();
+    }
 
     async function finish(exitCode, signal, terminationError) {
       if (settled) {
