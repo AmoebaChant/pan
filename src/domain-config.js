@@ -36,8 +36,8 @@ const DEFAULTS = Object.freeze({
   },
   agent: {
     executable: "copilot",
-    turnTimeoutSeconds: 600,
-    maxAiCredits: 30,
+    turnTimeoutSeconds: undefined,
+    maxAiCredits: undefined,
   },
   transcripts: {
     retentionDays: 30,
@@ -111,16 +111,14 @@ export function validateDomainConfig(config, { configPath } = {}) {
     name: config.agent.name,
     executable: config.agent.executable ?? DEFAULTS.agent.executable,
     model: config.agent.model,
-    turnTimeoutSeconds: boundedNumber(
+    turnTimeoutSeconds: optionalBoundedNumber(
       config.agent.turnTimeoutSeconds,
       "agent.turnTimeoutSeconds",
-      DEFAULTS.agent.turnTimeoutSeconds,
       { minimum: 30, maximum: 3_600 },
     ),
-    maxAiCredits: boundedNumber(
+    maxAiCredits: optionalBoundedNumber(
       config.agent.maxAiCredits,
       "agent.maxAiCredits",
-      DEFAULTS.agent.maxAiCredits,
       { minimum: 1, maximum: 1_000 },
     ),
   };
@@ -150,6 +148,12 @@ export function validateDomainConfig(config, { configPath } = {}) {
     transcripts,
     reviewPolicy,
   };
+}
+
+function optionalBoundedNumber(value, name, bounds) {
+  return value === undefined
+    ? undefined
+    : boundedNumber(value, name, undefined, bounds);
 }
 
 function normalizeCadences(cadences = {}) {

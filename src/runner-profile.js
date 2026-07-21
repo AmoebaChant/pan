@@ -7,11 +7,6 @@ const DEFAULTS = {
   pollIntervalSeconds: 30,
   leaseSeconds: 600,
   heartbeatSeconds: 120,
-  taskBudget: {
-    wallClockMinutes: 60,
-    maxAiCredits: 30,
-    maxAutopilotContinues: 5,
-  },
 };
 
 export async function loadRunnerProfile(profilePath) {
@@ -91,20 +86,17 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
       DEFAULTS.heartbeatSeconds,
     ),
     taskBudget: {
-      wallClockMinutes: positiveNumber(
+      wallClockMinutes: optionalPositiveNumber(
         profile.taskBudget?.wallClockMinutes,
         "taskBudget.wallClockMinutes",
-        DEFAULTS.taskBudget.wallClockMinutes,
       ),
-      maxAiCredits: aiCreditBudget(
+      maxAiCredits: optionalAiCreditBudget(
         profile.taskBudget?.maxAiCredits,
         "taskBudget.maxAiCredits",
-        DEFAULTS.taskBudget.maxAiCredits,
       ),
-      maxAutopilotContinues: positiveInteger(
+      maxAutopilotContinues: optionalPositiveInteger(
         profile.taskBudget?.maxAutopilotContinues,
         "taskBudget.maxAutopilotContinues",
-        DEFAULTS.taskBudget.maxAutopilotContinues,
       ),
     },
     terminal: {
@@ -227,8 +219,23 @@ function positiveInteger(value, name, fallback) {
   return value;
 }
 
-function aiCreditBudget(value, name, fallback) {
-  const normalized = positiveNumber(value, name, fallback);
+function optionalPositiveNumber(value, name) {
+  return value === undefined
+    ? undefined
+    : positiveNumber(value, name);
+}
+
+function optionalPositiveInteger(value, name) {
+  return value === undefined
+    ? undefined
+    : positiveInteger(value, name);
+}
+
+function optionalAiCreditBudget(value, name) {
+  if (value === undefined) {
+    return undefined;
+  }
+  const normalized = positiveNumber(value, name);
   if (normalized < 30) {
     throw new TypeError(`${name} must be at least 30`);
   }

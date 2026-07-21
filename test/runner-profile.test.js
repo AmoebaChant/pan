@@ -24,7 +24,11 @@ test("loads a capability profile and applies runner defaults", async () => {
     assert.equal(profile.pollIntervalSeconds, 30);
     assert.equal(profile.leaseSeconds, 600);
     assert.equal(profile.heartbeatSeconds, 120);
-    assert.equal(profile.taskBudget.maxAiCredits, 30);
+    assert.deepEqual(profile.taskBudget, {
+      wallClockMinutes: undefined,
+      maxAiCredits: undefined,
+      maxAutopilotContinues: undefined,
+    });
     assert.equal(profile.terminal.executable, "wt");
     assert.equal(profile.profilePath, profilePath);
     assert.equal(profile.store.path, directory);

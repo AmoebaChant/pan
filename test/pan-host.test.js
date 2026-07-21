@@ -1,10 +1,47 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { PanHost } from "../src/index.js";
+
+test("releases leadership when shutdown is requested during acquisition", async () => {
+  let finishAcquisition;
+  const acquisition = new Promise((resolve) => {
+    finishAcquisition = resolve;
+  });
+  let released = false;
+  const controller = new AbortController();
+  const host = new PanHost({
+    stateFile: path.join(os.tmpdir(), `pan-host-${randomUUID()}.json`),
+    token: "secret",
+    pollIntervalSeconds: 60,
+    heartbeatSeconds: 60,
+    autonomousApply: false,
+    port: 0,
+    reviewService: {
+      run: async () => ({}),
+      applyActions: async () => ({}),
+    },
+    toolRegistry: { dispatch: async () => ({}) },
+    leaderLease: {
+      acquire: () => acquisition,
+      renew: async () => {},
+      release: async () => {
+        released = true;
+      },
+    },
+  });
+
+  const running = host.run({ signal: controller.signal });
+  controller.abort();
+  finishAcquisition({ acquired: true });
+  await running;
+
+  assert.equal(released, true);
+});
 
 test("hosts authenticated interactive tools while holding leadership", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pan-host-"));

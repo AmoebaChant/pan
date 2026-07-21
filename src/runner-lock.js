@@ -8,6 +8,8 @@ import {
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { processIsAlive } from "./process-tree.js";
+
 export async function acquireRunnerLock(profile) {
   await mkdir(profile.stateDirectory, { recursive: true });
   const lockPath = path.join(
@@ -66,14 +68,5 @@ async function readLock(lockPath) {
     return JSON.parse(await readFile(lockPath, "utf8"));
   } catch {
     return undefined;
-  }
-}
-
-function processIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
   }
 }

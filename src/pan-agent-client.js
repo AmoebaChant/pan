@@ -23,7 +23,7 @@ export class PanAgentClient {
     this.agent = options.agent ?? "pan";
     this.model = options.model;
     this.extraArgs = [...(options.extraArgs ?? [])];
-    this.timeout = options.timeout ?? 120_000;
+    this.timeout = options.timeout;
     this.maxBuffer = options.maxBuffer ?? 10 * 1024 * 1024;
     this.cwd = options.cwd ?? process.cwd();
     this.env = options.env ?? process.env;
@@ -569,6 +569,9 @@ async function runProcess(executable, args, options) {
       }
       failure = error;
       termination = terminateProcessTree(child);
+      void termination.catch((terminationError) => {
+        void finish(undefined, undefined, terminationError);
+      });
     };
     const append = (target, chunk) => {
       const next = target + chunk.toString("utf8");
@@ -606,20 +609,35 @@ async function runProcess(executable, args, options) {
     });
     child.once("error", (error) => {
       failAndTerminate(Object.assign(error, { state: "spawn-error" }));
-      finish();
+      void finish();
     });
     child.once("close", (exitCode, signal) => {
       void finish(exitCode, signal);
     });
 
-    async function finish(exitCode, signal) {
+    async function finish(exitCode, signal, terminationError) {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", abort);
-      await termination;
+      if (!terminationError) {
+        try {
+          await termination;
+        } catch (error) {
+          terminationError = error;
+        }
+      }
+      if (terminationError) {
+        const error = new AggregateError(
+          [failure, terminationError].filter(Boolean),
+          "PAN agent process failed and could not be terminated",
+        );
+        Object.assign(error, { exitCode, signal, stdout, stderr });
+        reject(error);
+        return;
+      }
       if (failure) {
         Object.assign(failure, { exitCode, signal, stdout, stderr });
         reject(failure);

@@ -150,6 +150,7 @@ test("parses persistent PAN lifecycle commands", () => {
       profile: undefined,
       apply: true,
       noTerminal: false,
+      background: false,
     },
   );
   assert.deepEqual(
@@ -175,5 +176,23 @@ test("parses persistent PAN lifecycle commands", () => {
       apply: false,
       stateFile: "host.json",
     },
+  );
+  assert.deepEqual(
+    parsePanArgs(["connect", "--model", "gpt-5.6-sol"], {
+      PAN_CONFIG: "domain.json",
+    }),
+    {
+      command: "connect",
+      config: "domain.json",
+      profile: undefined,
+      model: "gpt-5.6-sol",
+    },
+  );
+  assert.throws(
+    () =>
+      parsePanArgs(["start", "--no-terminal"], {
+        PAN_CONFIG: "domain.json",
+      }),
+    /requires --background/,
   );
 });

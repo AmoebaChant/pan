@@ -25,10 +25,14 @@ export {
   startPanMcpServer,
 } from "./pan-mcp-server.js";
 export {
+  buildInteractiveCopilotArgs,
+  connectPan,
+  preparePanRuntime,
   runtimePaths,
   startPan,
   stopPan,
 } from "./pan-launcher.js";
+export { createServiceLogger } from "./service-logger.js";
 export { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 export {
   ActionPolicy,
@@ -63,6 +67,10 @@ export {
   validatePlaybook,
 } from "./playbook.js";
 export { buildTaskPrompt } from "./task-prompt.js";
+export {
+  buildTaskCopilotArgs,
+  UNATTENDED_AUTOPILOT_CONTINUES,
+} from "./task-command.js";
 export {
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,

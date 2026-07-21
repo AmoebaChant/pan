@@ -19,7 +19,8 @@ test("applies bounded runtime defaults without runner settings", () => {
   assert.equal(config.cadences.leaderLeaseSeconds, 120);
   assert.equal(config.cadences.leaderHeartbeatSeconds, 30);
   assert.equal(config.agent.executable, "copilot");
-  assert.equal(config.agent.turnTimeoutSeconds, 600);
+  assert.equal(config.agent.turnTimeoutSeconds, undefined);
+  assert.equal(config.agent.maxAiCredits, undefined);
   assert.equal(config.state.leaderPath, ".pan/leader.json");
   assert.equal(config.transcripts.path, ".pan/transcripts");
   assert.equal(config.transcripts.retentionDays, 30);

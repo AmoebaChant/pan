@@ -14,6 +14,7 @@ export class PanHost {
     pollIntervalSeconds = 300,
     heartbeatSeconds = 30,
     autonomousApply = false,
+    model,
     logger = console,
     host = "127.0.0.1",
     port = 0,
@@ -38,6 +39,7 @@ export class PanHost {
     this.pollIntervalSeconds = pollIntervalSeconds;
     this.heartbeatSeconds = heartbeatSeconds;
     this.autonomousApply = autonomousApply;
+    this.model = model;
     this.logger = logger;
     this.host = host;
     this.port = port;
@@ -46,21 +48,35 @@ export class PanHost {
   }
 
   async run({ signal } = {}) {
+    this.logger.info?.("Acquiring domain leadership.");
     const acquisition = await this.leaderLease.acquire();
     if (!acquisition.acquired) {
       throw new Error(
         `PAN leader lease is held by ${acquisition.lease?.holder ?? "another instance"}`,
       );
     }
-    const guard = startLeaseGuard(this.leaderLease, this.heartbeatSeconds);
+    this.logger.info?.("Domain leadership acquired.");
+    const guard = startLeaseGuard(
+      this.leaderLease,
+      this.heartbeatSeconds,
+      this.logger,
+    );
     const controller = new AbortController();
     const stop = () => controller.abort(signal?.reason);
-    signal?.addEventListener("abort", stop, { once: true });
-    guard.signal.addEventListener(
-      "abort",
-      () => controller.abort(guard.signal.reason),
-      { once: true },
-    );
+    if (signal?.aborted) {
+      stop();
+    } else {
+      signal?.addEventListener("abort", stop, { once: true });
+    }
+    if (guard.signal.aborted) {
+      controller.abort(guard.signal.reason);
+    } else {
+      guard.signal.addEventListener(
+        "abort",
+        () => controller.abort(guard.signal.reason),
+        { once: true },
+      );
+    }
 
     const server = createServer((request, response) => {
       void this.#handle(request, response, controller);
@@ -72,6 +88,7 @@ export class PanHost {
           if (controller.signal.aborted) {
             return;
           }
+          this.logger.info?.("Starting scheduled portfolio review.");
           const result = await this.reviewService.run({
             apply: this.autonomousApply,
             signal: controller.signal,
@@ -83,7 +100,9 @@ export class PanHost {
             error.result = result;
             throw error;
           }
-          this.logger.info(result.response.recommendation);
+          this.logger.info?.(
+            `Scheduled review completed: ${result.response.recommendation}`,
+          );
         })
           .catch((error) => {
             if (!controller.signal.aborted) {
@@ -97,9 +116,11 @@ export class PanHost {
           });
       }, this.pollIntervalSeconds * 1_000);
     };
-    scheduleReview();
-
     try {
+      if (controller.signal.aborted) {
+        return;
+      }
+      scheduleReview();
       await listen(server, this.host, this.port);
       const address = server.address();
       const endpoint = `http://${this.host}:${address.port}`;
@@ -111,8 +132,12 @@ export class PanHost {
         autonomousApply: this.autonomousApply,
         startedAt: new Date().toISOString(),
       });
+      this.logger.info?.(
+        `Listening at ${endpoint}; model=${this.model ?? "auto"}; scheduled reviews=${this.autonomousApply ? "apply" : "dry-run"}.`,
+      );
       await waitForAbort(controller.signal);
     } finally {
+      this.logger.info?.("Stopping host and releasing domain leadership.");
       clearTimeout(reviewTimer);
       signal?.removeEventListener("abort", stop);
       await close(server);
@@ -141,12 +166,14 @@ export class PanHost {
         });
       }
       if (request.method === "POST" && request.url === "/shutdown") {
+        this.logger.info?.("Shutdown requested.");
         sendJson(response, 202, { status: "stopping" });
         controller.abort(new Error("PAN host stopped"));
         return;
       }
       if (request.method === "POST" && request.url === "/tools/call") {
         const body = await readJsonBody(request);
+        this.logger.info?.(`Tool call: ${body.name}`);
         const result = await this.#enqueue(() =>
           this.#dispatch(body.name, body.arguments ?? {}, controller.signal),
         );
@@ -218,7 +245,7 @@ export class PanHost {
   }
 }
 
-function startLeaseGuard(leaderLease, heartbeatSeconds) {
+function startLeaseGuard(leaderLease, heartbeatSeconds, logger) {
   const controller = new AbortController();
   let inFlight;
   let failure;
@@ -232,7 +259,9 @@ function startLeaseGuard(leaderLease, heartbeatSeconds) {
         if (!result.renewed) {
           failure = new Error(`PAN leader lease lost: ${result.reason}`);
           controller.abort(failure);
+          return;
         }
+        logger.info?.("Domain leadership heartbeat renewed.");
       })
       .catch((error) => {
         failure = error;

@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runtimePaths, startPan } from "../src/index.js";
+import {
+  connectPan,
+  runtimePaths,
+  startPan,
+} from "../src/index.js";
 
 test("opens a headed PAN session connected to an existing host", async () => {
   const localAppData = await mkdtemp(path.join(os.tmpdir(), "pan-launcher-"));
@@ -129,4 +133,46 @@ test("stops a newly launched host when terminal startup fails", async () => {
     /wt failed/,
   );
   assert.equal(shutdownRequested, true);
+});
+
+test("connects Copilot in the current terminal with PAN tools and model", async () => {
+  const localAppData = await mkdtemp(path.join(os.tmpdir(), "pan-launcher-"));
+  const configPath = path.join(localAppData, "domain.json");
+  const paths = runtimePaths(configPath, { LOCALAPPDATA: localAppData });
+  await mkdir(paths.directory, { recursive: true });
+  await writeFile(
+    paths.stateFile,
+    JSON.stringify({
+      endpoint: "http://127.0.0.1:43127",
+      token: "secret",
+      autonomousApply: false,
+    }),
+  );
+  let launch;
+  const spawnProcess = (executable, args, options) => {
+    launch = { executable, args, options };
+    const child = new EventEmitter();
+    process.nextTick(() => child.emit("close", 0, null));
+    return child;
+  };
+
+  const result = await connectPan({
+    configPath,
+    toolRoot: path.resolve("."),
+    executable: "copilot-test",
+    agentName: "focused-pan",
+    model: "gpt-5.6-sol",
+    env: { LOCALAPPDATA: localAppData },
+    spawnProcess,
+    fetchImpl: async () => ({ ok: true }),
+  });
+
+  assert.equal(result.model, "gpt-5.6-sol");
+  assert.equal(launch.executable, "copilot-test");
+  assert.equal(launch.options.stdio, "inherit");
+  assert.equal(launch.options.windowsHide, false);
+  assert.ok(launch.args.includes("--agent"));
+  assert.ok(launch.args.includes("focused-pan"));
+  assert.ok(launch.args.includes("--model"));
+  assert.ok(launch.args.includes("gpt-5.6-sol"));
 });

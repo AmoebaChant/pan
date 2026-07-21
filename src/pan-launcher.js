@@ -10,6 +10,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { once } from "node:events";
 import os from "node:os";
 import path from "node:path";
 
@@ -26,6 +27,8 @@ export async function startPan({
   toolRoot,
   autonomousApply = false,
   openTerminal = true,
+  agentName = "pan",
+  model,
   env = process.env,
   spawnProcess = spawn,
   fetchImpl = fetch,
@@ -69,6 +72,8 @@ export async function startPan({
         configPath: resolvedConfig,
         mcpConfig: paths.mcpConfig,
         toolRoot,
+        agentName,
+        model,
         spawnProcess,
         env,
       });
@@ -118,6 +123,66 @@ export async function stopPan({
     await sleep(100);
   }
   throw new Error("PAN host did not stop within 10 seconds");
+}
+
+export async function preparePanRuntime({
+  configPath,
+  toolRoot,
+  stateFile,
+  env = process.env,
+}) {
+  const paths = runtimePaths(path.resolve(configPath), env);
+  const resolvedStateFile = stateFile
+    ? path.resolve(stateFile)
+    : paths.stateFile;
+  await mkdir(paths.directory, { recursive: true });
+  await writeMcpConfig(paths.mcpConfig, {
+    stateFile: resolvedStateFile,
+    mcpExecutable: path.join(toolRoot, "bin", "pan-mcp.js"),
+  });
+  return { ...paths, stateFile: resolvedStateFile };
+}
+
+export async function connectPan({
+  configPath,
+  toolRoot,
+  executable = "copilot",
+  agentName = "pan",
+  model,
+  env = process.env,
+  spawnProcess = spawn,
+  fetchImpl = fetch,
+}) {
+  const paths = await preparePanRuntime({ configPath, toolRoot, env });
+  const state = await readReadyState(paths.stateFile, fetchImpl);
+  if (!state) {
+    throw new Error(
+      "PAN host is not running. Start it in another terminal with `pan start --config <path>`.",
+    );
+  }
+  const args = buildInteractiveCopilotArgs({
+    toolRoot,
+    mcpConfig: paths.mcpConfig,
+    agentName,
+    model,
+  });
+  const child = spawnProcess(executable, args, {
+    cwd: toolRoot,
+    env,
+    stdio: "inherit",
+    windowsHide: false,
+  });
+  const [code, signal] = await waitForExit(child);
+  if (code !== 0) {
+    throw new Error(
+      `Copilot interactive session exited with code ${code}, signal ${signal ?? "none"}`,
+    );
+  }
+  return {
+    model: model ?? "auto",
+    endpoint: state.endpoint,
+    mcpConfig: paths.mcpConfig,
+  };
 }
 
 export function runtimePaths(configPath, env = process.env) {
@@ -174,29 +239,19 @@ async function launchInteractiveTerminal({
   configPath,
   mcpConfig,
   toolRoot,
+  agentName,
+  model,
   spawnProcess,
   env,
 }) {
   const domain = path.basename(configPath, path.extname(configPath));
   const title = `PAN - ${domain}`;
-  const copilotArgs = [
-    "copilot",
-    "-C",
+  const copilotArgs = buildInteractiveCopilotArgs({
     toolRoot,
-    "--agent",
-    "pan",
-    "--additional-mcp-config",
-    `@${mcpConfig}`,
-    "--disable-builtin-mcps",
-    ...TOOL_NAMES.map((name) => `--available-tools=pan-tools-${name}`),
-    "--allow-tool=pan-tools",
-    "--no-auto-update",
-    "--disallow-temp-dir",
-    "--session-id",
-    randomUUID(),
-    "-i",
-    "Read the complete PAN portfolio, then greet me with the single most important thing I should work on next and why.",
-  ];
+    mcpConfig,
+    agentName,
+    model,
+  });
   const child = spawnProcess(
     env.PAN_WINDOWS_TERMINAL ?? "wt.exe",
     [
@@ -208,6 +263,7 @@ async function launchInteractiveTerminal({
       "--title",
       title,
       "--suppressApplicationTitle",
+      "copilot",
       ...copilotArgs,
     ],
     {
@@ -218,6 +274,33 @@ async function launchInteractiveTerminal({
   );
   await spawned(child);
   child.unref();
+}
+
+export function buildInteractiveCopilotArgs({
+  toolRoot,
+  mcpConfig,
+  agentName = "pan",
+  model,
+  sessionId = randomUUID(),
+}) {
+  return [
+    "-C",
+    toolRoot,
+    "--agent",
+    agentName,
+    "--additional-mcp-config",
+    `@${mcpConfig}`,
+    "--disable-builtin-mcps",
+    ...TOOL_NAMES.map((name) => `--available-tools=pan-tools-${name}`),
+    "--allow-tool=pan-tools",
+    "--no-auto-update",
+    "--disallow-temp-dir",
+    "--session-id",
+    sessionId,
+    ...(model ? ["--model", model] : []),
+    "-i",
+    "Read the complete PAN portfolio, then greet me with the single most important thing I should work on next and why.",
+  ];
 }
 
 async function writeMcpConfig(filePath, { stateFile, mcpExecutable }) {
@@ -266,6 +349,10 @@ async function readReadyState(stateFile, fetchImpl) {
   } catch {
     return undefined;
   }
+}
+
+async function waitForExit(child) {
+  return once(child, "close");
 }
 
 function spawned(child) {
