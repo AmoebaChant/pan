@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { PanAgentClient } from "../src/index.js";
@@ -110,6 +111,32 @@ test("classifies untagged overlong launches without exposing launch values", asy
   assert.equal(error.launchDiagnostics.executableCharacters, executable.length);
   assert.ok(error.launchDiagnostics.stdinBytes > 0);
   assert.ok(!error.message.includes(executable));
+});
+
+test("reports actionable diagnostics for oversized process launch inputs", async () => {
+  const oversizedValue = "private-value".repeat(4_000);
+  const client = fixtureClient({
+    env: {
+      PATH: process.env.PATH,
+      PAN_OVERSIZED_CONTEXT: oversizedValue,
+    },
+    spawnProcess: () =>
+      failedSpawn(
+        Object.assign(new Error("spawn ENAMETOOLONG"), {
+          code: "ENAMETOOLONG",
+        }),
+      ),
+  });
+
+  const error = await captureRejection(
+    client.review(turn("autonomous-review")),
+  );
+
+  assert.equal(error.state, "spawn-input-too-long");
+  assert.equal(error.confirmedSideEffects, false);
+  assert.match(error.message, /PAN_OVERSIZED_CONTEXT \(\d+ characters\)/);
+  assert.match(error.message, /portfolio is sent over stdin/i);
+  assert.doesNotMatch(error.message, /private-value/);
 });
 
 test("validates and reports multiple bounded tool exchanges", async () => {
@@ -322,6 +349,15 @@ function untaggedLaunchFailure(code) {
   });
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  return child;
+}
+
+function failedSpawn(error) {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  queueMicrotask(() => child.emit("error", error));
   return child;
 }
 

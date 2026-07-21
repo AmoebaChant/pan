@@ -545,6 +545,9 @@ function diagnoseProcessError(error, launch) {
   if (!hasErrorCode(error, "ENAMETOOLONG")) {
     return error;
   }
+  if (error.state && error.state !== "stdin-error") {
+    return error;
+  }
   const diagnostics = launchDiagnostics(launch);
   return Object.assign(
     new Error(
@@ -652,7 +655,7 @@ async function runProcess(executable, args, options) {
       windowsHide: true,
     });
   } catch (error) {
-    throw Object.assign(error, { state: "spawn-error" });
+    throw classifySpawnError(error, executable, args, options);
   }
 
   return new Promise((resolve, reject) => {
@@ -716,7 +719,7 @@ async function runProcess(executable, args, options) {
       void finish();
     });
     child.once("error", (error) => {
-      failAndTerminate(Object.assign(error, { state: "spawn-error" }));
+      failAndTerminate(classifySpawnError(error, executable, args, options));
       void finish();
     });
     child.once("close", (exitCode, signal) => {
@@ -762,4 +765,52 @@ async function runProcess(executable, args, options) {
       }
     }
   });
+}
+
+function classifySpawnError(error, executable, args, options) {
+  if (error.code !== "ENAMETOOLONG") {
+    return Object.assign(error, { state: "spawn-error" });
+  }
+
+  const environmentEntries = Object.entries(options.env ?? {})
+    .map(([name, value]) => ({
+      name,
+      characters: name.length + String(value ?? "").length + 2,
+    }))
+    .sort((left, right) => right.characters - left.characters);
+  const largestEntries = environmentEntries
+    .slice(0, 3)
+    .map(
+      ({ name, characters }) =>
+        `${safeEnvironmentName(name)} (${characters} characters)`,
+    )
+    .join(", ");
+  const environmentCharacters =
+    environmentEntries.reduce(
+      (total, entry) => total + entry.characters,
+      0,
+    ) + 1;
+  const argumentCharacters = args.reduce(
+    (total, argument) => total + String(argument).length + 1,
+    0,
+  );
+  const message = [
+    "The operating system rejected the PAN agent process launch because its executable path, working directory, arguments, or inherited environment is too long.",
+    `Launch sizes (characters): executable=${String(executable).length}, working directory=${String(options.cwd ?? "").length}, arguments=${argumentCharacters}, environment=${environmentCharacters}.`,
+    ...(largestEntries
+      ? [`Largest inherited environment entries: ${largestEntries}.`]
+      : []),
+    "The portfolio is sent over stdin and did not contribute to the process arguments.",
+    "Shorten the configured executable or working directory, remove oversized extra arguments or inherited environment entries, and retry.",
+  ].join(" ");
+  return Object.assign(new Error(message, { cause: error }), {
+    code: error.code,
+    state: "spawn-input-too-long",
+  });
+}
+
+function safeEnvironmentName(name) {
+  return /auth|cookie|credential|key|pass|secret|token/i.test(name)
+    ? "<sensitive name>"
+    : name;
 }
