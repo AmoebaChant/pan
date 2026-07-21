@@ -136,6 +136,65 @@ export class PanReviewService {
     };
   }
 
+  async applyActions(actions, { signal, snapshot } = {}) {
+    snapshot ??= await this.snapshotSource.build();
+    if (!snapshot.complete || !snapshot.usableForMutation) {
+      throw new Error(
+        `PAN cannot apply actions from an incomplete portfolio: ${snapshot.diagnostics
+          .map((diagnostic) => diagnostic.message)
+          .join("; ")}`,
+      );
+    }
+    const timestamp = this.now().toISOString();
+    const response = validateResponseEvidence(
+      normalizePanFinalResponse({
+        version: 1,
+        type: "final-response",
+        turnId: randomUUID(),
+        mode: "interactive-chat",
+        timestamp,
+        snapshotId: snapshot.id,
+        recommendation: "Apply the actions proposed in the interactive PAN session.",
+        proposedActions: actions,
+      }),
+      snapshot,
+    );
+    signal?.throwIfAborted();
+    let outcomes;
+    try {
+      outcomes = await this.#apply(
+        response.proposedActions,
+        snapshot,
+        signal,
+      );
+    } catch (error) {
+      if (error.incompleteEffect) {
+        error.result = {
+          snapshotId: snapshot.id,
+          appliedActions: [],
+          rejectedActions: response.rejectedActions,
+          effects: {
+            confirmed: [],
+            incomplete: [error.incompleteEffect],
+          },
+        };
+      }
+      throw error;
+    }
+    return {
+      snapshotId: snapshot.id,
+      appliedActions: outcomes.appliedActions,
+      rejectedActions: [
+        ...response.rejectedActions,
+        ...outcomes.rejectedActions,
+      ],
+      effects: {
+        confirmed: outcomes.confirmed,
+        incomplete: outcomes.incomplete,
+      },
+    };
+  }
+
   async #apply(actions, snapshot, signal) {
     const appliedActions = [];
     const rejectedActions = [];

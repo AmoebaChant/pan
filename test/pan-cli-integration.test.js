@@ -284,6 +284,59 @@ test("reports normal live-command lease contention", async () => {
   assert.match(stdout.value, /already running elsewhere/i);
 });
 
+test("starts and stops the persistent PAN experience", async () => {
+  const calls = [];
+  const dependencies = {
+    stdout: capture(),
+    stderr: capture(),
+    domainConfigLoader: async () => domainConfig,
+    storeFactory: () => ({}),
+    attentionFactory: () => ({}),
+    startFactory: async (options) => {
+      calls.push(["start", options]);
+      return { started: true, terminalOpened: true };
+    },
+    stopFactory: async (options) => {
+      calls.push(["stop", options]);
+      return { stopped: true };
+    },
+  };
+
+  await runPanCli(
+    ["start", "--config", "domain.json"],
+    dependencies,
+  );
+  await runPanCli(
+    ["stop", "--config", "domain.json"],
+    dependencies,
+  );
+
+  assert.equal(calls[0][0], "start");
+  assert.equal(calls[0][1].configPath, "domain.json");
+  assert.equal(calls[0][1].autonomousApply, false);
+  assert.equal(calls[1][0], "stop");
+  assert.equal(calls[1][1].configPath, "domain.json");
+});
+
+test("stops PAN even when the domain config can no longer load", async () => {
+  let stopped = false;
+  const result = await runPanCli(
+    ["stop", "--config", "missing.json"],
+    {
+      stdout: capture(),
+      stderr: capture(),
+      domainConfigLoader: async () => assert.fail("config should not load"),
+      stopFactory: async () => {
+        stopped = true;
+        return { stopped: true };
+      },
+    },
+  );
+
+  assert.equal(stopped, true);
+  assert.deepEqual(result, { stopped: true });
+});
+
 function capture() {
   return {
     value: "",

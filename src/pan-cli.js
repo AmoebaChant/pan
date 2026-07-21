@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -9,10 +10,13 @@ import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { PanAgentClient } from "./pan-agent-client.js";
 import { PanDaemon } from "./pan-daemon.js";
+import { PanHost } from "./pan-host.js";
+import { startPan, stopPan } from "./pan-launcher.js";
 import { PanReviewService } from "./pan-review-service.js";
 import { PanRuntime } from "./pan-runtime.js";
 import { PanStore } from "./pan-store.js";
 import { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
+import { PanToolRegistry } from "./pan-tools.js";
 import { loadRunnerProfile } from "./runner-profile.js";
 import { RunnerProfileSource } from "./runner-profile-source.js";
 import { WorkstreamStore } from "./workstream-store.js";
@@ -36,9 +40,18 @@ export async function runPanCli(
     attentionFactory = (options) => new AttentionService(options),
     reviewServiceFactory,
     runtimeFactory = (options) => new PanRuntime(options),
+    hostFactory = (options) => new PanHost(options),
+    startFactory = startPan,
+    stopFactory = stopPan,
   } = {},
 ) {
   const parsed = parseArgs(args, env);
+  if (parsed.command === "stop") {
+    requireDomainConfiguration(parsed);
+    const result = await stopFactory({ configPath: parsed.config, env });
+    write(stdout, JSON.stringify(result, null, 2));
+    return result;
+  }
   const configuration = await loadCliConfiguration(parsed, {
     domainConfigLoader,
     runnerProfileLoader,
@@ -57,6 +70,44 @@ export async function runPanCli(
   });
   const attention = attentionFactory({ store });
 
+  if (parsed.command === "start") {
+    requireDomainConfiguration(parsed);
+    const result = await startFactory({
+      configPath: parsed.config,
+      toolRoot: TOOL_ROOT,
+      autonomousApply: parsed.apply,
+      openTerminal: !parsed.noTerminal,
+      env,
+    });
+    write(stdout, JSON.stringify(result, null, 2));
+    return result;
+  }
+  if (parsed.command === "host") {
+    requireDomainConfiguration(parsed);
+    const services = createDomainServices({
+      store,
+      attention,
+      configuration,
+      env,
+    });
+    const controller = new AbortController();
+    process.once("SIGINT", () => controller.abort());
+    process.once("SIGTERM", () => controller.abort());
+    return hostFactory({
+      reviewService: services.reviewService,
+      toolRegistry: services.toolRegistry,
+      leaderLease: createLeaderLease({
+        configuration,
+        gh,
+        pid,
+      }),
+      stateFile: parsed.stateFile,
+      token: randomUUID(),
+      pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
+      heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
+      autonomousApply: parsed.apply,
+    }).run({ signal: controller.signal });
+  }
   if (parsed.command === "inbox") {
     const entries = await attention.inbox();
     write(stdout, parsed.json ? JSON.stringify(entries, null, 2) : inboxTable(entries));
@@ -185,8 +236,39 @@ export function parseArgs(args, env = process.env) {
   const configuration = { config, profile };
   const json = takeFlag(remaining, "--json");
   const command = remaining.shift();
-  if (!["daemon", "review", "chat", "inbox", "answer", "add"].includes(command)) {
+  if (
+    ![
+      "start",
+      "stop",
+      "host",
+      "daemon",
+      "review",
+      "chat",
+      "inbox",
+      "answer",
+      "add",
+    ].includes(command)
+  ) {
     throw new TypeError(usage());
+  }
+  if (command === "start") {
+    const apply = takeFlag(remaining, "--apply");
+    const noTerminal = takeFlag(remaining, "--no-terminal");
+    requireNoArgs(remaining);
+    return { command, ...configuration, apply, noTerminal };
+  }
+  if (command === "stop") {
+    requireNoArgs(remaining);
+    return { command, ...configuration };
+  }
+  if (command === "host") {
+    const apply = takeFlag(remaining, "--apply");
+    const stateFile = takeOption(remaining, "--state-file");
+    requireNoArgs(remaining);
+    if (!stateFile) {
+      throw new TypeError("pan host requires --state-file");
+    }
+    return { command, ...configuration, apply, stateFile };
   }
   if (command === "daemon") {
     const once = takeFlag(remaining, "--once");
@@ -320,24 +402,34 @@ async function loadCliConfiguration(
 }
 
 function createReviewService({ store, configuration, env }) {
+  return createDomainServices({
+    store,
+    configuration,
+    env,
+  }).reviewService;
+}
+
+function createDomainServices({ store, attention, configuration, env }) {
   const runnerSource = new RunnerProfileSource({
     directory: configuration.runtime.runnerProfileDirectory,
   });
+  const workstreamSource = new WorkstreamStore({
+    repositoryPath: configuration.store.path,
+  });
   const snapshotSource = new PortfolioSnapshotBuilder({
     projectSource: store,
-    workstreamSource: new WorkstreamStore({
-      repositoryPath: configuration.store.path,
-    }),
+    workstreamSource,
     runnerSource,
   });
-  return new PanReviewService({
+  const actionPolicy = new ActionPolicy({
+    approvalRequired: configuration.reviewPolicy?.higherRisk.enabled
+      ? configuration.reviewPolicy.higherRisk.actionKinds
+      : [],
+  });
+  const reviewService = new PanReviewService({
     snapshotSource,
     store,
-    actionPolicy: new ActionPolicy({
-      approvalRequired: configuration.reviewPolicy?.higherRisk.enabled
-        ? configuration.reviewPolicy.higherRisk.actionKinds
-        : [],
-    }),
+    actionPolicy,
     agentClient: new PanAgentClient({
       executable: configuration.agent.executable,
       agent: configuration.agent.name,
@@ -352,6 +444,23 @@ function createReviewService({ store, configuration, env }) {
       ],
     }),
   });
+  return {
+    reviewService,
+    toolRegistry: new PanToolRegistry({
+      domain: {
+        repository: configuration.store.repository,
+        projectOwner: configuration.store.projectOwner,
+        projectNumber: configuration.store.projectNumber,
+        path: configuration.store.path,
+      },
+      snapshotSource,
+      projectSource: store,
+      workstreamSource,
+      runnerSource,
+      attentionSource: attention,
+      actionPolicy,
+    }),
+  };
 }
 
 function createLeaderLease({ configuration, gh, pid }) {
@@ -365,6 +474,14 @@ function createLeaderLease({ configuration, gh, pid }) {
     holder: `${configuration.runtime.machine}/pan-${pid}`,
     leaseSeconds: configuration.runtime.leaderLeaseSeconds,
   });
+}
+
+function requireDomainConfiguration(parsed) {
+  if (!parsed.config) {
+    throw new TypeError(
+      `pan ${parsed.command} requires --config or PAN_CONFIG`,
+    );
+  }
 }
 
 function formatReasoningResult(result) {
@@ -487,6 +604,8 @@ function write(stdout, value) {
 function usage() {
   return [
     "Usage:",
+    "  pan start [--apply] --config <path>",
+    "  pan stop --config <path>",
     "  pan daemon [--once] --config <path>",
     "  pan review [--apply] [--json] --config <path>",
     "  pan chat <message> [--dry-run] [--json] --config <path>",

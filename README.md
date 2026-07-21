@@ -66,11 +66,22 @@ The runtime decides when PAN should think; PAN decides how the portfolio should
 change. See [the target architecture](docs/architecture.md).
 
 ```powershell
+pan start --config C:\path\to\domain-config.json
+pan stop --config C:\path\to\domain-config.json
 pan review --config C:\path\to\domain-config.json
 pan review --apply --config C:\path\to\domain-config.json
 pan chat "What should I work on next?" --config C:\path\to\domain-config.json
 pan daemon --config C:\path\to\domain-config.json
 ```
+
+`start` launches a localhost-only PAN host in the background and opens a headed
+Windows Terminal tab running a persistent Copilot session with the PAN agent.
+The terminal reads live domain evidence and submits proposed actions through the
+host's authenticated MCP bridge. Autonomous scheduled reviews are dry-run by
+default; add `--apply` to `start` to let scheduled reviews apply validated
+changes. Interactive proposals are always validated by the host before any
+effect. Use `stop` to release the domain leader lease and stop the background
+host.
 
 `review` is a dry run unless `--apply` is present. `chat` applies validated
 proposals by default; add `--dry-run` for advice only. Reviews, conversation,

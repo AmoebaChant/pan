@@ -11,6 +11,7 @@
     "pan-runner": "./bin/pan-runner.js"
   },
   "files": [
+    ".github/agents",
     "bin",
     "src",
     "schema",

@@ -18,6 +18,17 @@ export { PanDaemon } from "./pan-daemon.js";
 export { PanAgentClient } from "./pan-agent-client.js";
 export { PanReviewService } from "./pan-review-service.js";
 export { PanRuntime } from "./pan-runtime.js";
+export { PanHost } from "./pan-host.js";
+export {
+  PAN_INTERACTIVE_TOOLS,
+  handlePanMcpRequest,
+  startPanMcpServer,
+} from "./pan-mcp-server.js";
+export {
+  runtimePaths,
+  startPan,
+  stopPan,
+} from "./pan-launcher.js";
 export { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 export {
   ActionPolicy,

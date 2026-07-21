@@ -23,6 +23,27 @@ test("validates, applies, and confirms a canonical reorder", async () => {
   assert.deepEqual(result.response.rejectedActions, []);
 });
 
+test("applies actions submitted by the interactive host", async () => {
+  const fixture = reviewFixture();
+  const result = await fixture.service.applyActions([
+    {
+      version: 1,
+      actionId: "reorder-interactive",
+      kind: "canonical-reorder",
+      rationale: "The user confirmed that B must be completed before A.",
+      confidence: 0.95,
+      evidence: [{ kind: "issue", locator: "item-b" }],
+      idempotencyKey: "reorder:interactive",
+      expectedState: { snapshotId: "snapshot-1" },
+      target: { orderedItemIds: ["item-b", "item-a"] },
+    },
+  ]);
+
+  assert.deepEqual(fixture.order, ["item-b", "item-a"]);
+  assert.equal(result.appliedActions.length, 1);
+  assert.deepEqual(result.effects.incomplete, []);
+});
+
 test("uses the same agent for conversational decisions", async () => {
   const fixture = reviewFixture();
   const result = await fixture.service.run({
