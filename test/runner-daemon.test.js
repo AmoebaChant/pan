@@ -91,6 +91,37 @@ test("does not mark direct delivery done until its commit is recorded", async ()
   assert.equal(store.releases[0].status, "blocked");
 });
 
+test("blocks direct work when closing its completed Issue fails", async () => {
+  const store = new FakeStore([makeItem()], {
+    releaseFailures: { done: 3 },
+  });
+  const handle = new FakeHandle(undefined, {
+    mode: "direct",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+  });
+  const profile = makePlaybookProfile({
+    maximum: 1,
+    panCapacity: 1,
+  });
+  profile.playbooks = [profile.playbooks[0]];
+  profile.playbooks[0].delivery = "direct";
+  const daemon = new RunnerDaemon({
+    store,
+    profile,
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.deepEqual(
+    store.releases.map((release) => release.status),
+    ["done", "done", "done", "blocked"],
+  );
+  assert.match(store.comments.at(-1), /Issue closure failed/);
+});
+
 test("does not claim work with unsupported requirements", async () => {
   const item = makeItem({
     requirements: ["repo:example/tool", "tool:unavailable"],
@@ -424,6 +455,7 @@ class FakeStore {
       commentFailures = 0,
       issueComments = [],
       claimFailure,
+      releaseFailures = {},
     } = {},
   ) {
     this.items = items;
@@ -433,6 +465,7 @@ class FakeStore {
     this.commentFailures = commentFailures;
     this.issueComments = issueComments;
     this.claimFailure = claimFailure;
+    this.releaseFailures = { ...releaseFailures };
     this.claims = [];
     this.comments = [];
     this.releases = [];
@@ -467,6 +500,10 @@ class FakeStore {
 
   async release(release) {
     this.releases.push(release);
+    if ((this.releaseFailures[release.status] ?? 0) > 0) {
+      this.releaseFailures[release.status] -= 1;
+      throw new Error("Issue closure failed");
+    }
     return { released: true };
   }
 

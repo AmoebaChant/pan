@@ -38,6 +38,10 @@ longer.
 `Status` is GitHub's built-in Project field, with its options replaced by PAN's
 lifecycle.
 
+A runner release to `done` also closes the Issue as completed. Pull-request
+delivery remains open in `in-review`; it must not be closed before review is
+complete.
+
 Project item ordering is the canonical queue for both human and agent work.
 Saved views filter that ordering by owner and lifecycle. PAN must update the
 Project directly rather than maintaining a separate generated queue.

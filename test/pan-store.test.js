@@ -19,7 +19,7 @@ const MANIFEST = {
       key: "status",
       name: "Status",
       type: "single_select",
-      options: ["untriaged", "ready", "in-progress"],
+      options: ["untriaged", "ready", "in-progress", "in-review", "done"],
     },
     {
       key: "priority",
@@ -514,6 +514,88 @@ test("releases the owning runner and returns the item to ready", async () => {
   ]);
 });
 
+test("closes an Issue when its runner releases it as done", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+        status: "in-progress",
+      }),
+    ],
+  });
+
+  const result = await store.release({
+    itemId: "item-1",
+    runner: "runner-a",
+    status: "done",
+  });
+
+  assert.equal(result.released, true);
+  assert.equal(result.item.fields.status, "done");
+  assert.equal(result.item.state, "closed");
+  assert.deepEqual(gh.issueStateEdits, [
+    { number: 1, action: "close", reason: "completed" },
+  ]);
+});
+
+test("keeps an Issue open when completed work enters review", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+        status: "in-progress",
+      }),
+    ],
+  });
+
+  const result = await store.release({
+    itemId: "item-1",
+    runner: "runner-a",
+    status: "in-review",
+  });
+
+  assert.equal(result.released, true);
+  assert.equal(result.item.fields.status, "in-review");
+  assert.equal(result.item.state, "open");
+  assert.deepEqual(gh.issueStateEdits, []);
+});
+
+test("restores a claimed task when closing its Issue fails", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+        status: "in-progress",
+        assignees: ["octocat"],
+      }),
+    ],
+    failIssueClose: true,
+  });
+
+  await assert.rejects(
+    store.release({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      status: "done",
+    }),
+    /Issue closure failed/,
+  );
+
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.status, "in-progress");
+  assert.equal(item.fields.claimedBy, "runner-a");
+  assert.equal(item.fields.leaseUntil, FUTURE);
+  assert.equal(item.state, "open");
+  assert.deepEqual(gh.issueEdits, [
+    { number: 1, flag: "--remove-assignee", assignee: "octocat" },
+    { number: 1, flag: "--add-assignee", assignee: "octocat" },
+  ]);
+});
+
 test("does not release an expired lease", async () => {
   const { store } = fixture({
     items: [
@@ -622,6 +704,7 @@ function fixture({
   truncatedComments = false,
   failSchemaOnce = false,
   failProjectRead = false,
+  failIssueClose = false,
   projectPageSize,
   projectItemSafetyLimit,
 } = {}) {
@@ -635,6 +718,7 @@ function fixture({
     truncatedComments,
     failSchemaOnce,
     failProjectRead,
+    failIssueClose,
     projectPageSize,
   });
   return {
@@ -666,6 +750,7 @@ class FakeGh {
       failSchemaOnce = false,
       failProjectRead = false,
       projectPageSize,
+      failIssueClose = false,
     } = {},
   ) {
     this.items = structuredClone(items);
@@ -679,8 +764,10 @@ class FakeGh {
     this.schemaFailures = failSchemaOnce ? 1 : 0;
     this.failProjectRead = failProjectRead;
     this.projectPageSize = projectPageSize;
+    this.failIssueClose = failIssueClose;
     this.issueCreates = [];
     this.issueEdits = [];
+    this.issueStateEdits = [];
     this.issueComments = [];
     this.commentsByIssue = new Map();
     this.projectOrders = [];
@@ -720,6 +807,27 @@ class FakeGh {
       });
       if (this.failAssignee && flag === "--add-assignee") {
         throw new Error("assignment failed");
+      }
+      return "";
+    }
+    if (
+      args[0] === "issue" &&
+      ["close", "reopen"].includes(args[1])
+    ) {
+      const action = args[1];
+      this.issueStateEdits.push({
+        number: Number(args[2]),
+        action,
+        reason: valueAfter(args, "--reason"),
+      });
+      if (this.failIssueClose && action === "close") {
+        throw new Error("Issue closure failed");
+      }
+      const item = this.items.find(
+        (candidate) => candidate.content?.number === Number(args[2]),
+      );
+      if (item) {
+        item.content.state = action === "close" ? "CLOSED" : "OPEN";
       }
       return "";
     }
@@ -931,6 +1039,7 @@ function makeItem({
   labels = [],
   comments = [],
   contentType = "Issue",
+  state = "OPEN",
   createdAt = "2026-07-17T18:00:00Z",
   updatedAt = "2026-07-17T19:00:00Z",
 } = {}) {
@@ -940,7 +1049,7 @@ function makeItem({
       number,
       title,
       body,
-      state: "OPEN",
+      state,
       url: `https://github.com/AmoebaChant/pan-work/issues/${number}`,
       createdAt,
       updatedAt,
