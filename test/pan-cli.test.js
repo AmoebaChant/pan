@@ -140,3 +140,40 @@ test("parses reasoning review and conversational commands", () => {
     },
   );
 });
+
+test("parses persistent PAN lifecycle commands", () => {
+  assert.deepEqual(
+    parsePanArgs(["start", "--apply", "--config", "domain.json"], {}),
+    {
+      command: "start",
+      config: "domain.json",
+      profile: undefined,
+      apply: true,
+      noTerminal: false,
+    },
+  );
+  assert.deepEqual(
+    parsePanArgs(["stop"], { PAN_CONFIG: "domain.json" }),
+    {
+      command: "stop",
+      config: "domain.json",
+      profile: undefined,
+    },
+  );
+  assert.deepEqual(
+    parsePanArgs([
+      "host",
+      "--state-file",
+      "host.json",
+      "--config",
+      "domain.json",
+    ]),
+    {
+      command: "host",
+      config: "domain.json",
+      profile: undefined,
+      apply: false,
+      stateFile: "host.json",
+    },
+  );
+});
