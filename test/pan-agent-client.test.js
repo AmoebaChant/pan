@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { PanAgentClient } from "../src/index.js";
@@ -86,6 +88,32 @@ test("streams large inline portfolios without placing them in process arguments"
     !result.result.data.arguments.some((argument) => argument.includes(marker)),
   );
   assert.match(result.result.data.prompt, new RegExp(marker));
+});
+
+test("reports actionable diagnostics for oversized process launch inputs", async () => {
+  const oversizedValue = "private-value".repeat(4_000);
+  const client = fixtureClient({
+    env: {
+      PATH: process.env.PATH,
+      PAN_OVERSIZED_CONTEXT: oversizedValue,
+    },
+    spawnProcess: () =>
+      failedSpawn(
+        Object.assign(new Error("spawn ENAMETOOLONG"), {
+          code: "ENAMETOOLONG",
+        }),
+      ),
+  });
+
+  const error = await captureRejection(
+    client.review(turn("autonomous-review")),
+  );
+
+  assert.equal(error.state, "spawn-input-too-long");
+  assert.equal(error.confirmedSideEffects, false);
+  assert.match(error.message, /PAN_OVERSIZED_CONTEXT \(\d+ characters\)/);
+  assert.match(error.message, /portfolio is sent over stdin/i);
+  assert.doesNotMatch(error.message, /private-value/);
 });
 
 test("validates and reports multiple bounded tool exchanges", async () => {
@@ -266,6 +294,7 @@ function fixtureClient(options = {}) {
     onToolMessage,
     inlinePortfolio = false,
     scenario = "success",
+    spawnProcess,
     timeout = 2_000,
   } = options;
   return new PanAgentClient({
@@ -280,7 +309,17 @@ function fixtureClient(options = {}) {
     timeout,
     onToolMessage,
     inlinePortfolio,
+    spawnProcess,
   });
+}
+
+function failedSpawn(error) {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  queueMicrotask(() => child.emit("error", error));
+  return child;
 }
 
 function readFixturePid(error) {
