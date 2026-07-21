@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import test from "node:test";
 
@@ -86,6 +87,29 @@ test("streams large inline portfolios without placing them in process arguments"
     !result.result.data.arguments.some((argument) => argument.includes(marker)),
   );
   assert.match(result.result.data.prompt, new RegExp(marker));
+});
+
+test("classifies untagged overlong launches without exposing launch values", async () => {
+  const executable = "private-agent-executable";
+  const error = await captureRejection(
+    fixtureClient({
+      executable,
+      spawnProcess: () => untaggedLaunchFailure("ENAMETOOLONG"),
+      timeout: 0,
+    }).review(turn("autonomous-review")),
+  );
+
+  assert.equal(error.state, "spawn-error");
+  assert.equal(error.confirmedSideEffects, false);
+  assert.equal(error.cause.code, "ENAMETOOLONG");
+  assert.match(
+    error.message,
+    /Copilot process launch exceeded an operating-system length limit/,
+  );
+  assert.match(error.message, /prompt is sent through stdin/);
+  assert.equal(error.launchDiagnostics.executableCharacters, executable.length);
+  assert.ok(error.launchDiagnostics.stdinBytes > 0);
+  assert.ok(!error.message.includes(executable));
 });
 
 test("validates and reports multiple bounded tool exchanges", async () => {
@@ -260,16 +284,18 @@ function fixtureClient(options = {}) {
   const {
     agent,
     env = process.env,
+    executable = process.execPath,
     extraArgs,
     maxBuffer,
     model,
     onToolMessage,
+    spawnProcess,
     inlinePortfolio = false,
     scenario = "success",
     timeout = 2_000,
   } = options;
   return new PanAgentClient({
-    executable: process.execPath,
+    executable,
     executableArgs: [FIXTURE],
     cwd: path.resolve("."),
     env: { ...env, PAN_FAKE_SCENARIO: scenario },
@@ -279,8 +305,24 @@ function fixtureClient(options = {}) {
     model,
     timeout,
     onToolMessage,
+    spawnProcess,
     inlinePortfolio,
   });
+}
+
+function untaggedLaunchFailure(code) {
+  const child = new EventEmitter();
+  child.stdin = Object.assign(new EventEmitter(), {
+    end: () => {
+      throw Object.assign(new Error(`spawn ${code}`), {
+        code,
+        syscall: "spawn",
+      });
+    },
+  });
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  return child;
 }
 
 function readFixturePid(error) {
