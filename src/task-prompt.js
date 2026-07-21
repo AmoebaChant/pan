@@ -40,6 +40,7 @@ export function buildTaskPrompt(taskContextPath, task) {
     '{"kind":"question|approval|local-ui","prompt":"one-line request","localUrl":"optional URL"}',
     `Then atomically write ${task.paths.agentResult} as JSON with:`,
     '{"status":"blocked","summary":"why work cannot continue"}',
-    "Do not ask the user directly in this non-interactive session.",
+    "If immediate clarification can unblock work in this attached terminal, ask the user directly and continue after the reply.",
+    "Use the needs-human files only when work cannot continue in this session.",
   ].join("\n");
 }
