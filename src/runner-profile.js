@@ -58,6 +58,9 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
   if (terminal.window !== undefined) {
     requireString(terminal.window, "terminal.window");
   }
+  if (terminal.profile !== undefined) {
+    requireString(terminal.profile, "terminal.profile");
+  }
 
   if (profile.githubAssignee !== undefined) {
     requireString(profile.githubAssignee, "githubAssignee");
@@ -103,6 +106,7 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
       type: terminal.type,
       executable: terminal.executable ?? "wt",
       window: terminal.window ?? "0",
+      profile: terminal.profile ?? "PowerShell",
     },
     copilot: {
       executable: profile.copilot?.executable ?? "copilot",

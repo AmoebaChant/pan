@@ -30,6 +30,7 @@ test("loads a capability profile and applies runner defaults", async () => {
       maxAutopilotContinues: undefined,
     });
     assert.equal(profile.terminal.executable, "wt");
+    assert.equal(profile.terminal.profile, "PowerShell");
     assert.equal(profile.profilePath, profilePath);
     assert.equal(profile.store.path, directory);
   } finally {
@@ -67,6 +68,13 @@ test("rejects Copilot credit budgets below the CLI minimum", () => {
     () => validateRunnerProfile(profile),
     /maxAiCredits must be at least 30/,
   );
+});
+
+test("preserves a configured Windows Terminal profile", () => {
+  const source = makeProfile(path.resolve("runner-root"));
+  source.terminal.profile = "PAN Work";
+
+  assert.equal(validateRunnerProfile(source).terminal.profile, "PAN Work");
 });
 
 test("adapts a legacy profile to one compatibility playbook", () => {

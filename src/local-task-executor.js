@@ -163,6 +163,7 @@ export class LocalTaskExecutor {
       await launchTerminal({
         executable: this.profile.terminal.executable,
         window: this.profile.terminal.window,
+        profile: this.profile.terminal.profile,
         title,
         workerPath: WORKER_PATH,
         contextPath,
@@ -607,6 +608,7 @@ class LocalTaskHandle {
 async function launchTerminal({
   executable,
   window,
+  profile,
   title,
   workerPath,
   contextPath,
@@ -618,6 +620,8 @@ async function launchTerminal({
       "-w",
       window,
       "nt",
+      "--profile",
+      profile,
       "--title",
       title,
       "--suppressApplicationTitle",

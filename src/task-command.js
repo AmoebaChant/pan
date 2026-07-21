@@ -1,5 +1,14 @@
 export const UNATTENDED_AUTOPILOT_CONTINUES = 1_000;
 
+export function buildTaskCopilotSpawnOptions(task, env) {
+  return {
+    cwd: task.target.worktreePath,
+    env,
+    stdio: "inherit",
+    windowsHide: false,
+  };
+}
+
 export function buildTaskCopilotArgs(task, taskPrompt) {
   const args = [
     "-C",
@@ -36,4 +45,3 @@ export function buildTaskCopilotArgs(task, taskPrompt) {
   }
   return args;
 }
-

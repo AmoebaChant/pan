@@ -3,8 +3,20 @@ import test from "node:test";
 
 import {
   buildTaskCopilotArgs,
+  buildTaskCopilotSpawnOptions,
   UNATTENDED_AUTOPILOT_CONTINUES,
 } from "../src/index.js";
+
+test("keeps Copilot attached to the worker terminal", () => {
+  const env = { PAN_TASK_RESULT: "C:\\state\\agent-result.json" };
+
+  assert.deepEqual(buildTaskCopilotSpawnOptions(makeTask(), env), {
+    cwd: "C:\\worktree",
+    env,
+    stdio: "inherit",
+    windowsHide: false,
+  });
+});
 
 test("omits AI credit limits and uses a long-running autopilot ceiling", () => {
   const args = buildTaskCopilotArgs(makeTask(), "Do the task.");
@@ -37,4 +49,3 @@ function makeTask() {
     copilot: { model: "gpt-5.6-sol" },
   };
 }
-

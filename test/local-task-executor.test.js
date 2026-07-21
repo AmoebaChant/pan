@@ -51,10 +51,14 @@ test("allocates unique branches, worktrees, and state for concurrent tasks", asy
   const fixture = await createFixture();
   const commands = new FakeCommands();
   const ids = ["allocation-one", "allocation-two"];
+  const terminalLaunches = [];
   const executor = new LocalTaskExecutor({
     profile: fixture.profile,
     commands,
-    spawnProcess: successfulSpawn,
+    spawnProcess: (...args) => {
+      terminalLaunches.push(args);
+      return successfulSpawn();
+    },
     randomId: () => ids.shift(),
   });
 
@@ -75,6 +79,10 @@ test("allocates unique branches, worktrees, and state for concurrent tasks", asy
     assert.equal(contexts[0].playbook.id, "pan-development");
     assert.deepEqual(contexts[0].playbook.instructions, ["Run tests."]);
     assert.equal(contexts[0].playbook.delivery, "pull-request");
+    assert.equal(terminalLaunches.length, 2);
+    for (const [, args] of terminalLaunches) {
+      assert.equal(args[args.indexOf("--profile") + 1], "PowerShell");
+    }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -433,6 +441,7 @@ async function createFixture() {
       terminal: {
         executable: "wt",
         window: "0",
+        profile: "PowerShell",
       },
       machine: "machine-a",
     },

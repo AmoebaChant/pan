@@ -113,8 +113,9 @@ branches or consuming each other's reserved playbook slots.
 It remains attached to its terminal, logs claims, capacity, heartbeats,
 worktree launches, results, and delivery handoffs, and tees the same output to
 `<stateDirectory>\runner.log`. Each coding worker opens in a visible Windows
-Terminal tab and keeps its own `copilot.log`. Pressing `Ctrl+C` stops active
-workers before the runner releases their leases.
+Terminal tab with interactive Copilot chrome and steering, and keeps lifecycle
+details in its own `copilot.log`. Pressing `Ctrl+C` stops active workers before
+the runner releases their leases.
 
 See the [runner contract and profile format](docs/runner.md).
 

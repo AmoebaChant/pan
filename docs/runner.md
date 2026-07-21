@@ -66,7 +66,8 @@ matching `repo:<owner/name>` capability.
   "terminal": {
     "type": "windows-terminal",
     "executable": "wt",
-    "window": "0"
+    "window": "0",
+    "profile": "PowerShell"
   },
   "copilot": {
     "executable": "copilot",
@@ -139,11 +140,14 @@ Omit `--once` to keep polling until the process receives `SIGINT` or `SIGTERM`.
 The configured interval is used while work is active. Idle polling backs off to
 five minutes, and GitHub rate-limit failures pause polling for fifteen minutes.
 The foreground runner prints normal lifecycle activity and tees it to
-`<stateDirectory>\runner.log`; each visible worker terminal also writes
-`copilot.log` under its task state directory. `Ctrl+C` stops active workers
-before releasing their leases; interrupted tasks move to `blocked` with their
-local locator so partial work is not silently discarded. A lost lease also
-stops its worker immediately to prevent duplicate execution.
+`<stateDirectory>\runner.log`; each visible worker terminal also writes worker
+lifecycle details to `copilot.log` under its task state directory. Copilot
+remains attached directly to that terminal so its interactive chrome and
+steering controls are available. The configured terminal `profile` defaults to
+`PowerShell`. `Ctrl+C` stops active workers before releasing their leases;
+interrupted tasks move to `blocked` with their local locator so partial work is
+not silently discarded. A lost lease also stops its worker immediately to
+prevent duplicate execution.
 
 When `pan answer` resolves blocked work, PAN returns the item to triage. The
 next runner attempt receives the marked answer comment in its task context.

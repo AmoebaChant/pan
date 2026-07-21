@@ -9,7 +9,10 @@ import path from "node:path";
 import { once } from "node:events";
 
 import { terminateProcessTree } from "./process-tree.js";
-import { buildTaskCopilotArgs } from "./task-command.js";
+import {
+  buildTaskCopilotArgs,
+  buildTaskCopilotSpawnOptions,
+} from "./task-command.js";
 import { buildTaskPrompt } from "./task-prompt.js";
 
 const contextPath = parseContextPath(process.argv.slice(2));
@@ -29,10 +32,10 @@ workerEnv.GIT_TERMINAL_PROMPT = "0";
 workerEnv.PAN_TASK_RESULT = context.paths.agentResult;
 workerEnv.PAN_NEEDS_HUMAN = context.paths.needsHuman;
 const log = createWriteStream(context.paths.log, { flags: "a" });
-console.log(
+writeWorkerLine(
   `[PAN worker] Starting task #${context.issue.number}; model=${context.copilot.model ?? "auto"}, wall-clock=${context.copilot.deadline ? "bounded" : "unlimited"}, AI credits=${context.copilot.maxAiCredits ?? "unlimited"}.`,
 );
-console.log(`[PAN worker] Activity log: ${context.paths.log}`);
+writeWorkerLine(`[PAN worker] Activity log: ${context.paths.log}`);
 await writeJsonAtomic(context.paths.worker, {
   pid: process.pid,
   startedAt: new Date().toISOString(),
@@ -42,12 +45,11 @@ if (cancellation) {
   throw new Error(cancellation.summary);
 }
 
-const child = spawn(context.copilot.executable, args, {
-  cwd: context.target.worktreePath,
-  env: workerEnv,
-  stdio: ["inherit", "pipe", "pipe"],
-  windowsHide: false,
-});
+const child = spawn(
+  context.copilot.executable,
+  args,
+  buildTaskCopilotSpawnOptions(context, workerEnv),
+);
 let termination;
 const stopChild = () => {
   termination ??= terminateReliably(child);
@@ -56,15 +58,6 @@ const stopChild = () => {
 process.once("SIGTERM", () => {
   void stopChild().finally(() => process.exit(0));
 });
-child.stdout.on("data", (chunk) => {
-  process.stdout.write(chunk);
-  log.write(chunk);
-});
-child.stderr.on("data", (chunk) => {
-  process.stderr.write(chunk);
-  log.write(chunk);
-});
-
 let timedOut = false;
 const timeout = context.copilot.deadline
   ? setTimeout(
@@ -85,8 +78,6 @@ const exit = await new Promise((resolve) => {
 });
 clearTimeout(timeout);
 await termination;
-log.end();
-await once(log, "finish");
 
 let result = runtimeError
   ? {
@@ -103,6 +94,9 @@ if (!result) {
     ...(timedOut ? { budgetExceeded: true } : {}),
   };
 }
+log.write(`[PAN worker] ${result.status}: ${result.summary}\n`);
+log.end();
+await once(log, "finish");
 await writeJsonAtomic(context.paths.result, result);
 
 if (result.status === "blocked") {
@@ -144,6 +138,11 @@ async function writeJsonAtomic(filePath, value) {
   const temporary = `${filePath}.${process.pid}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
   await rename(temporary, filePath);
+}
+
+function writeWorkerLine(message) {
+  console.log(message);
+  log.write(`${message}\n`);
 }
 
 async function terminateReliably(child) {
