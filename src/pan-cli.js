@@ -11,7 +11,12 @@ import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { PanAgentClient } from "./pan-agent-client.js";
 import { PanDaemon } from "./pan-daemon.js";
 import { PanHost } from "./pan-host.js";
-import { startPan, stopPan } from "./pan-launcher.js";
+import {
+  connectPan,
+  preparePanRuntime,
+  startPan,
+  stopPan,
+} from "./pan-launcher.js";
 import { PanReviewService } from "./pan-review-service.js";
 import { PanRuntime } from "./pan-runtime.js";
 import { PanStore } from "./pan-store.js";
@@ -20,6 +25,7 @@ import { PanToolRegistry } from "./pan-tools.js";
 import { loadRunnerProfile } from "./runner-profile.js";
 import { RunnerProfileSource } from "./runner-profile-source.js";
 import { WorkstreamStore } from "./workstream-store.js";
+import { createServiceLogger } from "./service-logger.js";
 
 const TOOL_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -38,11 +44,15 @@ export async function runPanCli(
     runnerProfileLoader = loadRunnerProfile,
     storeFactory = (options) => new PanStore(options),
     attentionFactory = (options) => new AttentionService(options),
+    toolRegistryFactory = (options) => new PanToolRegistry(options),
     reviewServiceFactory,
     runtimeFactory = (options) => new PanRuntime(options),
     hostFactory = (options) => new PanHost(options),
     startFactory = startPan,
     stopFactory = stopPan,
+    connectFactory = connectPan,
+    prepareRuntimeFactory = preparePanRuntime,
+    loggerFactory = createServiceLogger,
   } = {},
 ) {
   const parsed = parseArgs(args, env);
@@ -70,43 +80,84 @@ export async function runPanCli(
   });
   const attention = attentionFactory({ store });
 
-  if (parsed.command === "start") {
+  if (parsed.command === "start" && parsed.background) {
     requireDomainConfiguration(parsed);
     const result = await startFactory({
       configPath: parsed.config,
       toolRoot: TOOL_ROOT,
       autonomousApply: parsed.apply,
       openTerminal: !parsed.noTerminal,
+      agentName: configuration.agent.name,
+      model: configuration.agent?.model,
       env,
     });
     write(stdout, JSON.stringify(result, null, 2));
     return result;
   }
-  if (parsed.command === "host") {
+  if (parsed.command === "connect") {
     requireDomainConfiguration(parsed);
+    const model = parsed.model ?? configuration.agent?.model;
+    write(
+      stdout,
+      `Connecting PAN chat with model ${model ?? "auto"}; use /model to inspect or change it.`,
+    );
+    return connectFactory({
+      configPath: parsed.config,
+      toolRoot: TOOL_ROOT,
+      executable: configuration.agent?.executable ?? "copilot",
+      agentName: configuration.agent.name,
+      model,
+      env,
+    });
+  }
+  if (parsed.command === "start" || parsed.command === "host") {
+    requireDomainConfiguration(parsed);
+    const paths = await prepareRuntimeFactory({
+      configPath: parsed.config,
+      toolRoot: TOOL_ROOT,
+      stateFile: parsed.stateFile,
+      env,
+    });
     const services = createDomainServices({
       store,
       attention,
       configuration,
       env,
+      reviewServiceFactory,
+      toolRegistryFactory,
+    });
+    const logger = await loggerFactory({
+      name: "PAN host",
+      logFile: parsed.stateFile ? undefined : paths.logFile,
     });
     const controller = new AbortController();
     process.once("SIGINT", () => controller.abort());
     process.once("SIGTERM", () => controller.abort());
-    return hostFactory({
-      reviewService: services.reviewService,
-      toolRegistry: services.toolRegistry,
-      leaderLease: createLeaderLease({
-        configuration,
-        gh,
-        pid,
-      }),
-      stateFile: parsed.stateFile,
-      token: randomUUID(),
-      pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
-      heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
-      autonomousApply: parsed.apply,
-    }).run({ signal: controller.signal });
+    logger.info(
+      `Starting in the foreground with model ${configuration.agent?.model ?? "auto"}; press Ctrl+C to stop.`,
+    );
+    logger.info(`Activity log: ${paths.logFile}`);
+    try {
+      return await hostFactory({
+        reviewService: services.reviewService,
+        toolRegistry: services.toolRegistry,
+        leaderLease: createLeaderLease({
+          configuration,
+          gh,
+          pid,
+        }),
+        stateFile: paths.stateFile,
+        token: randomUUID(),
+        pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
+        heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
+        autonomousApply: parsed.apply,
+        model: configuration.agent?.model,
+        logger,
+      }).run({ signal: controller.signal });
+    } finally {
+      logger.info("Stopped.");
+      await logger.close();
+    }
   }
   if (parsed.command === "inbox") {
     const entries = await attention.inbox();
@@ -241,6 +292,7 @@ export function parseArgs(args, env = process.env) {
       "start",
       "stop",
       "host",
+      "connect",
       "daemon",
       "review",
       "chat",
@@ -254,8 +306,18 @@ export function parseArgs(args, env = process.env) {
   if (command === "start") {
     const apply = takeFlag(remaining, "--apply");
     const noTerminal = takeFlag(remaining, "--no-terminal");
+    const background = takeFlag(remaining, "--background");
+    if (noTerminal && !background) {
+      throw new TypeError("--no-terminal requires --background");
+    }
     requireNoArgs(remaining);
-    return { command, ...configuration, apply, noTerminal };
+    return {
+      command,
+      ...configuration,
+      apply,
+      noTerminal,
+      background,
+    };
   }
   if (command === "stop") {
     requireNoArgs(remaining);
@@ -265,10 +327,12 @@ export function parseArgs(args, env = process.env) {
     const apply = takeFlag(remaining, "--apply");
     const stateFile = takeOption(remaining, "--state-file");
     requireNoArgs(remaining);
-    if (!stateFile) {
-      throw new TypeError("pan host requires --state-file");
-    }
     return { command, ...configuration, apply, stateFile };
+  }
+  if (command === "connect") {
+    const model = takeOption(remaining, "--model");
+    requireNoArgs(remaining);
+    return { command, ...configuration, model };
   }
   if (command === "daemon") {
     const once = takeFlag(remaining, "--once");
@@ -395,8 +459,8 @@ async function loadCliConfiguration(
       name: "pan",
       executable: "copilot",
       model: undefined,
-      turnTimeoutSeconds: 600,
-      maxAiCredits: 30,
+      turnTimeoutSeconds: undefined,
+      maxAiCredits: undefined,
     },
   };
 }
@@ -409,7 +473,14 @@ function createReviewService({ store, configuration, env }) {
   }).reviewService;
 }
 
-function createDomainServices({ store, attention, configuration, env }) {
+function createDomainServices({
+  store,
+  attention,
+  configuration,
+  env,
+  reviewServiceFactory,
+  toolRegistryFactory = (options) => new PanToolRegistry(options),
+}) {
   const runnerSource = new RunnerProfileSource({
     directory: configuration.runtime.runnerProfileDirectory,
   });
@@ -426,27 +497,40 @@ function createDomainServices({ store, attention, configuration, env }) {
       ? configuration.reviewPolicy.higherRisk.actionKinds
       : [],
   });
-  const reviewService = new PanReviewService({
-    snapshotSource,
-    store,
-    actionPolicy,
-    agentClient: new PanAgentClient({
-      executable: configuration.agent.executable,
-      agent: configuration.agent.name,
-      model: configuration.agent.model,
-      timeout: configuration.agent.turnTimeoutSeconds * 1_000,
-      cwd: TOOL_ROOT,
+  const reviewService =
+    reviewServiceFactory?.({
+      store,
+      configuration,
       env,
-      inlinePortfolio: true,
-      extraArgs: [
-        "--max-ai-credits",
-        String(configuration.agent.maxAiCredits),
-      ],
-    }),
-  });
+      snapshotSource,
+      actionPolicy,
+    }) ??
+    new PanReviewService({
+      snapshotSource,
+      store,
+      actionPolicy,
+      agentClient: new PanAgentClient({
+        executable: configuration.agent.executable,
+        agent: configuration.agent.name,
+        model: configuration.agent.model,
+        timeout: configuration.agent.turnTimeoutSeconds
+          ? configuration.agent.turnTimeoutSeconds * 1_000
+          : undefined,
+        cwd: TOOL_ROOT,
+        env,
+        inlinePortfolio: true,
+        extraArgs:
+          configuration.agent.maxAiCredits === undefined
+            ? []
+            : [
+                "--max-ai-credits",
+                String(configuration.agent.maxAiCredits),
+              ],
+      }),
+    });
   return {
     reviewService,
-    toolRegistry: new PanToolRegistry({
+    toolRegistry: toolRegistryFactory({
       domain: {
         repository: configuration.store.repository,
         projectOwner: configuration.store.projectOwner,
@@ -605,7 +689,9 @@ function usage() {
   return [
     "Usage:",
     "  pan start [--apply] --config <path>",
+    "  pan start --background [--no-terminal] [--apply] --config <path>",
     "  pan stop --config <path>",
+    "  pan connect [--model <id>] --config <path>",
     "  pan daemon [--once] --config <path>",
     "  pan review [--apply] [--json] --config <path>",
     "  pan chat <message> [--dry-run] [--json] --config <path>",

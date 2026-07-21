@@ -66,7 +66,15 @@ The runtime decides when PAN should think; PAN decides how the portfolio should
 change. See [the target architecture](docs/architecture.md).
 
 ```powershell
+# Terminal 1: visible host and activity log
 pan start --config C:\path\to\domain-config.json
+
+# Terminal 2: visible coding runner and activity log
+pan-runner --profile C:\path\to\runner.json
+
+# Terminal 3: attached interactive Copilot session
+pan connect --config C:\path\to\domain-config.json
+
 pan stop --config C:\path\to\domain-config.json
 pan review --config C:\path\to\domain-config.json
 pan review --apply --config C:\path\to\domain-config.json
@@ -74,14 +82,17 @@ pan chat "What should I work on next?" --config C:\path\to\domain-config.json
 pan daemon --config C:\path\to\domain-config.json
 ```
 
-`start` launches a localhost-only PAN host in the background and opens a headed
-Windows Terminal tab running a persistent Copilot session with the PAN agent.
-The terminal reads live domain evidence and submits proposed actions through the
-host's authenticated MCP bridge. Autonomous scheduled reviews are dry-run by
-default; add `--apply` to `start` to let scheduled reviews apply validated
-changes. Interactive proposals are always validated by the host before any
-effect. Use `stop` to release the domain leader lease and stop the background
-host.
+`start` runs the localhost-only PAN host in the current terminal and tees
+timestamped activity to its runtime `host.log`. Press `Ctrl+C` to release
+leadership and stop it. `connect` starts Copilot in the current terminal with
+the PAN agent and authenticated MCP bridge. The configured `agent.model` is
+passed explicitly; `--model <id>` overrides it for that interactive session,
+and `/model` shows or changes the active model.
+
+Autonomous scheduled reviews are dry-run by default; add `--apply` to `start`
+to let them apply validated changes. The previous detached experience remains
+available through `start --background`, but foreground services are the
+recommended transparent workflow.
 
 `review` is a dry run unless `--apply` is present. `chat` applies validated
 proposals by default; add `--dry-run` for advice only. Reviews, conversation,
@@ -94,6 +105,11 @@ pulls compatible ready work, claims it with a renewable lease, and launches a
 headed Copilot CLI task in an isolated worktree. Global and per-playbook
 capacity allow independent task classes to run concurrently without sharing
 branches or consuming each other's reserved playbook slots.
+It remains attached to its terminal, logs claims, capacity, heartbeats,
+worktree launches, results, and PR handoffs, and tees the same output to
+`<stateDirectory>\runner.log`. Each coding worker opens in a visible Windows
+Terminal tab and keeps its own `copilot.log`. Pressing `Ctrl+C` stops active
+workers before the runner releases their leases.
 
 See the [runner contract and profile format](docs/runner.md).
 

@@ -10,11 +10,15 @@ test("claims matching work and advances a completed task to in-review", async ()
     status: "completed",
     summary: "Added the requested documentation.",
   });
+  const messages = [];
   const daemon = new RunnerDaemon({
     store,
     profile: makeProfile(),
     executor: new FakeExecutor(handle),
-    logger: silentLogger,
+    logger: {
+      ...silentLogger,
+      info: (message) => messages.push(message),
+    },
   });
 
   await daemon.runOnce();
@@ -31,6 +35,8 @@ test("claims matching work and advances a completed task to in-review", async ()
     },
   ]);
   assert.match(store.comments.at(-1), /pull\/42/);
+  assert.ok(messages.some((message) => message.includes("Claimed task #1")));
+  assert.ok(messages.some((message) => message.includes("pull request")));
 });
 
 test("does not claim work with unsupported requirements", async () => {
@@ -89,7 +95,7 @@ test("records a needs-human locator and blocks an incomplete task", async () => 
   assert.equal(store.releases[0].status, "blocked");
 });
 
-test("does not complete a task after losing its lease", async () => {
+test("does not mutate a task after losing its lease", async () => {
   const item = makeItem();
   const store = new FakeStore([item], {
     heartbeat: { renewed: false, reason: "not-owner" },
@@ -108,8 +114,104 @@ test("does not complete a task after losing its lease", async () => {
   await daemon.runOnce();
 
   assert.equal(handle.completed, false);
+  assert.equal(store.releases.length, 0);
+  assert.equal(store.comments.length, 0);
+});
+
+test("does not release completed work after a final lease check fails", async () => {
+  const store = new FakeStore([makeItem()], {
+    heartbeat: [
+      { renewed: true },
+      { renewed: false, reason: "lease-expired" },
+    ],
+  });
+  const handle = new FakeHandle();
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(handle.completed, true);
+  assert.equal(store.releases.length, 0);
+  assert.equal(store.comments.length, 0);
+});
+
+test("stops an unlimited worker when its lease is lost", async () => {
+  const item = makeItem();
+  const store = new FakeStore([item], {
+    heartbeat: { renewed: false, reason: "not-owner" },
+  });
+  const handle = new DeferredHandle();
+  const profile = makeProfile();
+  profile.heartbeatSeconds = 0.001;
+  profile.taskBudget = {};
+  const daemon = new RunnerDaemon({
+    store,
+    profile,
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.match(handle.cancelled, /Lease lost/);
+  assert.equal(store.releases.length, 0);
+});
+
+test("stops unlimited workers during runner shutdown", async () => {
+  const item = makeItem();
+  const store = new FakeStore([item]);
+  const handle = new DeferredHandle();
+  const executor = new FakeExecutor(handle);
+  const profile = makeProfile();
+  profile.pollIntervalSeconds = 30;
+  profile.taskBudget = {};
+  const controller = new AbortController();
+  const daemon = new RunnerDaemon({
+    store,
+    profile,
+    executor,
+    logger: silentLogger,
+  });
+
+  const running = daemon.run({ signal: controller.signal });
+  while (!executor.started) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  controller.abort(new Error("Ctrl+C"));
+  await running;
+
+  assert.match(handle.cancelled, /Runner stopped: Ctrl\+C/);
   assert.equal(store.releases[0].status, "blocked");
-  assert.match(store.comments.at(-1), /Lease lost/);
+});
+
+test("stops unlimited workers when a one-shot run is interrupted", async () => {
+  const store = new FakeStore([makeItem()]);
+  const handle = new DeferredHandle();
+  const executor = new FakeExecutor(handle);
+  const profile = makeProfile();
+  profile.taskBudget = {};
+  const controller = new AbortController();
+  const daemon = new RunnerDaemon({
+    store,
+    profile,
+    executor,
+    logger: silentLogger,
+  });
+
+  const running = daemon.runOnce({ signal: controller.signal });
+  while (!executor.started) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  controller.abort(new Error("Ctrl+C"));
+  await running;
+
+  assert.match(handle.cancelled, /Runner stopped: Ctrl\+C/);
+  assert.equal(store.releases[0].status, "blocked");
 });
 
 test("moves completed work to in-review even when its audit comment fails", async () => {
@@ -242,7 +344,9 @@ class FakeStore {
     } = {},
   ) {
     this.items = items;
-    this.heartbeatResult = heartbeat;
+    this.heartbeatResults = Array.isArray(heartbeat)
+      ? [...heartbeat]
+      : [heartbeat];
     this.commentFailures = commentFailures;
     this.issueComments = issueComments;
     this.claimFailure = claimFailure;
@@ -284,7 +388,10 @@ class FakeStore {
   }
 
   async heartbeat() {
-    return this.heartbeatResult;
+    if (this.heartbeatResults.length > 1) {
+      return this.heartbeatResults.shift();
+    }
+    return this.heartbeatResults[0];
   }
 }
 
@@ -357,6 +464,14 @@ class DeferredHandle extends FakeHandle {
 
   resolve() {
     this.resolveWait(this.result);
+  }
+
+  async cancel(summary) {
+    this.cancelled = summary;
+    this.resolveWait({
+      status: "failed",
+      summary,
+    });
   }
 }
 

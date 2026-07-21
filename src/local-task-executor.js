@@ -11,12 +11,17 @@ import { fileURLToPath } from "node:url";
 
 import { ProcessClient } from "./process-client.js";
 import {
+  processIsAlive,
+  terminateProcessByPid,
+} from "./process-tree.js";
+import {
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,
 } from "./workstream-store.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./task-worker.js", import.meta.url));
 const RESULT_POLL_MS = 1_000;
+const WORKER_START_GRACE_MS = 30_000;
 
 export class LocalTaskExecutor {
   constructor({
@@ -27,6 +32,9 @@ export class LocalTaskExecutor {
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
     randomId = randomUUID,
+    workerIsAlive = processIsAlive,
+    terminateWorker = terminateProcessByPid,
+    logger = console,
   }) {
     this.profile = profile;
     this.commands = commands;
@@ -34,6 +42,9 @@ export class LocalTaskExecutor {
     this.now = now;
     this.sleep = sleep;
     this.randomId = randomId;
+    this.workerIsAlive = workerIsAlive;
+    this.terminateWorker = terminateWorker;
+    this.logger = logger;
   }
 
   async start({ item, repository, runner, playbook, deadline }) {
@@ -125,6 +136,8 @@ export class LocalTaskExecutor {
           result: path.join(statePath, "result.json"),
           needsHuman: path.join(statePath, "needs-human.json"),
           log: path.join(statePath, "copilot.log"),
+          worker: path.join(statePath, "worker.json"),
+          cancel: path.join(statePath, "cancel.json"),
         },
         copilot: {
           executable: this.profile.copilot.executable,
@@ -160,6 +173,14 @@ export class LocalTaskExecutor {
         statePath,
         resultPath: context.paths.result,
         needsHumanPath: context.paths.needsHuman,
+        workerPath: context.paths.worker,
+        cancelPath: context.paths.cancel,
+        workerStartDeadline:
+          this.now().getTime() + WORKER_START_GRACE_MS,
+        workerIsAlive: this.workerIsAlive,
+        terminateWorker: this.terminateWorker,
+        logger: this.logger,
+        now: () => this.now().getTime(),
         deadline,
       });
     } catch (error) {
@@ -243,10 +264,19 @@ class LocalTaskHandle {
   constructor(options) {
     Object.assign(this, options);
     this.lastNeedsHuman = undefined;
+    this.cancellation = new Promise((resolve) => {
+      this.resolveCancellation = resolve;
+    });
   }
 
   async wait({ onNeedsHuman } = {}) {
-    while (Date.now() < this.deadline + 60_000) {
+    while (
+      this.deadline === undefined ||
+      this.now() < this.deadline + 60_000
+    ) {
+      if (this.cancelledResult) {
+        return this.cancelledResult;
+      }
       const needsHuman = await readJsonIfReady(this.needsHumanPath);
       const serialized = needsHuman ? JSON.stringify(needsHuman) : undefined;
       if (
@@ -262,13 +292,75 @@ class LocalTaskHandle {
       if (result) {
         return normalizeResult(result);
       }
-      await this.sleep(RESULT_POLL_MS);
+      const worker = await readJsonIfReady(this.workerPath);
+      if (worker) {
+        if (!Number.isInteger(worker.pid) || worker.pid <= 0) {
+          await this.cancel("The task worker reported invalid process state.");
+          return this.cancelledResult;
+        }
+        if (!this.workerIsAlive(worker.pid)) {
+          await this.cancel(
+            "The task worker exited without reporting a result.",
+          );
+          return this.cancelledResult;
+        }
+      } else if (this.now() >= this.workerStartDeadline) {
+        await this.cancel("The task worker did not start.");
+        return this.cancelledResult;
+      }
+      const cancelled = await Promise.race([
+        this.sleep(RESULT_POLL_MS).then(() => undefined),
+        this.cancellation,
+      ]);
+      if (cancelled) {
+        return cancelled;
+      }
     }
-    return {
+    await this.cancel(
+      "The task worker did not report a result before its budget expired.",
+      { budgetExceeded: true },
+    );
+    return this.cancelledResult;
+  }
+
+  async cancel(summary = "The task worker was stopped.", details = {}) {
+    if (this.cancelPromise) {
+      return this.cancelPromise;
+    }
+    this.cancelledResult = {
       status: "failed",
-      summary: "The task worker did not report a result before its budget expired.",
-      budgetExceeded: true,
+      summary,
+      ...details,
     };
+    this.cancelPromise = (async () => {
+      try {
+        await writeFile(
+          this.cancelPath,
+          `${JSON.stringify(this.cancelledResult, null, 2)}\n`,
+        );
+        const worker = await readJsonIfReady(this.workerPath);
+        if (
+          Number.isInteger(worker?.pid) &&
+          worker.pid > 0 &&
+          this.workerIsAlive(worker.pid)
+        ) {
+          while (this.workerIsAlive(worker.pid)) {
+            try {
+              await this.terminateWorker(worker.pid);
+            } catch (error) {
+              this.logger.error?.(
+                `Unable to stop task worker ${worker.pid}; retrying.`,
+                error,
+              );
+              await this.sleep(5_000);
+            }
+          }
+        }
+      } finally {
+        this.resolveCancellation(this.cancelledResult);
+      }
+    })();
+    return this.cancelPromise;
   }
 
   async complete(result, { assertLease } = {}) {
@@ -521,6 +613,9 @@ function lastNonEmptyLine(value) {
 }
 
 function remainingMilliseconds(deadline, now = Date.now) {
+  if (deadline === undefined) {
+    return undefined;
+  }
   const remaining = deadline - now();
   if (remaining <= 0) {
     throw new Error("Task wall-clock budget expired");

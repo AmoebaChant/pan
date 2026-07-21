@@ -25,6 +25,9 @@ const domainConfig = {
       actionKinds: ["canonical-reorder"],
     },
   },
+  agent: {
+    name: "pan",
+  },
 };
 
 const runnerProfile = {
@@ -303,7 +306,7 @@ test("starts and stops the persistent PAN experience", async () => {
   };
 
   await runPanCli(
-    ["start", "--config", "domain.json"],
+    ["start", "--background", "--config", "domain.json"],
     dependencies,
   );
   await runPanCli(
@@ -314,8 +317,97 @@ test("starts and stops the persistent PAN experience", async () => {
   assert.equal(calls[0][0], "start");
   assert.equal(calls[0][1].configPath, "domain.json");
   assert.equal(calls[0][1].autonomousApply, false);
+  assert.equal(calls[0][1].agentName, "pan");
   assert.equal(calls[1][0], "stop");
   assert.equal(calls[1][1].configPath, "domain.json");
+});
+
+test("runs the host in the foreground and exposes its configured model", async () => {
+  const calls = [];
+  const logger = {
+    info: (message) => calls.push(["log", message]),
+    error() {},
+    async close() {
+      calls.push(["logger-close"]);
+    },
+  };
+  await runPanCli(
+    ["start", "--config", "domain.json"],
+    {
+      stdout: capture(),
+      stderr: capture(),
+      domainConfigLoader: async () => ({
+        ...domainConfig,
+        agent: {
+          name: "pan",
+          executable: "copilot",
+          model: "gpt-5.6-sol",
+        },
+      }),
+      storeFactory: () => ({
+        readCanonicalProject: async () => ({}),
+      }),
+      attentionFactory: () => ({}),
+      reviewServiceFactory: () => ({
+        run: async () => ({}),
+        applyActions: async () => ({}),
+      }),
+      toolRegistryFactory: () => ({
+        dispatch: async () => ({}),
+      }),
+      prepareRuntimeFactory: async () => ({
+        stateFile: "C:\\runtime\\host.json",
+        logFile: "C:\\runtime\\host.log",
+      }),
+      loggerFactory: async () => logger,
+      hostFactory: (options) => ({
+        run: async () => {
+          calls.push(["host", options]);
+        },
+      }),
+    },
+  );
+
+  const options = calls.find(([kind]) => kind === "host")[1];
+  assert.equal(options.model, "gpt-5.6-sol");
+  assert.equal(options.stateFile, "C:\\runtime\\host.json");
+  assert.ok(
+    calls.some(
+      ([kind, message]) =>
+        kind === "log" && message.includes("press Ctrl+C"),
+    ),
+  );
+  assert.deepEqual(calls.at(-1), ["logger-close"]);
+});
+
+test("connects an attached interactive session with an explicit model", async () => {
+  let options;
+  const stdout = capture();
+  await runPanCli(
+    ["connect", "--model", "gpt-5.6-sol", "--config", "domain.json"],
+    {
+      stdout,
+      stderr: capture(),
+      domainConfigLoader: async () => ({
+        ...domainConfig,
+        agent: {
+          name: "pan",
+          executable: "copilot-test",
+        },
+      }),
+      storeFactory: () => ({}),
+      attentionFactory: () => ({}),
+      connectFactory: async (input) => {
+        options = input;
+        return { model: input.model };
+      },
+    },
+  );
+
+  assert.equal(options.executable, "copilot-test");
+  assert.equal(options.agentName, "pan");
+  assert.equal(options.model, "gpt-5.6-sol");
+  assert.match(stdout.value, /use \/model/);
 });
 
 test("stops PAN even when the domain config can no longer load", async () => {

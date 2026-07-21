@@ -66,6 +66,10 @@ matching `repo:<owner/name>` capability.
     "type": "windows-terminal",
     "executable": "wt",
     "window": "0"
+  },
+  "copilot": {
+    "executable": "copilot",
+    "model": "gpt-5.6-sol"
   }
 }
 ```
@@ -103,10 +107,15 @@ For each task it:
 
 The worker denies Copilot access to `git push`, GitHub CLI commands, and the
 built-in GitHub MCP. The runner alone owns push and pull-request creation.
-Wall-clock, AI-credit, machine-wide concurrency, per-playbook concurrency, and
-lease limits come from the profile. Tasks using another playbook do not consume
-the selected playbook's slots. Copilot CLI requires
-`taskBudget.maxAiCredits` to be at least 30.
+Machine-wide concurrency, per-playbook concurrency, and lease limits come from
+the profile. Tasks using another playbook do not consume the selected
+playbook's slots. `copilot.model` selects the coding model deterministically.
+
+`taskBudget.wallClockMinutes`, `taskBudget.maxAiCredits`, and
+`taskBudget.maxAutopilotContinues` are optional safeguards. Omitting the first
+two removes PAN's wall-clock and AI-credit caps. Copilot CLI requires a finite
+autopilot continuation count, so PAN uses a high default of 1,000 for unattended
+tasks when no explicit value is configured.
 
 Run one polling cycle and wait for its selected tasks:
 
@@ -117,6 +126,12 @@ node .\bin\pan-runner.js --profile C:\path\to\runner.json --once
 Omit `--once` to keep polling until the process receives `SIGINT` or `SIGTERM`.
 The configured interval is used while work is active. Idle polling backs off to
 five minutes, and GitHub rate-limit failures pause polling for fifteen minutes.
+The foreground runner prints normal lifecycle activity and tees it to
+`<stateDirectory>\runner.log`; each visible worker terminal also writes
+`copilot.log` under its task state directory. `Ctrl+C` stops active workers
+before releasing their leases; interrupted tasks move to `blocked` with their
+local locator so partial work is not silently discarded. A lost lease also
+stops its worker immediately to prevent duplicate execution.
 
 When `pan answer` resolves blocked work, PAN returns the item to triage. The
 next runner attempt receives the marked answer comment in its task context.

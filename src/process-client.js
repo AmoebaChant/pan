@@ -17,22 +17,42 @@ export class ProcessClient {
       let stderr = "";
       let failure;
       let settled = false;
+      const failAndTerminate = (error) => {
+        if (failure) {
+          return;
+        }
+        failure = error;
+        const termination = terminateProcessTree(child);
+        void termination.catch((terminationError) => {
+          finish(
+            new AggregateError(
+              [failure, terminationError],
+              "Process failed and could not be terminated",
+            ),
+          );
+        });
+      };
       const timeout = options.timeout
         ? setTimeout(() => {
-            failure = Object.assign(new Error("Process timed out"), {
-              code: "ETIMEDOUT",
-            });
-            void terminateProcessTree(child);
+            failAndTerminate(
+              Object.assign(new Error("Process timed out"), {
+                code: "ETIMEDOUT",
+              }),
+            );
           }, options.timeout)
         : undefined;
 
       const append = (target, chunk) => {
         const next = target + chunk.toString("utf8");
         if (Buffer.byteLength(next) > maxBuffer && !failure) {
-          failure = Object.assign(new Error("Process output exceeded maxBuffer"), {
-            code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
-          });
-          void terminateProcessTree(child);
+          failAndTerminate(
+            Object.assign(
+              new Error("Process output exceeded maxBuffer"),
+              {
+                code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+              },
+            ),
+          );
         }
         return next;
       };

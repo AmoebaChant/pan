@@ -489,6 +489,26 @@ test("releases the owning runner and returns the item to ready", async () => {
   ]);
 });
 
+test("does not release an expired lease", async () => {
+  const { store } = fixture({
+    items: [
+      makeItem({
+        claimedBy: "runner-a",
+        leaseUntil: PAST,
+        status: "in-progress",
+      }),
+    ],
+  });
+
+  const result = await store.release({
+    itemId: "item-1",
+    runner: "runner-a",
+  });
+
+  assert.equal(result.released, false);
+  assert.equal(result.reason, "lease-expired");
+});
+
 test("adds a comment to an Issue-backed item", async () => {
   const { store, gh } = fixture();
   const item = await store.getItem("item-1");

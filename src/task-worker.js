@@ -9,12 +9,13 @@ import path from "node:path";
 import { once } from "node:events";
 
 import { terminateProcessTree } from "./process-tree.js";
+import { buildTaskCopilotArgs } from "./task-command.js";
 import { buildTaskPrompt } from "./task-prompt.js";
 
 const contextPath = parseContextPath(process.argv.slice(2));
 const context = JSON.parse(await readFile(contextPath, "utf8"));
 const prompt = buildTaskPrompt(contextPath, context);
-const args = buildCopilotArgs(context, prompt);
+const args = buildTaskCopilotArgs(context, prompt);
 const workerEnv = { ...process.env };
 for (const name of [
   "GH_TOKEN",
@@ -28,12 +29,32 @@ workerEnv.GIT_TERMINAL_PROMPT = "0";
 workerEnv.PAN_TASK_RESULT = context.paths.agentResult;
 workerEnv.PAN_NEEDS_HUMAN = context.paths.needsHuman;
 const log = createWriteStream(context.paths.log, { flags: "a" });
+console.log(
+  `[PAN worker] Starting task #${context.issue.number}; model=${context.copilot.model ?? "auto"}, wall-clock=${context.copilot.deadline ? "bounded" : "unlimited"}, AI credits=${context.copilot.maxAiCredits ?? "unlimited"}.`,
+);
+console.log(`[PAN worker] Activity log: ${context.paths.log}`);
+await writeJsonAtomic(context.paths.worker, {
+  pid: process.pid,
+  startedAt: new Date().toISOString(),
+});
+const cancellation = await readAgentResult(context.paths.cancel);
+if (cancellation) {
+  throw new Error(cancellation.summary);
+}
 
 const child = spawn(context.copilot.executable, args, {
   cwd: context.target.worktreePath,
   env: workerEnv,
   stdio: ["inherit", "pipe", "pipe"],
   windowsHide: false,
+});
+let termination;
+const stopChild = () => {
+  termination ??= terminateReliably(child);
+  return termination;
+};
+process.once("SIGTERM", () => {
+  void stopChild().finally(() => process.exit(0));
 });
 child.stdout.on("data", (chunk) => {
   process.stdout.write(chunk);
@@ -45,15 +66,15 @@ child.stderr.on("data", (chunk) => {
 });
 
 let timedOut = false;
-let termination;
-const remaining = Math.max(1, context.copilot.deadline - Date.now());
-const timeout = setTimeout(
-  () => {
-    timedOut = true;
-    termination = terminateProcessTree(child);
-  },
-  remaining,
-);
+const timeout = context.copilot.deadline
+  ? setTimeout(
+      () => {
+        timedOut = true;
+        void stopChild();
+      },
+      Math.max(1, context.copilot.deadline - Date.now()),
+    )
+  : undefined;
 let runtimeError;
 const exit = await new Promise((resolve) => {
   child.once("error", (error) => {
@@ -100,36 +121,6 @@ function parseContextPath(args) {
   return path.resolve(args[index + 1]);
 }
 
-function buildCopilotArgs(task, taskPrompt) {
-  const args = [
-    "-C",
-    task.target.worktreePath,
-    "-p",
-    taskPrompt,
-    "--autopilot",
-    "--allow-all-tools",
-    "--no-ask-user",
-    "--disable-builtin-mcps",
-    "--no-remote",
-    "--no-auto-update",
-    "--max-ai-credits",
-    String(task.copilot.maxAiCredits),
-    "--max-autopilot-continues",
-    String(task.copilot.maxAutopilotContinues),
-    "--add-dir",
-    task.paths.statePath,
-    "--deny-tool=shell(git:*)",
-    "--deny-tool=shell(gh:*)",
-    "--deny-tool=shell(cmd:*)",
-    "--deny-tool=shell(powershell:*)",
-    "--deny-tool=shell(pwsh:*)",
-  ];
-  if (task.copilot.model) {
-    args.push("--model", task.copilot.model);
-  }
-  return args;
-}
-
 async function readAgentResult(filePath) {
   try {
     const value = JSON.parse(await readFile(filePath, "utf8"));
@@ -153,4 +144,19 @@ async function writeJsonAtomic(filePath, value) {
   const temporary = `${filePath}.${process.pid}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
   await rename(temporary, filePath);
+}
+
+async function terminateReliably(child) {
+  while (true) {
+    try {
+      await terminateProcessTree(child);
+      return;
+    } catch (error) {
+      console.error(
+        `[PAN worker] Unable to stop Copilot process ${child.pid}; retrying.`,
+        error,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+  }
 }

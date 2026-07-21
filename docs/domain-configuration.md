@@ -20,7 +20,8 @@ or credential settings.
     "path": ".pan"
   },
   "agent": {
-    "name": "pan"
+    "name": "pan",
+    "model": "gpt-5.6-sol"
   }
 }
 ```
@@ -41,8 +42,14 @@ The normalized defaults are:
 | General retry | 60 seconds |
 | Rate-limit retry | 900 seconds |
 | Transcript retention | 30 days |
-| Agent turn timeout | 600 seconds |
-| Agent AI credit limit | 30 |
+
+`agent.model` selects the Copilot model deterministically for autonomous
+reviews and is also the default for `pan connect`. If it is omitted, Copilot
+uses `auto`. `pan connect --model <id>` overrides it for one interactive
+session, and `/model` displays the active selection.
+
+`agent.turnTimeoutSeconds` and `agent.maxAiCredits` are optional safeguards.
+When omitted, PAN does not pass a turn timeout or AI-credit cap to Copilot.
 
 State and transcripts are confined to the repository-relative `state.path`
 namespace. With the example above, the normalized leader file is

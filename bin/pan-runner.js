@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
+import path from "node:path";
+
 import {
+  createServiceLogger,
   GhClient,
   LocalTaskExecutor,
   PanStore,
@@ -11,9 +14,14 @@ import {
 
 const options = parseArgs(process.argv.slice(2));
 const profile = await loadRunnerProfile(options.profile);
+const logger = await createServiceLogger({
+  name: "PAN runner",
+  logFile: path.join(profile.stateDirectory, "runner.log"),
+});
 
 if (options.validateProfile) {
   console.log(`Runner profile ${profile.id} is valid.`);
+  await logger.close();
   process.exit(0);
 }
 
@@ -24,21 +32,38 @@ const store = new PanStore({
   projectNumber: profile.store.projectNumber,
   gh,
 });
-const executor = new LocalTaskExecutor({ profile });
-const daemon = new RunnerDaemon({ store, profile, executor });
+const executor = new LocalTaskExecutor({ profile, logger });
+const daemon = new RunnerDaemon({ store, profile, executor, logger });
 const lock = await acquireRunnerLock(profile);
+const controller = new AbortController();
+process.once("SIGINT", () => {
+  logger.info("Ctrl+C received; waiting for active tasks to stop.");
+  controller.abort(new Error("Ctrl+C"));
+});
+process.once("SIGTERM", () => {
+  logger.info("Termination requested; waiting for active tasks to stop.");
+  controller.abort(new Error("Termination requested"));
+});
 
 try {
+  logger.info(
+    `Starting ${profile.id}; model=${profile.copilot.model ?? "auto"}, capacity=${profile.maxConcurrentDaemons}, wall-clock=${profile.taskBudget.wallClockMinutes ? `${profile.taskBudget.wallClockMinutes}m` : "unlimited"}, AI credits=${profile.taskBudget.maxAiCredits ?? "unlimited"}.`,
+  );
+  logger.info(
+    `Playbooks: ${profile.playbooks.map((playbook) => `${playbook.id}=${playbook.capacity}`).join(", ")}.`,
+  );
+  logger.info(
+    `Activity log: ${path.join(profile.stateDirectory, "runner.log")}`,
+  );
   if (options.once) {
-    await daemon.runOnce();
+    await daemon.runOnce({ signal: controller.signal });
   } else {
-    const controller = new AbortController();
-    process.once("SIGINT", () => controller.abort());
-    process.once("SIGTERM", () => controller.abort());
     await daemon.run({ signal: controller.signal });
   }
 } finally {
   await lock.release();
+  logger.info("Stopped.");
+  await logger.close();
 }
 
 function parseArgs(args) {

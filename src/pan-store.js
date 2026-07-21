@@ -616,6 +616,12 @@ export class PanStore {
     if (!force && current.fields.claimedBy !== runner) {
       return { released: false, reason: "not-owner", item: current };
     }
+    if (
+      !force &&
+      isExpired(current.fields.leaseUntil, this.now())
+    ) {
+      return { released: false, reason: "lease-expired", item: current };
+    }
 
     await this.setFields(itemId, {
       claimedBy: null,

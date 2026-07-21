@@ -159,6 +159,144 @@ test("uses a separate cleanup budget after the task deadline expires", async () 
   }
 });
 
+test("fails unlimited tasks when their worker process disappears", async () => {
+  const fixture = await createFixture();
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "lost-worker",
+    workerIsAlive: () => false,
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(4),
+      deadline: undefined,
+    });
+    const context = JSON.parse(
+      await readFile(path.join(handle.statePath, "context.json"), "utf8"),
+    );
+    await writeFile(context.paths.worker, JSON.stringify({ pid: 1234 }));
+
+    assert.deepEqual(await handle.wait(), {
+      status: "failed",
+      summary: "The task worker exited without reporting a result.",
+    });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancels an unlimited task before its worker reports a result", async () => {
+  const fixture = await createFixture();
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "cancelled-worker",
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(5),
+      deadline: undefined,
+    });
+    const waiting = handle.wait();
+    await handle.cancel("Runner stopped: Ctrl+C");
+
+    assert.deepEqual(await waiting, {
+      status: "failed",
+      summary: "Runner stopped: Ctrl+C",
+    });
+    assert.deepEqual(
+      JSON.parse(await readFile(handle.cancelPath, "utf8")),
+      {
+        status: "failed",
+        summary: "Runner stopped: Ctrl+C",
+      },
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancels a worker that does not start within the grace period", async () => {
+  const fixture = await createFixture();
+  let now = 0;
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "late-worker",
+    now: () => new Date(now),
+    sleep: async () => {
+      now = 31_000;
+    },
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(6),
+      deadline: undefined,
+    });
+
+    assert.deepEqual(await handle.wait(), {
+      status: "failed",
+      summary: "The task worker did not start.",
+    });
+    assert.deepEqual(
+      JSON.parse(await readFile(handle.cancelPath, "utf8")),
+      {
+        status: "failed",
+        summary: "The task worker did not start.",
+      },
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("does not finish cancellation until the worker process stops", async () => {
+  const fixture = await createFixture();
+  let alive = true;
+  let attempts = 0;
+  const errors = [];
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "stubborn-worker",
+    workerIsAlive: () => alive,
+    terminateWorker: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("taskkill failed");
+      }
+      alive = false;
+    },
+    sleep: async () => {},
+    logger: {
+      error: (...args) => errors.push(args),
+    },
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(7),
+      deadline: undefined,
+    });
+    await writeFile(handle.workerPath, JSON.stringify({ pid: 1234 }));
+
+    await handle.cancel("Runner stopped");
+
+    assert.equal(attempts, 2);
+    assert.equal(errors.length, 1);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 class FakeCommands {
   constructor() {
     this.calls = [];

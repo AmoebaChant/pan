@@ -32,20 +32,22 @@ export class RunnerDaemon {
     this.active = new Map();
   }
 
-  async runOnce() {
-    await this.tick();
+  async runOnce({ signal } = {}) {
+    this.logger.info?.("Running one polling cycle.");
+    await this.tick({ signal });
     await Promise.all(
       [...this.active.values()].map((entry) => entry.promise),
     );
   }
 
   async run({ signal } = {}) {
+    this.logger.info?.("Polling for ready tasks; press Ctrl+C to stop.");
     let idlePolls = 0;
     while (!signal?.aborted) {
       let started = 0;
       let rateLimited = false;
       try {
-        started = await this.tick();
+        started = await this.tick({ signal });
       } catch (error) {
         this.logger.error("PAN runner poll failed", error);
         rateLimited = isRateLimitError(error);
@@ -63,15 +65,20 @@ export class RunnerDaemon {
     await Promise.all(
       [...this.active.values()].map((entry) => entry.promise),
     );
+    this.logger.info?.("All active tasks have stopped.");
   }
 
-  async tick() {
+  async tick({ signal } = {}) {
     if (!this.profile.online) {
+      this.logger.info?.("Runner is offline; skipping poll.");
       return 0;
     }
     const freeSlots =
       this.profile.maxConcurrentDaemons - this.active.size;
     if (freeSlots <= 0) {
+      this.logger.info?.(
+        `Capacity full (${this.active.size}/${this.profile.maxConcurrentDaemons}); skipping poll.`,
+      );
       return 0;
     }
 
@@ -81,6 +88,9 @@ export class RunnerDaemon {
       claimable: true,
     });
     const candidates = items.filter((item) => isRunnable(item));
+    this.logger.info?.(
+      `Poll found ${items.length} ready item(s), ${candidates.length} runnable; active=${this.active.size}, free=${freeSlots}.`,
+    );
     const activeCounts = this.#activePlaybookCounts();
 
     let started = 0;
@@ -90,6 +100,9 @@ export class RunnerDaemon {
       }
       const playbook = matchingPlaybook(item, this.profile, activeCounts);
       if (!playbook) {
+        this.logger.info?.(
+          `Skipping task #${item.number}: no compatible playbook with free capacity.`,
+        );
         continue;
       }
       const slot = this.#nextPlaybookSlot(playbook);
@@ -98,6 +111,9 @@ export class RunnerDaemon {
         : `${this.profile.id}/${playbook.id}/slot-${slot}`;
       let claim;
       try {
+        this.logger.info?.(
+          `Claiming task #${item.number} with playbook ${playbook.id} slot ${slot}/${playbook.capacity}.`,
+        );
         claim = await this.store.claimWithLease({
           itemId: item.id,
           runner,
@@ -112,15 +128,24 @@ export class RunnerDaemon {
         continue;
       }
       if (!claim.claimed) {
+        this.logger.info?.(
+          `Task #${item.number} was claimed by another runner.`,
+        );
         continue;
       }
+      this.logger.info?.(
+        `Claimed task #${item.number} as ${runner}.`,
+      );
 
-      const promise = this.#runClaim(claim.item, runner, playbook)
+      const promise = this.#runClaim(claim.item, runner, playbook, signal)
         .catch((error) => {
           this.logger.error(`PAN task #${item.number} failed`, error);
         })
         .finally(() => {
           this.active.delete(runner);
+          this.logger.info?.(
+            `Released local capacity for task #${item.number}; active=${this.active.size}.`,
+          );
         });
       this.active.set(runner, { playbookId: playbook.id, slot, promise });
       activeCounts.set(
@@ -132,11 +157,12 @@ export class RunnerDaemon {
     return started;
   }
 
-  async #runClaim(item, runner, playbook) {
+  async #runClaim(item, runner, playbook, signal) {
     const repository = repositoryFor(item);
-    const deadline =
-      this.now().getTime() +
-      this.profile.taskBudget.wallClockMinutes * 60_000;
+    const deadline = this.profile.taskBudget?.wallClockMinutes
+      ? this.now().getTime() +
+        this.profile.taskBudget.wallClockMinutes * 60_000
+      : undefined;
     let handle;
     const heartbeat = startHeartbeat({
       store: this.store,
@@ -149,6 +175,9 @@ export class RunnerDaemon {
     let prUrl;
     try {
       const comments = await this.store.listComments(item);
+      this.logger.info?.(
+        `Launching task #${item.number} for ${repository}; model=${this.profile.copilot?.model ?? "auto"}, wall-clock=${deadline ? `${this.profile.taskBudget.wallClockMinutes}m` : "unlimited"}, AI credits=${this.profile.taskBudget?.maxAiCredits ?? "unlimited"}.`,
+      );
       handle = await this.executor.start({
         item: { ...item, comments },
         repository,
@@ -156,16 +185,26 @@ export class RunnerDaemon {
         playbook,
         deadline,
       });
-      const result = await handle.wait({
+      const result = await waitForTask({
+        handle,
+        heartbeat,
+        signal,
         onNeedsHuman: (record) =>
           this.store.addComment(item, formatNeedsHuman(record)),
       });
+      this.logger.info?.(
+        `Task #${item.number} worker reported ${result.status}: ${result.summary}`,
+      );
 
       if (result.status === "completed") {
         await heartbeat.renewNow();
         ({ prUrl } = await handle.complete(result, {
           assertLease: heartbeat.renewNow,
         }));
+        this.logger.info?.(
+          `Task #${item.number} published pull request ${prUrl}.`,
+        );
+        await heartbeat.renewNow();
         const release = await retry(() =>
           this.store.release({
             itemId: item.id,
@@ -177,6 +216,9 @@ export class RunnerDaemon {
         if (!release.released) {
           throw new Error(`Unable to release completed task: ${release.reason}`);
         }
+        this.logger.info?.(
+          `Task #${item.number} moved to in-review and its lease was released.`,
+        );
         try {
           await retry(() =>
             this.store.addComment(item, completedComment(prUrl, result)),
@@ -195,7 +237,9 @@ export class RunnerDaemon {
         prompt: result.summary,
         locator: handle.locator(result.localUrl),
       };
+      await heartbeat.renewNow();
       await this.store.addComment(item, formatNeedsHuman(record));
+      await heartbeat.renewNow();
       const release = await this.store.release({
         itemId: item.id,
         runner,
@@ -205,7 +249,30 @@ export class RunnerDaemon {
       if (!release.released) {
         throw new Error(`Unable to release blocked task: ${release.reason}`);
       }
+      this.logger.info?.(
+        `Task #${item.number} moved to blocked and its lease was released.`,
+      );
     } catch (error) {
+      if (error.code === "PAN_LEASE_LOST") {
+        this.logger.warn?.(
+          `Stopped task #${item.number} after losing its lease.`,
+        );
+        return;
+      }
+      try {
+        await heartbeat.renewNow();
+      } catch (leaseError) {
+        if (leaseError.code === "PAN_LEASE_LOST") {
+          this.logger.warn?.(
+            `Suppressed failure updates for task #${item.number} after losing its lease.`,
+          );
+          return;
+        }
+        throw new AggregateError(
+          [error, leaseError],
+          `Task #${item.number} failed and its lease could not be confirmed`,
+        );
+      }
       const locator = handle
         ? handle.locator()
         : { machine: this.profile.machine };
@@ -247,6 +314,7 @@ export class RunnerDaemon {
         );
       }
       try {
+        await heartbeat.renewNow();
         const release = await retry(() =>
           this.store.release({
             itemId: item.id,
@@ -341,6 +409,10 @@ function startHeartbeat({
 }) {
   let inFlight;
   let failure;
+  let reportFailure;
+  const failed = new Promise((resolve) => {
+    reportFailure = resolve;
+  });
   const renewNow = () => {
     if (failure) {
       return Promise.reject(failure);
@@ -359,10 +431,13 @@ function startHeartbeat({
           failure = new Error(
             `Lease lost for PAN task #${item.number}: ${result.reason}`,
           );
+          failure.code = "PAN_LEASE_LOST";
           throw failure;
         }
+        logger.info?.(`Heartbeat renewed for PAN task #${item.number}.`);
       } catch (error) {
         failure = error;
+        reportFailure(error);
         throw error;
       } finally {
         inFlight = undefined;
@@ -377,11 +452,71 @@ function startHeartbeat({
       logger.error(`Heartbeat failed for PAN task #${item.number}`, error);
     }
   }, intervalMilliseconds);
-  timer.unref?.();
   return {
+    failed,
     renewNow,
     stop: () => clearInterval(timer),
   };
+}
+
+async function waitForTask({
+  handle,
+  heartbeat,
+  signal,
+  onNeedsHuman,
+}) {
+  const abort = createAbortWaiter(signal);
+  try {
+    const outcome = await Promise.race([
+      handle.wait({ onNeedsHuman }).then((result) => ({ result })),
+      heartbeat.failed.then((error) => ({ error })),
+      abort.promise.then((reason) => ({
+        error: runnerStoppedError(reason),
+      })),
+    ]);
+    if (outcome.error) {
+      await handle.cancel(outcome.error.message);
+      throw outcome.error;
+    }
+    return outcome.result;
+  } finally {
+    abort.stop();
+  }
+}
+
+function createAbortWaiter(signal) {
+  if (!signal) {
+    return {
+      promise: new Promise(() => {}),
+      stop() {},
+    };
+  }
+  if (signal.aborted) {
+    return {
+      promise: Promise.resolve(signal.reason),
+      stop() {},
+    };
+  }
+  let resolveAbort;
+  const listener = () => resolveAbort(signal.reason);
+  const promise = new Promise((resolve) => {
+    resolveAbort = resolve;
+    signal.addEventListener("abort", listener, { once: true });
+  });
+  return {
+    promise,
+    stop: () => signal.removeEventListener("abort", listener),
+  };
+}
+
+function runnerStoppedError(reason) {
+  const detail =
+    reason instanceof Error && reason.message
+      ? `: ${reason.message}`
+      : "";
+  const error = new Error(`Runner stopped${detail}`);
+  error.code = "PAN_RUNNER_STOPPED";
+  return error;
 }
 
 function completedComment(prUrl, result) {
