@@ -230,6 +230,53 @@ test("cancels an unlimited task before its worker reports a result", async () =>
   }
 });
 
+test("resumes an interrupted task with its saved worktree and Copilot session", async () => {
+  const fixture = await createFixture();
+  const commands = new FakeCommands();
+  const terminalLaunches = [];
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: (...args) => {
+      terminalLaunches.push(args);
+      return successfulSpawn();
+    },
+    randomId: () => "resumable-task",
+    sessionIdFactory: () => "00000000-0000-4000-8000-000000000001",
+  });
+
+  try {
+    const first = await executor.start({
+      ...makeStartOptions(9),
+      deadline: undefined,
+    });
+    const firstContext = JSON.parse(
+      await readFile(path.join(first.statePath, "context.json"), "utf8"),
+    );
+
+    await first.interrupt("Runner stopped: Ctrl+C");
+    const resumed = await executor.start({
+      ...makeStartOptions(9),
+      runner: "runner/slot-resumed",
+      deadline: undefined,
+    });
+    const resumedContext = JSON.parse(
+      await readFile(path.join(resumed.statePath, "context.json"), "utf8"),
+    );
+
+    assert.equal(resumed.statePath, first.statePath);
+    assert.equal(resumed.worktreePath, first.worktreePath);
+    assert.equal(resumed.branch, first.branch);
+    assert.equal(firstContext.copilot.sessionId, "00000000-0000-4000-8000-000000000001");
+    assert.equal(resumedContext.copilot.sessionId, firstContext.copilot.sessionId);
+    assert.equal(resumedContext.copilot.resume, true);
+    assert.equal(resumedContext.runner, "runner/slot-resumed");
+    assert.equal(terminalLaunches.length, 2);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("cancels a worker that does not start within the grace period", async () => {
   const fixture = await createFixture();
   let now = 0;

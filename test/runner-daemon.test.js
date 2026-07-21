@@ -299,8 +299,9 @@ test("stops unlimited workers during runner shutdown", async () => {
   controller.abort(new Error("Ctrl+C"));
   await running;
 
-  assert.match(handle.cancelled, /Runner stopped: Ctrl\+C/);
-  assert.equal(store.releases[0].status, "blocked");
+  assert.match(handle.interrupted, /Runner stopped: Ctrl\+C/);
+  assert.equal(store.releases[0].status, "ready");
+  assert.equal(store.comments.length, 0);
 });
 
 test("stops unlimited workers when a one-shot run is interrupted", async () => {
@@ -324,8 +325,9 @@ test("stops unlimited workers when a one-shot run is interrupted", async () => {
   controller.abort(new Error("Ctrl+C"));
   await running;
 
-  assert.match(handle.cancelled, /Runner stopped: Ctrl\+C/);
-  assert.equal(store.releases[0].status, "blocked");
+  assert.match(handle.interrupted, /Runner stopped: Ctrl\+C/);
+  assert.equal(store.releases[0].status, "ready");
+  assert.equal(store.comments.length, 0);
 });
 
 test("moves completed work to in-review even when its audit comment fails", async () => {
@@ -595,6 +597,14 @@ class DeferredHandle extends FakeHandle {
     this.cancelled = summary;
     this.resolveWait({
       status: "failed",
+      summary,
+    });
+  }
+
+  async interrupt(summary) {
+    this.interrupted = summary;
+    this.resolveWait({
+      status: "interrupted",
       summary,
     });
   }

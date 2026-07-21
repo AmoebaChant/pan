@@ -26,12 +26,27 @@ test("opens an interactive Copilot shell with the initial task", () => {
   assert.ok(!args.includes("--autopilot"));
   assert.ok(!args.includes("--no-ask-user"));
   assert.ok(!args.includes("--max-autopilot-continues"));
+  assert.equal(
+    args[args.indexOf("--session-id") + 1],
+    "00000000-0000-4000-8000-000000000001",
+  );
   assert.deepEqual(args.slice(-4), [
     "--model",
     "gpt-5.6-sol",
     "-i",
     prompt,
   ]);
+});
+
+test("resumes an interrupted task's Copilot session", () => {
+  const task = makeTask();
+  task.copilot.resume = true;
+  const args = buildTaskCopilotArgs(task, "Continue the task.");
+
+  assert.ok(
+    args.includes("--resume=00000000-0000-4000-8000-000000000001"),
+  );
+  assert.ok(!args.includes("--session-id"));
 });
 
 test("preserves supported optional task limits without enabling autopilot", () => {
@@ -48,6 +63,9 @@ function makeTask() {
   return {
     target: { worktreePath: "C:\\worktree" },
     paths: { statePath: "C:\\state" },
-    copilot: { model: "gpt-5.6-sol" },
+    copilot: {
+      model: "gpt-5.6-sol",
+      sessionId: "00000000-0000-4000-8000-000000000001",
+    },
   };
 }
