@@ -47,6 +47,8 @@ test("opens a headed PAN session connected to an existing host", async () => {
   assert.ok(launches[0].args.includes("--suppressApplicationTitle"));
   assert.ok(launches[0].args.includes("--agent"));
   assert.ok(launches[0].args.includes("pan"));
+  assert.ok(launches[0].args.includes("--session-id"));
+  assert.ok(!launches[0].args.includes("--name"));
   const mcp = JSON.parse(await readFile(paths.mcpConfig, "utf8"));
   assert.equal(
     mcp.mcpServers["pan-tools"].env.PAN_RUNTIME_STATE,
