@@ -65,6 +65,21 @@ test("rejects Copilot credit budgets below the CLI minimum", () => {
   );
 });
 
+test("adapts a legacy profile to one compatibility playbook", () => {
+  const profile = validateRunnerProfile(makeProfile(path.resolve("runner-root")));
+
+  assert.deepEqual(profile.playbooks, [
+    {
+      id: "legacy",
+      capacity: 1,
+      capabilities: ["env:local", "repo:example/tool"],
+      repositories: ["example/tool"],
+      instructions: [],
+      legacy: true,
+    },
+  ]);
+});
+
 function makeProfile(root) {
   return {
     version: 1,

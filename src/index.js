@@ -57,6 +57,13 @@ export {
   validateRunnerProfile,
 } from "./runner-profile.js";
 export {
+  matchingPlaybook,
+  normalizePlaybooks,
+  taskRepository,
+  validatePlaybook,
+} from "./playbook.js";
+export { buildTaskPrompt } from "./task-prompt.js";
+export {
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,
   WorkstreamStore,

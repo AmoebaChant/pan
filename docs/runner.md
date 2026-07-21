@@ -5,9 +5,9 @@ claims compatible ready Issues with a lease, and runs each task in an isolated
 git worktree. It is a lightweight non-AI process; no Copilot session waits idle
 in each repository.
 
-The capability profile below documents the current implementation. The target
-architecture replaces flat matching with shared playbooks and local machine
-settings while preserving the same atomic claim and worktree isolation.
+The private runner profile combines machine settings with reusable playbooks.
+Machine-wide and per-playbook capacity are independent limits: a launch needs a
+free global slot and a free slot in its selected playbook.
 
 ## Capability profile
 
@@ -28,6 +28,25 @@ matching `repo:<owner/name>` capability.
     "os:windows",
     "tool:copilot-cli",
     "repo:example/tool"
+  ],
+  "playbooks": [
+    {
+      "id": "tool-development",
+      "capacity": 2,
+      "capabilities": [
+        "env:local",
+        "os:windows",
+        "tool:copilot-cli",
+        "repo:example/tool"
+      ],
+      "repositories": [
+        "example/tool"
+      ],
+      "instructions": [
+        "Inspect repository guidance before editing.",
+        "Implement the complete task and run relevant existing validation."
+      ]
+    }
   ],
   "store": {
     "repository": "example/private-data",
@@ -51,6 +70,11 @@ matching `repo:<owner/name>` capability.
 }
 ```
 
+Playbook capacity, clone paths, worktree roots, machine names, and terminal
+settings are private machine configuration. Commit them only to the private
+domain repository, never to this public package. Profiles without `playbooks`
+remain supported as one compatibility playbook using the global capacity.
+
 When the profile is loaded from `runners/<machine>.json`, the domain repository
 path is inferred from the profile location. `store.path` can override it when a
 profile is stored elsewhere.
@@ -63,8 +87,9 @@ node .\bin\pan-runner.js --profile C:\path\to\runner.json --validate-profile
 
 ## Task lifecycle
 
-The runner selects `owner=agent`, `Status=ready`, claimable items whose
-requirements are all present in its profile. `manual` items are not started.
+The runner selects `owner=agent`, `Status=ready`, claimable items in canonical
+Project order. A task must match every requirement and repository declared by
+an enabled playbook with free capacity. `manual` items are not started.
 For each task it:
 
 1. claims the Project item and starts a renewable lease;
@@ -78,8 +103,10 @@ For each task it:
 
 The worker denies Copilot access to `git push`, GitHub CLI commands, and the
 built-in GitHub MCP. The runner alone owns push and pull-request creation.
-Wall-clock, AI-credit, per-runner concurrency, and lease limits come from the
-profile. Copilot CLI requires `taskBudget.maxAiCredits` to be at least 30.
+Wall-clock, AI-credit, machine-wide concurrency, per-playbook concurrency, and
+lease limits come from the profile. Tasks using another playbook do not consume
+the selected playbook's slots. Copilot CLI requires
+`taskBudget.maxAiCredits` to be at least 30.
 
 Run one polling cycle and wait for its selected tasks:
 
@@ -94,27 +121,18 @@ five minutes, and GitHub rate-limit failures pause polling for fifteen minutes.
 When `pan answer` resolves blocked work, PAN returns the item to triage. The
 next runner attempt receives the marked answer comment in its task context.
 
-## Target playbook model
+## Bootstrap a task manually
 
-A shared playbook in the private domain repository defines:
+During bootstrap, put one compatible task in `ready` with `owner=agent`, then
+run one cycle:
 
-- the task, repository, environment, and tool requirements it matches;
-- common pickup, setup, validation, and cleanup instructions;
-- the worker-agent definition, skills, and prompt context;
-- the reporting protocol; and
-- default execution limits.
+```powershell
+node .\bin\pan-runner.js --profile C:\path\to\runner.json --once
+```
 
-Local machine settings enable installed playbooks and provide repository paths,
-installed tools, credentials, terminal configuration, and per-playbook capacity.
-The runner publishes only a sanitized advertisement containing playbook IDs,
-capabilities, online state, and free capacity.
-
-For each available slot, the runner selects the highest-ranked compatible
-Project item, confirms its atomic claim, creates a unique worktree, and launches
-a headed worker session. Global and playbook-specific limits allow two tasks in
-the same repository to run concurrently without sharing a branch or worktree.
-
-The runner owns the task lease and heartbeat independently of the Copilot
-session. Worker sessions report progress, questions, results, and failures
-through the versioned protocol described in
-[the architecture](architecture.md#reporting-protocol).
+The worker receives the canonical Issue body, comments and answers, workstream
+README, target branch/worktree, and playbook instructions. It implements and
+validates the change. The runner independently owns the lease, creates a
+collision-resistant isolated worktree, commits remaining changes, pushes only
+the feature branch, opens the pull request, records its URL, moves the task to
+`in-review`, and exposes it through `pan inbox`.
