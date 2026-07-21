@@ -14,6 +14,12 @@ import {
 const FIXTURE_PATH = path.resolve("test/fixtures/copilot-spike");
 const SESSION_ID = "00000000-0000-4000-8000-000000000001";
 
+test("package tests exclude executable fixture files", async () => {
+  const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+
+  assert.equal(packageJson.scripts.test, "node --test test/*.test.js");
+});
+
 function buildTurnArguments(options = {}) {
   const sessionId = options.sessionId ?? SESSION_ID;
   const args = [
