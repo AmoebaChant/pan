@@ -106,6 +106,31 @@ test("creates an Issue, adds it to the Project, and sets fields", async () => {
   assert.deepEqual(gh.issueCreates[0].assignees, ["octocat"]);
 });
 
+test("scopes marker lookup to open repair Issues", async () => {
+  const { store, gh } = fixture({
+    openIssues: [
+      {
+        number: 9,
+        title: "Repair PAN",
+        body: "<!-- pan:self-repair:abc -->",
+        url: "https://github.com/AmoebaChant/pan-work/issues/9",
+        state: "OPEN",
+      },
+    ],
+  });
+
+  const issue = await store.findIssueByMarker(
+    "<!-- pan:self-repair:abc -->",
+    { state: "open" },
+  );
+
+  assert.equal(issue.number, 9);
+  const args = gh.jsonCalls.find(
+    (call) => call[0] === "issue" && call[1] === "list",
+  );
+  assert.equal(valueAfter(args, "--state"), "open");
+});
+
 test("cleans up a partially created item when field setup fails", async () => {
   const { store, gh } = fixture({ failProjectEdit: true });
 

@@ -343,6 +343,12 @@ test("runs the host in the foreground and exposes its configured model", async (
           executable: "copilot",
           model: "gpt-5.6-sol",
         },
+        selfRepair: {
+          enabled: true,
+          repository: "example/pan",
+          workstream: "pan",
+          requirements: ["task:self-repair"],
+        },
       }),
       storeFactory: () => ({
         readCanonicalProject: async () => ({}),
@@ -351,6 +357,10 @@ test("runs the host in the foreground and exposes its configured model", async (
       reviewServiceFactory: () => ({
         run: async () => ({}),
         applyActions: async () => ({}),
+      }),
+      repairServiceFactory: ({ policy }) => ({
+        policy,
+        reportFailure: async () => ({}),
       }),
       toolRegistryFactory: () => ({
         dispatch: async () => ({}),
@@ -370,6 +380,7 @@ test("runs the host in the foreground and exposes its configured model", async (
 
   const options = calls.find(([kind]) => kind === "host")[1];
   assert.equal(options.model, "gpt-5.6-sol");
+  assert.equal(options.repairService.policy.repository, "example/pan");
   assert.equal(options.stateFile, "C:\\runtime\\host.json");
   assert.ok(
     calls.some(

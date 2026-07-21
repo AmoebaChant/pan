@@ -9,6 +9,7 @@ const ALLOWED_KEYS = new Set([
   "cadences",
   "transcripts",
   "reviewPolicy",
+  "selfRepair",
 ]);
 const RUNNER_ONLY_KEYS = new Set([
   "id",
@@ -47,6 +48,9 @@ const DEFAULTS = Object.freeze({
       enabled: false,
       actionKinds: [],
     },
+  },
+  selfRepair: {
+    enabled: false,
   },
 });
 
@@ -128,6 +132,7 @@ export function validateDomainConfig(config, { configPath } = {}) {
 
   const transcripts = normalizeTranscripts(config.transcripts, statePath);
   const reviewPolicy = normalizeReviewPolicy(config.reviewPolicy);
+  const selfRepair = normalizeSelfRepair(config.selfRepair);
 
   return {
     version: 1,
@@ -147,6 +152,7 @@ export function validateDomainConfig(config, { configPath } = {}) {
     cadences,
     transcripts,
     reviewPolicy,
+    selfRepair,
   };
 }
 
@@ -291,6 +297,7 @@ function normalizeReviewPolicy(reviewPolicy = {}) {
   if (new Set(actionKinds).size !== actionKinds.length) {
     fail("reviewPolicy.higherRisk.actionKinds", "must not contain duplicates");
   }
+
   if (enabled && actionKinds.length === 0) {
     fail(
       "reviewPolicy.higherRisk.actionKinds",
@@ -302,6 +309,44 @@ function normalizeReviewPolicy(reviewPolicy = {}) {
       enabled,
       actionKinds: [...actionKinds],
     },
+  };
+}
+
+function normalizeSelfRepair(selfRepair = {}) {
+  requireRecord(selfRepair, "selfRepair");
+  rejectObjectKeys(
+    selfRepair,
+    new Set(["enabled", "repository", "workstream", "requirements"]),
+    "selfRepair",
+  );
+  const enabled = selfRepair.enabled ?? DEFAULTS.selfRepair.enabled;
+  requireBoolean(enabled, "selfRepair.enabled");
+  const requirements = selfRepair.requirements ?? [];
+  requireStringArray(requirements, "selfRepair.requirements");
+  if (new Set(requirements).size !== requirements.length) {
+    fail("selfRepair.requirements", "must not contain duplicates");
+  }
+  if (
+    requirements.some(
+      (requirement) =>
+        requirement.startsWith("repo:") ||
+        requirement.startsWith("delivery:"),
+    )
+  ) {
+    fail(
+      "selfRepair.requirements",
+      "must not contain repo: or delivery: entries because PAN supplies them",
+    );
+  }
+  if (enabled) {
+    requireRepository(selfRepair.repository, "selfRepair.repository");
+    requireString(selfRepair.workstream, "selfRepair.workstream");
+  }
+  return {
+    enabled,
+    repository: selfRepair.repository,
+    workstream: selfRepair.workstream,
+    requirements: [...requirements],
   };
 }
 

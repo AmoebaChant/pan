@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -27,6 +27,12 @@ test("applies bounded runtime defaults without runner settings", () => {
   assert.deepEqual(config.reviewPolicy.higherRisk, {
     enabled: false,
     actionKinds: [],
+  });
+  assert.deepEqual(config.selfRepair, {
+    enabled: false,
+    repository: undefined,
+    workstream: undefined,
+    requirements: [],
   });
   assert.equal(config.machine, undefined);
   assert.equal(config.repositories, undefined);
@@ -134,6 +140,31 @@ test("requires explicit opt-in and action kinds for higher-risk review", () => {
   );
 });
 
+test("validates an opt-in self-repair target and runner requirements", () => {
+  const config = makeConfig();
+  config.selfRepair = {
+    enabled: true,
+    repository: "example/pan",
+    workstream: "pan",
+    requirements: ["env:local", "task:self-repair"],
+  };
+
+  assert.deepEqual(validateDomainConfig(config).selfRepair, config.selfRepair);
+
+  delete config.selfRepair.workstream;
+  assert.throws(
+    () => validateDomainConfig(config),
+    /selfRepair\.workstream must be a non-empty string/,
+  );
+
+  config.selfRepair.workstream = "pan";
+  config.selfRepair.requirements = ["delivery:pull-request"];
+  assert.throws(
+    () => validateDomainConfig(config),
+    /must not contain repo: or delivery:/,
+  );
+});
+
 test("loads valid JSON and wraps unreadable or malformed config errors", async () => {
   const directory = path.resolve(`.domain-config-test-${randomUUID()}`);
   const validPath = path.join(directory, "domain.json");
@@ -157,6 +188,15 @@ test("loads valid JSON and wraps unreadable or malformed config errors", async (
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("publishes a parseable domain configuration schema", async () => {
+  const schema = JSON.parse(
+    await readFile(path.resolve("schema/domain-config.json"), "utf8"),
+  );
+
+  assert.equal(schema.title, "PAN domain runtime configuration");
+  assert.equal(schema.properties.selfRepair.type, "object");
 });
 
 function makeConfig() {

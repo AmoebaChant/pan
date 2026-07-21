@@ -43,6 +43,112 @@ test("releases leadership when shutdown is requested during acquisition", async 
   assert.equal(released, true);
 });
 
+test("queues a repair task after a scheduled review failure", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pan-host-"));
+  const controller = new AbortController();
+  let report;
+  const host = new PanHost({
+    stateFile: path.join(directory, "host.json"),
+    token: "secret",
+    pollIntervalSeconds: 0.01,
+    heartbeatSeconds: 60,
+    autonomousApply: true,
+    model: "gpt-5.6-sol",
+    reviewService: {
+      run: async () => {
+        throw new Error("review failed");
+      },
+      applyActions: async () => assert.fail("not called"),
+    },
+    repairService: {
+      reportFailure: async (error, options) => {
+        report = { error, options };
+        controller.abort();
+        return {
+          created: true,
+          issueNumber: 12,
+          issueUrl: "https://github.com/example/domain/issues/12",
+        };
+      },
+    },
+    toolRegistry: { dispatch: async () => assert.fail("not called") },
+    leaderLease: {
+      acquire: async () => ({ acquired: true }),
+      heartbeat: async () => ({ renewed: true }),
+      release: async () => ({ released: true }),
+    },
+    logger: {
+      info() {},
+      error() {},
+    },
+  });
+
+  await host.run({ signal: controller.signal });
+
+  assert.equal(report.error.message, "review failed");
+  assert.equal(report.options.source, "scheduled-review");
+  assert.equal(report.options.model, "gpt-5.6-sol");
+});
+
+test("waits for in-flight repair reporting before releasing leadership", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pan-host-"));
+  const controller = new AbortController();
+  let finishRepair;
+  const repairGate = new Promise((resolve) => {
+    finishRepair = resolve;
+  });
+  let reportStarted;
+  const started = new Promise((resolve) => {
+    reportStarted = resolve;
+  });
+  let released = false;
+  const host = new PanHost({
+    stateFile: path.join(directory, "host.json"),
+    token: "secret",
+    pollIntervalSeconds: 0.01,
+    heartbeatSeconds: 60,
+    reviewService: {
+      run: async () => {
+        throw new Error("review failed");
+      },
+      applyActions: async () => assert.fail("not called"),
+    },
+    repairService: {
+      reportFailure: async () => {
+        reportStarted();
+        await repairGate;
+        return {
+          created: true,
+          issueNumber: 12,
+          issueUrl: "https://github.com/example/domain/issues/12",
+        };
+      },
+    },
+    toolRegistry: { dispatch: async () => assert.fail("not called") },
+    leaderLease: {
+      acquire: async () => ({ acquired: true }),
+      heartbeat: async () => ({ renewed: true }),
+      release: async () => {
+        released = true;
+        return { released: true };
+      },
+    },
+    logger: {
+      info() {},
+      error() {},
+    },
+  });
+
+  const running = host.run({ signal: controller.signal });
+  await started;
+  controller.abort();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(released, false);
+  finishRepair();
+  await running;
+  assert.equal(released, true);
+});
+
 test("hosts authenticated interactive tools while holding leadership", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pan-host-"));
   const stateFile = path.join(directory, "host.json");

@@ -464,9 +464,12 @@ export class PanStore {
     }));
   }
 
-  async findIssueByMarker(marker) {
+  async findIssueByMarker(marker, { state = "all", signal } = {}) {
     if (!marker?.trim()) {
       throw new TypeError("marker is required");
+    }
+    if (!["open", "closed", "all"].includes(state)) {
+      throw new TypeError('state must be "open", "closed", or "all"');
     }
     const issues = await this.gh.runJson([
       "issue",
@@ -474,14 +477,14 @@ export class PanStore {
       "--repo",
       this.repository,
       "--state",
-      "all",
+      state,
       "--limit",
       String(ISSUE_LIST_LIMIT),
       "--search",
       `${marker} in:body`,
       "--json",
       "number,title,body,url,state",
-    ]);
+    ], { signal });
     return issues.find((issue) => issue.body?.includes(marker));
   }
 

@@ -79,6 +79,38 @@ of action kinds:
 This setting identifies actions for later review policy. It does not itself
 grant authority or make an action automatic.
 
+## Optional self-repair tasks
+
+Self-repair is disabled by default. When enabled, an unexpected scheduled-review
+failure creates a deduplicated Issue in the domain repository with the failure
+evidence and routes it to a coding runner:
+
+```json
+{
+  "selfRepair": {
+    "enabled": true,
+    "repository": "example/pan",
+    "workstream": "pan",
+    "requirements": [
+      "env:local",
+      "tool:node22",
+      "task:self-repair"
+    ]
+  }
+}
+```
+
+PAN automatically adds `repo:<repository>` and `delivery:pull-request` to the
+task requirements. The runner profile must provide a dedicated compatible
+playbook whose delivery mode is `pull-request`. An open task with the same
+failure fingerprint is reused, preventing one broken review from creating an
+Issue every polling cycle. Repair-task creation failures are logged but do not
+trigger another repair task.
+
+The coding task must investigate whether the failure is a reusable PAN defect or
+invalid domain data. It must preserve fail-closed mutation behavior and open a
+pull request for review; PAN does not merge the repair automatically.
+
 ## Migration from a runner profile
 
 Copy only the domain identity from the runner profile's `store` object:

@@ -18,6 +18,7 @@ import {
   stopPan,
 } from "./pan-launcher.js";
 import { PanReviewService } from "./pan-review-service.js";
+import { PanRepairService } from "./pan-repair-service.js";
 import { PanRuntime } from "./pan-runtime.js";
 import { PanStore } from "./pan-store.js";
 import { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
@@ -46,6 +47,7 @@ export async function runPanCli(
     attentionFactory = (options) => new AttentionService(options),
     toolRegistryFactory = (options) => new PanToolRegistry(options),
     reviewServiceFactory,
+    repairServiceFactory,
     runtimeFactory = (options) => new PanRuntime(options),
     hostFactory = (options) => new PanHost(options),
     startFactory = startPan,
@@ -124,6 +126,7 @@ export async function runPanCli(
       configuration,
       env,
       reviewServiceFactory,
+      repairServiceFactory,
       toolRegistryFactory,
     });
     const logger = await loggerFactory({
@@ -151,6 +154,7 @@ export async function runPanCli(
         pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
         heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
         autonomousApply: parsed.apply,
+        repairService: services.repairService,
         model: configuration.agent?.model,
         logger,
       }).run({ signal: controller.signal });
@@ -435,6 +439,7 @@ async function loadCliConfiguration(
       },
       agent: config.agent,
       reviewPolicy: config.reviewPolicy,
+      selfRepair: config.selfRepair,
     };
   }
 
@@ -462,6 +467,12 @@ async function loadCliConfiguration(
       turnTimeoutSeconds: undefined,
       maxAiCredits: undefined,
     },
+    selfRepair: {
+      enabled: false,
+      repository: undefined,
+      workstream: undefined,
+      requirements: [],
+    },
   };
 }
 
@@ -479,6 +490,7 @@ function createDomainServices({
   configuration,
   env,
   reviewServiceFactory,
+  repairServiceFactory = (options) => new PanRepairService(options),
   toolRegistryFactory = (options) => new PanToolRegistry(options),
 }) {
   const runnerSource = new RunnerProfileSource({
@@ -528,8 +540,15 @@ function createDomainServices({
               ],
       }),
     });
+  const repairService = configuration.selfRepair?.enabled
+    ? repairServiceFactory({
+        store,
+        policy: configuration.selfRepair,
+      })
+    : undefined;
   return {
     reviewService,
+    repairService,
     toolRegistry: toolRegistryFactory({
       domain: {
         repository: configuration.store.repository,

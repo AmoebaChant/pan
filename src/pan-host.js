@@ -14,6 +14,7 @@ export class PanHost {
     pollIntervalSeconds = 300,
     heartbeatSeconds = 30,
     autonomousApply = false,
+    repairService,
     model,
     logger = console,
     host = "127.0.0.1",
@@ -31,6 +32,9 @@ export class PanHost {
         "reviewService, toolRegistry, leaderLease, stateFile, and token are required",
       );
     }
+    if (repairService && !repairService.reportFailure) {
+      throw new TypeError("repairService must provide reportFailure()");
+    }
     this.reviewService = reviewService;
     this.toolRegistry = toolRegistry;
     this.leaderLease = leaderLease;
@@ -39,6 +43,7 @@ export class PanHost {
     this.pollIntervalSeconds = pollIntervalSeconds;
     this.heartbeatSeconds = heartbeatSeconds;
     this.autonomousApply = autonomousApply;
+    this.repairService = repairService;
     this.model = model;
     this.logger = logger;
     this.host = host;
@@ -88,27 +93,29 @@ export class PanHost {
           if (controller.signal.aborted) {
             return;
           }
-          this.logger.info?.("Starting scheduled portfolio review.");
-          const result = await this.reviewService.run({
-            apply: this.autonomousApply,
-            signal: controller.signal,
-          });
-          if (result.response.effects?.incomplete?.length > 0) {
-            const error = new Error(
-              "PAN scheduled review produced an incomplete mutation",
-            );
-            error.result = result;
-            throw error;
-          }
-          this.logger.info?.(
-            `Scheduled review completed: ${result.response.recommendation}`,
-          );
-        })
-          .catch((error) => {
-            if (!controller.signal.aborted) {
-              this.logger.error("PAN scheduled review failed", error);
+          try {
+            this.logger.info?.("Starting scheduled portfolio review.");
+            const result = await this.reviewService.run({
+              apply: this.autonomousApply,
+              signal: controller.signal,
+            });
+            if (result.response.effects?.incomplete?.length > 0) {
+              const error = new Error(
+                "PAN scheduled review produced an incomplete mutation",
+              );
+              error.result = result;
+              throw error;
             }
-          })
+            this.logger.info?.(
+              `Scheduled review completed: ${result.response.recommendation}`,
+            );
+          } catch (error) {
+            await this.#handleScheduledReviewFailure(
+              error,
+              controller.signal,
+            );
+          }
+        })
           .finally(() => {
             if (!controller.signal.aborted) {
               scheduleReview();
@@ -235,6 +242,32 @@ export class PanHost {
     const pending = this.queue.then(operation, operation);
     this.queue = pending.catch(() => {});
     return pending;
+  }
+
+  async #handleScheduledReviewFailure(error, signal) {
+    if (signal.aborted) {
+      return;
+    }
+    this.logger.error("PAN scheduled review failed", error);
+    if (!this.repairService) {
+      return;
+    }
+    try {
+      const repair = await this.repairService.reportFailure(error, {
+        source: "scheduled-review",
+        model: this.model,
+        signal,
+      });
+      this.logger.info?.(
+        repair.created
+          ? `Queued self-repair task #${repair.issueNumber}: ${repair.issueUrl}`
+          : `Self-repair task #${repair.issueNumber} is already open: ${repair.issueUrl}`,
+      );
+    } catch (repairError) {
+      if (!signal.aborted) {
+        this.logger.error("PAN could not queue a self-repair task", repairError);
+      }
+    }
   }
 
   #rememberSnapshot(snapshot) {

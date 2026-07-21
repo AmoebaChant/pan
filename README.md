@@ -94,6 +94,11 @@ to let them apply validated changes. The previous detached experience remains
 available through `start --background`, but foreground services are the
 recommended transparent workflow.
 
+An optional self-repair policy can turn unexpected scheduled-review failures
+into deduplicated ready tasks for a dedicated pull-request runner playbook. PAN
+keeps the original failure visible, does not retry a failing repair queue
+recursively, and never merges the resulting pull request automatically.
+
 `review` is a dry run unless `--apply` is present. `chat` applies validated
 proposals by default; add `--dry-run` for advice only. Reviews, conversation,
 and the daemon use the same generic PAN agent and complete domain snapshot.

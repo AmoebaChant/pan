@@ -83,6 +83,12 @@ remain supported as one compatibility playbook using the global capacity.
 where the runner is explicitly authorized to rebase and push completed work to
 the configured default branch without human review.
 
+Self-repair tasks include the `delivery:pull-request` requirement. Reserve a
+dedicated playbook with that capability and `delivery: "pull-request"` so
+ordinary direct-delivery playbooks cannot claim repair work. A capacity of one
+keeps repairs serialized; reserve an additional machine-wide slot if repairs
+must start while normal playbooks are full.
+
 When the profile is loaded from `runners/<machine>.json`, the domain repository
 path is inferred from the profile location. `store.path` can override it when a
 profile is stored elsewhere.
