@@ -36,7 +36,59 @@ test("claims matching work and advances a completed task to in-review", async ()
   ]);
   assert.match(store.comments.at(-1), /pull\/42/);
   assert.ok(messages.some((message) => message.includes("Claimed task #1")));
-  assert.ok(messages.some((message) => message.includes("pull request")));
+  assert.ok(messages.some((message) => message.includes("pull-request")));
+});
+
+test("marks direct delivery done and records its commit", async () => {
+  const store = new FakeStore([makeItem()]);
+  const handle = new FakeHandle(undefined, {
+    mode: "direct",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+  });
+  const profile = makePlaybookProfile({
+    maximum: 1,
+    panCapacity: 1,
+  });
+  profile.playbooks = [profile.playbooks[0]];
+  profile.playbooks[0].delivery = "direct";
+  const daemon = new RunnerDaemon({
+    store,
+    profile,
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.releases[0].status, "done");
+  assert.match(store.comments.at(-1), /Commit:/);
+  assert.match(store.comments.at(-1), /\/commit\//);
+});
+
+test("does not mark direct delivery done until its commit is recorded", async () => {
+  const store = new FakeStore([makeItem()], { commentFailures: 3 });
+  const handle = new FakeHandle(undefined, {
+    mode: "direct",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+  });
+  const profile = makePlaybookProfile({
+    maximum: 1,
+    panCapacity: 1,
+  });
+  profile.playbooks = [profile.playbooks[0]];
+  profile.playbooks[0].delivery = "direct";
+  const daemon = new RunnerDaemon({
+    store,
+    profile,
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.releases[0].status, "blocked");
 });
 
 test("does not claim work with unsupported requirements", async () => {
@@ -138,6 +190,37 @@ test("does not release completed work after a final lease check fails", async ()
   assert.equal(handle.completed, true);
   assert.equal(store.releases.length, 0);
   assert.equal(store.comments.length, 0);
+});
+
+test("records a direct commit before a post-delivery lease loss", async () => {
+  const store = new FakeStore([makeItem()], {
+    heartbeat: [
+      { renewed: true },
+      { renewed: false, reason: "lease-expired" },
+    ],
+  });
+  const handle = new FakeHandle(undefined, {
+    mode: "direct",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+  });
+  const profile = makePlaybookProfile({
+    maximum: 1,
+    panCapacity: 1,
+  });
+  profile.playbooks = [profile.playbooks[0]];
+  profile.playbooks[0].delivery = "direct";
+  const daemon = new RunnerDaemon({
+    store,
+    profile,
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.releases.length, 0);
+  assert.match(store.comments.at(-1), /Commit:/);
 });
 
 test("stops an unlimited worker when its lease is lost", async () => {
@@ -428,8 +511,13 @@ class FakeHandle {
       status: "completed",
       summary: "Completed.",
     },
+    delivery = {
+      mode: "pull-request",
+      url: "https://github.com/example/tool/pull/42",
+    },
   ) {
     this.result = result;
+    this.delivery = delivery;
     this.completed = false;
   }
 
@@ -439,7 +527,7 @@ class FakeHandle {
 
   async complete() {
     this.completed = true;
-    return { prUrl: "https://github.com/example/tool/pull/42" };
+    return this.delivery;
   }
 
   locator() {

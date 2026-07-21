@@ -51,8 +51,9 @@ runner state, and machine configuration remain outside it.
 - PAN does not keep an idle worker-agent session in every repository.
 - PAN does not treat model conversation history as the only durable record of a
   commitment or decision.
-- PAN does not let autonomous workers push to default branches, force-push, or
-  bypass review policy.
+- PAN does not let autonomous workers push, force-push, or bypass delivery
+  policy. The runner may push to a default branch only when its playbook
+  explicitly selects direct delivery.
 
 ## Success criteria
 

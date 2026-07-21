@@ -18,6 +18,32 @@ test("normalizes explicit playbooks with independent capacity", () => {
       { id: "documentation", capacity: 1 },
     ],
   );
+  assert.deepEqual(
+    profile.playbooks.map(({ delivery }) => delivery),
+    ["pull-request", "pull-request"],
+  );
+});
+
+test("supports direct delivery and rejects unknown delivery policies", () => {
+  const profile = makeProfile();
+  profile.playbooks[0].delivery = "direct";
+
+  assert.equal(
+    validateRunnerProfile(profile).playbooks[0].delivery,
+    "direct",
+  );
+
+  profile.playbooks[0].delivery = "email";
+  assert.throws(
+    () => validateRunnerProfile(profile),
+    /delivery must be "pull-request" or "direct"/,
+  );
+
+  profile.playbooks[0].delivery = null;
+  assert.throws(
+    () => validateRunnerProfile(profile),
+    /delivery must be "pull-request" or "direct"/,
+  );
 });
 
 test("rejects playbooks that use unavailable machine capabilities", () => {
@@ -99,4 +125,3 @@ function makeProfile() {
     },
   };
 }
-

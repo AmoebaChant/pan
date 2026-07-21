@@ -42,6 +42,7 @@ matching `repo:<owner/name>` capability.
       "repositories": [
         "example/tool"
       ],
+      "delivery": "pull-request",
       "instructions": [
         "Inspect repository guidance before editing.",
         "Implement the complete task and run relevant existing validation."
@@ -78,6 +79,9 @@ Playbook capacity, clone paths, worktree roots, machine names, and terminal
 settings are private machine configuration. Commit them only to the private
 domain repository, never to this public package. Profiles without `playbooks`
 remain supported as one compatibility playbook using the global capacity.
+`delivery` defaults to `pull-request`. Set it to `direct` only for repositories
+where the runner is explicitly authorized to rebase and push completed work to
+the configured default branch without human review.
 
 When the profile is loaded from `runners/<machine>.json`, the domain repository
 path is inferred from the profile location. `store.path` can override it when a
@@ -102,11 +106,13 @@ For each task it:
    comments and answers, and workstream README as context;
 4. posts structured needs-human records, including the machine, terminal title,
    and optional local URL;
-5. commits any remaining changes, pushes only the task branch, opens a pull
-   request, and moves the item to `in-review`.
+5. commits any remaining changes and follows the playbook delivery policy:
+   `pull-request` pushes the task branch and moves the item to `in-review`;
+   `direct` serializes delivery for the repository, rebases onto the latest
+   default branch, pushes it, and moves the item to `done`.
 
 The worker denies Copilot access to `git push`, GitHub CLI commands, and the
-built-in GitHub MCP. The runner alone owns push and pull-request creation.
+built-in GitHub MCP. The runner alone owns push and delivery.
 Machine-wide concurrency, per-playbook concurrency, and lease limits come from
 the profile. Tasks using another playbook do not consume the selected
 playbook's slots. `copilot.model` selects the coding model deterministically.
@@ -148,6 +154,6 @@ node .\bin\pan-runner.js --profile C:\path\to\runner.json --once
 The worker receives the canonical Issue body, comments and answers, workstream
 README, target branch/worktree, and playbook instructions. It implements and
 validates the change. The runner independently owns the lease, creates a
-collision-resistant isolated worktree, commits remaining changes, pushes only
-the feature branch, opens the pull request, records its URL, moves the task to
-`in-review`, and exposes it through `pan inbox`.
+collision-resistant isolated worktree, commits remaining changes, and applies
+the playbook delivery policy. Pull-request delivery records the PR and moves the
+task to `in-review`; direct delivery records the commit and moves it to `done`.

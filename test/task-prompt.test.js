@@ -8,6 +8,7 @@ test("requires complete implementation and runner-owned pull-request handoff", (
     playbook: {
       id: "pan-development",
       instructions: ["Follow the repository contribution guide."],
+      delivery: "pull-request",
     },
     paths: {
       agentResult: "C:\\state\\agent-result.json",
@@ -23,3 +24,21 @@ test("requires complete implementation and runner-owned pull-request handoff", (
   assert.match(prompt, /Follow the repository contribution guide/);
 });
 
+test("describes runner-owned direct delivery without granting git access", () => {
+  const prompt = buildTaskPrompt("C:\\state\\context.json", {
+    playbook: {
+      id: "pan-development",
+      instructions: [],
+      delivery: "direct",
+    },
+    paths: {
+      agentResult: "C:\\state\\agent-result.json",
+      needsHuman: "C:\\state\\needs-human.json",
+    },
+  });
+
+  assert.match(prompt, /push it directly to the default branch/);
+  assert.match(prompt, /runner owns the direct commit and push/);
+  assert.match(prompt, /Never push/);
+  assert.doesNotMatch(prompt, /open the pull request/);
+});

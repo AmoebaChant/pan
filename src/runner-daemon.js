@@ -172,7 +172,7 @@ export class RunnerDaemon {
       intervalMilliseconds: this.profile.heartbeatSeconds * 1_000,
       logger: this.logger,
     });
-    let prUrl;
+    let delivery;
     try {
       const comments = await this.store.listComments(item);
       this.logger.info?.(
@@ -198,36 +198,45 @@ export class RunnerDaemon {
 
       if (result.status === "completed") {
         await heartbeat.renewNow();
-        ({ prUrl } = await handle.complete(result, {
+        delivery = await handle.complete(result, {
           assertLease: heartbeat.renewNow,
-        }));
+        });
         this.logger.info?.(
-          `Task #${item.number} published pull request ${prUrl}.`,
+          `Task #${item.number} delivered via ${delivery.mode}: ${delivery.url}.`,
         );
+        if (delivery.mode === "direct") {
+          await retry(() =>
+            this.store.addComment(item, completedComment(delivery, result)),
+          );
+        }
         await heartbeat.renewNow();
+        const completedStatus =
+          delivery.mode === "direct" ? "done" : "in-review";
         const release = await retry(() =>
           this.store.release({
             itemId: item.id,
             runner,
             assignee: this.profile.githubAssignee,
-            status: "in-review",
+            status: completedStatus,
           }),
         );
         if (!release.released) {
           throw new Error(`Unable to release completed task: ${release.reason}`);
         }
         this.logger.info?.(
-          `Task #${item.number} moved to in-review and its lease was released.`,
+          `Task #${item.number} moved to ${completedStatus} and its lease was released.`,
         );
-        try {
-          await retry(() =>
-            this.store.addComment(item, completedComment(prUrl, result)),
-          );
-        } catch (commentError) {
-          this.logger.error(
-            `Unable to comment on completed PAN task #${item.number}`,
-            commentError,
-          );
+        if (delivery.mode === "pull-request") {
+          try {
+            await retry(() =>
+              this.store.addComment(item, completedComment(delivery, result)),
+            );
+          } catch (commentError) {
+            this.logger.error(
+              `Unable to comment on completed PAN task #${item.number}`,
+              commentError,
+            );
+          }
         }
         return;
       }
@@ -276,14 +285,14 @@ export class RunnerDaemon {
       const locator = handle
         ? handle.locator()
         : { machine: this.profile.machine };
-      if (prUrl) {
+      if (delivery) {
         try {
           await retry(() =>
             this.store.addComment(
               item,
               formatNeedsHuman({
                 kind: "question",
-                prompt: `Pull request ${prUrl} was created, but final Project updates failed: ${error.message}`,
+                prompt: `Delivery ${delivery.url} completed, but final Project updates failed: ${error.message}`,
                 locator,
               }),
             ),
@@ -293,6 +302,26 @@ export class RunnerDaemon {
             `Unable to report finalization failure for PAN task #${item.number}`,
             reportError,
           );
+        }
+        if (delivery.mode === "direct") {
+          await heartbeat.renewNow();
+          const release = await retry(() =>
+            this.store.release({
+              itemId: item.id,
+              runner,
+              assignee: this.profile.githubAssignee,
+              status: "blocked",
+            }),
+          );
+          if (!release.released) {
+            throw new Error(
+              `Unable to block directly delivered task: ${release.reason}`,
+            );
+          }
+          this.logger.warn?.(
+            `Task #${item.number} was delivered directly but blocked because final Project updates failed.`,
+          );
+          return;
         }
         throw error;
       }
@@ -519,14 +548,16 @@ function runnerStoppedError(reason) {
   return error;
 }
 
-function completedComment(prUrl, result) {
+function completedComment(delivery, result) {
+  const label =
+    delivery.mode === "direct" ? "Commit" : "Pull request";
   return [
     "<!-- pan:runner-result -->",
     "### Runner completed",
     "",
     result.summary,
     "",
-    `Pull request: ${prUrl}`,
+    `${label}: ${delivery.url}`,
   ].join("\n");
 }
 

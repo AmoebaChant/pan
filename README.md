@@ -106,7 +106,7 @@ headed Copilot CLI task in an isolated worktree. Global and per-playbook
 capacity allow independent task classes to run concurrently without sharing
 branches or consuming each other's reserved playbook slots.
 It remains attached to its terminal, logs claims, capacity, heartbeats,
-worktree launches, results, and PR handoffs, and tees the same output to
+worktree launches, results, and delivery handoffs, and tees the same output to
 `<stateDirectory>\runner.log`. Each coding worker opens in a visible Windows
 Terminal tab and keeps its own `copilot.log`. Pressing `Ctrl+C` stops active
 workers before the runner releases their leases.

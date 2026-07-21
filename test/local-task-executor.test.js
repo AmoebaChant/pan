@@ -74,6 +74,7 @@ test("allocates unique branches, worktrees, and state for concurrent tasks", asy
     assert.notEqual(handles[0].statePath, handles[1].statePath);
     assert.equal(contexts[0].playbook.id, "pan-development");
     assert.deepEqual(contexts[0].playbook.instructions, ["Run tests."]);
+    assert.equal(contexts[0].playbook.delivery, "pull-request");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -297,6 +298,60 @@ test("does not finish cancellation until the worker process stops", async () => 
   }
 });
 
+test("rebases and retries concurrent direct delivery to the default branch", async () => {
+  const fixture = await createFixture();
+  const commands = new DirectDeliveryCommands();
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: successfulSpawn,
+    randomId: () => "direct-delivery",
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(8),
+      playbook: {
+        id: "pan-development",
+        instructions: ["Run tests."],
+        delivery: "direct",
+      },
+      deadline: undefined,
+    });
+    commands.branch = handle.branch;
+
+    const delivery = await handle.complete({
+      status: "completed",
+      summary: "Implemented directly.",
+    });
+
+    assert.deepEqual(delivery, {
+      mode: "direct",
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+    });
+    assert.equal(commands.directPushes, 2);
+    assert.equal(
+      commands.calls.some(({ executable }) => executable === "gh"),
+      false,
+    );
+    assert.ok(
+      commands.calls.some(
+        ({ args }) =>
+          args.includes("rev-parse") && args.includes("FETCH_HEAD"),
+      ),
+    );
+    assert.ok(
+      commands.calls.some(
+        ({ args }) =>
+          args.includes("rev-parse") && args.includes("HEAD"),
+      ),
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 class FakeCommands {
   constructor() {
     this.calls = [];
@@ -306,6 +361,42 @@ class FakeCommands {
     this.calls.push({ executable, args, options });
     if (args.includes("get-url")) {
       return "https://github.com/example/tool.git";
+    }
+    return "";
+  }
+}
+
+class DirectDeliveryCommands extends FakeCommands {
+  constructor() {
+    super();
+    this.directPushes = 0;
+  }
+
+  async run(executable, args, options = {}) {
+    this.calls.push({ executable, args, options });
+    if (args.includes("get-url")) {
+      return "https://github.com/example/tool.git";
+    }
+    if (args.includes("--show-current")) {
+      return this.branch;
+    }
+    if (args.includes("--porcelain")) {
+      return " M src/file.js";
+    }
+    if (args.includes("rev-list")) {
+      return "1";
+    }
+    if (args.includes("rev-parse")) {
+      return "0123456789abcdef0123456789abcdef01234567";
+    }
+    if (
+      args.includes("push") &&
+      args.includes("HEAD:refs/heads/main")
+    ) {
+      this.directPushes += 1;
+      if (this.directPushes === 1) {
+        throw new Error("rejected non-fast-forward; fetch first");
+      }
     }
     return "";
   }

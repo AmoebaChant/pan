@@ -9,6 +9,7 @@ export function normalizePlaybooks(profile) {
         capabilities: [...profile.capabilities],
         repositories: Object.keys(profile.repositories),
         instructions: [],
+        delivery: "pull-request",
         legacy: true,
       },
     ];
@@ -47,6 +48,15 @@ export function validatePlaybook(
     nonEmpty: true,
   });
   requireStringArray(playbook.instructions ?? [], `${name}.instructions`);
+  const delivery =
+    playbook.delivery === undefined
+      ? "pull-request"
+      : playbook.delivery;
+  if (!["pull-request", "direct"].includes(delivery)) {
+    throw new TypeError(
+      `${name}.delivery must be "pull-request" or "direct"`,
+    );
+  }
 
   if (new Set(playbook.capabilities).size !== playbook.capabilities.length) {
     throw new TypeError(`${name}.capabilities must not contain duplicates`);
@@ -82,6 +92,7 @@ export function validatePlaybook(
     capabilities: [...playbook.capabilities],
     repositories: [...playbook.repositories],
     instructions: [...(playbook.instructions ?? [])],
+    delivery,
     legacy: false,
   };
 }
@@ -129,4 +140,3 @@ function requireInteger(value, name) {
     throw new TypeError(`${name} must be an integer >= 1`);
   }
 }
-

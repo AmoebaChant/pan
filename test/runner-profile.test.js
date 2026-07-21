@@ -79,6 +79,7 @@ test("adapts a legacy profile to one compatibility playbook", () => {
       capabilities: ["env:local", "repo:example/tool"],
       repositories: ["example/tool"],
       instructions: [],
+      delivery: "pull-request",
       legacy: true,
     },
   ]);

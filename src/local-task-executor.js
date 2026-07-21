@@ -55,7 +55,9 @@ export class LocalTaskExecutor {
     const selectedPlaybook = playbook ?? {
       id: "legacy",
       instructions: [],
+      delivery: "pull-request",
     };
+    const delivery = selectedPlaybook.delivery ?? "pull-request";
 
     await mkdir(this.profile.workspaceRoot, { recursive: true });
     await mkdir(this.profile.stateDirectory, { recursive: true });
@@ -98,6 +100,12 @@ export class LocalTaskExecutor {
         `origin/${repositoryConfig.defaultBranch}`,
       ]);
       worktreeCreated = true;
+      const baseCommit = await this.#run(deadline, "git", [
+        "-C",
+        worktreePath,
+        "rev-parse",
+        "HEAD",
+      ]);
 
       const workstreamPath = await resolveConfinedWorkstreamReadme(
         this.profile.store.path,
@@ -118,12 +126,14 @@ export class LocalTaskExecutor {
         target: {
           repository,
           defaultBranch: repositoryConfig.defaultBranch,
+          baseCommit,
           branch,
           worktreePath,
         },
         playbook: {
           id: selectedPlaybook.id,
           instructions: selectedPlaybook.instructions,
+          delivery,
         },
         workstream: {
           path: item.fields.workstream,
@@ -164,6 +174,7 @@ export class LocalTaskExecutor {
         repository,
         repositoryConfig,
         expectedRemote,
+        baseCommit,
         profile: this.profile,
         commands: this.commands,
         sleep: this.sleep,
@@ -182,6 +193,9 @@ export class LocalTaskExecutor {
         logger: this.logger,
         now: () => this.now().getTime(),
         deadline,
+        delivery,
+        coordinateDelivery: (action) =>
+          this.#coordinateDelivery(repository, action),
       });
     } catch (error) {
       const cleanupErrors = [];
@@ -257,6 +271,20 @@ export class LocalTaskExecutor {
     return this.commands.run(executable, args, {
       timeout: 30_000,
     });
+  }
+
+  async #coordinateDelivery(repository, action) {
+    this.deliveries ??= new Map();
+    const previous = this.deliveries.get(repository) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(action);
+    this.deliveries.set(repository, current);
+    try {
+      return await current;
+    } finally {
+      if (this.deliveries.get(repository) === current) {
+        this.deliveries.delete(repository);
+      }
+    }
   }
 }
 
@@ -423,7 +451,7 @@ class LocalTaskHandle {
       this.worktreePath,
       "merge-base",
       "--is-ancestor",
-      `origin/${this.repositoryConfig.defaultBranch}`,
+      this.baseCommit,
       "HEAD",
     ]);
     await assertLease?.();
@@ -437,6 +465,31 @@ class LocalTaskHandle {
     if (currentRemote !== this.expectedRemote) {
       throw new Error("The task changed the repository origin URL");
     }
+    const delivery =
+      this.delivery === "direct"
+        ? await this.coordinateDelivery(() =>
+            this.#deliverDirect({ assertLease }),
+          )
+        : await this.#deliverPullRequest(result, { assertLease });
+    await this.#cleanupDeliveredWorktree();
+    return delivery;
+  }
+
+  locator(localUrl) {
+    return {
+      machine: this.profile.machine,
+      terminalTitle: this.title,
+      ...(localUrl ? { localUrl } : {}),
+    };
+  }
+
+  async #run(executable, args) {
+    return this.commands.run(executable, args, {
+      timeout: remainingMilliseconds(this.deadline),
+    });
+  }
+
+  async #deliverPullRequest(result, { assertLease }) {
     await this.#run("git", [
       "-C",
       this.worktreePath,
@@ -445,9 +498,8 @@ class LocalTaskHandle {
       this.expectedRemote,
       `HEAD:refs/heads/${this.branch}`,
     ]);
-
     await assertLease?.();
-    const prUrl = lastNonEmptyLine(
+    const url = lastNonEmptyLine(
       await this.#run("gh", [
         "pr",
         "create",
@@ -467,10 +519,64 @@ class LocalTaskHandle {
         ].join("\n"),
       ]),
     );
-    if (!/^https:\/\/github\.com\/.+\/pull\/\d+$/.test(prUrl)) {
-      throw new Error(`gh pr create returned an invalid PR URL: ${prUrl}`);
+    if (!/^https:\/\/github\.com\/.+\/pull\/\d+$/.test(url)) {
+      throw new Error(`gh pr create returned an invalid PR URL: ${url}`);
     }
+    return { mode: "pull-request", url };
+  }
 
+  async #deliverDirect({ assertLease }) {
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await assertLease?.();
+      await this.#run("git", [
+        "-C",
+        this.worktreePath,
+        "fetch",
+        "origin",
+        this.repositoryConfig.defaultBranch,
+      ]);
+      const upstream = await this.#run("git", [
+        "-C",
+        this.worktreePath,
+        "rev-parse",
+        "FETCH_HEAD",
+      ]);
+      await this.#run("git", [
+        "-C",
+        this.worktreePath,
+        "rebase",
+        upstream,
+      ]);
+      await assertLease?.();
+      try {
+        await this.#run("git", [
+          "-C",
+          this.worktreePath,
+          "push",
+          this.expectedRemote,
+          `HEAD:refs/heads/${this.repositoryConfig.defaultBranch}`,
+        ]);
+        const commit = await this.#run("git", [
+          "-C",
+          this.worktreePath,
+          "rev-parse",
+          "HEAD",
+        ]);
+        return {
+          mode: "direct",
+          commit,
+          url: `https://github.com/${this.repository}/commit/${commit}`,
+        };
+      } catch (error) {
+        if (attempt === 5 || !isConcurrentPushFailure(error)) {
+          throw error;
+        }
+      }
+    }
+    throw new Error("Unable to deliver task directly");
+  }
+
+  async #cleanupDeliveredWorktree() {
     try {
       await this.#run("git", [
         "-C",
@@ -479,24 +585,22 @@ class LocalTaskHandle {
         "remove",
         this.worktreePath,
       ]);
-    } catch {
-      // The PR is the durable handoff; local cleanup can be retried manually.
+      if (this.delivery === "direct") {
+        await this.#run("git", [
+          "-C",
+          this.repositoryConfig.path,
+          "branch",
+          "--delete",
+          "--force",
+          this.branch,
+        ]);
+      }
+    } catch (error) {
+      this.logger.warn?.(
+        `Delivery completed, but local cleanup failed for ${this.worktreePath}.`,
+        error,
+      );
     }
-    return { prUrl };
-  }
-
-  locator(localUrl) {
-    return {
-      machine: this.profile.machine,
-      terminalTitle: this.title,
-      ...(localUrl ? { localUrl } : {}),
-    };
-  }
-
-  async #run(executable, args) {
-    return this.commands.run(executable, args, {
-      timeout: remainingMilliseconds(this.deadline),
-    });
   }
 }
 
@@ -610,6 +714,19 @@ function lastNonEmptyLine(value) {
     .map((line) => line.trim())
     .filter(Boolean)
     .at(-1);
+}
+
+function isConcurrentPushFailure(error) {
+  const messages = [];
+  for (let current = error; current; current = current.cause) {
+    if (current.message) {
+      messages.push(current.message);
+    }
+    if (current.stderr) {
+      messages.push(current.stderr);
+    }
+  }
+  return /non-fast-forward|fetch first|rejected/i.test(messages.join("\n"));
 }
 
 function remainingMilliseconds(deadline, now = Date.now) {
