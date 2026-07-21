@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   openSync,
@@ -192,8 +192,8 @@ async function launchInteractiveTerminal({
     "--allow-tool=pan-tools",
     "--no-auto-update",
     "--disallow-temp-dir",
-    "--name",
-    title,
+    "--session-id",
+    randomUUID(),
     "-i",
     "Read the complete PAN portfolio, then greet me with the single most important thing I should work on next and why.",
   ];
