@@ -54,6 +54,7 @@ export class PanAgentClient {
       throw new TypeError("Resumed PAN turns require a sessionId");
     }
     const sessionId = options.sessionId ?? randomUUID();
+    const prompt = buildPrompt(turn);
     const args = this.#buildArguments(
       turn,
       sessionId,
@@ -66,6 +67,7 @@ export class PanAgentClient {
       execution = await runProcess(this.executable, args, {
         cwd: this.cwd,
         env,
+        input: prompt,
         maxBuffer: this.maxBuffer,
         signal: options.signal,
         timeout: this.timeout,
@@ -151,8 +153,6 @@ export class PanAgentClient {
       ...this.executableArgs,
       "-C",
       this.cwd,
-      "-p",
-      buildPrompt(turn),
       "--agent",
       this.agent,
       "--no-ask-user",
@@ -549,12 +549,17 @@ async function runProcess(executable, args, options) {
     throw stateError("cancelled", "Turn was cancelled before process launch");
   }
 
-  const child = spawn(executable, args, {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  let child;
+  try {
+    child = spawn(executable, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch (error) {
+    throw Object.assign(error, { state: "spawn-error" });
+  }
 
   return new Promise((resolve, reject) => {
     let stdout = "";
@@ -607,6 +612,15 @@ async function runProcess(executable, args, options) {
     child.stderr.on("data", (chunk) => {
       stderr = append(stderr, chunk);
     });
+    child.stdin.once("error", (error) => {
+      failAndTerminate(
+        stateError(
+          "stdin-error",
+          `Could not send the PAN turn request to Copilot: ${error.message}`,
+        ),
+      );
+      void finish();
+    });
     child.once("error", (error) => {
       failAndTerminate(Object.assign(error, { state: "spawn-error" }));
       void finish();
@@ -614,6 +628,7 @@ async function runProcess(executable, args, options) {
     child.once("close", (exitCode, signal) => {
       void finish(exitCode, signal);
     });
+    child.stdin.end(options.input, "utf8");
 
     async function finish(exitCode, signal, terminationError) {
       if (settled) {
