@@ -544,6 +544,7 @@ function validateResponseEvidence(response, snapshot) {
 function buildEvidenceIndex(snapshot) {
   const byKind = new Map();
   const itemsById = new Map();
+  const runnersById = new Map();
   addEvidence(byKind, "domain-record", snapshot.id);
   addEvidence(byKind, "domain-record", snapshot.project.id);
   addEvidence(
@@ -616,15 +617,18 @@ function buildEvidenceIndex(snapshot) {
     }
   }
   for (const runner of snapshot.runnerAvailability?.runners ?? []) {
+    runnersById.set(runner.id, runner);
     addEvidence(byKind, "runner", runner.id);
   }
-  return { byKind, itemsById };
+  return { byKind, itemsById, runnersById };
 }
 
 function assertCitationsResolve(citations, index) {
   for (const citation of citations) {
     if (!citationResolves(citation, index)) {
-      throw new Error(`unknown locator ${citation.locator}`);
+      throw new Error(
+        `unknown locator ${citation.locator} for ${citation.kind} evidence; cite a snapshot locator or value assertions that match the snapshot`,
+      );
     }
   }
 }
@@ -647,12 +651,29 @@ function citationResolves(citation, index) {
       return true;
     }
   }
-  if (citation.kind !== "project-field") {
-    return false;
+  if (citation.kind === "project-field") {
+    return assertionLocatorResolves(
+      citation,
+      index.itemsById,
+      kindIndex,
+      (item) => item.fields ?? {},
+    );
   }
-  for (const [itemId, item] of index.itemsById) {
-    const colonPrefix = `${itemId}:`;
-    const spacePrefix = `${itemId} `;
+  if (citation.kind === "runner") {
+    return assertionLocatorResolves(
+      citation,
+      index.runnersById,
+      kindIndex,
+      (runner) => runner,
+    );
+  }
+  return false;
+}
+
+function assertionLocatorResolves(citation, recordsById, kindIndex, valuesFor) {
+  for (const [recordId, record] of recordsById) {
+    const colonPrefix = `${recordId}:`;
+    const spacePrefix = `${recordId} `;
     const prefix = citation.locator.startsWith(colonPrefix)
       ? colonPrefix
       : citation.locator.startsWith(spacePrefix)
@@ -665,24 +686,27 @@ function citationResolves(citation, index) {
       .slice(prefix.length)
       .split(",")
       .map((assertion) => assertion.trim());
+    const values = valuesFor(record);
     const fieldsMatch = assertions.every((assertion) => {
       const separator = assertion.indexOf("=");
       if (separator === -1) {
         if (assertion === "fields") {
-          return item.fields && typeof item.fields === "object";
+          return values && typeof values === "object";
         }
         const field = assertion.replace(/^fields\./, "");
-        return Object.hasOwn(item.fields ?? {}, field);
+        return Object.hasOwn(values, field);
       }
       const field = assertion.slice(0, separator).replace(/^fields\./, "");
       const expected = assertion.slice(separator + 1);
-      return String(item.fields?.[field]) === expected;
+      return Object.hasOwn(values, field) && String(values[field]) === expected;
     });
     if (!fieldsMatch) {
-      return false;
+      continue;
     }
-    const revisions = kindIndex.get(itemId) ?? new Set();
-    return revisionResolves(citation.revision, revisions);
+    const revisions = kindIndex.get(recordId) ?? new Set();
+    if (revisionResolves(citation.revision, revisions)) {
+      return true;
+    }
   }
   return false;
 }
