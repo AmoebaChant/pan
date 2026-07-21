@@ -626,29 +626,68 @@ export class PanStore {
       return { released: false, reason: "lease-expired", item: current };
     }
 
-    await this.setFields(itemId, {
-      claimedBy: null,
-      leaseUntil: null,
-      ...(status ? { status } : {}),
-    });
-    if (assignee) {
-      await this.#editAssignee(current, "--remove-assignee", assignee);
-    }
+    const closesIssue = status === "done" && current.state !== "closed";
+    let assigneeRemoved = false;
+    try {
+      await this.setFields(itemId, {
+        claimedBy: null,
+        leaseUntil: null,
+        ...(status ? { status } : {}),
+      });
+      if (assignee) {
+        await this.#editAssignee(current, "--remove-assignee", assignee);
+        assigneeRemoved = true;
+      }
 
-    const expected = {
-      claimedBy: "",
-      leaseUntil: "",
-      ...(status ? { status } : {}),
-    };
-    const confirmed = await this.#confirmFields(itemId, expected);
-    if (!confirmed) {
-      return {
-        released: false,
-        reason: "release-not-confirmed",
-        item: await this.#requireItem(itemId),
+      const expected = {
+        claimedBy: "",
+        leaseUntil: "",
+        ...(status ? { status } : {}),
       };
+      const confirmed = await this.#confirmFields(itemId, expected);
+      if (!confirmed) {
+        return {
+          released: false,
+          reason: "release-not-confirmed",
+          item: await this.#requireItem(itemId),
+        };
+      }
+      if (closesIssue) {
+        await this.#closeIssue(confirmed);
+        confirmed.state = "closed";
+      }
+      return { released: true, item: confirmed };
+    } catch (error) {
+      if (!closesIssue) {
+        throw error;
+      }
+      try {
+        await this.setFields(itemId, {
+          claimedBy: current.fields.claimedBy,
+          leaseUntil: current.fields.leaseUntil,
+          status: current.fields.status,
+        });
+        if (assigneeRemoved) {
+          await this.#editAssignee(current, "--add-assignee", assignee);
+        }
+        const restored = await this.#confirmFields(itemId, {
+          claimedBy: current.fields.claimedBy,
+          leaseUntil: current.fields.leaseUntil,
+          status: current.fields.status,
+        });
+        if (!restored) {
+          throw new Error(
+            `Unable to restore PAN task ${itemId} after Issue closure failed`,
+          );
+        }
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          "Issue closure failed and the PAN task could not be restored",
+        );
+      }
+      throw error;
     }
-    return { released: true, item: confirmed };
   }
 
   async #loadSchema() {
@@ -876,6 +915,21 @@ export class PanStore {
       item.repository || this.repository,
       flag,
       assignee,
+    ]);
+  }
+
+  async #closeIssue(item) {
+    if (!item.number) {
+      throw new Error(`Project item ${item.id} is not an Issue`);
+    }
+    await this.gh.run([
+      "issue",
+      "close",
+      String(item.number),
+      "--repo",
+      item.repository || this.repository,
+      "--reason",
+      "completed",
     ]);
   }
 }
