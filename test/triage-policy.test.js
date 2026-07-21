@@ -86,6 +86,32 @@ test("matches all requirements against online runner capabilities", () => {
   );
 });
 
+test("requires one playbook to satisfy the complete task", () => {
+  const profiles = [
+    {
+      id: "split",
+      online: true,
+      capabilities: ["repo:example/tool", "tool:a", "tool:b"],
+      playbooks: [
+        {
+          capabilities: ["repo:example/tool", "tool:a"],
+        },
+        {
+          capabilities: ["repo:example/tool", "tool:b"],
+        },
+      ],
+    },
+  ];
+
+  assert.equal(
+    matchingRunner(
+      ["repo:example/tool", "tool:a", "tool:b"],
+      profiles,
+    ),
+    undefined,
+  );
+});
+
 function makeItem({
   body = "Do the task.",
   owner = "unassigned",

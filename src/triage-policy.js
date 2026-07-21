@@ -78,9 +78,15 @@ export function matchingRunner(requirements, profiles) {
   return profiles.find(
     (profile) =>
       profile.online &&
-      requirements.every((requirement) =>
-        profile.capabilities.includes(requirement),
-      ),
+      (profile.playbooks
+        ? profile.playbooks.some((playbook) =>
+            requirements.every((requirement) =>
+              playbook.capabilities.includes(requirement),
+            ),
+          )
+        : requirements.every((requirement) =>
+            profile.capabilities.includes(requirement),
+          )),
   );
 }
 

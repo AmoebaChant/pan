@@ -9,10 +9,11 @@ import path from "node:path";
 import { once } from "node:events";
 
 import { terminateProcessTree } from "./process-tree.js";
+import { buildTaskPrompt } from "./task-prompt.js";
 
 const contextPath = parseContextPath(process.argv.slice(2));
 const context = JSON.parse(await readFile(contextPath, "utf8"));
-const prompt = buildPrompt(contextPath, context);
+const prompt = buildTaskPrompt(contextPath, context);
 const args = buildCopilotArgs(context, prompt);
 const workerEnv = { ...process.env };
 for (const name of [
@@ -127,32 +128,6 @@ function buildCopilotArgs(task, taskPrompt) {
     args.push("--model", task.copilot.model);
   }
   return args;
-}
-
-function buildPrompt(taskContextPath, task) {
-  return [
-    "You are a PAN worker daemon executing one GitHub Issue.",
-    "",
-    `Read the complete task context from ${taskContextPath}.`,
-    "It contains the Issue, its comments and answers, target worktree, branch, and workstream README.",
-    "",
-    "Guardrails:",
-    "- Work only in the provided worktree and remain on the provided task branch.",
-    "- Never push, force-push, merge, delete branches/worktrees, or create/merge/close pull requests or Issues.",
-    "- Do not modify the default branch. The runner owns commit, push, and PR creation.",
-    "- Do not run git, gh, cmd, PowerShell, or other wrapper commands that bypass the denied tools.",
-    "- Make only the requested change and run the smallest relevant existing tests.",
-    "- Do not write credentials, tokens, local paths, runner state, or other private data into the target repository.",
-    "",
-    `When complete, atomically write ${task.paths.agentResult} as JSON with:`,
-    '{"status":"completed","summary":"one paragraph"}',
-    "",
-    `If human input is required, atomically write ${task.paths.needsHuman} as JSON with:`,
-    '{"kind":"question|approval|local-ui","prompt":"one-line request","localUrl":"optional URL"}',
-    `Then atomically write ${task.paths.agentResult} as JSON with:`,
-    '{"status":"blocked","summary":"why work cannot continue"}',
-    "Do not ask the user directly in this non-interactive session.",
-  ].join("\n");
 }
 
 async function readAgentResult(filePath) {

@@ -1,17 +1,15 @@
 import { formatNeedsHuman } from "./needs-human.js";
 import {
+  matchingPlaybook,
+  normalizePlaybooks,
+  taskRepository,
+} from "./playbook.js";
+import {
   isRateLimitError,
   nextPollDelaySeconds,
   rateLimitBackoffSeconds,
   waitForNextPoll,
 } from "./polling.js";
-
-const PRIORITY = new Map([
-  ["urgent", 0],
-  ["high", 1],
-  ["normal", 2],
-  ["low", 3],
-]);
 
 export class RunnerDaemon {
   constructor({
@@ -24,7 +22,9 @@ export class RunnerDaemon {
     logger = console,
   }) {
     this.store = store;
-    this.profile = profile;
+    this.profile = profile.playbooks
+      ? profile
+      : { ...profile, playbooks: normalizePlaybooks(profile) };
     this.executor = executor;
     this.now = now;
     this.sleep = sleep;
@@ -34,7 +34,9 @@ export class RunnerDaemon {
 
   async runOnce() {
     await this.tick();
-    await Promise.all([...this.active.values()]);
+    await Promise.all(
+      [...this.active.values()].map((entry) => entry.promise),
+    );
   }
 
   async run({ signal } = {}) {
@@ -58,7 +60,9 @@ export class RunnerDaemon {
         signal,
       });
     }
-    await Promise.all([...this.active.values()]);
+    await Promise.all(
+      [...this.active.values()].map((entry) => entry.promise),
+    );
   }
 
   async tick() {
@@ -76,17 +80,22 @@ export class RunnerDaemon {
       status: "ready",
       claimable: true,
     });
-    const candidates = items
-      .filter((item) => isRunnable(item, this.profile))
-      .sort(compareItems);
+    const candidates = items.filter((item) => isRunnable(item));
+    const activeCounts = this.#activePlaybookCounts();
 
     let started = 0;
     for (const item of candidates) {
       if (started >= freeSlots) {
         break;
       }
-      const slot = this.#nextSlot();
-      const runner = `${this.profile.id}/slot-${slot}`;
+      const playbook = matchingPlaybook(item, this.profile, activeCounts);
+      if (!playbook) {
+        continue;
+      }
+      const slot = this.#nextPlaybookSlot(playbook);
+      const runner = playbook.legacy
+        ? `${this.profile.id}/slot-${slot}`
+        : `${this.profile.id}/${playbook.id}/slot-${slot}`;
       let claim;
       try {
         claim = await this.store.claimWithLease({
@@ -106,20 +115,24 @@ export class RunnerDaemon {
         continue;
       }
 
-      const promise = this.#runClaim(claim.item, runner)
+      const promise = this.#runClaim(claim.item, runner, playbook)
         .catch((error) => {
           this.logger.error(`PAN task #${item.number} failed`, error);
         })
         .finally(() => {
-          this.active.delete(slot);
+          this.active.delete(runner);
         });
-      this.active.set(slot, promise);
+      this.active.set(runner, { playbookId: playbook.id, slot, promise });
+      activeCounts.set(
+        playbook.id,
+        (activeCounts.get(playbook.id) ?? 0) + 1,
+      );
       started += 1;
     }
     return started;
   }
 
-  async #runClaim(item, runner) {
+  async #runClaim(item, runner, playbook) {
     const repository = repositoryFor(item);
     const deadline =
       this.now().getTime() +
@@ -140,6 +153,7 @@ export class RunnerDaemon {
         item: { ...item, comments },
         repository,
         runner,
+        playbook,
         deadline,
       });
       const result = await handle.wait({
@@ -271,58 +285,50 @@ export class RunnerDaemon {
     ).toISOString();
   }
 
-  #nextSlot() {
-    for (
-      let slot = 1;
-      slot <= this.profile.maxConcurrentDaemons;
-      slot += 1
-    ) {
-      if (!this.active.has(slot)) {
+  #activePlaybookCounts() {
+    const counts = new Map();
+    for (const entry of this.active.values()) {
+      counts.set(
+        entry.playbookId,
+        (counts.get(entry.playbookId) ?? 0) + 1,
+      );
+    }
+    return counts;
+  }
+
+  #nextPlaybookSlot(playbook) {
+    for (let slot = 1; slot <= playbook.capacity; slot += 1) {
+      if (
+        ![...this.active.values()].some(
+          (entry) =>
+            entry.playbookId === playbook.id && entry.slot === slot,
+        )
+      ) {
         return slot;
       }
     }
-    throw new Error("No free daemon slot");
+    throw new Error(`No free slot for playbook ${playbook.id}`);
   }
 }
 
-function isRunnable(item, profile) {
+function isRunnable(item) {
   if (!["full-auto", "agent-reviewer"].includes(item.fields.autonomy)) {
     return false;
   }
   if (!item.fields.workstream?.trim()) {
     return false;
   }
-  const repositories = item.requirements.filter((requirement) =>
-    requirement.startsWith("repo:"),
-  );
-  if (
-    repositories.length !== 1 ||
-    !profile.repositories[repositories[0].slice("repo:".length)]
-  ) {
-    return false;
-  }
-  return item.requirements.every((requirement) =>
-    profile.capabilities.includes(requirement),
-  );
+  return Boolean(taskRepository(item));
 }
 
 function repositoryFor(item) {
-  const repositories = item.requirements
-    .filter((requirement) => requirement.startsWith("repo:"))
-    .map((requirement) => requirement.slice("repo:".length));
-  if (repositories.length !== 1) {
+  const repository = taskRepository(item);
+  if (!repository) {
     throw new Error(
       `PAN task #${item.number} must have exactly one repo: requirement`,
     );
   }
-  return repositories[0];
-}
-
-function compareItems(left, right) {
-  const priority =
-    (PRIORITY.get(left.fields.priority) ?? PRIORITY.size) -
-    (PRIORITY.get(right.fields.priority) ?? PRIORITY.size);
-  return priority || left.number - right.number;
+  return repository;
 }
 
 function startHeartbeat({

@@ -161,6 +161,76 @@ test("surfaces claim rate limits to the polling loop", async () => {
   await assert.rejects(daemon.runOnce(), /rate limit exceeded/i);
 });
 
+test("enforces per-playbook capacity without sharing slots between playbooks", async () => {
+  const items = [
+    makeItem({
+      id: "docs-1",
+      number: 1,
+      requirements: ["repo:example/tool", "tool:docs"],
+    }),
+    ...Array.from({ length: 6 }, (_, index) =>
+      makeItem({
+        id: `pan-${index + 1}`,
+        number: index + 2,
+        requirements: ["repo:example/tool", "tool:node22"],
+      }),
+    ),
+  ];
+  const handles = Array.from(
+    { length: 6 },
+    () => new DeferredHandle(),
+  );
+  const store = new FakeStore(items);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makePlaybookProfile(),
+    executor: new SequencedExecutor(handles),
+    logger: silentLogger,
+  });
+
+  const started = await daemon.tick();
+
+  assert.equal(started, 6);
+  assert.equal(store.claims.length, 6);
+  assert.equal(
+    store.claims.filter((claim) => claim.runner.includes("pan-development"))
+      .length,
+    5,
+  );
+  assert.equal(
+    store.claims.filter((claim) => claim.runner.includes("documentation"))
+      .length,
+    1,
+  );
+  for (const handle of handles) {
+    handle.resolve();
+  }
+  await Promise.all([...daemon.active.values()].map((entry) => entry.promise));
+});
+
+test("releases playbook capacity after a failed launch so work can retry", async () => {
+  const item = makeItem({
+    requirements: ["repo:example/tool", "tool:node22"],
+  });
+  const store = new FakeStore([item]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makePlaybookProfile({ maximum: 1, panCapacity: 1 }),
+    executor: new FailingExecutor(),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+  assert.equal(daemon.active.size, 0);
+  assert.equal(store.releases[0].status, "blocked");
+
+  daemon.executor = new FakeExecutor(new FakeHandle());
+  await daemon.runOnce();
+
+  assert.equal(store.claims.length, 2);
+  assert.equal(store.releases.at(-1).status, "in-review");
+});
+
 class FakeStore {
   constructor(
     items,
@@ -190,7 +260,10 @@ class FakeStore {
     if (this.claimFailure) {
       throw this.claimFailure;
     }
-    return { claimed: true, item: this.items[0] };
+    return {
+      claimed: true,
+      item: this.items.find((item) => item.id === claim.itemId),
+    };
   }
 
   async addComment(_item, body) {
@@ -232,6 +305,16 @@ class FailingExecutor {
   }
 }
 
+class SequencedExecutor {
+  constructor(handles) {
+    this.handles = [...handles];
+  }
+
+  async start() {
+    return this.handles.shift();
+  }
+}
+
 class FakeHandle {
   constructor(
     result = {
@@ -260,12 +343,31 @@ class FakeHandle {
   }
 }
 
+class DeferredHandle extends FakeHandle {
+  constructor() {
+    super();
+    this.waitPromise = new Promise((resolve) => {
+      this.resolveWait = resolve;
+    });
+  }
+
+  async wait() {
+    return this.waitPromise;
+  }
+
+  resolve() {
+    this.resolveWait(this.result);
+  }
+}
+
 function makeItem({
+  id = "item-1",
+  number = 1,
   requirements = ["repo:example/tool", "env:local"],
 } = {}) {
   return {
-    id: "item-1",
-    number: 1,
+    id,
+    number,
     title: "Task",
     body: "Do the task.",
     url: "https://github.com/example/data/issues/1",
@@ -276,6 +378,42 @@ function makeItem({
       priority: "normal",
       workstream: "example",
     },
+  };
+}
+
+function makePlaybookProfile({
+  maximum = 6,
+  panCapacity = 5,
+} = {}) {
+  return {
+    ...makeProfile(),
+    maxConcurrentDaemons: maximum,
+    capabilities: [
+      "repo:example/tool",
+      "env:local",
+      "tool:node22",
+      "tool:docs",
+    ],
+    playbooks: [
+      {
+        id: "pan-development",
+        capacity: panCapacity,
+        capabilities: [
+          "repo:example/tool",
+          "env:local",
+          "tool:node22",
+        ],
+        repositories: ["example/tool"],
+        instructions: [],
+      },
+      {
+        id: "documentation",
+        capacity: 1,
+        capabilities: ["repo:example/tool", "tool:docs"],
+        repositories: ["example/tool"],
+        instructions: [],
+      },
+    ],
   };
 }
 

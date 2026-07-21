@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { normalizePlaybooks } from "./playbook.js";
+
 const DEFAULTS = {
   pollIntervalSeconds: 30,
   leaseSeconds: 600,
@@ -115,6 +117,7 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
       model: profile.copilot?.model,
     },
   };
+  normalized.playbooks = normalizePlaybooks(normalized);
 
   if (normalized.heartbeatSeconds >= normalized.leaseSeconds) {
     throw new TypeError("heartbeatSeconds must be less than leaseSeconds");

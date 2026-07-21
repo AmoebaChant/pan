@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   mkdir,
   readFile,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -24,138 +26,215 @@ export class LocalTaskExecutor {
     now = () => new Date(),
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    randomId = randomUUID,
   }) {
     this.profile = profile;
     this.commands = commands;
     this.spawnProcess = spawnProcess;
     this.now = now;
     this.sleep = sleep;
+    this.randomId = randomId;
   }
 
-  async start({ item, repository, runner, deadline }) {
+  async start({ item, repository, runner, playbook, deadline }) {
     const repositoryConfig = this.profile.repositories[repository];
     if (!repositoryConfig) {
       throw new Error(`Runner cannot service repository ${repository}`);
     }
+    const selectedPlaybook = playbook ?? {
+      id: "legacy",
+      instructions: [],
+    };
 
-    const stamp = this.now().toISOString().replace(/\D/g, "").slice(0, 14);
-    const taskName = `issue-${item.number}-${stamp}`;
-    const branch = `pan/issue-${item.number}-${slugify(item.title)}-${stamp}`;
+    await mkdir(this.profile.workspaceRoot, { recursive: true });
+    await mkdir(this.profile.stateDirectory, { recursive: true });
+    const allocation = await this.#allocateTask(item);
+    const { taskName, branch, worktreePath, statePath } = allocation;
     if (branch === repositoryConfig.defaultBranch) {
       throw new Error("Task branch must not be the default branch");
     }
 
-    const worktreePath = path.join(this.profile.workspaceRoot, taskName);
-    const statePath = path.join(this.profile.stateDirectory, taskName);
-    await mkdir(this.profile.workspaceRoot, { recursive: true });
-    await mkdir(statePath, { recursive: true });
+    let worktreeCreated = false;
+    try {
+      const expectedRemote = await this.#run(deadline, "git", [
+        "-C",
+        repositoryConfig.path,
+        "remote",
+        "get-url",
+        "origin",
+      ]);
+      const remoteRepository = normalizeGitHubRepositoryUrl(expectedRemote);
+      if (remoteRepository?.toLowerCase() !== repository.toLowerCase()) {
+        throw new Error(
+          `Configured path origin is ${remoteRepository ?? "not a GitHub repository"}, expected ${repository}`,
+        );
+      }
+      await this.#run(deadline, "git", [
+        "-C",
+        repositoryConfig.path,
+        "fetch",
+        "origin",
+        repositoryConfig.defaultBranch,
+      ]);
+      await this.#run(deadline, "git", [
+        "-C",
+        repositoryConfig.path,
+        "worktree",
+        "add",
+        worktreePath,
+        "-b",
+        branch,
+        `origin/${repositoryConfig.defaultBranch}`,
+      ]);
+      worktreeCreated = true;
 
-    const expectedRemote = await this.#run(deadline, "git", [
-      "-C",
-      repositoryConfig.path,
-      "remote",
-      "get-url",
-      "origin",
-    ]);
-    const remoteRepository = normalizeGitHubRepositoryUrl(expectedRemote);
-    if (remoteRepository?.toLowerCase() !== repository.toLowerCase()) {
-      throw new Error(
-        `Configured path origin is ${remoteRepository ?? "not a GitHub repository"}, expected ${repository}`,
+      const workstreamPath = await resolveConfinedWorkstreamReadme(
+        this.profile.store.path,
+        item.fields.workstream,
       );
-    }
-    await this.#run(deadline, "git", [
-      "-C",
-      repositoryConfig.path,
-      "fetch",
-      "origin",
-      repositoryConfig.defaultBranch,
-    ]);
-    await this.#run(deadline, "git", [
-      "-C",
-      repositoryConfig.path,
-      "worktree",
-      "add",
-      worktreePath,
-      "-b",
-      branch,
-      `origin/${repositoryConfig.defaultBranch}`,
-    ]);
+      const workstream = await readFile(workstreamPath, "utf8");
+      const context = {
+        version: 1,
+        runner,
+        issue: {
+          number: item.number,
+          title: item.title,
+          body: item.body,
+          url: item.url,
+          repository: item.repository,
+          comments: item.comments ?? [],
+        },
+        target: {
+          repository,
+          defaultBranch: repositoryConfig.defaultBranch,
+          branch,
+          worktreePath,
+        },
+        playbook: {
+          id: selectedPlaybook.id,
+          instructions: selectedPlaybook.instructions,
+        },
+        workstream: {
+          path: item.fields.workstream,
+          sourcePath: workstreamPath,
+          content: workstream,
+        },
+        paths: {
+          statePath,
+          agentResult: path.join(statePath, "agent-result.json"),
+          result: path.join(statePath, "result.json"),
+          needsHuman: path.join(statePath, "needs-human.json"),
+          log: path.join(statePath, "copilot.log"),
+        },
+        copilot: {
+          executable: this.profile.copilot.executable,
+          model: this.profile.copilot.model,
+          ...this.profile.taskBudget,
+          deadline,
+        },
+      };
+      const contextPath = path.join(statePath, "context.json");
+      await writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`);
 
-    const workstreamPath = await resolveConfinedWorkstreamReadme(
-      this.profile.store.path,
-      item.fields.workstream,
-    );
-    const workstream = await readFile(workstreamPath, "utf8");
-    const context = {
-      version: 1,
-      runner,
-      issue: {
-        number: item.number,
-        title: item.title,
-        body: item.body,
-        url: item.url,
-        repository: item.repository,
-        comments: item.comments ?? [],
-      },
-      target: {
+      const title = terminalTitle(item);
+      await launchTerminal({
+        executable: this.profile.terminal.executable,
+        window: this.profile.terminal.window,
+        title,
+        workerPath: WORKER_PATH,
+        contextPath,
+        spawnProcess: this.spawnProcess,
+      });
+
+      return new LocalTaskHandle({
+        item,
         repository,
-        defaultBranch: repositoryConfig.defaultBranch,
+        repositoryConfig,
+        expectedRemote,
+        profile: this.profile,
+        commands: this.commands,
+        sleep: this.sleep,
+        title,
         branch,
         worktreePath,
-      },
-      workstream: {
-        path: item.fields.workstream,
-        sourcePath: workstreamPath,
-        content: workstream,
-      },
-      paths: {
         statePath,
-        agentResult: path.join(statePath, "agent-result.json"),
-        result: path.join(statePath, "result.json"),
-        needsHuman: path.join(statePath, "needs-human.json"),
-        log: path.join(statePath, "copilot.log"),
-      },
-      copilot: {
-        executable: this.profile.copilot.executable,
-        model: this.profile.copilot.model,
-        ...this.profile.taskBudget,
+        resultPath: context.paths.result,
+        needsHumanPath: context.paths.needsHuman,
         deadline,
-      },
-    };
-    const contextPath = path.join(statePath, "context.json");
-    await writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`);
+      });
+    } catch (error) {
+      const cleanupErrors = [];
+      if (worktreeCreated) {
+        try {
+          await this.#runCleanup("git", [
+            "-C",
+            repositoryConfig.path,
+            "worktree",
+            "remove",
+            "--force",
+            worktreePath,
+          ]);
+          await this.#runCleanup("git", [
+            "-C",
+            repositoryConfig.path,
+            "branch",
+            "--delete",
+            "--force",
+            branch,
+          ]);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      try {
+        await rm(statePath, { recursive: true, force: true });
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      if (cleanupErrors.length) {
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          `Task launch failed and cleanup was incomplete: ${error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
 
-    const title = terminalTitle(item);
-    await launchTerminal({
-      executable: this.profile.terminal.executable,
-      window: this.profile.terminal.window,
-      title,
-      workerPath: WORKER_PATH,
-      contextPath,
-      spawnProcess: this.spawnProcess,
-    });
-
-    return new LocalTaskHandle({
-      item,
-      repository,
-      repositoryConfig,
-      expectedRemote,
-      profile: this.profile,
-      commands: this.commands,
-      sleep: this.sleep,
-      title,
-      branch,
-      worktreePath,
-      statePath,
-      resultPath: context.paths.result,
-      needsHumanPath: context.paths.needsHuman,
-      deadline,
-    });
+  async #allocateTask(item) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const token = allocationToken(this.randomId());
+      const taskName = `issue-${item.number}-${token}`;
+      const statePath = path.join(this.profile.stateDirectory, taskName);
+      try {
+        await mkdir(statePath);
+        return {
+          taskName,
+          branch: `pan/issue-${item.number}-${slugify(item.title)}-${token}`,
+          worktreePath: path.join(this.profile.workspaceRoot, taskName),
+          statePath,
+        };
+      } catch (error) {
+        if (error.code !== "EEXIST") {
+          throw error;
+        }
+      }
+    }
+    throw new Error(`Unable to allocate unique workspace for issue ${item.number}`);
   }
 
   async #run(deadline, executable, args) {
     return this.commands.run(executable, args, {
-      timeout: remainingMilliseconds(deadline),
+      timeout: remainingMilliseconds(
+        deadline,
+        () => this.now().getTime(),
+      ),
+    });
+  }
+
+  async #runCleanup(executable, args) {
+    return this.commands.run(executable, args, {
+      timeout: 30_000,
     });
   }
 }
@@ -421,6 +500,14 @@ function slugify(value) {
   return slug || "task";
 }
 
+function allocationToken(value) {
+  const token = String(value).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 12);
+  if (!token) {
+    throw new TypeError("task allocation ID must contain letters or numbers");
+  }
+  return token;
+}
+
 function truncate(value, length) {
   return value.length > length ? `${value.slice(0, length - 3)}...` : value;
 }
@@ -433,8 +520,8 @@ function lastNonEmptyLine(value) {
     .at(-1);
 }
 
-function remainingMilliseconds(deadline) {
-  const remaining = deadline - Date.now();
+function remainingMilliseconds(deadline, now = Date.now) {
+  const remaining = deadline - now();
   if (remaining <= 0) {
     throw new Error("Task wall-clock budget expired");
   }

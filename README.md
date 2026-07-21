@@ -89,11 +89,11 @@ and the daemon use the same generic PAN agent and complete domain snapshot.
 
 ## Runner daemon
 
-`pan-runner` currently loads a private machine capability profile, pulls
-compatible ready work, claims it with a renewable lease, and launches a headed
-Copilot CLI task in an isolated worktree. The target model evolves profiles into
-shared domain playbooks plus local machine settings, allowing multiple matching
-tasks to run concurrently without idle per-repository agents.
+`pan-runner` loads a private machine profile containing reusable playbooks,
+pulls compatible ready work, claims it with a renewable lease, and launches a
+headed Copilot CLI task in an isolated worktree. Global and per-playbook
+capacity allow independent task classes to run concurrently without sharing
+branches or consuming each other's reserved playbook slots.
 
 See the [runner contract and profile format](docs/runner.md).
 
