@@ -279,6 +279,38 @@ test("rejects evidence cited as the wrong source kind", async () => {
   assert.deepEqual(fixture.calls, []);
 });
 
+test("accepts runner evidence with matching value assertions", async () => {
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "runner",
+      locator:
+        "runner-a:online=true,freeCapacity=0,capacityKnown=false,activeLeaseCount=null",
+    },
+    mutateSnapshot: addUnknownCapacityRunner,
+  });
+
+  const result = await fixture.service.run();
+
+  assert.equal(result.response.facts.length, 1);
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("rejects runner evidence when a value assertion does not match", async () => {
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "runner",
+      locator: "runner-a:online=true,capacityKnown=true",
+    },
+    mutateSnapshot: addUnknownCapacityRunner,
+  });
+
+  await assert.rejects(
+    fixture.service.run(),
+    /unknown locator .* for runner evidence; cite a snapshot locator or value assertions that match the snapshot/i,
+  );
+  assert.deepEqual(fixture.calls, []);
+});
+
 test("rejects cross-domain Issue creation", async () => {
   const fixture = reviewFixture({
     action: {
@@ -361,6 +393,7 @@ function reviewFixture({
   action,
   afterReorder,
   existingIssue,
+  factCitation,
   failReorder = false,
   mutateCurrent,
   mutateSnapshot,
@@ -398,7 +431,7 @@ function reviewFixture({
     facts: [
       {
         statement: "B is due first.",
-        citations: [{ kind: "issue", locator: "item-b" }],
+        citations: [factCitation ?? { kind: "issue", locator: "item-b" }],
       },
     ],
     interpretations: [],
@@ -518,6 +551,23 @@ function reviewFixture({
       store,
       now: () => new Date("2026-07-20T20:00:00.000Z"),
     }),
+  };
+}
+
+function addUnknownCapacityRunner(snapshot) {
+  snapshot.runnerAvailability = {
+    complete: true,
+    runners: [
+      {
+        id: "runner-a",
+        online: true,
+        capabilities: ["coding"],
+        maximumCapacity: 1,
+        activeLeaseCount: null,
+        freeCapacity: 0,
+        capacityKnown: false,
+      },
+    ],
   };
 }
 
