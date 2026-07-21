@@ -25,14 +25,13 @@ test("uses one custom agent for review and chat turns", async () => {
   assert.equal(chat.response.mode, "interactive-chat");
   assert.equal(chat.sessionId, sessionId);
   const args = review.result.data.arguments;
-  assert.deepEqual(args.slice(0, 6), [
+  assert.deepEqual(args.slice(0, 4), [
     "-C",
     path.resolve("."),
-    "-p",
-    args[3],
     "--agent",
     "pan",
   ]);
+  assert.ok(!args.includes("-p"));
   for (const expected of [
     "--no-ask-user",
     "--disable-builtin-mcps",
@@ -67,7 +66,26 @@ test("supports an inline portfolio without exposing unavailable tools", async ()
   const args = result.result.data.arguments;
   assert.ok(!args.some((argument) => argument.startsWith("--available-tools")));
   assert.ok(!args.some((argument) => argument.startsWith("--allow-tool")));
-  assert.match(args[3], /complete portfolio snapshot is embedded/i);
+  assert.match(
+    result.result.data.prompt,
+    /complete portfolio snapshot is embedded/i,
+  );
+});
+
+test("streams large inline portfolios without placing them in process arguments", async () => {
+  const marker = "portfolio-content-marker";
+  const result = await fixtureClient().review(
+    {
+      ...turn("autonomous-review"),
+      portfolio: { narrative: `${marker}${"x".repeat(64 * 1024)}` },
+    },
+    { inlinePortfolio: true },
+  );
+
+  assert.ok(
+    !result.result.data.arguments.some((argument) => argument.includes(marker)),
+  );
+  assert.match(result.result.data.prompt, new RegExp(marker));
 });
 
 test("validates and reports multiple bounded tool exchanges", async () => {
@@ -111,7 +129,7 @@ test("includes reasoning response requirements in the agent prompt", async () =>
       agentQueueRecommendation: "Recommend agent work.",
     },
   });
-  const prompt = result.result.data.arguments[3];
+  const prompt = result.result.data.prompt;
 
   assert.match(prompt, /"classifications":\[\{"itemId":"item-1"/);
   assert.match(prompt, /"humanNextAction":/);

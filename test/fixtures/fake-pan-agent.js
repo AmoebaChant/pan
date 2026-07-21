@@ -3,7 +3,7 @@ function argument(name) {
   return index === -1 ? undefined : process.argv[index + 1];
 }
 
-const prompt = argument("-p");
+const prompt = argument("-p") ?? (await readInput());
 if (prompt) {
   const request = JSON.parse(
     prompt
@@ -104,9 +104,19 @@ if (prompt) {
           process.argv.find((value) => value.startsWith("--resume="))?.slice(9),
         exitCode: 0,
         arguments: process.argv.slice(2),
+        prompt,
       });
     }
   }
+}
+
+async function readInput() {
+  process.stdin.setEncoding("utf8");
+  let input = "";
+  for await (const chunk of process.stdin) {
+    input += chunk;
+  }
+  return input;
 }
 
 function emit(type, value) {

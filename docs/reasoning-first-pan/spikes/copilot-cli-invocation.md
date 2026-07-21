@@ -19,9 +19,10 @@ This was verified with GitHub Copilot CLI 1.0.72 on Windows on 2026-07-20.
 The first turn uses:
 
 ```text
+stdin: <request-json-and-turn-prompt>
+
 copilot
   -C <domain-or-runtime-working-directory>
-  -p <request-json-and-turn-prompt>
   --agent pan
   --no-ask-user
   --disable-builtin-mcps
@@ -41,10 +42,11 @@ Later conversational turns replace `--session-id <uuid>` with:
 --resume=<uuid>
 ```
 
-The process receives no conversational stdin. The request is supplied with
-`-p`, stdout is JSONL, stderr is diagnostic output, and a final `result` event
-contains `sessionId`, `exitCode`, and usage. A successful observed turn returned
-process exit code 0 and a final event whose `exitCode` was 0.
+The request is supplied on stdin so a complete portfolio cannot exceed the
+platform process command-line limit. Stdout is JSONL, stderr is diagnostic
+output, and a final `result` event contains `sessionId`, `exitCode`, and usage.
+A successful observed turn returned process exit code 0 and a final event whose
+`exitCode` was 0.
 
 `--autopilot` is intentionally omitted. Prompt mode is already non-interactive
 and bounded. In 1.0.72, filtering tools during autopilot also filters its
@@ -133,7 +135,7 @@ Windows.
 The terminal interactive mode (`-i`) was rejected as the service transport. It
 uses a human-oriented terminal UI, has no documented NDJSON stdin request
 framing, and complicates deadlines and recovery. PAN chat remains interactive
-at the application level through repeated `-p`/`--resume` processes.
+at the application level through repeated stdin/`--resume` processes.
 
 ## Offline contract and live probe
 
