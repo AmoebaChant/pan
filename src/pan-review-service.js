@@ -606,6 +606,14 @@ function buildEvidenceIndex(snapshot) {
       addEvidence(byKind, "issue-comment", comment.id, revisions);
       addEvidence(byKind, "issue-comment", comment.url, revisions);
     }
+    for (const pullRequest of item.linkedPullRequests ?? []) {
+      addEvidence(
+        byKind,
+        "domain-record",
+        pullRequest.url,
+        issueRevisions,
+      );
+    }
     const workstreamRevisions = [
       workstream?.revision,
       ...(workstream?.history ?? []).map((history) => history.sha),

@@ -327,6 +327,32 @@ test("accepts runner evidence with matching value assertions", async () => {
   assert.deepEqual(fixture.calls, []);
 });
 
+test("accepts linked pull request URLs as domain-record evidence", async () => {
+  const pullRequestUrl = "https://github.com/example/tool/pull/21";
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "domain-record",
+      locator: pullRequestUrl,
+    },
+    mutateSnapshot: (snapshot) => {
+      snapshot.dossiers[0].item.linkedPullRequests = [
+        {
+          number: 21,
+          url: pullRequestUrl,
+          state: "open",
+          mergedAt: null,
+          repository: "example/tool",
+        },
+      ];
+    },
+  });
+
+  const result = await fixture.service.run();
+
+  assert.equal(result.response.facts.length, 1);
+  assert.deepEqual(fixture.calls, []);
+});
+
 test("rejects runner evidence when a value assertion does not match", async () => {
   const fixture = reviewFixture({
     factCitation: {
