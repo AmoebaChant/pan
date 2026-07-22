@@ -47,7 +47,7 @@ test("normalizes supported GitHub remote URL formats", () => {
   );
 });
 
-test("allocates unique branches, worktrees, and state for concurrent tasks", async () => {
+test("allocates concurrent tasks and opens their interactive worker terminals", async () => {
   const fixture = await createFixture();
   const commands = new FakeCommands();
   const ids = ["allocation-one", "allocation-two"];
@@ -80,8 +80,20 @@ test("allocates unique branches, worktrees, and state for concurrent tasks", asy
     assert.deepEqual(contexts[0].playbook.instructions, ["Run tests."]);
     assert.equal(contexts[0].playbook.delivery, "pull-request");
     assert.equal(terminalLaunches.length, 2);
-    for (const [, args] of terminalLaunches) {
+    for (const [executable, args, options] of terminalLaunches) {
+      assert.equal(executable, "wt");
       assert.equal(args[args.indexOf("--profile") + 1], "PowerShell");
+      assert.match(args[args.indexOf("--title") + 1], /^PAN #1 - /);
+      const commandIndex = args.indexOf("--suppressApplicationTitle") + 1;
+      assert.equal(args[commandIndex], process.execPath);
+      assert.match(args[commandIndex + 1], /src[\\/]task-worker\.js$/);
+      assert.equal(args[commandIndex + 2], "--context");
+      assert.match(args[commandIndex + 3], /context-[a-f0-9-]+\.json$/);
+      assert.deepEqual(options, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      });
     }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
