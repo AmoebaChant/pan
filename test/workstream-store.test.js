@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
   mkdir,
+  mkdtemp,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -16,7 +18,6 @@ import {
 } from "../src/index.js";
 
 const run = promisify(execFile);
-let fixtureIndex = 0;
 
 test("enumerates hierarchy from folders and reads revision metadata", async (t) => {
   const repositoryPath = await createRepository(t);
@@ -145,10 +146,9 @@ test("returns bounded recent git history for one workstream", async (t) => {
 });
 
 async function createRepository(t) {
-  const repositoryPath = path.resolve(
-    `.workstream-store-fixture-${process.pid}-${fixtureIndex++}`,
+  const repositoryPath = await mkdtemp(
+    path.join(os.tmpdir(), "pan-workstream-store-"),
   );
-  await rm(repositoryPath, { recursive: true, force: true });
   t.after(() => rm(repositoryPath, { recursive: true, force: true }));
   await mkdir(
     path.join(repositoryPath, "workstreams", "parent", "child"),
