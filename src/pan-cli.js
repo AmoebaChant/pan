@@ -1,7 +1,4 @@
-import { readFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import os from "node:os";
 import path from "node:path";
 
 import { AttentionService } from "./attention-service.js";
@@ -23,26 +20,14 @@ import { createAttentionCommandHandlers } from "./attention-commands.js";
 import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 import { createWorkstreamCommandHandlers } from "./workstream-commands.js";
 import { PanAgentClient } from "./pan-agent-client.js";
-import { PanDaemon } from "./pan-daemon.js";
-import { PanHost } from "./pan-host.js";
-import {
-  connectPan,
-  preparePanRuntime,
-  startPan,
-  stopPan,
-} from "./pan-launcher.js";
 import { startPanSession } from "./pan-session.js";
 import { PanReviewService } from "./pan-review-service.js";
-import { PanRepairService } from "./pan-repair-service.js";
 import { PanRuntime } from "./pan-runtime.js";
 import { setupPanDomain } from "./pan-setup.js";
 import { PanStore } from "./pan-store.js";
 import { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
-import { PanToolRegistry } from "./pan-tools.js";
-import { loadRunnerProfile } from "./runner-profile.js";
 import { RunnerProfileSource } from "./runner-profile-source.js";
 import { WorkstreamStore } from "./workstream-store.js";
-import { createServiceLogger } from "./service-logger.js";
 
 const TOOL_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -58,24 +43,13 @@ export async function runPanCli(
     gh = new GhClient(),
     pid = process.pid,
     domainConfigLoader = loadDomainConfig,
-    runnerProfileLoader = loadRunnerProfile,
     storeFactory = (options) => new PanStore(options),
     attentionFactory = (options) => new AttentionService(options),
-    toolRegistryFactory = (options) => new PanToolRegistry(options),
     reviewServiceFactory,
-    repairServiceFactory,
     runtimeFactory = (options) => new PanRuntime(options),
-    hostFactory = (options) => new PanHost(options),
-    startFactory = startPan,
-    stopFactory = stopPan,
-    connectFactory = connectPan,
     sessionFactory = startPanSession,
-    prepareRuntimeFactory = preparePanRuntime,
     setupFactory = setupPanDomain,
     assetServiceFactory = (options) => new PanAssetService(options),
-    loggerFactory = createServiceLogger,
-    hostname = os.hostname(),
-    runnerProfileSourceFactory = (options) => new RunnerProfileSource(options),
     commandContextFactory = createPanCommandContext,
     commandHandlers,
   } = {},
@@ -89,8 +63,12 @@ export async function runPanCli(
       reconcile: createReconciliationCommandHandlers({ env }),
       workstream: createWorkstreamCommandHandlers({ env }),
     };
-  const helper = parsePanHelperArgs(args, { env, handlers: helpers });
+  const normalized = normalizeLegacyAttentionAlias(args);
+  const helper = parsePanHelperArgs(normalized.args, { env, handlers: helpers });
   if (helper) {
+    if (normalized.guidance) {
+      write(stderr, normalized.guidance);
+    }
     return runPanHelperCommand(helper, {
       stdout,
       env,
@@ -98,7 +76,7 @@ export async function runPanCli(
       commandHandlers: helpers,
     });
   }
-  const parsed = parseArgs(args, env);
+  const parsed = parseArgs(normalized.args, env);
   if (parsed.command === "assets") {
     const service = assetServiceFactory({ env });
     const result =
@@ -127,24 +105,10 @@ export async function runPanCli(
     );
     return result;
   }
-  if (parsed.command === "stop") {
-    requireDomainConfiguration(parsed);
-    const result = await stopFactory({ configPath: parsed.config, env });
-    write(stdout, JSON.stringify(result, null, 2));
-    return result;
-  }
   const configuration = await loadCliConfiguration(parsed, {
     domainConfigLoader,
-    runnerProfileLoader,
   });
-  if (configuration.deprecated) {
-    write(
-      stderr,
-      "Warning: --profile and PAN_PROFILE are deprecated for PAN commands; use --config or PAN_CONFIG.",
-    );
-  }
   if (parsed.command === "session") {
-    requireDomainConfiguration(parsed);
     const result = await sessionFactory({
       config: configuration.domainConfig,
       configPath: parsed.config,
@@ -188,129 +152,10 @@ export async function runPanCli(
     humanAssignee: configuration.attention?.assignee,
   });
 
-  if (parsed.command === "start" && parsed.background) {
-    requireDomainConfiguration(parsed);
-    const terminalProfile = parsed.noTerminal
-      ? undefined
-      : await resolveTerminalProfile({
-          directory: configuration.runtime.runnerProfileDirectory,
-          machine: hostname,
-          runnerProfileSourceFactory,
-        });
-    const result = await startFactory({
-      configPath: parsed.config,
-      toolRoot: TOOL_ROOT,
-      autonomousApply: parsed.apply,
-      openTerminal: !parsed.noTerminal,
-      agentName: configuration.agent.name,
-      model: configuration.agent?.model,
-      terminalProfile,
-      env,
-    });
-    write(stdout, JSON.stringify(result, null, 2));
-    return result;
-  }
-
-  if (parsed.command === "connect") {
-    requireDomainConfiguration(parsed);
-    const model = parsed.model ?? configuration.agent?.model;
-    write(
-      stdout,
-      `Connecting PAN chat with model ${model ?? "auto"}; use /model to inspect or change it.`,
-    );
-    return connectFactory({
-      configPath: parsed.config,
-      toolRoot: TOOL_ROOT,
-      executable: configuration.agent?.executable ?? "copilot",
-      agentName: configuration.agent.name,
-      model,
-      env,
-    });
-  }
-  if (parsed.command === "start" || parsed.command === "host") {
-    requireDomainConfiguration(parsed);
-    const paths = await prepareRuntimeFactory({
-      configPath: parsed.config,
-      toolRoot: TOOL_ROOT,
-      stateFile: parsed.stateFile,
-      env,
-    });
-    const services = createDomainServices({
-      store,
-      attention,
-      configuration,
-      env,
-      reviewServiceFactory,
-      repairServiceFactory,
-      toolRegistryFactory,
-    });
-    const logger = await loggerFactory({
-      name: "PAN host",
-      logFile: parsed.stateFile ? undefined : paths.logFile,
-    });
-    const controller = new AbortController();
-    process.once("SIGINT", () => controller.abort());
-    process.once("SIGTERM", () => controller.abort());
-    logger.info(
-      `Starting in the foreground with model ${configuration.agent?.model ?? "auto"}; press Ctrl+C to stop.`,
-    );
-    logger.info(`Activity log: ${paths.logFile}`);
-    const machineProfile = await resolveMachineRunnerProfile({
-      directory: configuration.runtime.runnerProfileDirectory,
-      machine: hostname,
-      runnerProfileSourceFactory,
-    });
-    try {
-      return await hostFactory({
-        reviewService: services.reviewService,
-        toolRegistry: services.toolRegistry,
-        leaderLease: createLeaderLease({
-          configuration,
-          gh,
-          pid,
-        }),
-        stateFile: paths.stateFile,
-        token: randomUUID(),
-        pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
-        heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
-        autonomousApply: parsed.apply,
-        repairService: services.repairService,
-        taskStore: store,
-        model: configuration.agent?.model,
-        configPath: parsed.config,
-        runnerProfilePath: machineProfile?.profilePath,
-        logger,
-      }).run({ signal: controller.signal });
-    } finally {
-      logger.info("Stopped.");
-      await logger.close();
-    }
-  }
-  if (parsed.command === "inbox") {
-    const entries = await attention.inbox();
-    write(stdout, parsed.json ? JSON.stringify(entries, null, 2) : inboxTable(entries));
-    return entries;
-  }
-  if (parsed.command === "answer") {
-    const item = await attention.answer(parsed.identifier, parsed.text);
-    const result = { id: item.number ?? item.id, issueUrl: item.url };
-    write(stdout, parsed.json ? JSON.stringify(result, null, 2) : item.url);
-    return result;
-  }
-  if (parsed.command === "add") {
-    const body = parsed.bodyFile
-      ? await readFile(path.resolve(parsed.bodyFile), "utf8")
-      : parsed.body;
-    const item = await attention.add({ ...parsed, body });
-    const result = { id: item.number ?? item.id, issueUrl: item.url };
-    write(stdout, parsed.json ? JSON.stringify(result, null, 2) : item.url);
-    return result;
-  }
-  if (parsed.command === "review" || parsed.command === "chat") {
+  if (parsed.command === "review") {
     const reviewService =
       reviewServiceFactory?.({ store, configuration, env }) ??
-      createReviewService({ store, configuration, env });
-    const userInput = parsed.command === "chat" ? parsed.text : undefined;
+      createReviewService({ store, attention, configuration, env });
     let result;
     try {
       result = parsed.apply
@@ -322,11 +167,10 @@ export async function runPanCli(
               pid,
             }),
             heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
-          }).runOnce({ userInput })
+            }).runOnce()
         : await reviewService.run({
             apply: false,
-            ...(userInput ? { userInput } : {}),
-          });
+            });
     } catch (error) {
       if (error.result) {
         write(
@@ -360,83 +204,13 @@ export async function runPanCli(
     }
     return result;
   }
-  if (parsed.command === "daemon") {
-    const leaderLease = createLeaderLease({
-      configuration,
-      gh,
-      pid,
-    });
-    const daemon = parsed.config
-      ? runtimeFactory({
-          reviewService:
-            reviewServiceFactory?.({ store, configuration, env }) ??
-            createReviewService({ store, configuration, env }),
-          leaderLease,
-          pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
-          heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
-        })
-      : new PanDaemon({
-          store,
-          leaderLease,
-          profileSource: new RunnerProfileSource({
-            directory: configuration.runtime.runnerProfileDirectory,
-          }),
-          pollIntervalSeconds: configuration.runtime.pollIntervalSeconds,
-          leaderHeartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
-        });
-    if (parsed.once) {
-      const result = await daemon.runOnce();
-      write(stdout, JSON.stringify(result, null, 2));
-      return result;
-    }
-    const controller = new AbortController();
-    process.once("SIGINT", () => controller.abort());
-    process.once("SIGTERM", () => controller.abort());
-    return daemon.run({ signal: controller.signal });
-  }
   throw new Error(`Unknown PAN command: ${parsed.command}`);
-}
-
-async function resolveMachineRunnerProfile({
-  directory,
-  machine,
-  runnerProfileSourceFactory,
-}) {
-  const profiles = await runnerProfileSourceFactory({ directory }).load();
-  const matches = profiles.filter(
-    (profile) => profile.machine.toLowerCase() === machine.toLowerCase(),
-  );
-  if (matches.length > 1) {
-    throw new Error(
-      `Multiple runner profiles match this machine (${machine}); keep exactly one profile per machine`,
-    );
-  }
-  return matches[0];
-}
-
-async function resolveTerminalProfile({
-  directory,
-  machine,
-  runnerProfileSourceFactory,
-}) {
-  const profile = await resolveMachineRunnerProfile({
-    directory,
-    machine,
-    runnerProfileSourceFactory,
-  });
-  return profile?.terminal.profile;
 }
 
 export function parseArgs(args, env = process.env) {
   const remaining = [...args];
   const config = takeOption(remaining, "--config") ?? env.PAN_CONFIG;
   const profile = takeOption(remaining, "--profile") ?? env.PAN_PROFILE;
-  if (config && profile) {
-    throw new TypeError(
-      "PAN domain config and runner profile inputs cannot be used together",
-    );
-  }
-
   const configuration = { config, profile };
   const json = takeFlag(remaining, "--json");
   const command = remaining.shift();
@@ -487,137 +261,85 @@ export function parseArgs(args, env = process.env) {
     return { command, operation, force, json };
   }
 
-  if (!config && !profile) {
-    throw new TypeError(
-      "Set PAN_CONFIG or pass --config <domain-config.json> (legacy: PAN_PROFILE or --profile)",
+  const retirement = retiredCommand(command, json);
+  if (retirement) {
+    throw retirement;
+  }
+  if (remaining.includes("--background") || remaining.includes("--no-terminal")) {
+    throw retiredCommandError(
+      "--background",
+      json,
+      "PAN sessions run in the foreground. Run pan session --config <path>, then exit that session to stop it.",
     );
   }
-  if (
-    ![
-      "start",
-      "stop",
-      "host",
-      "connect",
-      "session",
-      "daemon",
-      "review",
-      "chat",
-      "inbox",
-      "answer",
-      "add",
-    ].includes(command)
-  ) {
+  if (config && profile) {
+    throw new TypeError(
+      "PAN domain config and runner profile inputs cannot be used together",
+    );
+  }
+  if (!config) {
+    throw new TypeError(
+      `pan ${command ?? "<command>"} requires --config <domain-config.json> or PAN_CONFIG. --profile and PAN_PROFILE belong to pan-runner.`,
+    );
+  }
+  if (!["session", "review"].includes(command)) {
     throw new TypeError(usage());
-  }
-  if (command === "start") {
-    const apply = takeFlag(remaining, "--apply");
-    const noTerminal = takeFlag(remaining, "--no-terminal");
-    const background = takeFlag(remaining, "--background");
-    if (noTerminal && !background) {
-      throw new TypeError("--no-terminal requires --background");
-    }
-    requireNoArgs(remaining);
-    return {
-      command,
-      ...configuration,
-      apply,
-      noTerminal,
-      background,
-    };
-  }
-  if (command === "stop") {
-    requireNoArgs(remaining);
-    return { command, ...configuration };
-  }
-  if (command === "host") {
-    const apply = takeFlag(remaining, "--apply");
-    const stateFile = takeOption(remaining, "--state-file");
-    requireNoArgs(remaining);
-    return { command, ...configuration, apply, stateFile };
-  }
-  if (command === "connect") {
-    const model = takeOption(remaining, "--model");
-    requireNoArgs(remaining);
-    return { command, ...configuration, model };
   }
   if (command === "session") {
     requireNoArgs(remaining);
     return { command, ...configuration, json };
   }
-  if (command === "daemon") {
-    const once = takeFlag(remaining, "--once");
-    requireNoArgs(remaining);
-    return { command, ...configuration, once };
+  const apply = takeFlag(remaining, "--apply");
+  requireNoArgs(remaining);
+  return { command, ...configuration, json, apply };
+}
+
+function normalizeLegacyAttentionAlias(args) {
+  const [command, ...remaining] = args;
+  const operation = {
+    inbox: "list",
+    answer: "answer",
+    add: "add",
+  }[command];
+  if (!operation) {
+    return { args };
   }
-  if (command === "inbox") {
-    requireNoArgs(remaining);
-    return { command, ...configuration, json };
-  }
-  if (command === "review") {
-    const apply = takeFlag(remaining, "--apply");
-    requireNoArgs(remaining);
-    return { command, ...configuration, json, apply };
-  }
-  if (command === "chat") {
-    const dryRun = takeFlag(remaining, "--dry-run");
-    const text = remaining.join(" ").trim();
-    if (!text) {
-      throw new TypeError("Usage: pan chat <message> [--dry-run] [--json]");
-    }
-    return {
+  return {
+    args: ["attention", operation, ...remaining, "--schema-version", "1"],
+    guidance: `Deprecated: pan ${command} is an alias for pan attention ${operation} --schema-version 1. Update scripts to use the attention command.`,
+  };
+}
+
+function retiredCommand(command, json) {
+  const guidance = {
+    start:
+      "Run pan session --config <path> in the foreground; PAN no longer starts a host or background process.",
+    stop:
+      "PAN sessions are foreground processes. Exit the running pan session, then rerun pan session --config <path> when needed.",
+    host:
+      "Run pan session --config <path> in the foreground; PAN no longer runs a host or bridge.",
+    connect:
+      "Run pan session --config <path> and use that ordinary interactive Copilot session.",
+    daemon:
+      "Run pan session --config <path>. After domain, session, or scheduling changes, exit and rerun that session; restart pan-runner only after runner changes.",
+    chat:
+      "Run pan session --config <path> and ask in the ordinary interactive session. Use pan review for a one-shot review.",
+  }[command];
+  return guidance ? retiredCommandError(command, json, guidance) : undefined;
+}
+
+function retiredCommandError(command, json, guidance) {
+  const error = new TypeError(`pan ${command} is retired. ${guidance}`);
+  if (json) {
+    error.result = {
+      version: 1,
+      status: "retired",
       command,
-      ...configuration,
-      json,
-      apply: !dryRun,
-      text,
+      replacement: "pan session --config <path>",
+      guidance: [guidance],
     };
   }
-  if (command === "answer") {
-    const [identifier, text, ...extra] = remaining;
-    if (!identifier || !text || extra.length > 0) {
-      throw new TypeError("Usage: pan answer <id> <text> [--json]");
-    }
-    return { command, ...configuration, json, identifier, text };
-  }
-
-  const body = takeOption(remaining, "--body") ?? "";
-  const bodyFile = takeOption(remaining, "--body-file");
-  if (body && bodyFile) {
-    throw new TypeError("--body and --body-file cannot be used together");
-  }
-  const workstream = takeOption(remaining, "--workstream");
-  const owner = takeOption(remaining, "--owner") ?? "unassigned";
-  const priority = takeOption(remaining, "--priority") ?? "normal";
-  const autonomy = takeOption(remaining, "--autonomy") ?? "manual";
-  const requirements = takeOptions(remaining, "--requirement");
-  requirements.push(
-    ...takeOptions(remaining, "--repo").map((repository) => `repo:${repository}`),
-  );
-  const title = remaining.shift();
-  requireNoArgs(remaining);
-  if (!title?.trim()) {
-    throw new TypeError("Usage: pan add <title> [options]");
-  }
-  validateChoice(owner, ["unassigned", "human", "agent"], "--owner");
-  validateChoice(priority, ["urgent", "high", "normal", "low"], "--priority");
-  validateChoice(
-    autonomy,
-    ["manual", "full-auto", "agent-reviewer"],
-    "--autonomy",
-  );
-  return {
-    command,
-    ...configuration,
-    json,
-    title,
-    body,
-    bodyFile,
-    workstream,
-    owner,
-    priority,
-    autonomy,
-    requirements: [...new Set(requirements)],
-  };
+  return error;
 }
 
 export function parsePanHelperArgs(
@@ -795,82 +517,44 @@ async function runPanHelperCommand(
 
 async function loadCliConfiguration(
   parsed,
-  { domainConfigLoader, runnerProfileLoader },
+  { domainConfigLoader },
 ) {
-  if (parsed.config) {
-    const config = await domainConfigLoader(parsed.config);
-    const agent = config.session?.agent ?? config.agent;
-    const scheduling = config.scheduling ?? {};
-    const leadership = config.leadership ?? {};
-    return {
-      deprecated: false,
-      domainConfig: config,
-      store: {
-        repository: config.domain.repository,
-        projectOwner: config.domain.projectOwner,
-        projectNumber: config.domain.projectNumber,
-        path: config.domain.path,
-      },
-      runtime: {
-        machine: "pan-runtime",
-        pollIntervalSeconds:
-          scheduling.retrySeconds ?? config.cadences?.activePollSeconds ?? 60,
-        leaderLeaseSeconds:
-          leadership.leaseSeconds ?? config.cadences?.leaderLeaseSeconds ?? 120,
-        leaderHeartbeatSeconds:
-          leadership.heartbeatSeconds ??
-          config.cadences?.leaderHeartbeatSeconds ??
-          30,
-        stateBranch: config.state.branch,
-        leaderPath: config.state.leaderPath,
-        runnerProfileDirectory: path.join(config.domain.path, "runners"),
-      },
-      agent,
-      reviewPolicy: config.reviewPolicy,
-      selfRepair: config.selfRepair,
-      attention: config.attention,
-    };
-  }
-
-  const profile = await runnerProfileLoader(parsed.profile);
-  const leaderLeaseSeconds = Math.max(
-    120,
-    profile.pollIntervalSeconds * 4,
-  );
+  const config = await domainConfigLoader(parsed.config);
+  const agent = config.session?.agent ?? config.agent;
+  const scheduling = config.scheduling ?? {};
+  const leadership = config.leadership ?? {};
   return {
-    deprecated: true,
-    store: profile.store,
+    domainConfig: config,
+    store: {
+      repository: config.domain.repository,
+      projectOwner: config.domain.projectOwner,
+      projectNumber: config.domain.projectNumber,
+      path: config.domain.path,
+    },
     runtime: {
-      machine: profile.machine,
-      pollIntervalSeconds: profile.pollIntervalSeconds,
-      leaderLeaseSeconds,
-      leaderHeartbeatSeconds: Math.min(30, leaderLeaseSeconds / 3),
-      stateBranch: undefined,
-      leaderPath: undefined,
-      runnerProfileDirectory: path.join(profile.store.path, "runners"),
+      machine: "pan-runtime",
+      pollIntervalSeconds:
+        scheduling.retrySeconds ?? config.cadences?.activePollSeconds ?? 60,
+      leaderLeaseSeconds:
+        leadership.leaseSeconds ?? config.cadences?.leaderLeaseSeconds ?? 120,
+      leaderHeartbeatSeconds:
+        leadership.heartbeatSeconds ??
+        config.cadences?.leaderHeartbeatSeconds ??
+        30,
+      stateBranch: config.state.branch,
+      leaderPath: config.state.leaderPath,
+      runnerProfileDirectory: path.join(config.domain.path, "runners"),
     },
-    agent: {
-      name: "pan",
-      executable: "copilot",
-      model: undefined,
-      turnTimeoutSeconds: undefined,
-      maxAiCredits: undefined,
-    },
-    selfRepair: {
-      enabled: false,
-      repository: undefined,
-      workstream: undefined,
-      requirements: [],
-    },
-    attention: {
-      assignee: undefined,
-    },
+    agent,
+    reviewPolicy: config.reviewPolicy,
+    attention: config.attention,
   };
 }
 
-function createReviewService({ store, configuration, env }) {
+function createReviewService({ store, attention, configuration, env }) {
   return createDomainServices({
     store,
+    attention,
     configuration,
     env,
   }).reviewService;
@@ -882,8 +566,6 @@ function createDomainServices({
   configuration,
   env,
   reviewServiceFactory,
-  repairServiceFactory = (options) => new PanRepairService(options),
-  toolRegistryFactory = (options) => new PanToolRegistry(options),
 }) {
   const runnerSource = new RunnerProfileSource({
     directory: configuration.runtime.runnerProfileDirectory,
@@ -935,30 +617,7 @@ function createDomainServices({
               ],
       }),
     });
-  const repairService = configuration.selfRepair?.enabled
-    ? repairServiceFactory({
-        store,
-        policy: configuration.selfRepair,
-      })
-    : undefined;
-  return {
-    reviewService,
-    repairService,
-    toolRegistry: toolRegistryFactory({
-      domain: {
-        repository: configuration.store.repository,
-        projectOwner: configuration.store.projectOwner,
-        projectNumber: configuration.store.projectNumber,
-        path: configuration.store.path,
-      },
-      snapshotSource,
-      projectSource: store,
-      workstreamSource,
-      runnerSource,
-      attentionSource: attention,
-      actionPolicy,
-    }),
-  };
+  return { reviewService };
 }
 
 function createLeaderLease({ configuration, gh, pid }) {
@@ -974,14 +633,6 @@ function createLeaderLease({ configuration, gh, pid }) {
     pid,
     leaseSeconds: configuration.runtime.leaderLeaseSeconds,
   });
-}
-
-function requireDomainConfiguration(parsed) {
-  if (!parsed.config) {
-    throw new TypeError(
-      `pan ${parsed.command} requires --config or PAN_CONFIG`,
-    );
-  }
 }
 
 function formatReasoningResult(result) {
@@ -1047,39 +698,6 @@ function formatAssetResult(result) {
   return lines.join("\n");
 }
 
-function inboxTable(entries) {
-  if (entries.length === 0) {
-    return "Inbox is empty.";
-  }
-  const rows = [
-    ["ID", "Kind", "Priority", "Title", "Location"],
-    ...entries.map((entry) => [
-      String(entry.id),
-      entry.kind,
-      entry.priority,
-      entry.title,
-      entry.pullRequestUrl ??
-        entry.locator?.localUrl ??
-        entry.locator?.terminalTitle ??
-        entry.issueUrl,
-    ]),
-  ];
-  const widths = rows[0].map((_, column) =>
-    Math.max(...rows.map((row) => String(row[column] ?? "").length)),
-  );
-  return rows
-    .map((row, index) => {
-      const line = row
-        .map((cell, column) => String(cell ?? "").padEnd(widths[column]))
-        .join("  ")
-        .trimEnd();
-      return index === 0
-        ? `${line}\n${widths.map((width) => "-".repeat(width)).join("  ")}`
-        : line;
-    })
-    .join("\n");
-}
-
 function takeFlag(args, name) {
   const index = args.indexOf(name);
   if (index === -1) {
@@ -1134,17 +752,10 @@ function usage() {
     "Usage:",
     "  pan setup [--repository <owner/name>] [--path <path>] [--approval-mode <prompt|allow-all>] [--install-assets]",
     "  pan assets <install|status|repair> [--force] [--json]",
-    "  pan start [--apply] --config <path>",
-    "  pan start --background [--no-terminal] [--apply] --config <path>",
-    "  pan stop --config <path>",
-    "  pan connect [--model <id>] --config <path>",
     "  pan session --config <path>",
-    "  pan daemon [--once] --config <path>",
     "  pan review [--apply] [--json] --config <path>",
-    "  pan chat <message> [--dry-run] [--json] --config <path>",
-    "  pan inbox [--json] --config <path>",
-    "  pan answer <id> <text> [--json] --config <path>",
-    "  pan add <title> [options] --config <path>",
+    "  pan attention <list|answer|add> --schema-version 1 --config <path>",
+    "  Session, domain, or scheduling changes: exit and rerun pan session; runner changes: restart pan-runner.",
     "  pan leadership <status|acquire|assert|renew|release> --schema-version 1 --config <path>",
     "  pan reconcile <missing-issues|merged-prs> [--apply] --schema-version 1 --config <path>",
   ].join("\n");

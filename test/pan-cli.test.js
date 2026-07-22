@@ -74,88 +74,45 @@ test("runs asset commands before loading domain configuration", async () => {
   assert.deepEqual(JSON.parse(stdout.value), expected);
 });
 
-test("parses attention commands from PAN_CONFIG", () => {
+test("parses hostless session and one-shot review commands", () => {
   assert.deepEqual(
-    parsePanArgs(["inbox", "--json"], { PAN_CONFIG: "domain.json" }),
+    parsePanArgs(["session", "--json"], { PAN_CONFIG: "domain.json" }),
     {
-      command: "inbox",
+      command: "session",
       config: "domain.json",
       profile: undefined,
       json: true,
     },
   );
   assert.deepEqual(
-    parsePanArgs(["answer", "42", "Use option A."], {
+    parsePanArgs(["review", "--apply"], {
       PAN_CONFIG: "domain.json",
     }),
     {
-      command: "answer",
+      command: "review",
       config: "domain.json",
       profile: undefined,
       json: false,
-      identifier: "42",
-      text: "Use option A.",
+      apply: true,
     },
   );
 });
 
-test("parses add fields and repeatable requirements", () => {
+test("prefers explicit configuration and rejects runner profiles for PAN commands", () => {
   assert.deepEqual(
-    parsePanArgs([
-      "add",
-      "Implement it",
-      "--config",
-      "domain.json",
-      "--body",
-      "Acceptance criteria.",
-      "--workstream",
-      "orchestration/pan",
-      "--repo",
-      "example/tool",
-      "--requirement",
-      "env:local",
-      "--owner",
-      "agent",
-      "--autonomy",
-      "full-auto",
-    ]),
-    {
-      command: "add",
-      config: "domain.json",
-      profile: undefined,
-      json: false,
-      title: "Implement it",
-      body: "Acceptance criteria.",
-      bodyFile: undefined,
-      workstream: "orchestration/pan",
-      owner: "agent",
-      priority: "normal",
-      autonomy: "full-auto",
-      requirements: ["env:local", "repo:example/tool"],
-    },
-  );
-});
-
-test("prefers explicit paths and retains legacy profile parsing", () => {
-  assert.deepEqual(
-    parsePanArgs(["inbox", "--config", "explicit.json"], {
+    parsePanArgs(["session", "--config", "explicit.json"], {
       PAN_CONFIG: "environment.json",
     }),
     {
-      command: "inbox",
+      command: "session",
       config: "explicit.json",
       profile: undefined,
       json: false,
     },
   );
-  assert.deepEqual(
-    parsePanArgs(["daemon", "--once"], { PAN_PROFILE: "runner.json" }),
-    {
-      command: "daemon",
-      config: undefined,
-      profile: "runner.json",
-      once: true,
-    },
+  assert.throws(
+    () => parsePanArgs(["review"], { PAN_PROFILE: "runner.json" }),
+    /--profile and PAN_PROFILE belong to pan-runner/,
   );
 });
 
@@ -180,15 +137,30 @@ test("rejects simultaneous domain and runner configuration", () => {
   );
 });
 
-test("requires explicit store configuration", () => {
-  assert.throws(() => parsePanArgs(["inbox"], {}), /PAN_CONFIG/);
-});
-
-test("parses reasoning review and conversational commands", () => {
+test("retires host-era commands with migration guidance", () => {
+  for (const command of ["start", "stop", "host", "connect", "daemon", "chat"]) {
+    assert.throws(
+      () => parsePanArgs([command, "--json"], {}),
+      (error) => {
+        assert.match(error.message, new RegExp(`pan ${command} is retired`, "i"));
+        assert.match(error.message, /pan session --config <path>/i);
+        assert.deepEqual(error.result, {
+          version: 1,
+          status: "retired",
+          command,
+          replacement: "pan session --config <path>",
+          guidance: [error.result.guidance[0]],
+        });
+        return true;
+      },
+    );
+  }
+  assert.throws(
+    () => parsePanArgs(["session", "--background", "--config", "domain.json"]),
+    /sessions run in the foreground/i,
+  );
   assert.deepEqual(
-    parsePanArgs(["review", "--apply", "--json"], {
-      PAN_CONFIG: "domain.json",
-    }),
+    parsePanArgs(["review", "--apply", "--json"], { PAN_CONFIG: "domain.json" }),
     {
       command: "review",
       config: "domain.json",
@@ -196,81 +168,6 @@ test("parses reasoning review and conversational commands", () => {
       json: true,
       apply: true,
     },
-  );
-  assert.deepEqual(
-    parsePanArgs(["chat", "What", "next?", "--dry-run"], {
-      PAN_CONFIG: "domain.json",
-    }),
-    {
-      command: "chat",
-      config: "domain.json",
-      profile: undefined,
-      json: false,
-      apply: false,
-      text: "What next?",
-    },
-  );
-});
-
-test("parses persistent PAN lifecycle commands", () => {
-  assert.deepEqual(
-    parsePanArgs(["start", "--apply", "--config", "domain.json"], {}),
-    {
-      command: "start",
-      config: "domain.json",
-      profile: undefined,
-      apply: true,
-      noTerminal: false,
-      background: false,
-    },
-  );
-  assert.deepEqual(
-    parsePanArgs(["stop"], { PAN_CONFIG: "domain.json" }),
-    {
-      command: "stop",
-      config: "domain.json",
-      profile: undefined,
-    },
-  );
-  assert.deepEqual(
-    parsePanArgs([
-      "host",
-      "--state-file",
-      "host.json",
-      "--config",
-      "domain.json",
-    ]),
-    {
-      command: "host",
-      config: "domain.json",
-      profile: undefined,
-      apply: false,
-      stateFile: "host.json",
-    },
-  );
-  assert.deepEqual(
-    parsePanArgs(["connect", "--model", "gpt-5.6-sol"], {
-      PAN_CONFIG: "domain.json",
-    }),
-    {
-      command: "connect",
-      config: "domain.json",
-      profile: undefined,
-      model: "gpt-5.6-sol",
-    },
-  );
-  assert.deepEqual(parsePanArgs(["session"], { PAN_CONFIG: "domain.json" }), {
-    command: "session",
-    config: "domain.json",
-    profile: undefined,
-    json: false,
-  });
-  assert.throws(
-    () =>
-      parsePanArgs(["start", "--no-terminal"], {
-        PAN_CONFIG: "domain.json",
-      }),
-    /requires --background/,
   );
 });
 

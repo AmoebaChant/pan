@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { runPanCli } from "../src/index.js";
@@ -29,27 +30,6 @@ const domainConfig = {
     name: "pan",
   },
 };
-
-const runnerProfile = {
-  machine: "machine-a",
-  pollIntervalSeconds: 30,
-  store: {
-    repository: "example/domain",
-    projectOwner: "example",
-    projectNumber: 12,
-    path: "C:\\domains\\example",
-  },
-};
-
-const inboxEntries = [
-  {
-    id: 42,
-    kind: "needs-human",
-    priority: "high",
-    title: "Choose an API",
-    issueUrl: "https://github.com/example/domain/issues/42",
-  },
-];
 
 test("runs setup before loading any existing configuration", async () => {
   const stdout = capture();
@@ -172,133 +152,84 @@ test("reports successful setup in the default human-readable format", async () =
   assert.match(stdout.value, /Copilot approvals: prompt/);
 });
 
-test("composes attention commands from domain config without a runner profile", async () => {
-  const stdout = capture();
-  const calls = [];
-
-  const result = await runPanCli(["inbox", "--json", "--config", "domain.json"], {
-    stdout,
-    stderr: capture(),
-    domainConfigLoader: async (configPath) => {
-      calls.push(["config", configPath]);
-      return domainConfig;
-    },
-    runnerProfileLoader: async () => assert.fail("profile loader was called"),
-    storeFactory: (options) => {
-      calls.push(["store", options]);
-      return { kind: "domain-store" };
-    },
-    attentionFactory: ({ store }) => {
-      assert.equal(store.kind, "domain-store");
-      return { inbox: async () => inboxEntries };
-    },
-  });
-
-  assert.deepEqual(result, inboxEntries);
-  assert.deepEqual(calls[0], ["config", "domain.json"]);
-  assert.deepEqual(calls[1][1], {
+test("keeps legacy attention aliases equivalent to canonical helper commands", async () => {
+  const domain = {
     repository: "example/domain",
     projectOwner: "example",
     projectNumber: 12,
-    gh: calls[1][1].gh,
-  });
-  assert.deepEqual(JSON.parse(stdout.value), inboxEntries);
-});
-
-test("legacy profile mode adapts the same store and warns on stderr", async () => {
-  const stdout = capture();
-  const stderr = capture();
-  let storeOptions;
-
-  const result = await runPanCli(["inbox", "--json", "--profile", "runner.json"], {
-    stdout,
-    stderr,
-    domainConfigLoader: async () => assert.fail("config loader was called"),
-    runnerProfileLoader: async (profilePath) => {
-      assert.equal(profilePath, "runner.json");
-      return runnerProfile;
-    },
-    storeFactory: (options) => {
-      storeOptions = options;
-      return {};
-    },
-    attentionFactory: () => ({ inbox: async () => inboxEntries }),
-  });
-
-  assert.deepEqual(result, inboxEntries);
-  assert.deepEqual(
-    {
-      repository: storeOptions.repository,
-      projectOwner: storeOptions.projectOwner,
-      projectNumber: storeOptions.projectNumber,
-    },
-    {
-      repository: domainConfig.domain.repository,
-      projectOwner: domainConfig.domain.projectOwner,
-      projectNumber: domainConfig.domain.projectNumber,
-    },
-  );
-  assert.doesNotThrow(() => JSON.parse(stdout.value));
-  assert.match(stderr.value, /deprecated/i);
-});
-
-test("preserves answer and add result shapes through injected composition", async () => {
-  const results = [];
-  const dependencies = {
-    stdout: capture(),
-    stderr: capture(),
-    domainConfigLoader: async () => domainConfig,
-    storeFactory: () => ({}),
-    attentionFactory: () => ({
-      answer: async (identifier, text) => {
-        results.push({ identifier, text });
-        return { number: 42, url: "https://github.com/example/domain/issues/42" };
-      },
-      add: async (input) => {
-        results.push(input);
-        return { number: 43, url: "https://github.com/example/domain/issues/43" };
-      },
-    }),
   };
+  const command = (operation, specification) =>
+    Object.assign(
+      async ({ options }) => ({
+        version: 1,
+        status: "confirmed",
+        operation,
+        operationId: `${operation}-1`,
+        domain,
+        confirmedEffects: [operation],
+        remainingSteps: [],
+        diagnostics: [],
+        recovery: { safe: true, steps: [] },
+        data: options,
+      }),
+      { specification },
+    );
+  const commandHandlers = {
+    attention: {
+      list: command("attention.list", {}),
+      answer: command("attention.answer", { positionals: ["identifier", "text"] }),
+      add: command("attention.add", {
+        positionals: ["title"],
+        options: ["body", "body-file", "workstream", "owner", "priority", "autonomy"],
+        repeatableOptions: ["requirement", "repo"],
+      }),
+    },
+  };
+  const cases = [
+    {
+      canonical: ["attention", "list", "--schema-version", "1", "--config", "domain.json", "--json"],
+      alias: ["inbox", "--config", "domain.json", "--json"],
+      replacement: "attention list",
+    },
+    {
+      canonical: ["attention", "answer", "42", "Use option A.", "--schema-version", "1", "--config", "domain.json", "--json"],
+      alias: ["answer", "42", "Use option A.", "--config", "domain.json", "--json"],
+      replacement: "attention answer",
+    },
+    {
+      canonical: ["attention", "add", "Implement it", "--repo", "example/tool", "--requirement", "env:local", "--schema-version", "1", "--config", "domain.json", "--json"],
+      alias: ["add", "Implement it", "--repo", "example/tool", "--requirement", "env:local", "--config", "domain.json", "--json"],
+      replacement: "attention add",
+    },
+  ];
 
-  const answer = await runPanCli(
-    ["answer", "42", "Use option A.", "--config", "domain.json"],
-    dependencies,
-  );
-  const added = await runPanCli(
-    [
-      "add",
-      "Implement it",
-      "--config",
-      "domain.json",
-      "--repo",
-      "example/tool",
-      "--requirement",
-      "env:local",
-    ],
-    dependencies,
-  );
+  for (const { canonical, alias, replacement } of cases) {
+    const canonicalOutput = capture();
+    const aliasOutput = capture();
+    const stderr = capture();
+    const dependencies = {
+      commandHandlers,
+      commandContextFactory: async () => ({ domain }),
+    };
+    const expected = await runPanCli(canonical, {
+      ...dependencies,
+      stdout: canonicalOutput,
+      stderr: capture(),
+    });
+    const actual = await runPanCli(alias, {
+      ...dependencies,
+      stdout: aliasOutput,
+      stderr,
+    });
 
-  assert.deepEqual(answer, {
-    id: 42,
-    issueUrl: "https://github.com/example/domain/issues/42",
-  });
-
-  assert.deepEqual(added, {
-    id: 43,
-    issueUrl: "https://github.com/example/domain/issues/43",
-  });
-  assert.deepEqual(results[0], {
-    identifier: "42",
-    text: "Use option A.",
-  });
-  assert.deepEqual(results[1].requirements, [
-    "env:local",
-    "repo:example/tool",
-  ]);
+    assert.deepEqual(actual, expected);
+    assert.equal(aliasOutput.value, canonicalOutput.value);
+    assert.match(stderr.value, /deprecated/i);
+    assert.match(stderr.value, new RegExp(replacement));
+  }
 });
 
-test("exposes review and chat through the injected reasoning service", async () => {
+test("exposes one-shot review through the injected reasoning service", async () => {
   const calls = [];
   let receivedConfiguration;
   const result = {
@@ -331,15 +262,7 @@ test("exposes review and chat through the injected reasoning service", async () 
     ["review", "--config", "domain.json"],
     dependencies,
   );
-  await runPanCli(
-    ["chat", "What next?", "--dry-run", "--config", "domain.json"],
-    dependencies,
-  );
-
-  assert.deepEqual(calls, [
-    { apply: false },
-    { apply: false, userInput: "What next?" },
-  ]);
+  assert.deepEqual(calls, [{ apply: false }]);
   assert.deepEqual(receivedConfiguration.reviewPolicy, domainConfig.reviewPolicy);
 });
 
@@ -408,198 +331,45 @@ test("reports normal live-command lease contention", async () => {
   assert.match(stdout.value, /already running elsewhere/i);
 });
 
-test("starts and stops the persistent PAN experience", async () => {
-  const calls = [];
-  const dependencies = {
-    stdout: capture(),
-    stderr: capture(),
-    domainConfigLoader: async () => domainConfig,
-    storeFactory: () => ({}),
-    attentionFactory: () => ({}),
-    startFactory: async (options) => {
-      calls.push(["start", options]);
-      return { started: true, terminalOpened: true };
-    },
-    stopFactory: async (options) => {
-      calls.push(["stop", options]);
-      return { stopped: true };
-    },
-    hostname: "machine-a",
-    runnerProfileSourceFactory: () => ({
-      load: async () => [
-        {
-          machine: "MACHINE-A",
-          terminal: { profile: "PowerShell" },
-        },
-      ],
-    }),
-  };
-
-  await runPanCli(
-    ["start", "--background", "--config", "domain.json"],
-    dependencies,
-  );
-  await runPanCli(
-    ["stop", "--config", "domain.json"],
-    dependencies,
-  );
-
-  assert.equal(calls[0][0], "start");
-  assert.equal(calls[0][1].configPath, "domain.json");
-  assert.equal(calls[0][1].autonomousApply, false);
-  assert.equal(calls[0][1].agentName, "pan");
-  assert.equal(calls[0][1].terminalProfile, "PowerShell");
-  assert.equal(calls[1][0], "stop");
-  assert.equal(calls[1][1].configPath, "domain.json");
-});
-
-test("does not force a terminal profile when the local runner omits it", async () => {
-  let startOptions;
-
-  await runPanCli(
-    ["start", "--background", "--config", "domain.json"],
-    {
-      stdout: capture(),
-      stderr: capture(),
-      domainConfigLoader: async () => domainConfig,
-      storeFactory: () => ({}),
-      attentionFactory: () => ({}),
-      hostname: "machine-a",
-      runnerProfileSourceFactory: () => ({
-        load: async () => [
-          {
-            machine: "machine-a",
-            terminal: {},
-          },
-        ],
+test("retires host-era commands before constructing services", async () => {
+  for (const command of ["start", "stop", "host", "connect", "daemon", "chat"]) {
+    await assert.rejects(
+      runPanCli([command, "--json"], {
+        domainConfigLoader: async () => assert.fail("config loader was called"),
+        sessionFactory: async () => assert.fail("session factory was called"),
+        runtimeFactory: () => assert.fail("runtime factory was called"),
       }),
-      startFactory: async (options) => {
-        startOptions = options;
-        return { started: false, terminalOpened: true };
+      (error) => {
+        assert.match(error.message, /is retired/i);
+        assert.deepEqual(error.result, {
+          version: 1,
+          status: "retired",
+          command,
+          replacement: "pan session --config <path>",
+          guidance: [error.result.guidance[0]],
+        });
+        return true;
       },
-    },
-  );
-
-  assert.equal(startOptions.terminalProfile, undefined);
+    );
+  }
 });
 
-test("runs the host in the foreground and exposes its configured model", async () => {
-  const calls = [];
-  const logger = {
-    info: (message) => calls.push(["log", message]),
-    error() {},
-    async close() {
-      calls.push(["logger-close"]);
-    },
-  };
-  await runPanCli(
-    ["start", "--config", "domain.json"],
-    {
-      stdout: capture(),
-      stderr: capture(),
-      domainConfigLoader: async () => ({
-        ...domainConfig,
-        agent: {
-          name: "pan",
-          executable: "copilot",
-          model: "gpt-5.6-sol",
-        },
-        selfRepair: {
-          enabled: true,
-          repository: "example/pan",
-          workstream: "pan",
-          requirements: ["task:self-repair"],
-        },
-      }),
-      storeFactory: () => ({
-        readCanonicalProject: async () => ({}),
-      }),
-      attentionFactory: () => ({}),
-      reviewServiceFactory: () => ({
-        run: async () => ({}),
-        applyActions: async () => ({}),
-      }),
-      repairServiceFactory: ({ policy }) => ({
-        policy,
-        reportFailure: async () => ({}),
-      }),
-      toolRegistryFactory: () => ({
-        dispatch: async () => ({}),
-      }),
-      prepareRuntimeFactory: async () => ({
-        stateFile: "C:\\runtime\\host.json",
-        logFile: "C:\\runtime\\host.log",
-      }),
-      loggerFactory: async () => logger,
-      hostFactory: (options) => ({
-        run: async () => {
-          calls.push(["host", options]);
-        },
-      }),
-    },
-  );
+test("prints a structured retirement result from the executable", () => {
+  const result = spawnSync(process.execPath, ["bin/pan.js", "host", "--json"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
 
-  const options = calls.find(([kind]) => kind === "host")[1];
-  assert.equal(options.model, "gpt-5.6-sol");
-  assert.equal(options.repairService.policy.repository, "example/pan");
-  assert.equal(typeof options.taskStore.readCanonicalProject, "function");
-  assert.equal(options.stateFile, "C:\\runtime\\host.json");
-  assert.ok(
-    calls.some(
-      ([kind, message]) =>
-        kind === "log" && message.includes("press Ctrl+C"),
-    ),
-  );
-  assert.deepEqual(calls.at(-1), ["logger-close"]);
-});
-
-test("connects an attached interactive session with an explicit model", async () => {
-  let options;
-  const stdout = capture();
-  await runPanCli(
-    ["connect", "--model", "gpt-5.6-sol", "--config", "domain.json"],
-    {
-      stdout,
-      stderr: capture(),
-      domainConfigLoader: async () => ({
-        ...domainConfig,
-        agent: {
-          name: "pan",
-          executable: "copilot-test",
-        },
-      }),
-      storeFactory: () => ({}),
-      attentionFactory: () => ({}),
-      connectFactory: async (input) => {
-        options = input;
-        return { model: input.model };
-      },
-    },
-  );
-
-  assert.equal(options.executable, "copilot-test");
-  assert.equal(options.agentName, "pan");
-  assert.equal(options.model, "gpt-5.6-sol");
-  assert.match(stdout.value, /use \/model/);
-});
-
-test("stops PAN even when the domain config can no longer load", async () => {
-  let stopped = false;
-  const result = await runPanCli(
-    ["stop", "--config", "missing.json"],
-    {
-      stdout: capture(),
-      stderr: capture(),
-      domainConfigLoader: async () => assert.fail("config should not load"),
-      stopFactory: async () => {
-        stopped = true;
-        return { stopped: true };
-      },
-    },
-  );
-
-  assert.equal(stopped, true);
-  assert.deepEqual(result, { stopped: true });
+  assert.equal(result.status, 1);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: 1,
+    status: "retired",
+    command: "host",
+    replacement: "pan session --config <path>",
+    guidance: [
+      "Run pan session --config <path> in the foreground; PAN no longer runs a host or bridge.",
+    ],
+  });
 });
 
 function capture() {
