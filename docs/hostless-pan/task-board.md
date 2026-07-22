@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-31 | Execute implementation_plan/06_04_final_e2e_cleanup.md | execute-implementation-plan | |
 
 ## Completed
 
@@ -40,5 +39,6 @@
 | | T-28 | Execute implementation_plan/06_01_stateless_helper_process_tests.md | execute-implementation-plan | done 2026-07-22 · f7e4998 · targeted and full tests passed |
 | | T-29 | Execute implementation_plan/06_02_session_contract_integration_tests.md | execute-implementation-plan | done 2026-07-22 · 3991fb0 · targeted and full tests passed |
 | | T-30 | Execute implementation_plan/06_03_workstream_delivery_integration_tests.md | execute-implementation-plan | done 2026-07-22 · 852caea · targeted and full tests passed |
+| | T-31 | Execute implementation_plan/06_04_final_e2e_cleanup.md | execute-implementation-plan | done 2026-07-22 · hostless E2E and full tests passed |
 
 ## Untriaged

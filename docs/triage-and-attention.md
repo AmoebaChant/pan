@@ -83,8 +83,8 @@ untriaged Issue. It accepts `--body` or `--body-file`, `--workstream`,
 `--owner`, `--priority`, `--autonomy`, and repeatable `--repo` and
 `--requirement`; do not combine `--body` and `--body-file`.
 
-The legacy `inbox`, `answer`, and `add` spellings remain aliases and print
-migration guidance. Update scripts to the `attention` family.
+Use the `attention` family directly; `inbox`, `answer`, and `add` are not PAN
+commands.
 
 ## Workstream delivery
 

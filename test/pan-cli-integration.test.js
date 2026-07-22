@@ -152,80 +152,18 @@ test("reports successful setup in the default human-readable format", async () =
   assert.match(stdout.value, /Copilot approvals: prompt/);
 });
 
-test("keeps legacy attention aliases equivalent to canonical helper commands", async () => {
-  const domain = {
-    repository: "example/domain",
-    projectOwner: "example",
-    projectNumber: 12,
-  };
-  const command = (operation, specification) =>
-    Object.assign(
-      async ({ options }) => ({
-        version: 1,
-        status: "confirmed",
-        operation,
-        operationId: `${operation}-1`,
-        domain,
-        confirmedEffects: [operation],
-        remainingSteps: [],
-        diagnostics: [],
-        recovery: { safe: true, steps: [] },
-        data: options,
+test("requires canonical attention helper commands", async () => {
+  for (const args of [
+    ["inbox", "--config", "domain.json"],
+    ["answer", "42", "Use option A.", "--config", "domain.json"],
+    ["add", "Implement it", "--config", "domain.json"],
+  ]) {
+    await assert.rejects(
+      runPanCli(args, {
+        domainConfigLoader: async () => assert.fail("config loader was called"),
       }),
-      { specification },
+      /Usage:/,
     );
-  const commandHandlers = {
-    attention: {
-      list: command("attention.list", {}),
-      answer: command("attention.answer", { positionals: ["identifier", "text"] }),
-      add: command("attention.add", {
-        positionals: ["title"],
-        options: ["body", "body-file", "workstream", "owner", "priority", "autonomy"],
-        repeatableOptions: ["requirement", "repo"],
-      }),
-    },
-  };
-  const cases = [
-    {
-      canonical: ["attention", "list", "--schema-version", "1", "--config", "domain.json", "--json"],
-      alias: ["inbox", "--config", "domain.json", "--json"],
-      replacement: "attention list",
-    },
-    {
-      canonical: ["attention", "answer", "42", "Use option A.", "--schema-version", "1", "--config", "domain.json", "--json"],
-      alias: ["answer", "42", "Use option A.", "--config", "domain.json", "--json"],
-      replacement: "attention answer",
-    },
-    {
-      canonical: ["attention", "add", "Implement it", "--repo", "example/tool", "--requirement", "env:local", "--schema-version", "1", "--config", "domain.json", "--json"],
-      alias: ["add", "Implement it", "--repo", "example/tool", "--requirement", "env:local", "--config", "domain.json", "--json"],
-      replacement: "attention add",
-    },
-  ];
-
-  for (const { canonical, alias, replacement } of cases) {
-    const canonicalOutput = capture();
-    const aliasOutput = capture();
-    const stderr = capture();
-    const dependencies = {
-      commandHandlers,
-      commandContextFactory: async () => ({ domain }),
-    };
-    const expected = await runPanCli(canonical, {
-      ...dependencies,
-      stdout: canonicalOutput,
-      stderr: capture(),
-    });
-    const actual = await runPanCli(alias, {
-      ...dependencies,
-      stdout: aliasOutput,
-      stderr,
-    });
-
-    assert.deepEqual(actual, expected);
-    assert.equal(aliasOutput.value, canonicalOutput.value);
-    assert.match(stderr.value, /deprecated/i);
-    assert.match(stderr.value, new RegExp(replacement));
   }
 });
 

@@ -107,7 +107,7 @@ test("prefers explicit configuration and rejects runner profiles for PAN command
 test("rejects simultaneous domain and runner configuration", () => {
   assert.throws(
     () =>
-      parsePanArgs(["inbox", "--config", "domain.json"], {
+      parsePanArgs(["session", "--config", "domain.json"], {
         PAN_PROFILE: "runner.json",
       }),
     /cannot be used together/,
@@ -115,7 +115,7 @@ test("rejects simultaneous domain and runner configuration", () => {
   assert.throws(
     () =>
       parsePanArgs([
-        "inbox",
+        "session",
         "--config",
         "domain.json",
         "--profile",

@@ -43,12 +43,8 @@ export async function runPanCli(
       workstream: createWorkstreamCommandHandlers({ env }),
       config: createConfigCommandHandlers(),
     };
-  const normalized = normalizeLegacyAttentionAlias(args);
-  const helper = parsePanHelperArgs(normalized.args, { env, handlers: helpers });
+  const helper = parsePanHelperArgs(args, { env, handlers: helpers });
   if (helper) {
-    if (normalized.guidance) {
-      write(stderr, normalized.guidance);
-    }
     return runPanHelperCommand(helper, {
       stdout,
       env,
@@ -56,7 +52,7 @@ export async function runPanCli(
       commandHandlers: helpers,
     });
   }
-  const parsed = parseArgs(normalized.args, env);
+  const parsed = parseArgs(args, env);
   if (parsed.command === "assets") {
     const service = assetServiceFactory({ env });
     const result =
@@ -204,22 +200,6 @@ export function parseArgs(args, env = process.env) {
   }
   requireNoArgs(remaining);
   return { command, ...configuration, json };
-}
-
-function normalizeLegacyAttentionAlias(args) {
-  const [command, ...remaining] = args;
-  const operation = {
-    inbox: "list",
-    answer: "answer",
-    add: "add",
-  }[command];
-  if (!operation) {
-    return { args };
-  }
-  return {
-    args: ["attention", operation, ...remaining, "--schema-version", "1"],
-    guidance: `Deprecated: pan ${command} is an alias for pan attention ${operation} --schema-version 1. Update scripts to use the attention command.`,
-  };
 }
 
 function retiredCommand(command, json) {
