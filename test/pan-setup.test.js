@@ -55,6 +55,7 @@ test("creates and bootstraps a private PAN domain with safe approvals", async ()
     );
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
+    assert.equal(config.version, 2);
     assert.equal(config.domain.path, path.resolve(directory));
     assert.equal(config.domain.projectNumber, 7);
 

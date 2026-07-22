@@ -278,7 +278,7 @@ function domainConfig({
   directory,
 }) {
   return {
-    version: 1,
+    version: 2,
     domain: {
       repository,
       projectOwner,
@@ -289,8 +289,11 @@ function domainConfig({
       branch: "pan-state",
       path: ".pan",
     },
-    agent: {
-      name: "pan",
+    session: {
+      agent: {
+        name: "pan",
+      },
+      productContextRoots: [],
     },
   };
 }

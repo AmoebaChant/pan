@@ -1,16 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-const ALLOWED_KEYS = new Set([
-  "version",
-  "domain",
-  "state",
-  "agent",
-  "cadences",
-  "transcripts",
-  "reviewPolicy",
-  "selfRepair",
-  "attention",
+const ACTION_KINDS = new Set([
+  "field-update",
+  "canonical-reorder",
+  "relative-precedence",
+  "issue-create",
+  "issue-comment",
+  "needs-human",
+  "no-op",
 ]);
 const RUNNER_ONLY_KEYS = new Set([
   "id",
@@ -25,37 +23,54 @@ const RUNNER_ONLY_KEYS = new Set([
   "terminal",
   "taskBudget",
 ]);
+const V1_KEYS = new Set([
+  "version",
+  "domain",
+  "state",
+  "agent",
+  "cadences",
+  "transcripts",
+  "reviewPolicy",
+  "selfRepair",
+  "attention",
+]);
+const V2_KEYS = new Set([
+  "version",
+  "domain",
+  "state",
+  "session",
+  "scheduling",
+  "leadership",
+  "policy",
+  "reviewPolicy",
+  "selfRepair",
+  "attention",
+]);
 const DEFAULTS = Object.freeze({
-  cadences: {
-    activePollSeconds: 30,
-    idlePollSeconds: 300,
-    fullReviewSeconds: 86_400,
-    leaderLeaseSeconds: 120,
-    leaderHeartbeatSeconds: 30,
-    notificationSeconds: 300,
+  agent: { executable: "copilot" },
+  scheduling: {
+    enabled: true,
+    reviewIntervalSeconds: 86_400,
+    startup: "immediate",
     retrySeconds: 60,
     rateLimitRetrySeconds: 900,
   },
-  agent: {
-    executable: "copilot",
-    turnTimeoutSeconds: undefined,
-    maxAiCredits: undefined,
+  leadership: { leaseSeconds: 120, heartbeatSeconds: 30 },
+  policy: {
+    automatic: ["no-op"],
+    approvalRequired: [
+      "field-update",
+      "canonical-reorder",
+      "relative-precedence",
+      "issue-create",
+      "issue-comment",
+      "needs-human",
+    ],
+    prohibited: [],
   },
-  transcripts: {
-    retentionDays: 30,
-  },
-  reviewPolicy: {
-    higherRisk: {
-      enabled: false,
-      actionKinds: [],
-    },
-  },
-  selfRepair: {
-    enabled: false,
-  },
-  attention: {
-    assignee: undefined,
-  },
+  reviewPolicy: { higherRisk: { enabled: false, actionKinds: [] } },
+  selfRepair: { enabled: false },
+  attention: { assignee: undefined },
 });
 
 export async function loadDomainConfig(configPath) {
@@ -77,9 +92,118 @@ export async function loadDomainConfig(configPath) {
 
 export function validateDomainConfig(config, { configPath } = {}) {
   requireRecord(config, "domain config");
-  rejectUnexpectedKeys(config);
-  requireEqual(config.version, 1, "version");
+  if (config.version === 1) {
+    return normalizeV1(config, configPath);
+  }
+  if (config.version === 2) {
+    return normalizeV2(config, configPath);
+  }
+  fail("version", "must be 1 or 2");
+}
 
+export function migrateDomainConfig(config) {
+  requireRecord(config, "domain config");
+  if (config.version === 2) {
+    validateDomainConfig(config);
+    return { document: structuredClone(config), diagnostics: [] };
+  }
+  if (config.version !== 1) {
+    fail("version", "must be 1 or 2");
+  }
+
+  const normalized = normalizeV1(config);
+  const diagnostics = [
+    "version: migrated domain configuration from version 1 to version 2",
+    "agent: remapped to session.agent",
+    "cadences.fullReviewSeconds: remapped to scheduling.reviewIntervalSeconds",
+    "cadences.leaderLeaseSeconds: remapped to leadership.leaseSeconds",
+    "cadences.leaderHeartbeatSeconds: remapped to leadership.heartbeatSeconds",
+    "cadences.retrySeconds: remapped to scheduling.retrySeconds",
+    "cadences.rateLimitRetrySeconds: remapped to scheduling.rateLimitRetrySeconds",
+  ];
+  for (const field of [
+    "activePollSeconds",
+    "idlePollSeconds",
+    "notificationSeconds",
+  ]) {
+    if (config.cadences?.[field] !== undefined) {
+      diagnostics.push(`cadences.${field}: obsolete host polling setting removed`);
+    }
+  }
+  if (config.transcripts !== undefined) {
+    diagnostics.push("transcripts: obsolete host transcript setting removed");
+  }
+
+  return {
+    document: domainConfigDocument(normalized),
+    diagnostics,
+  };
+}
+
+function normalizeV1(config, configPath) {
+  rejectUnexpectedKeys(config, V1_KEYS);
+  const identity = normalizeIdentity(config);
+  const agent = normalizeAgent(config.agent, "agent");
+  const cadences = normalizeV1Cadences(config.cadences);
+  validateLeadership(cadences.leaderLeaseSeconds, cadences.leaderHeartbeatSeconds);
+  validateScheduling(
+    cadences.fullReviewSeconds,
+    cadences.retrySeconds,
+    cadences.rateLimitRetrySeconds,
+  );
+
+  return normalizedConfig({
+    configPath,
+    identity,
+    session: { agent, productContextRoots: [] },
+    scheduling: {
+      enabled: DEFAULTS.scheduling.enabled,
+      startup: DEFAULTS.scheduling.startup,
+      reviewIntervalSeconds: cadences.fullReviewSeconds,
+      retrySeconds: cadences.retrySeconds,
+      rateLimitRetrySeconds: cadences.rateLimitRetrySeconds,
+    },
+    leadership: {
+      leaseSeconds: cadences.leaderLeaseSeconds,
+      heartbeatSeconds: cadences.leaderHeartbeatSeconds,
+    },
+    policy: normalizePolicy(),
+    reviewPolicy: normalizeReviewPolicy(config.reviewPolicy),
+    selfRepair: normalizeSelfRepair(config.selfRepair),
+    attention: normalizeAttention(config.attention),
+    migrationDiagnostics: migrationDiagnostics(config),
+  });
+}
+
+function normalizeV2(config, configPath) {
+  rejectUnexpectedKeys(config, V2_KEYS);
+  const identity = normalizeIdentity(config);
+  requireRecord(config.session, "session");
+  rejectObjectKeys(config.session, new Set(["agent", "productContextRoots"]), "session");
+  const session = {
+    agent: normalizeAgent(config.session.agent, "session.agent"),
+    productContextRoots: normalizeProductContextRoots(
+      config.session.productContextRoots,
+    ),
+  };
+  const scheduling = normalizeScheduling(config.scheduling);
+  const leadership = normalizeLeadership(config.leadership);
+
+  return normalizedConfig({
+    configPath,
+    identity,
+    session,
+    scheduling,
+    leadership,
+    policy: normalizePolicy(config.policy),
+    reviewPolicy: normalizeReviewPolicy(config.reviewPolicy),
+    selfRepair: normalizeSelfRepair(config.selfRepair),
+    attention: normalizeAttention(config.attention),
+    migrationDiagnostics: [],
+  });
+}
+
+function normalizeIdentity(config) {
   requireRecord(config.domain, "domain");
   rejectObjectKeys(
     config.domain,
@@ -95,53 +219,7 @@ export function validateDomainConfig(config, { configPath } = {}) {
   rejectObjectKeys(config.state, new Set(["branch", "path"]), "state");
   requireBranch(config.state.branch, "state.branch");
   const statePath = requireRepositoryPath(config.state.path, "state.path");
-
-  requireRecord(config.agent, "agent");
-  rejectObjectKeys(
-    config.agent,
-    new Set([
-      "name",
-      "executable",
-      "model",
-      "turnTimeoutSeconds",
-      "maxAiCredits",
-    ]),
-    "agent",
-  );
-  requireString(config.agent.name, "agent.name");
-  if (config.agent.executable !== undefined) {
-    requireString(config.agent.executable, "agent.executable");
-  }
-  if (config.agent.model !== undefined) {
-    requireString(config.agent.model, "agent.model");
-  }
-  const agent = {
-    name: config.agent.name,
-    executable: config.agent.executable ?? DEFAULTS.agent.executable,
-    model: config.agent.model,
-    turnTimeoutSeconds: optionalBoundedNumber(
-      config.agent.turnTimeoutSeconds,
-      "agent.turnTimeoutSeconds",
-      { minimum: 30, maximum: 3_600 },
-    ),
-    maxAiCredits: optionalBoundedNumber(
-      config.agent.maxAiCredits,
-      "agent.maxAiCredits",
-      { minimum: 1, maximum: 1_000 },
-    ),
-  };
-
-  const cadences = normalizeCadences(config.cadences);
-  validateCadenceRelationships(cadences);
-
-  const transcripts = normalizeTranscripts(config.transcripts, statePath);
-  const reviewPolicy = normalizeReviewPolicy(config.reviewPolicy);
-  const selfRepair = normalizeSelfRepair(config.selfRepair);
-  const attention = normalizeAttention(config.attention);
-
   return {
-    version: 1,
-    configPath: configPath ? path.resolve(configPath) : undefined,
     domain: {
       repository: config.domain.repository,
       projectOwner: config.domain.projectOwner,
@@ -153,33 +231,60 @@ export function validateDomainConfig(config, { configPath } = {}) {
       path: statePath,
       leaderPath: `${statePath}/leader.json`,
     },
-    agent,
-    cadences,
-    transcripts,
-    reviewPolicy,
-    selfRepair,
-    attention,
   };
 }
 
-function normalizeAttention(attention = {}) {
-  requireRecord(attention, "attention");
-  rejectObjectKeys(attention, new Set(["assignee"]), "attention");
-  if (attention.assignee !== undefined) {
-    requireOwner(attention.assignee, "attention.assignee");
+function normalizeAgent(agent, field) {
+  requireRecord(agent, field);
+  rejectObjectKeys(
+    agent,
+    new Set(["name", "executable", "model", "turnTimeoutSeconds", "maxAiCredits"]),
+    field,
+  );
+  requireString(agent.name, `${field}.name`);
+  if (agent.executable !== undefined) {
+    requireString(agent.executable, `${field}.executable`);
+  }
+  if (agent.model !== undefined) {
+    requireString(agent.model, `${field}.model`);
   }
   return {
-    assignee: attention.assignee ?? DEFAULTS.attention.assignee,
+    name: agent.name,
+    executable: agent.executable ?? DEFAULTS.agent.executable,
+    model: agent.model,
+    turnTimeoutSeconds: optionalBoundedNumber(
+      agent.turnTimeoutSeconds,
+      `${field}.turnTimeoutSeconds`,
+      { minimum: 30, maximum: 3_600 },
+    ),
+    maxAiCredits: optionalBoundedNumber(
+      agent.maxAiCredits,
+      `${field}.maxAiCredits`,
+      { minimum: 1, maximum: 1_000 },
+    ),
   };
 }
 
-function optionalBoundedNumber(value, name, bounds) {
-  return value === undefined
-    ? undefined
-    : boundedNumber(value, name, undefined, bounds);
+function normalizeProductContextRoots(roots = []) {
+  if (!Array.isArray(roots)) {
+    fail("session.productContextRoots", "must be an array");
+  }
+  const labels = new Set();
+  return roots.map((root, index) => {
+    const field = `session.productContextRoots[${index}]`;
+    requireRecord(root, field);
+    rejectObjectKeys(root, new Set(["label", "path"]), field);
+    requireString(root.label, `${field}.label`);
+    if (labels.has(root.label)) {
+      fail(`${field}.label`, "must not duplicate another product-context root label");
+    }
+    labels.add(root.label);
+    requireAbsolutePath(root.path, `${field}.path`);
+    return { label: root.label, path: path.resolve(root.path) };
+  });
 }
 
-function normalizeCadences(cadences = {}) {
+function normalizeV1Cadences(cadences = {}) {
   requireRecord(cadences, "cadences");
   rejectObjectKeys(
     cadences,
@@ -195,106 +300,173 @@ function normalizeCadences(cadences = {}) {
     ]),
     "cadences",
   );
+  const activePollSeconds = boundedNumber(
+    cadences.activePollSeconds,
+    "cadences.activePollSeconds",
+    30,
+    { minimum: 5, maximum: 300 },
+  );
+  const idlePollSeconds = boundedNumber(
+    cadences.idlePollSeconds,
+    "cadences.idlePollSeconds",
+    300,
+    { minimum: 30, maximum: 3_600 },
+  );
+  if (idlePollSeconds < activePollSeconds) {
+    fail("cadences.idlePollSeconds", "must be greater than or equal to cadences.activePollSeconds");
+  }
   return {
-    activePollSeconds: boundedNumber(
-      cadences.activePollSeconds,
-      "cadences.activePollSeconds",
-      DEFAULTS.cadences.activePollSeconds,
-      { minimum: 5, maximum: 300 },
-    ),
-    idlePollSeconds: boundedNumber(
-      cadences.idlePollSeconds,
-      "cadences.idlePollSeconds",
-      DEFAULTS.cadences.idlePollSeconds,
-      { minimum: 30, maximum: 3_600 },
-    ),
     fullReviewSeconds: boundedNumber(
       cadences.fullReviewSeconds,
       "cadences.fullReviewSeconds",
-      DEFAULTS.cadences.fullReviewSeconds,
+      DEFAULTS.scheduling.reviewIntervalSeconds,
       { minimum: 300, maximum: 604_800 },
     ),
     leaderLeaseSeconds: boundedNumber(
       cadences.leaderLeaseSeconds,
       "cadences.leaderLeaseSeconds",
-      DEFAULTS.cadences.leaderLeaseSeconds,
+      DEFAULTS.leadership.leaseSeconds,
       { minimum: 30, maximum: 3_600 },
     ),
     leaderHeartbeatSeconds: boundedNumber(
       cadences.leaderHeartbeatSeconds,
       "cadences.leaderHeartbeatSeconds",
-      DEFAULTS.cadences.leaderHeartbeatSeconds,
+      DEFAULTS.leadership.heartbeatSeconds,
       { minimum: 5, maximum: 1_200 },
-    ),
-    notificationSeconds: boundedNumber(
-      cadences.notificationSeconds,
-      "cadences.notificationSeconds",
-      DEFAULTS.cadences.notificationSeconds,
-      { minimum: 30, maximum: 86_400 },
     ),
     retrySeconds: boundedNumber(
       cadences.retrySeconds,
       "cadences.retrySeconds",
-      DEFAULTS.cadences.retrySeconds,
+      DEFAULTS.scheduling.retrySeconds,
       { minimum: 5, maximum: 3_600 },
     ),
     rateLimitRetrySeconds: boundedNumber(
       cadences.rateLimitRetrySeconds,
       "cadences.rateLimitRetrySeconds",
-      DEFAULTS.cadences.rateLimitRetrySeconds,
+      DEFAULTS.scheduling.rateLimitRetrySeconds,
       { minimum: 60, maximum: 86_400 },
     ),
   };
 }
 
-function validateCadenceRelationships(cadences) {
-  if (cadences.idlePollSeconds < cadences.activePollSeconds) {
+function normalizeScheduling(scheduling = {}) {
+  requireRecord(scheduling, "scheduling");
+  rejectObjectKeys(
+    scheduling,
+    new Set([
+      "enabled",
+      "reviewIntervalSeconds",
+      "startup",
+      "retrySeconds",
+      "rateLimitRetrySeconds",
+    ]),
+    "scheduling",
+  );
+  const enabled = scheduling.enabled ?? DEFAULTS.scheduling.enabled;
+  requireBoolean(enabled, "scheduling.enabled");
+  const startup = scheduling.startup ?? DEFAULTS.scheduling.startup;
+  if (!["immediate", "after-interval", "manual"].includes(startup)) {
+    fail("scheduling.startup", 'must be "immediate", "after-interval", or "manual"');
+  }
+  const reviewIntervalSeconds = boundedNumber(
+    scheduling.reviewIntervalSeconds,
+    "scheduling.reviewIntervalSeconds",
+    DEFAULTS.scheduling.reviewIntervalSeconds,
+    { minimum: 300, maximum: 604_800 },
+  );
+  const retrySeconds = boundedNumber(
+    scheduling.retrySeconds,
+    "scheduling.retrySeconds",
+    DEFAULTS.scheduling.retrySeconds,
+    { minimum: 5, maximum: 3_600 },
+  );
+  const rateLimitRetrySeconds = boundedNumber(
+    scheduling.rateLimitRetrySeconds,
+    "scheduling.rateLimitRetrySeconds",
+    DEFAULTS.scheduling.rateLimitRetrySeconds,
+    { minimum: 60, maximum: 86_400 },
+  );
+  validateScheduling(reviewIntervalSeconds, retrySeconds, rateLimitRetrySeconds);
+  return {
+    enabled,
+    startup,
+    reviewIntervalSeconds,
+    retrySeconds,
+    rateLimitRetrySeconds,
+  };
+}
+
+function normalizeLeadership(leadership = {}) {
+  requireRecord(leadership, "leadership");
+  rejectObjectKeys(
+    leadership,
+    new Set(["leaseSeconds", "heartbeatSeconds"]),
+    "leadership",
+  );
+  const leaseSeconds = boundedNumber(
+    leadership.leaseSeconds,
+    "leadership.leaseSeconds",
+    DEFAULTS.leadership.leaseSeconds,
+    { minimum: 30, maximum: 3_600 },
+  );
+  const heartbeatSeconds = boundedNumber(
+    leadership.heartbeatSeconds,
+    "leadership.heartbeatSeconds",
+    DEFAULTS.leadership.heartbeatSeconds,
+    { minimum: 5, maximum: 1_200 },
+  );
+  validateLeadership(leaseSeconds, heartbeatSeconds);
+  return { leaseSeconds, heartbeatSeconds };
+}
+
+function validateScheduling(reviewIntervalSeconds, retrySeconds, rateLimitRetrySeconds) {
+  if (reviewIntervalSeconds < retrySeconds) {
     fail(
-      "cadences.idlePollSeconds",
-      "must be greater than or equal to cadences.activePollSeconds",
+      "scheduling.reviewIntervalSeconds",
+      "must be greater than or equal to scheduling.retrySeconds",
     );
   }
-  if (cadences.fullReviewSeconds < cadences.idlePollSeconds) {
+  if (rateLimitRetrySeconds < retrySeconds) {
     fail(
-      "cadences.fullReviewSeconds",
-      "must be greater than or equal to cadences.idlePollSeconds",
-    );
-  }
-  if (cadences.leaderHeartbeatSeconds >= cadences.leaderLeaseSeconds) {
-    fail(
-      "cadences.leaderHeartbeatSeconds",
-      "must be less than cadences.leaderLeaseSeconds",
-    );
-  }
-  if (cadences.rateLimitRetrySeconds < cadences.retrySeconds) {
-    fail(
-      "cadences.rateLimitRetrySeconds",
-      "must be greater than or equal to cadences.retrySeconds",
+      "scheduling.rateLimitRetrySeconds",
+      "must be greater than or equal to scheduling.retrySeconds",
     );
   }
 }
 
-function normalizeTranscripts(transcripts = {}, statePath) {
-  requireRecord(transcripts, "transcripts");
+function validateLeadership(leaseSeconds, heartbeatSeconds) {
+  if (heartbeatSeconds >= leaseSeconds) {
+    fail(
+      "leadership.heartbeatSeconds",
+      "must be less than leadership.leaseSeconds",
+    );
+  }
+}
+
+function normalizePolicy(policy = {}) {
+  requireRecord(policy, "policy");
   rejectObjectKeys(
-    transcripts,
-    new Set(["path", "retentionDays"]),
-    "transcripts",
+    policy,
+    new Set(["automatic", "approvalRequired", "prohibited"]),
+    "policy",
   );
-  const transcriptPath = requireRepositoryPath(
-    transcripts.path ?? `${statePath}/transcripts`,
-    "transcripts.path",
-  );
-  requireWithinNamespace(transcriptPath, statePath, "transcripts.path");
-  return {
-    path: transcriptPath,
-    retentionDays: boundedInteger(
-      transcripts.retentionDays,
-      "transcripts.retentionDays",
-      DEFAULTS.transcripts.retentionDays,
-      { minimum: 1, maximum: 365 },
-    ),
-  };
+  const normalized = {};
+  const classified = new Set();
+  for (const [name, fallback] of Object.entries(DEFAULTS.policy)) {
+    const values = policy[name] ?? fallback;
+    requireStringArray(values, `policy.${name}`);
+    for (const action of values) {
+      if (!ACTION_KINDS.has(action)) {
+        fail(`policy.${name}`, `contains unsupported action kind ${JSON.stringify(action)}`);
+      }
+      if (classified.has(action)) {
+        fail(`policy.${name}`, "must not classify an action more than once");
+      }
+      classified.add(action);
+    }
+    normalized[name] = [...values];
+  }
+  return normalized;
 }
 
 function normalizeReviewPolicy(reviewPolicy = {}) {
@@ -314,19 +486,13 @@ function normalizeReviewPolicy(reviewPolicy = {}) {
   if (new Set(actionKinds).size !== actionKinds.length) {
     fail("reviewPolicy.higherRisk.actionKinds", "must not contain duplicates");
   }
-
   if (enabled && actionKinds.length === 0) {
     fail(
       "reviewPolicy.higherRisk.actionKinds",
       "must name at least one action kind when higher-risk review is enabled",
     );
   }
-  return {
-    higherRisk: {
-      enabled,
-      actionKinds: [...actionKinds],
-    },
-  };
+  return { higherRisk: { enabled, actionKinds: [...actionKinds] } };
 }
 
 function normalizeSelfRepair(selfRepair = {}) {
@@ -346,8 +512,7 @@ function normalizeSelfRepair(selfRepair = {}) {
   if (
     requirements.some(
       (requirement) =>
-        requirement.startsWith("repo:") ||
-        requirement.startsWith("delivery:"),
+        requirement.startsWith("repo:") || requirement.startsWith("delivery:"),
     )
   ) {
     fail(
@@ -367,7 +532,97 @@ function normalizeSelfRepair(selfRepair = {}) {
   };
 }
 
-function rejectUnexpectedKeys(config) {
+function normalizeAttention(attention = {}) {
+  requireRecord(attention, "attention");
+  rejectObjectKeys(attention, new Set(["assignee"]), "attention");
+  if (attention.assignee !== undefined) {
+    requireOwner(attention.assignee, "attention.assignee");
+  }
+  return { assignee: attention.assignee ?? DEFAULTS.attention.assignee };
+}
+
+function normalizedConfig({
+  configPath,
+  identity,
+  session,
+  scheduling,
+  leadership,
+  policy,
+  reviewPolicy,
+  selfRepair,
+  attention,
+  migrationDiagnostics,
+}) {
+  return {
+    version: 2,
+    configPath: configPath ? path.resolve(configPath) : undefined,
+    ...identity,
+    session,
+    scheduling,
+    leadership,
+    policy,
+    reviewPolicy,
+    selfRepair,
+    attention,
+    migrationDiagnostics,
+  };
+}
+
+function domainConfigDocument(config) {
+  return {
+    version: 2,
+    domain: config.domain,
+    state: { branch: config.state.branch, path: config.state.path },
+    session: {
+      agent: removeUndefined(config.session.agent),
+      productContextRoots: config.session.productContextRoots,
+    },
+    scheduling: config.scheduling,
+    leadership: config.leadership,
+    policy: config.policy,
+    reviewPolicy: config.reviewPolicy,
+    selfRepair: removeUndefined(config.selfRepair),
+    attention: removeUndefined(config.attention),
+  };
+}
+
+function migrationDiagnostics(config) {
+  const { diagnostics } = migrateDomainConfigUnsafe(config);
+  return diagnostics;
+}
+
+function migrateDomainConfigUnsafe(config) {
+  const diagnostics = [
+    "version: migrated domain configuration from version 1 to version 2",
+    "agent: remapped to session.agent",
+    "cadences.fullReviewSeconds: remapped to scheduling.reviewIntervalSeconds",
+    "cadences.leaderLeaseSeconds: remapped to leadership.leaseSeconds",
+    "cadences.leaderHeartbeatSeconds: remapped to leadership.heartbeatSeconds",
+    "cadences.retrySeconds: remapped to scheduling.retrySeconds",
+    "cadences.rateLimitRetrySeconds: remapped to scheduling.rateLimitRetrySeconds",
+  ];
+  for (const field of [
+    "activePollSeconds",
+    "idlePollSeconds",
+    "notificationSeconds",
+  ]) {
+    if (config.cadences?.[field] !== undefined) {
+      diagnostics.push(`cadences.${field}: obsolete host polling setting removed`);
+    }
+  }
+  if (config.transcripts !== undefined) {
+    diagnostics.push("transcripts: obsolete host transcript setting removed");
+  }
+  return { diagnostics };
+}
+
+function removeUndefined(record) {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) => value !== undefined),
+  );
+}
+
+function rejectUnexpectedKeys(config, allowed) {
   for (const key of Object.keys(config)) {
     if (RUNNER_ONLY_KEYS.has(key)) {
       fail(
@@ -375,8 +630,7 @@ function rejectUnexpectedKeys(config) {
         "is runner-only and must be kept in an independent runner profile",
       );
     }
-
-    if (!ALLOWED_KEYS.has(key)) {
+    if (!allowed.has(key)) {
       fail(key, "is not a supported PAN domain configuration field");
     }
   }
@@ -445,12 +699,6 @@ function requireRepositoryPath(value, field) {
   return path.posix.normalize(value);
 }
 
-function requireWithinNamespace(value, namespace, field) {
-  if (value !== namespace && !value.startsWith(`${namespace}/`)) {
-    fail(field, `must remain inside the ${namespace} state namespace`);
-  }
-}
-
 function boundedNumber(value, field, fallback, { minimum, maximum }) {
   const normalized = value ?? fallback;
   if (
@@ -464,12 +712,8 @@ function boundedNumber(value, field, fallback, { minimum, maximum }) {
   return normalized;
 }
 
-function boundedInteger(value, field, fallback, bounds) {
-  const normalized = boundedNumber(value, field, fallback, bounds);
-  if (!Number.isInteger(normalized)) {
-    fail(field, "must be an integer");
-  }
-  return normalized;
+function optionalBoundedNumber(value, field, bounds) {
+  return value === undefined ? undefined : boundedNumber(value, field, undefined, bounds);
 }
 
 function requireRecord(value, field) {
@@ -509,12 +753,6 @@ function requireAbsolutePath(value, field) {
   requireString(value, field);
   if (!path.isAbsolute(value)) {
     fail(field, "must be an absolute path");
-  }
-}
-
-function requireEqual(value, expected, field) {
-  if (value !== expected) {
-    fail(field, `must be ${JSON.stringify(expected)}`);
   }
 }
 

@@ -6,219 +6,191 @@ import test from "node:test";
 
 import {
   loadDomainConfig,
+  migrateDomainConfig,
+  migrateDomainConfigFile,
+  replaceDomainConfigFile,
   validateDomainConfig,
 } from "../src/index.js";
 
-test("applies bounded runtime defaults without runner settings", () => {
+test("normalizes version 2 defaults without host runtime settings", () => {
   const config = validateDomainConfig(makeConfig());
 
-  assert.equal(config.cadences.activePollSeconds, 30);
-  assert.equal(config.cadences.idlePollSeconds, 300);
-  assert.equal(config.cadences.fullReviewSeconds, 86_400);
-  assert.equal(config.cadences.rateLimitRetrySeconds, 900);
-  assert.equal(config.cadences.leaderLeaseSeconds, 120);
-  assert.equal(config.cadences.leaderHeartbeatSeconds, 30);
-  assert.equal(config.agent.executable, "copilot");
-  assert.equal(config.agent.turnTimeoutSeconds, undefined);
-  assert.equal(config.agent.maxAiCredits, undefined);
-  assert.equal(config.state.leaderPath, ".pan/leader.json");
-  assert.equal(config.transcripts.path, ".pan/transcripts");
-  assert.equal(config.transcripts.retentionDays, 30);
-  assert.deepEqual(config.reviewPolicy.higherRisk, {
-    enabled: false,
-    actionKinds: [],
+  assert.equal(config.version, 2);
+  assert.deepEqual(config.session.productContextRoots, []);
+  assert.equal(config.session.agent.executable, "copilot");
+  assert.deepEqual(config.scheduling, {
+    enabled: true,
+    startup: "immediate",
+    reviewIntervalSeconds: 86_400,
+    retrySeconds: 60,
+    rateLimitRetrySeconds: 900,
   });
-  assert.deepEqual(config.selfRepair, {
-    enabled: false,
-    repository: undefined,
-    workstream: undefined,
-    requirements: [],
+  assert.deepEqual(config.leadership, {
+    leaseSeconds: 120,
+    heartbeatSeconds: 30,
   });
-  assert.deepEqual(config.attention, { assignee: undefined });
-  assert.equal(config.machine, undefined);
-  assert.equal(config.repositories, undefined);
+  assert.equal(config.cadences, undefined);
+  assert.equal(config.transcripts, undefined);
 });
 
-test("confines state and transcript paths to the configured namespace", () => {
-  const config = makeConfig();
-  config.transcripts = { path: ".pan/history", retentionDays: 7 };
-  assert.equal(
-    validateDomainConfig(config).transcripts.path,
-    ".pan/history",
-  );
-
-  for (const invalidPath of [
-    "../outside",
-    ".pan/../outside",
-    "/absolute",
-    ".pan\\outside",
-  ]) {
-    const invalid = makeConfig();
-    invalid.transcripts = { path: invalidPath };
-    assert.throws(
-      () => validateDomainConfig(invalid),
-      /transcripts\.path .*confined repository-relative path|transcripts\.path must remain inside/,
-    );
-  }
-
-  const outsideNamespace = makeConfig();
-  outsideNamespace.transcripts = { path: "other/transcripts" };
-  assert.throws(
-    () => validateDomainConfig(outsideNamespace),
-    /transcripts\.path must remain inside the \.pan state namespace/,
-  );
-});
-
-test("rejects invalid cadence relationships before runtime mutation", () => {
-  const heartbeat = makeConfig();
-  heartbeat.cadences = {
-    leaderLeaseSeconds: 60,
-    leaderHeartbeatSeconds: 60,
+test("reads version 1 into the version 2 runtime shape with diagnostics", () => {
+  const legacy = makeVersion1Config();
+  legacy.cadences = {
+    fullReviewSeconds: 3_600,
+    leaderLeaseSeconds: 90,
+    leaderHeartbeatSeconds: 30,
+    activePollSeconds: 30,
   };
+  legacy.transcripts = { path: ".pan/history", retentionDays: 7 };
+
+  const config = validateDomainConfig(legacy);
+
+  assert.equal(config.version, 2);
+  assert.equal(config.session.agent.name, "pan");
+  assert.equal(config.scheduling.reviewIntervalSeconds, 3_600);
+  assert.equal(config.leadership.leaseSeconds, 90);
+  assert.match(
+    config.migrationDiagnostics.join("\n"),
+    /activePollSeconds: obsolete host polling setting removed/,
+  );
+  assert.match(
+    config.migrationDiagnostics.join("\n"),
+    /transcripts: obsolete host transcript setting removed/,
+  );
+});
+
+test("proposes an explicit version 2 migration without mutating the input", () => {
+  const source = makeVersion1Config();
+  const { document, diagnostics } = migrateDomainConfig(source);
+
+  assert.equal(source.version, 1);
+  assert.equal(document.version, 2);
+  assert.equal(document.session.agent.name, "pan");
+  assert.equal(document.scheduling.reviewIntervalSeconds, 86_400);
+  assert.match(diagnostics.join("\n"), /cadences.fullReviewSeconds/);
+});
+
+test("validates product-context roots, scheduling, leadership, and policy", () => {
+  const config = makeConfig();
+  config.session.productContextRoots = [
+    { label: "product", path: path.resolve("product-context") },
+  ];
+  config.scheduling = { reviewIntervalSeconds: 600, retrySeconds: 60 };
+  config.leadership = { leaseSeconds: 120, heartbeatSeconds: 30 };
+  config.policy = {
+    automatic: ["no-op"],
+    approvalRequired: ["issue-create"],
+    prohibited: ["issue-comment"],
+  };
+  assert.equal(
+    validateDomainConfig(config).session.productContextRoots[0].label,
+    "product",
+  );
+
+  config.session.productContextRoots[0].path = "relative";
+  assert.throws(
+    () => validateDomainConfig(config),
+    /session\.productContextRoots\[0\]\.path must be an absolute path/,
+  );
+
+  const duplicate = makeConfig();
+  duplicate.session.productContextRoots = [
+    { label: "product", path: path.resolve("one") },
+    { label: "product", path: path.resolve("two") },
+  ];
+  assert.throws(
+    () => validateDomainConfig(duplicate),
+    /must not duplicate another product-context root label/,
+  );
+
+  const heartbeat = makeConfig();
+  heartbeat.leadership = { leaseSeconds: 60, heartbeatSeconds: 60 };
   assert.throws(
     () => validateDomainConfig(heartbeat),
-    /cadences\.leaderHeartbeatSeconds must be less than/,
+    /leadership\.heartbeatSeconds must be less than leadership\.leaseSeconds/,
   );
 
-  const idle = makeConfig();
-  idle.cadences = { activePollSeconds: 60, idlePollSeconds: 30 };
+  const retry = makeConfig();
+  retry.scheduling = { retrySeconds: 120, rateLimitRetrySeconds: 60 };
   assert.throws(
-    () => validateDomainConfig(idle),
-    /cadences\.idlePollSeconds must be greater than or equal/,
+    () => validateDomainConfig(retry),
+    /scheduling\.rateLimitRetrySeconds must be greater than or equal/,
+  );
+
+  const classifications = makeConfig();
+  classifications.policy = {
+    automatic: ["no-op"],
+    approvalRequired: ["no-op"],
+  };
+  assert.throws(
+    () => validateDomainConfig(classifications),
+    /must not classify an action more than once/,
   );
 });
 
-test("rejects malformed identity and missing Project fields", () => {
-  const repository = makeConfig();
-  repository.domain.repository = "not-a-repository";
-  assert.throws(
-    () => validateDomainConfig(repository),
-    /domain\.repository must use owner\/name/,
-  );
-
-  const missingProject = makeConfig();
-  delete missingProject.domain.projectNumber;
-  assert.throws(
-    () => validateDomainConfig(missingProject),
-    /domain\.projectNumber must be an integer/,
-  );
-});
-
-test("rejects runner-only, credential, and unknown configuration fields", () => {
+test("rejects runner-only, credentials, and version 2 host fields", () => {
   for (const key of ["machine", "repositories", "terminal", "workspaceRoot"]) {
-    const config = { ...makeConfig(), [key]: {} };
     assert.throws(
-      () => validateDomainConfig(config),
+      () => validateDomainConfig({ ...makeConfig(), [key]: {} }),
       new RegExp(`${key} is runner-only`),
     );
   }
 
   const credential = makeConfig();
-  credential.agent.token = "must-not-be-stored";
+  credential.session.agent.token = "must-not-be-stored";
   assert.throws(
     () => validateDomainConfig(credential),
-    /agent\.token is not a supported configuration field/,
+    /session\.agent\.token is not a supported configuration field/,
+  );
+
+  const hostSetting = makeConfig();
+  hostSetting.cadences = {};
+  assert.throws(
+    () => validateDomainConfig(hostSetting),
+    /cadences is not a supported PAN domain configuration field/,
   );
 });
 
-test("requires explicit opt-in and action kinds for higher-risk review", () => {
-  const config = makeConfig();
-  config.reviewPolicy = {
-    higherRisk: {
-      enabled: true,
-      actionKinds: ["issue-create", "canonical-reorder"],
-    },
-  };
-  assert.deepEqual(
-    validateDomainConfig(config).reviewPolicy.higherRisk.actionKinds,
-    ["issue-create", "canonical-reorder"],
-  );
-
-  config.reviewPolicy.higherRisk.actionKinds = [];
-  assert.throws(
-    () => validateDomainConfig(config),
-    /must name at least one action kind/,
-  );
-});
-
-test("validates an opt-in self-repair target and runner requirements", () => {
-  const config = makeConfig();
-  config.selfRepair = {
-    enabled: true,
-    repository: "example/pan",
-    workstream: "pan",
-    requirements: ["env:local", "task:self-repair"],
-  };
-
-  assert.deepEqual(validateDomainConfig(config).selfRepair, config.selfRepair);
-
-  delete config.selfRepair.workstream;
-  assert.throws(
-    () => validateDomainConfig(config),
-    /selfRepair\.workstream must be a non-empty string/,
-  );
-
-  config.selfRepair.workstream = "pan";
-  config.selfRepair.requirements = ["delivery:pull-request"];
-  assert.throws(
-    () => validateDomainConfig(config),
-    /must not contain repo: or delivery:/,
-  );
-});
-
-test("keeps the human attention assignee in private domain configuration", () => {
-  const config = makeConfig();
-  config.attention = { assignee: "octocat" };
-
-  assert.deepEqual(validateDomainConfig(config).attention, {
-    assignee: "octocat",
-  });
-
-  config.attention.assignee = "not a login";
-  assert.throws(
-    () => validateDomainConfig(config),
-    /attention\.assignee must be a GitHub user or organization name/,
-  );
-});
-
-test("loads valid JSON and wraps unreadable or malformed config errors", async () => {
+test("replaces and migrates files atomically", async () => {
   const directory = path.resolve(`.domain-config-test-${randomUUID()}`);
-  const validPath = path.join(directory, "domain.json");
-  const malformedPath = path.join(directory, "malformed.json");
+  const configPath = path.join(directory, "domain.json");
   await mkdir(directory);
-  await writeFile(validPath, JSON.stringify(makeConfig()));
-  await writeFile(malformedPath, "{");
+  await writeFile(configPath, JSON.stringify(makeVersion1Config()));
 
   try {
-    const loaded = await loadDomainConfig(validPath);
-    assert.equal(loaded.configPath, validPath);
-    assert.equal(loaded.domain.repository, "example/domain");
+    const migration = await migrateDomainConfigFile(configPath);
+    const stored = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(migration.document.version, 2);
+    assert.equal(stored.version, 2);
+
+    const original = await readFile(configPath, "utf8");
     await assert.rejects(
-      loadDomainConfig(malformedPath),
-      /Unable to read PAN domain config .*malformed\.json/,
+      replaceDomainConfigFile(configPath, { version: 2 }),
+      /domain must be an object/,
     );
-    await assert.rejects(
-      loadDomainConfig(path.join(directory, "missing.json")),
-      /Unable to read PAN domain config .*missing\.json/,
-    );
+    assert.equal(await readFile(configPath, "utf8"), original);
+
+    const loaded = await loadDomainConfig(configPath);
+    assert.equal(loaded.configPath, configPath);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("publishes a parseable domain configuration schema", async () => {
+test("publishes a parseable versioned domain configuration schema", async () => {
   const schema = JSON.parse(
     await readFile(path.resolve("schema/domain-config.json"), "utf8"),
   );
 
   assert.equal(schema.title, "PAN domain runtime configuration");
-  assert.equal(schema.properties.selfRepair.type, "object");
-  assert.equal(schema.properties.attention.type, "object");
+  assert.equal(schema.$defs.version1.properties.version.const, 1);
+  assert.equal(schema.$defs.version2.properties.version.const, 2);
+  assert.ok(schema.$defs.version2.properties.session);
 });
 
 function makeConfig() {
   return {
-    version: 1,
+    version: 2,
     domain: {
       repository: "example/domain",
       projectOwner: "example",
@@ -229,8 +201,20 @@ function makeConfig() {
       branch: "pan-state",
       path: ".pan",
     },
-    agent: {
-      name: "pan",
+    session: {
+      agent: {
+        name: "pan",
+      },
     },
+  };
+}
+
+function makeVersion1Config() {
+  const config = makeConfig();
+  const { session, ...legacy } = config;
+  return {
+    ...legacy,
+    version: 1,
+    agent: session.agent,
   };
 }

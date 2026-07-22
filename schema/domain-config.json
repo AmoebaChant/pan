@@ -2,164 +2,41 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/domain-config.json",
   "title": "PAN domain runtime configuration",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "version",
-    "domain",
-    "state",
-    "agent"
+  "oneOf": [
+    { "$ref": "#/$defs/version1" },
+    { "$ref": "#/$defs/version2" }
   ],
-  "properties": {
-    "version": {
-      "const": 1
-    },
+  "$defs": {
     "domain": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "repository",
-        "projectOwner",
-        "projectNumber",
-        "path"
-      ],
+      "required": ["repository", "projectOwner", "projectNumber", "path"],
       "properties": {
-        "repository": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]+$"
-        },
-        "projectOwner": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
-        },
-        "projectNumber": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "path": {
-          "type": "string",
-          "minLength": 1
-        }
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]+$" },
+        "projectOwner": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$" },
+        "projectNumber": { "type": "integer", "minimum": 1 },
+        "path": { "type": "string", "minLength": 1 }
       }
     },
     "state": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "branch",
-        "path"
-      ],
+      "required": ["branch", "path"],
       "properties": {
-        "branch": {
-          "type": "string",
-          "minLength": 1
-        },
-        "path": {
-          "type": "string",
-          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
-        }
+        "branch": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$" }
       }
     },
     "agent": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "name"
-      ],
+      "required": ["name"],
       "properties": {
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "executable": {
-          "type": "string",
-          "minLength": 1,
-          "default": "copilot"
-        },
-        "model": {
-          "type": "string",
-          "minLength": 1
-        },
-        "turnTimeoutSeconds": {
-          "type": "number",
-          "minimum": 30,
-          "maximum": 3600
-        },
-        "maxAiCredits": {
-          "type": "number",
-          "minimum": 1,
-          "maximum": 1000
-        }
-      }
-    },
-    "cadences": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "activePollSeconds": {
-          "type": "number",
-          "minimum": 5,
-          "maximum": 300,
-          "default": 30
-        },
-        "idlePollSeconds": {
-          "type": "number",
-          "minimum": 30,
-          "maximum": 3600,
-          "default": 300
-        },
-        "fullReviewSeconds": {
-          "type": "number",
-          "minimum": 300,
-          "maximum": 604800,
-          "default": 86400
-        },
-        "leaderLeaseSeconds": {
-          "type": "number",
-          "minimum": 30,
-          "maximum": 3600,
-          "default": 120
-        },
-        "leaderHeartbeatSeconds": {
-          "type": "number",
-          "minimum": 5,
-          "maximum": 1200,
-          "default": 30
-        },
-        "notificationSeconds": {
-          "type": "number",
-          "minimum": 30,
-          "maximum": 86400,
-          "default": 300
-        },
-        "retrySeconds": {
-          "type": "number",
-          "minimum": 5,
-          "maximum": 3600,
-          "default": 60
-        },
-        "rateLimitRetrySeconds": {
-          "type": "number",
-          "minimum": 60,
-          "maximum": 86400,
-          "default": 900
-        }
-      }
-    },
-    "transcripts": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "path": {
-          "type": "string",
-          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
-        },
-        "retentionDays": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 365,
-          "default": 30
-        }
+        "name": { "type": "string", "minLength": 1 },
+        "executable": { "type": "string", "minLength": 1, "default": "copilot" },
+        "model": { "type": "string", "minLength": 1 },
+        "turnTimeoutSeconds": { "type": "number", "minimum": 30, "maximum": 3600 },
+        "maxAiCredits": { "type": "number", "minimum": 1, "maximum": 1000 }
       }
     },
     "reviewPolicy": {
@@ -170,82 +47,134 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": {
-              "type": "boolean",
-              "default": false
-            },
-            "actionKinds": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "default": []
-            }
+            "enabled": { "type": "boolean", "default": false },
+            "actionKinds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "default": [] }
           }
         }
+      }
+    },
+    "selfRepair": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "repository": { "$ref": "#/$defs/domain/properties/repository" },
+        "workstream": { "type": "string", "minLength": 1 },
+        "requirements": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "not": { "pattern": "^(repo|delivery):" } }, "default": [] }
       }
     },
     "attention": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "assignee": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
-        }
+        "assignee": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$" }
       }
     },
-    "selfRepair": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "default": false
-          },
-          "repository": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]+$"
-          },
-          "workstream": {
-            "type": "string",
-            "minLength": 1
-          },
-          "requirements": {
-            "type": "array",
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "not": {
-                "pattern": "^(repo|delivery):"
-              }
-            },
-            "default": []
+    "version1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "domain", "state", "agent"],
+      "properties": {
+        "version": { "const": 1 },
+        "domain": { "$ref": "#/$defs/domain" },
+        "state": { "$ref": "#/$defs/state" },
+        "agent": { "$ref": "#/$defs/agent" },
+        "cadences": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "activePollSeconds": { "type": "number", "minimum": 5, "maximum": 300 },
+            "idlePollSeconds": { "type": "number", "minimum": 30, "maximum": 3600 },
+            "fullReviewSeconds": { "type": "number", "minimum": 300, "maximum": 604800 },
+            "leaderLeaseSeconds": { "type": "number", "minimum": 30, "maximum": 3600 },
+            "leaderHeartbeatSeconds": { "type": "number", "minimum": 5, "maximum": 1200 },
+            "notificationSeconds": { "type": "number", "minimum": 30, "maximum": 86400 },
+            "retrySeconds": { "type": "number", "minimum": 5, "maximum": 3600 },
+            "rateLimitRetrySeconds": { "type": "number", "minimum": 60, "maximum": 86400 }
           }
         },
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "enabled": {
-                  "const": true
+        "transcripts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": { "$ref": "#/$defs/state/properties/path" },
+            "retentionDays": { "type": "integer", "minimum": 1, "maximum": 365 }
+          }
+        },
+        "reviewPolicy": { "$ref": "#/$defs/reviewPolicy" },
+        "selfRepair": { "$ref": "#/$defs/selfRepair" },
+        "attention": { "$ref": "#/$defs/attention" }
+      }
+    },
+    "version2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "domain", "state", "session"],
+      "properties": {
+        "version": { "const": 2 },
+        "domain": { "$ref": "#/$defs/domain" },
+        "state": { "$ref": "#/$defs/state" },
+        "session": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["agent"],
+          "properties": {
+            "agent": { "$ref": "#/$defs/agent" },
+            "productContextRoots": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["label", "path"],
+                "properties": {
+                  "label": { "type": "string", "minLength": 1 },
+                  "path": { "type": "string", "minLength": 1 }
                 }
               },
-              "required": [
-                "enabled"
-              ]
-            },
-            "then": {
-              "required": [
-                "repository",
-                "workstream"
-              ]
+              "default": []
             }
           }
-        ]
+        },
+        "scheduling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "reviewIntervalSeconds": { "type": "number", "minimum": 300, "maximum": 604800, "default": 86400 },
+            "startup": { "enum": ["immediate", "after-interval", "manual"], "default": "immediate" },
+            "retrySeconds": { "type": "number", "minimum": 5, "maximum": 3600, "default": 60 },
+            "rateLimitRetrySeconds": { "type": "number", "minimum": 60, "maximum": 86400, "default": 900 }
+          }
+        },
+        "leadership": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "leaseSeconds": { "type": "number", "minimum": 30, "maximum": 3600, "default": 120 },
+            "heartbeatSeconds": { "type": "number", "minimum": 5, "maximum": 1200, "default": 30 }
+          }
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "automatic": { "$ref": "#/$defs/actionKinds" },
+            "approvalRequired": { "$ref": "#/$defs/actionKinds" },
+            "prohibited": { "$ref": "#/$defs/actionKinds" }
+          }
+        },
+        "reviewPolicy": { "$ref": "#/$defs/reviewPolicy" },
+        "selfRepair": { "$ref": "#/$defs/selfRepair" },
+        "attention": { "$ref": "#/$defs/attention" }
+      }
+    },
+    "actionKinds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["field-update", "canonical-reorder", "relative-precedence", "issue-create", "issue-comment", "needs-human", "no-op"]
+      }
     }
   }
 }
