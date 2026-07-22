@@ -40,6 +40,40 @@ test("parses setup without pre-existing configuration", () => {
   );
 });
 
+test("parses asset installation commands without domain configuration", () => {
+  assert.deepEqual(parsePanArgs(["assets", "status", "--json"], {}), {
+    command: "assets",
+    operation: "status",
+    force: false,
+    json: true,
+  });
+  assert.deepEqual(parsePanArgs(["assets", "repair", "--force"], {}), {
+    command: "assets",
+    operation: "repair",
+    force: true,
+    json: false,
+  });
+  assert.throws(
+    () => parsePanArgs(["assets", "install", "--force"], {}),
+    /only supported/,
+  );
+});
+
+test("runs asset commands before loading domain configuration", async () => {
+  const stdout = { value: "", write(value) { this.value += value; } };
+  const expected = { status: "current", assets: [], shadows: [] };
+  const result = await runPanCli(["assets", "status", "--json"], {
+    stdout,
+    domainConfigLoader: async () => assert.fail("config loader was called"),
+    assetServiceFactory: () => ({
+      status: async () => expected,
+    }),
+  });
+
+  assert.equal(result, expected);
+  assert.deepEqual(JSON.parse(stdout.value), expected);
+});
+
 test("parses attention commands from PAN_CONFIG", () => {
   assert.deepEqual(
     parsePanArgs(["inbox", "--json"], { PAN_CONFIG: "domain.json" }),

@@ -20,6 +20,12 @@ export {
   replaceDomainConfigFile,
 } from "./domain-config-file.js";
 export { AttentionService } from "./attention-service.js";
+export {
+  discoverCopilotUserScope,
+  isCurrentPanAssets,
+  PanAssetError,
+  PanAssetService,
+} from "./pan-assets.js";
 export { createPanCommandContext } from "./pan-command-context.js";
 export {
   commandResultExitCode,

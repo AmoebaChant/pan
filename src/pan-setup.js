@@ -4,6 +4,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 
 import { validateDomainConfig } from "./domain-config.js";
+import { PanAssetService } from "./pan-assets.js";
 import { ProcessClient } from "./process-client.js";
 import { validateRunnerProfile } from "./runner-profile.js";
 
@@ -21,6 +22,7 @@ export async function setupPanDomain(
     input = process.stdin,
     output = process.stdout,
     ask,
+    assetServiceFactory = (options) => new PanAssetService(options),
   } = {},
 ) {
   if (!gh?.run || !gh?.runJson) {
@@ -180,7 +182,7 @@ export async function setupPanDomain(
       "HEAD",
     ]);
 
-    return {
+    const result = {
       repository,
       directory,
       configPath,
@@ -191,6 +193,18 @@ export async function setupPanDomain(
       approvalMode,
       runnerOnline: false,
     };
+    if (options.installAssets) {
+      try {
+        result.assets = await assetServiceFactory({ env }).install();
+      } catch (error) {
+        result.assets = {
+          status: "failed",
+          diagnostics: [error.message],
+          ...(error.status ? { details: error.status } : {}),
+        };
+      }
+    }
+    return result;
   } catch (error) {
     const suffix =
       created.length > 0

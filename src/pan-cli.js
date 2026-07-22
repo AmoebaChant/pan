@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { AttentionService } from "./attention-service.js";
 import { ActionPolicy } from "./action-policy.js";
+import { PanAssetService } from "./pan-assets.js";
 import { createPanCommandContext } from "./pan-command-context.js";
 import {
   commandResultFromError,
@@ -69,6 +70,7 @@ export async function runPanCli(
     connectFactory = connectPan,
     prepareRuntimeFactory = preparePanRuntime,
     setupFactory = setupPanDomain,
+    assetServiceFactory = (options) => new PanAssetService(options),
     loggerFactory = createServiceLogger,
     hostname = os.hostname(),
     runnerProfileSourceFactory = (options) => new RunnerProfileSource(options),
@@ -95,6 +97,20 @@ export async function runPanCli(
     });
   }
   const parsed = parseArgs(args, env);
+  if (parsed.command === "assets") {
+    const service = assetServiceFactory({ env });
+    const result =
+      parsed.operation === "status"
+        ? await service.status()
+        : parsed.operation === "install"
+          ? await service.install()
+          : await service.repair({ force: parsed.force });
+    write(
+      stdout,
+      parsed.json ? JSON.stringify(result, null, 2) : formatAssetResult(result),
+    );
+    return result;
+  }
   if (parsed.command === "setup") {
     const result = await setupFactory(parsed, {
       gh,
@@ -399,6 +415,7 @@ export function parseArgs(args, env = process.env) {
     const projectOwner = takeOption(remaining, "--project-owner");
     const projectTitle = takeOption(remaining, "--project-title");
     const approvalMode = takeOption(remaining, "--approval-mode");
+    const installAssets = takeFlag(remaining, "--install-assets");
     if (approvalMode !== undefined) {
       validateChoice(
         approvalMode,
@@ -415,7 +432,23 @@ export function parseArgs(args, env = process.env) {
       projectOwner,
       projectTitle,
       approvalMode,
+      ...(installAssets ? { installAssets: true } : {}),
     };
+  }
+
+  if (command === "assets") {
+    const operation = remaining.shift();
+    if (!["install", "status", "repair"].includes(operation)) {
+      throw new TypeError(
+        "Usage: pan assets <install|status|repair> [--force] [--json]",
+      );
+    }
+    const force = takeFlag(remaining, "--force");
+    if (force && operation !== "repair") {
+      throw new TypeError("--force is only supported by pan assets repair");
+    }
+    requireNoArgs(remaining);
+    return { command, operation, force, json };
   }
 
   if (!config && !profile) {
@@ -946,14 +979,30 @@ function formatReasoningResult(result) {
 }
 
 function formatSetupResult(result) {
-  return [
+  const lines = [
     `PAN domain ready: ${result.repository}`,
     `Clone: ${result.directory}`,
     `Project: ${result.projectUrl ?? `${result.projectOwner}#${result.projectNumber}`}`,
     `Config: ${result.configPath}`,
     `Runner profile: ${result.runnerProfilePath} (offline)`,
     `Copilot approvals: ${result.approvalMode}`,
-  ].join("\n");
+  ];
+  if (result.assets) {
+    lines.push(`PAN assets: ${result.assets.status}`);
+    lines.push(...(result.assets.diagnostics ?? []));
+  }
+  return lines.join("\n");
+}
+
+function formatAssetResult(result) {
+  const lines = [`PAN assets: ${result.status}`];
+  for (const asset of result.assets) {
+    lines.push(`${asset.status}: ${asset.destination}`);
+  }
+  for (const shadow of result.shadows) {
+    lines.push(`shadowed: ${shadow.path}`);
+  }
+  return lines.join("\n");
 }
 
 function inboxTable(entries) {
@@ -1041,7 +1090,8 @@ function write(stdout, value) {
 function usage() {
   return [
     "Usage:",
-    "  pan setup [--repository <owner/name>] [--path <path>] [--approval-mode <prompt|allow-all>]",
+    "  pan setup [--repository <owner/name>] [--path <path>] [--approval-mode <prompt|allow-all>] [--install-assets]",
+    "  pan assets <install|status|repair> [--force] [--json]",
     "  pan start [--apply] --config <path>",
     "  pan start --background [--no-terminal] [--apply] --config <path>",
     "  pan stop --config <path>",

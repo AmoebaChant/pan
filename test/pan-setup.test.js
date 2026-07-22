@@ -119,6 +119,44 @@ test("refuses to overwrite an existing local path before remote mutation", async
   }
 });
 
+test("reports asset installation failure after preserving the bootstrapped domain", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pan-setup-assets-"));
+  const directory = path.join(root, "domain");
+  const gh = new FakeGh();
+  const commands = new FakeCommands();
+  try {
+    const result = await setupPanDomain(
+      {
+        repository: "example/domain",
+        path: directory,
+        projectOwner: "example",
+        projectTitle: "PAN",
+        approvalMode: "prompt",
+        installAssets: true,
+      },
+      {
+        gh,
+        commands,
+        hostname: "machine",
+        ask: assert.fail,
+        assetServiceFactory: () => ({
+          install: async () => {
+            throw new Error("asset conflict");
+          },
+        }),
+      },
+    );
+
+    assert.equal(result.assets.status, "failed");
+    assert.match(result.assets.diagnostics[0], /asset conflict/);
+    assert.equal((await readFile(result.configPath, "utf8")).length > 0, true);
+    assert.ok(commands.calls.some(({ args }) => args[2] === "push"));
+    assert.ok(gh.calls.some((args) => args[0] === "repo" && args[1] === "create"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 class FakeGh {
   constructor() {
     this.calls = [];
