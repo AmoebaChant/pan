@@ -11,7 +11,6 @@ export function buildTaskCopilotArgs(task, taskPrompt) {
   const args = [
     "-C",
     task.target.worktreePath,
-    "--allow-all-tools",
     "--disable-builtin-mcps",
     "--no-remote",
     "--no-auto-update",
@@ -23,6 +22,9 @@ export function buildTaskCopilotArgs(task, taskPrompt) {
     "--deny-tool=shell(powershell:*)",
     "--deny-tool=shell(pwsh:*)",
   ];
+  if (task.copilot.approvalMode === "allow-all") {
+    args.splice(2, 0, "--allow-all-tools");
+  }
   if (task.copilot.maxAiCredits !== undefined) {
     args.push(
       "--max-ai-credits",

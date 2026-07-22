@@ -3,6 +3,39 @@ import test from "node:test";
 
 import { parsePanArgs } from "../src/index.js";
 
+test("parses setup without pre-existing configuration", () => {
+  assert.deepEqual(
+    parsePanArgs([
+      "setup",
+      "--repository",
+      "example/domain",
+      "--path",
+      "C:\\domains\\example",
+      "--project-owner",
+      "example",
+      "--project-title",
+      "My PAN",
+      "--approval-mode",
+      "prompt",
+      "--json",
+    ], {}),
+    {
+      command: "setup",
+      json: true,
+      repository: "example/domain",
+      path: "C:\\domains\\example",
+      projectOwner: "example",
+      projectTitle: "My PAN",
+      approvalMode: "prompt",
+    },
+  );
+
+  assert.throws(
+    () => parsePanArgs(["setup"], { PAN_CONFIG: "domain.json" }),
+    /creates configuration/,
+  );
+});
+
 test("parses attention commands from PAN_CONFIG", () => {
   assert.deepEqual(
     parsePanArgs(["inbox", "--json"], { PAN_CONFIG: "domain.json" }),

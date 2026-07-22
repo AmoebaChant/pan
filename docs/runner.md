@@ -71,7 +71,8 @@ matching `repo:<owner/name>` capability.
   },
   "copilot": {
     "executable": "copilot",
-    "model": "gpt-5.6-sol"
+    "model": "gpt-5.6-sol",
+    "approvalMode": "prompt"
   }
 }
 ```
@@ -80,6 +81,8 @@ Playbook capacity, clone paths, worktree roots, machine names, and terminal
 settings are private machine configuration. Commit them only to the private
 domain repository, never to this public package. Profiles without `playbooks`
 remain supported as one compatibility playbook using the global capacity.
+`copilot.approvalMode` defaults to `prompt`, which leaves tool approval with the
+interactive Copilot session. Set it to `allow-all` only as an explicit opt-in.
 `delivery` defaults to `pull-request`. Set it to `direct` only for repositories
 where the runner is explicitly authorized to rebase and push completed work to
 the configured default branch without human review.
@@ -133,6 +136,10 @@ safeguards. Omitting them removes PAN's wall-clock and AI-credit caps.
 `taskBudget.maxAutopilotContinues` remains accepted for compatibility with
 existing profiles but is not applied because runner tasks now start in
 interactive mode instead of autopilot.
+
+`pan setup` creates an offline starter profile with no service repositories.
+An offline profile may keep `repositories` empty while it is being configured;
+an online profile must configure at least one repository.
 
 Run one polling cycle and wait for its selected tasks:
 

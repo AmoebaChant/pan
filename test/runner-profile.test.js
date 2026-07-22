@@ -31,6 +31,7 @@ test("loads a capability profile and applies runner defaults", async () => {
     });
     assert.equal(profile.terminal.executable, "wt");
     assert.equal(profile.terminal.profile, "PowerShell");
+    assert.equal(profile.copilot.approvalMode, "prompt");
     assert.equal(profile.profilePath, profilePath);
     assert.equal(profile.store.path, directory);
   } finally {
@@ -75,6 +76,37 @@ test("preserves a configured Windows Terminal profile", () => {
   source.terminal.profile = "PAN Work";
 
   assert.equal(validateRunnerProfile(source).terminal.profile, "PAN Work");
+});
+
+test("requires explicit opt-in for all-tools Copilot approval", () => {
+  const source = makeProfile(path.resolve("runner-root"));
+  source.copilot = { approvalMode: "allow-all" };
+
+  assert.equal(
+    validateRunnerProfile(source).copilot.approvalMode,
+    "allow-all",
+  );
+
+  source.copilot.approvalMode = "automatic";
+  assert.throws(
+    () => validateRunnerProfile(source),
+    /approvalMode must be "prompt" or "allow-all"/,
+  );
+});
+
+test("allows an offline starter profile without service repositories", () => {
+  const source = makeProfile(path.resolve("runner-root"));
+  source.online = false;
+  source.capabilities = ["env:local"];
+  source.repositories = {};
+
+  assert.deepEqual(validateRunnerProfile(source).playbooks[0].repositories, []);
+
+  source.online = true;
+  assert.throws(
+    () => validateRunnerProfile(source),
+    /at least one repository when the runner is online/,
+  );
 });
 
 test("adapts a legacy profile to one compatibility playbook", () => {

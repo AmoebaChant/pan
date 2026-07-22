@@ -4,6 +4,31 @@ A PAN domain configuration connects one PAN runtime to one GitHub repository
 and one Project. It contains no runner capability, machine, worktree, terminal,
 or credential settings.
 
+## Setup
+
+Run `pan setup` after installing or cloning PAN. The wizard creates a new
+private domain repository and GitHub Project, installs the required Project
+fields, clones the repository, and bootstraps:
+
+- `pan.json`, including the absolute local clone path;
+- `workstreams/getting-started/README.md`;
+- an offline `runners/<machine>.json` starter profile.
+
+The runner remains offline until its repositories, capabilities, and playbooks
+are configured intentionally. Tool auto-approval is not the default. The wizard
+records either `prompt` or the explicit `allow-all` opt-in in the private runner
+profile.
+
+All values can also be supplied non-interactively:
+
+```powershell
+pan setup --repository example/personal-domain `
+  --path C:\domains\personal-domain `
+  --project-owner example `
+  --project-title "Personal PAN" `
+  --approval-mode prompt
+```
+
 ## Example
 
 ```json
