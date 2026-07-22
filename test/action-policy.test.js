@@ -38,6 +38,21 @@ test("supports configured approval requirements and material explanations", () =
   assert.match(assessment.reasons[0], /specific rationale/i);
 });
 
+test("requires evidence and a material rationale for automatic mutations", () => {
+  const policy = new ActionPolicy({ automatic: ["field-update"] });
+  const action = fieldAction("ready");
+  action.rationale = "short";
+
+  const assessment = policy.assess(action, {
+    snapshot: portfolio("ready"),
+    mode: "live",
+  });
+
+  assert.equal(assessment.authority, "automatic");
+  assert.equal(assessment.allowed, false);
+  assert.match(assessment.reasons.join(" "), /specific rationale/i);
+});
+
 test("protects active lifecycle states and leases from retriage", () => {
   const policy = new ActionPolicy();
 

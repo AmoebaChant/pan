@@ -70,7 +70,7 @@ export class ActionPolicy {
 
     if (
       mode === "live" &&
-      authority !== "automatic" &&
+      normalized.kind !== "no-op" &&
       !hasMaterialExplanation(normalized)
     ) {
       reasons.push(
