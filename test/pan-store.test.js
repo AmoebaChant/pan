@@ -771,7 +771,7 @@ test("marks an auto-closed linked Issue done without closing it again", async ()
   assert.deepEqual(gh.issueStateEdits, []);
 });
 
-test("restores review status when merged PR Issue closure fails", async () => {
+test("preserves confirmed done status when merged PR Issue closure fails", async () => {
   const { store } = fixture({
     items: [
       makeItem({
@@ -790,11 +790,68 @@ test("restores review status when merged PR Issue closure fails", async () => {
     failIssueClose: true,
   });
 
-  await assert.rejects(
-    store.reconcileMergedPullRequests(),
-    /Issue closure failed/,
-  );
+  const result = await store.reconcileMergedPullRequests();
+
+  assert.deepEqual(result.completed, []);
+  assert.equal((await store.getItem("item-1")).fields.status, "done");
+});
+
+test("retries closure of a done merged pull request without another status transition", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        status: "in-review",
+        linkedPullRequests: [
+          {
+            number: 42,
+            url: "https://github.com/AmoebaChant/pan/pull/42",
+            state: "MERGED",
+            mergedAt: "2026-07-17T19:30:00Z",
+            repository: "AmoebaChant/pan",
+          },
+        ],
+      }),
+    ],
+    failIssueClose: true,
+  });
+
+  await store.reconcileMergedPullRequests();
+  gh.failIssueClose = false;
+  const result = await store.reconcileMergedPullRequests();
+
+  assert.equal(result.completed.length, 1);
+  assert.equal((await store.getItem("item-1")).fields.status, "done");
+  assert.deepEqual(gh.issueStateEdits, [
+    { number: 1, action: "close", reason: "completed" },
+    { number: 1, action: "close", reason: "completed" },
+  ]);
+});
+
+test("does not complete merged review work with an active lease", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        status: "in-review",
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+        linkedPullRequests: [
+          {
+            number: 42,
+            url: "https://github.com/AmoebaChant/pan/pull/42",
+            state: "MERGED",
+            mergedAt: "2026-07-17T19:30:00Z",
+            repository: "AmoebaChant/pan",
+          },
+        ],
+      }),
+    ],
+  });
+
+  const result = await store.reconcileMergedPullRequests();
+
+  assert.deepEqual(result.completed, []);
   assert.equal((await store.getItem("item-1")).fields.status, "in-review");
+  assert.deepEqual(gh.issueStateEdits, []);
 });
 
 test("restores a claimed task when closing its Issue fails", async () => {

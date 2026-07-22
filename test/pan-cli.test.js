@@ -380,3 +380,58 @@ test("dispatches reconcile missing-issues with an opt-in apply flag", async () =
   assert.equal(result.status, "confirmed");
   assert.equal(JSON.parse(output[0]).confirmedEffects[0], "Applied reconciliation.");
 });
+
+test("dispatches reconcile merged-prs with a per-item receipt", async () => {
+  const output = [];
+  const handler = Object.assign(
+    async ({ context, options }) => ({
+      version: 1,
+      status: "confirmed",
+      operation: "reconcile.merged-prs",
+      operationId: "merged-1",
+      domain: context.domain,
+      receipts: [
+        {
+          itemId: "item-1",
+          issueNumber: 1,
+          issueUrl: "https://github.com/example/domain/issues/1",
+          pullRequestUrl: "https://github.com/example/domain/pull/42",
+          projectStatus: options.apply ? "confirmed" : "planned",
+          issueStatus: options.apply ? "confirmed" : "planned",
+        },
+      ],
+      confirmedEffects: ["Confirmed merged pull request completion."],
+      remainingSteps: [],
+      diagnostics: [],
+      recovery: { safe: true, steps: [] },
+    }),
+    { specification: { flags: ["apply"] } },
+  );
+
+  const result = await runPanCli(
+    [
+      "reconcile",
+      "merged-prs",
+      "--schema-version",
+      "1",
+      "--config",
+      "domain.json",
+      "--apply",
+      "--json",
+    ],
+    {
+      commandHandlers: { reconcile: { "merged-prs": handler } },
+      commandContextFactory: async () => ({
+        domain: {
+          repository: "example/domain",
+          projectOwner: "example",
+          projectNumber: 12,
+        },
+      }),
+      stdout: { write: (value) => output.push(value) },
+    },
+  );
+
+  assert.equal(result.receipts[0].issueStatus, "confirmed");
+  assert.equal(JSON.parse(output[0]).operation, "reconcile.merged-prs");
+});

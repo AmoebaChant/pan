@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   MISSING_ISSUE_INITIAL_FIELDS,
+  MergedPullRequestReconciliationService,
   ReconciliationService,
 } from "../src/index.js";
 
@@ -118,6 +119,82 @@ test("rejects an apply when Project membership changes after planning", async ()
   assert.match(result.diagnostics.at(-1), /membership changed/);
 });
 
+test("reconciles only confirmed merged pull requests with separate receipts", async () => {
+  const store = new MergedReconciliationStore([
+    mergedItem(1),
+    mergedItem(2, { pullRequest: { state: "open" } }),
+  ]);
+  const service = new MergedPullRequestReconciliationService({ store });
+
+  const result = await service.reconcileMergedPullRequests({ apply: true });
+
+  assert.equal(result.status, "confirmed");
+  assert.deepEqual(result.receipts, [
+    {
+      itemId: "merged-1",
+      issueNumber: 1,
+      issueUrl: "https://github.com/example/domain/issues/1",
+      pullRequestUrl: "https://github.com/example/domain/pull/101",
+      projectStatus: "confirmed",
+      issueStatus: "confirmed",
+    },
+  ]);
+  assert.equal(store.items[0].fields.status, "done");
+  assert.equal(store.items[0].state, "closed");
+  assert.equal(store.items[1].fields.status, "in-review");
+});
+
+test("retries Issue closure without repeating a confirmed done transition", async () => {
+  const store = new MergedReconciliationStore([mergedItem(1)], {
+    failClosureOnce: true,
+  });
+  const service = new MergedPullRequestReconciliationService({ store });
+
+  const interrupted = await service.reconcileMergedPullRequests({ apply: true });
+  const retried = await service.reconcileMergedPullRequests({ apply: true });
+
+  assert.equal(interrupted.status, "incomplete");
+  assert.equal(interrupted.receipts[0].projectStatus, "confirmed");
+  assert.equal(interrupted.receipts[0].issueStatus, "pending");
+  assert.equal(store.statusWrites, 1);
+  assert.equal(retried.status, "confirmed");
+  assert.equal(store.statusWrites, 1);
+  assert.equal(retried.receipts[0].issueStatus, "confirmed");
+});
+
+test("treats an auto-closed backing Issue as a confirmed effect", async () => {
+  const store = new MergedReconciliationStore([
+    mergedItem(1, { state: "closed" }),
+  ]);
+
+  const result = await new MergedPullRequestReconciliationService({
+    store,
+  }).reconcileMergedPullRequests({ apply: true });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.receipts[0].issueStatus, "already-closed");
+  assert.equal(store.closureWrites, 0);
+});
+
+test("does not start Issue closure after leadership is lost", async () => {
+  const store = new MergedReconciliationStore([mergedItem(1)]);
+  let assertions = 0;
+  const service = new MergedPullRequestReconciliationService({
+    store,
+    assertLeadership: async () => ({
+      asserted: ++assertions === 1,
+      reason: "Leadership was lost.",
+    }),
+  });
+
+  const result = await service.reconcileMergedPullRequests({ apply: true });
+
+  assert.equal(result.status, "incomplete");
+  assert.equal(store.items[0].fields.status, "done");
+  assert.equal(store.closureWrites, 0);
+  assert.equal(result.receipts[0].projectStatus, "confirmed");
+});
+
 class ReconciliationStore {
   constructor({
     issues = [],
@@ -198,6 +275,71 @@ class ReconciliationStore {
   }
 }
 
+class MergedReconciliationStore {
+  constructor(items, { failClosureOnce = false } = {}) {
+    this.repository = REPOSITORY;
+    this.projectOwner = "example";
+    this.projectNumber = 1;
+    this.items = structuredClone(items);
+    this.failClosureOnce = failClosureOnce;
+    this.statusWrites = 0;
+    this.closureWrites = 0;
+  }
+
+  async readCanonicalProject() {
+    return {
+      id: "project-merged",
+      complete: true,
+      items: structuredClone(this.items),
+    };
+  }
+
+  async confirmMergedPullRequest(itemId, expected) {
+    const item = this.#item(itemId);
+    if (expected.expectedIssueUrl && item.url !== expected.expectedIssueUrl) {
+      return { confirmed: false, reason: "backing-issue-changed", item };
+    }
+    const pullRequest = item.linkedPullRequests.find(
+      (candidate) => candidate.state === "merged" || candidate.mergedAt,
+    );
+    return pullRequest
+      ? { confirmed: true, item: structuredClone(item), pullRequest }
+      : { confirmed: false, reason: "pull-request-not-merged", item };
+  }
+
+  async confirmMergedPullRequestStatus(itemId, expected) {
+    const evidence = await this.confirmMergedPullRequest(itemId, expected);
+    if (!evidence.confirmed || evidence.item.fields.status === "done") {
+      return evidence;
+    }
+    const item = this.#item(itemId);
+    item.fields.status = "done";
+    this.statusWrites += 1;
+    return { confirmed: true, item: structuredClone(item) };
+  }
+
+  async confirmMergedIssueClosure(itemId, { expectedIssueUrl }) {
+    const item = this.#item(itemId);
+    if (item.url !== expectedIssueUrl) {
+      return { confirmed: false, reason: "backing-issue-changed", item };
+    }
+    if (item.state === "closed") {
+      return { confirmed: true, alreadyClosed: true, item: structuredClone(item) };
+    }
+    if (this.failClosureOnce) {
+      this.failClosureOnce = false;
+      return { confirmed: false, reason: "Issue closure failed", item: structuredClone(item) };
+    }
+    item.state = "closed";
+    this.closureWrites += 1;
+    return { confirmed: true, alreadyClosed: false, item: structuredClone(item) };
+  }
+
+  #item(itemId) {
+    return this.items.find((item) => item.id === itemId);
+  }
+}
+
 function issue(number, values = {}) {
   return {
     id: `issue-${number}`,
@@ -215,5 +357,26 @@ function projectItem(number, { fields = MISSING_ISSUE_INITIAL_FIELDS } = {}) {
     url: `https://github.com/${REPOSITORY}/issues/${number}`,
     contentClassification: "domain-issue",
     fields: { ...fields },
+  };
+}
+
+function mergedItem(number, {
+  state = "open",
+  status = "in-review",
+  pullRequest = { state: "merged", mergedAt: "2026-07-22T20:00:00Z" },
+} = {}) {
+  return {
+    id: `merged-${number}`,
+    number,
+    url: `https://github.com/${REPOSITORY}/issues/${number}`,
+    state,
+    contentClassification: "domain-issue",
+    fields: { status, claimedBy: "", leaseUntil: "" },
+    linkedPullRequests: [
+      {
+        url: `https://github.com/${REPOSITORY}/pull/${100 + number}`,
+        ...pullRequest,
+      },
+    ],
   };
 }

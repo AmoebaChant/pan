@@ -475,7 +475,11 @@ export class PanStore {
   }
 
   async reconcileMergedPullRequests({ signal } = {}) {
-    const items = await this.listByFilter({ status: "in-review" });
+    const items = (await this.listItems()).filter(
+      (item) =>
+        item.fields.status === "in-review" ||
+        (item.fields.status === "done" && item.state?.toLowerCase() !== "closed"),
+    );
     const completed = [];
     for (const item of items) {
       signal?.throwIfAborted();
@@ -492,56 +496,111 @@ export class PanStore {
   }
 
   async completeMergedPullRequest(itemId, { signal } = {}) {
-    if (!itemId) {
-      throw new TypeError("itemId is required");
+    const evidence = await this.confirmMergedPullRequest(itemId, { signal });
+    if (!evidence.confirmed) {
+      return { completed: false, reason: evidence.reason, item: evidence.item };
     }
-    const current = await this.#requireItem(itemId, { signal });
-    if (current.fields.status !== "in-review") {
-      return { completed: false, reason: "not-in-review", item: current };
+    const status = await this.confirmMergedPullRequestStatus(itemId, {
+      expectedIssueUrl: evidence.item.url,
+      expectedPullRequestUrl: evidence.pullRequest.url,
+      signal,
+    });
+    if (!status.confirmed) {
+      return { completed: false, reason: status.reason, item: status.item };
     }
-    const pullRequest = current.linkedPullRequests.find(
-      (candidate) => candidate.state === "merged" || candidate.mergedAt,
-    );
-    if (!pullRequest) {
+    try {
+      const closure = await this.confirmMergedIssueClosure(itemId, {
+        expectedIssueUrl: evidence.item.url,
+        signal,
+      });
+      return closure.confirmed
+        ? { completed: true, item: closure.item, pullRequest: evidence.pullRequest }
+        : { completed: false, reason: closure.reason, item: closure.item };
+    } catch (error) {
       return {
         completed: false,
-        reason: "pull-request-not-merged",
-        item: current,
+        reason: error instanceof Error ? error.message : String(error),
+        item: status.item,
       };
     }
+  }
 
-    const closesIssue = current.state !== "closed";
-    try {
-      await this.setFields(itemId, { status: "done" }, { signal });
-      const confirmed = await this.#confirmFields(
-        itemId,
-        { status: "done" },
-        { signal },
-      );
-      if (!confirmed) {
-        await this.#restoreReviewStatus(itemId);
-        return {
-          completed: false,
+  async confirmMergedPullRequest(
+    itemId,
+    { expectedIssueUrl, expectedPullRequestUrl, signal } = {},
+  ) {
+    const item = await this.#requireItem(itemId, { signal });
+    if (expectedIssueUrl && item.url !== expectedIssueUrl) {
+      return { confirmed: false, reason: "backing-issue-changed", item };
+    }
+    if (!["in-review", "done"].includes(item.fields.status)) {
+      return { confirmed: false, reason: "not-in-review", item };
+    }
+    if (hasActiveLease(item, this.now())) {
+      return { confirmed: false, reason: "active-lease", item };
+    }
+    const pullRequest = item.linkedPullRequests.find(
+      (candidate) =>
+        candidate.state?.toLowerCase() === "merged" || Boolean(candidate.mergedAt),
+    );
+    if (!pullRequest) {
+      return { confirmed: false, reason: "pull-request-not-merged", item };
+    }
+    if (expectedPullRequestUrl && pullRequest.url !== expectedPullRequestUrl) {
+      return { confirmed: false, reason: "linked-pull-request-changed", item };
+    }
+    return { confirmed: true, item, pullRequest };
+  }
+
+  async confirmMergedPullRequestStatus(
+    itemId,
+    { expectedIssueUrl, expectedPullRequestUrl, signal } = {},
+  ) {
+    const evidence = await this.confirmMergedPullRequest(itemId, {
+      expectedIssueUrl,
+      expectedPullRequestUrl,
+      signal,
+    });
+    if (!evidence.confirmed) {
+      return evidence;
+    }
+    if (evidence.item.fields.status === "done") {
+      return { confirmed: true, item: evidence.item, pullRequest: evidence.pullRequest };
+    }
+    await this.setFields(itemId, { status: "done" }, { signal });
+    const item = await this.#confirmFields(itemId, { status: "done" }, { signal });
+    return item
+      ? { confirmed: true, item, pullRequest: evidence.pullRequest }
+      : {
+          confirmed: false,
           reason: "completion-not-confirmed",
           item: await this.#requireItem(itemId, { signal }),
         };
-      }
-      if (closesIssue) {
-        await this.#closeIssue(confirmed, { signal });
-        confirmed.state = "closed";
-      }
-      return { completed: true, item: confirmed, pullRequest };
-    } catch (error) {
-      try {
-        await this.#restoreReviewStatus(itemId);
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [error, rollbackError],
-          "Merged pull request completion failed and the PAN task could not be restored",
-        );
-      }
-      throw error;
+  }
+
+  async confirmMergedIssueClosure(
+    itemId,
+    { expectedIssueUrl, signal } = {},
+  ) {
+    const item = await this.#requireItem(itemId, { signal });
+    if (expectedIssueUrl && item.url !== expectedIssueUrl) {
+      return { confirmed: false, reason: "backing-issue-changed", item };
     }
+    if (item.fields.status !== "done") {
+      return { confirmed: false, reason: "not-done", item };
+    }
+    if (item.state?.toLowerCase() === "closed") {
+      return { confirmed: true, alreadyClosed: true, item };
+    }
+    await this.#closeIssue(item, { signal });
+    const confirmed = await this.#confirmIssueClosed(itemId, { signal });
+    return confirmed
+      ? { confirmed: true, alreadyClosed: false, item: confirmed }
+      : {
+          confirmed: false,
+          reason: "issue-closure-not-confirmed",
+          item: await this.#requireItem(itemId, { signal }),
+        };
   }
 
   async readCanonicalProject() {
@@ -1301,17 +1360,18 @@ export class PanStore {
     return undefined;
   }
 
-  async #restoreReviewStatus(itemId) {
-    await this.setFields(itemId, { status: "in-review" });
-    const restored = await this.#confirmFields(
-      itemId,
-      { status: "in-review" },
-    );
-    if (!restored) {
-      throw new Error(
-        `Unable to restore PAN task ${itemId} after merged pull request completion failed`,
-      );
+  async #confirmIssueClosed(itemId, { signal } = {}) {
+    for (let attempt = 0; attempt < CONFIRM_ATTEMPTS; attempt += 1) {
+      signal?.throwIfAborted();
+      const item = await this.getItem(itemId, { signal });
+      if (item?.state?.toLowerCase() === "closed") {
+        return item;
+      }
+      if (attempt < CONFIRM_ATTEMPTS - 1) {
+        await this.sleep(CONFIRM_DELAY_MS);
+      }
     }
+    return undefined;
   }
 
   async #restoreAttentionTransition({
@@ -1722,6 +1782,10 @@ function isExpired(leaseUntil, now) {
   }
   const parsed = Date.parse(leaseUntil);
   return !Number.isFinite(parsed) || parsed <= now.getTime();
+}
+
+function hasActiveLease(item, now) {
+  return Boolean(item.fields.claimedBy) && !isExpired(item.fields.leaseUntil, now);
 }
 
 function isResumeAffinity(claimedBy) {

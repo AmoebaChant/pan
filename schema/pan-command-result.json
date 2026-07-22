@@ -34,7 +34,15 @@
     },
     "snapshot": { "type": "object", "minProperties": 1 },
     "expectedState": { "type": "object", "minProperties": 1 },
-    "leadership": { "type": "object", "minProperties": 1 }
+    "leadership": { "type": "object", "minProperties": 1 },
+    "receipts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": { "type": ["string", "number", "boolean"] }
+      }
+    }
   },
   "allOf": [
     {

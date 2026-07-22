@@ -249,6 +249,321 @@ export class ReconciliationService {
   }
 }
 
+/**
+ * Completes reviewed work only after its linked pull request is independently
+ * confirmed as merged, preserving each external effect as a retryable receipt.
+ */
+export class MergedPullRequestReconciliationService {
+  constructor({
+    store,
+    assertLeadership = async () => ({ asserted: true }),
+  } = {}) {
+    if (
+      !store?.readCanonicalProject ||
+      !store?.confirmMergedPullRequest ||
+      !store?.confirmMergedPullRequestStatus ||
+      !store?.confirmMergedIssueClosure
+    ) {
+      throw new TypeError("store must provide merged pull request reconciliation primitives");
+    }
+    if (typeof assertLeadership !== "function") {
+      throw new TypeError("assertLeadership must be a function");
+    }
+    this.store = store;
+    this.assertLeadership = assertLeadership;
+  }
+
+  async planMergedPullRequests() {
+    const project = await this.store.readCanonicalProject();
+    if (project.complete !== true) {
+      return {
+        repository: this.store.repository,
+        projectOwner: this.store.projectOwner,
+        projectNumber: this.store.projectNumber,
+        complete: false,
+        projectId: project.id,
+        candidates: [],
+        exclusions: [],
+        blockers: [
+          "Project evidence is incomplete; merged pull requests cannot be reconciled safely.",
+          ...(project.diagnostics ?? []),
+        ],
+      };
+    }
+    const candidates = [];
+    const exclusions = [];
+    for (const item of project.items) {
+      if (
+        item.contentClassification !== "domain-issue" ||
+        !(
+          item.fields?.status === "in-review" ||
+          (item.fields?.status === "done" && item.state?.toLowerCase() !== "closed")
+        )
+      ) {
+        continue;
+      }
+      const pullRequest = mergedPullRequest(item);
+      if (!pullRequest) {
+        exclusions.push(
+          `Excluded in-review Issue #${item.number ?? item.id}: no confirmed merged linked pull request.`,
+        );
+        continue;
+      }
+      candidates.push(candidateFrom(item, pullRequest));
+    }
+    return {
+      repository: this.store.repository,
+      projectOwner: this.store.projectOwner,
+      projectNumber: this.store.projectNumber,
+      complete: true,
+      projectId: project.id,
+      candidates,
+      exclusions,
+      blockers: [],
+    };
+  }
+
+  async reconcileMergedPullRequests({ apply = false } = {}) {
+    if (typeof apply !== "boolean") {
+      throw new TypeError("apply must be a boolean");
+    }
+    const plan = await this.planMergedPullRequests();
+    if (!plan.complete) {
+      return mergedReceipt({
+        status: "incomplete",
+        plan,
+        diagnostics: plan.blockers,
+        remainingSteps: [
+          "Resolve incomplete Project evidence and retry merged pull request reconciliation.",
+        ],
+      });
+    }
+    if (!apply) {
+      return mergedReceipt({
+        plan,
+        receipts: plan.candidates.map((candidate) =>
+          receiptFor(candidate, "planned", "planned"),
+        ),
+        confirmedEffects: plan.candidates.map(
+          (candidate) =>
+            `Planned completion of Issue #${candidate.issueNumber} after ${candidate.pullRequestUrl} was confirmed merged.`,
+        ),
+        diagnostics: plan.exclusions,
+        remainingSteps: [],
+      });
+    }
+
+    const receipts = [];
+    const confirmedEffects = [];
+    const diagnostics = [...plan.exclusions];
+    for (const candidate of plan.candidates) {
+      const evidence = await this.store.confirmMergedPullRequest(candidate.itemId, {
+        expectedIssueUrl: candidate.issueUrl,
+        expectedPullRequestUrl: candidate.pullRequestUrl,
+      });
+      if (!evidence.confirmed) {
+        return incompleteMergedReceipt({
+          plan,
+          receipts,
+          confirmedEffects,
+          diagnostics: [...diagnostics, evidence.reason],
+          remaining: candidate,
+        });
+      }
+
+      const statusAuthority = await this.assertLeadership();
+      if (!statusAuthority?.asserted) {
+        return incompleteMergedReceipt({
+          plan,
+          receipts,
+          confirmedEffects,
+          diagnostics: [
+            ...diagnostics,
+            statusAuthority?.reason ??
+              "Leadership was not confirmed before status completion.",
+          ],
+          remaining: candidate,
+        });
+      }
+      let status;
+      try {
+        status = await this.store.confirmMergedPullRequestStatus(
+          candidate.itemId,
+          {
+            expectedIssueUrl: candidate.issueUrl,
+            expectedPullRequestUrl: candidate.pullRequestUrl,
+          },
+        );
+      } catch (error) {
+        return incompleteMergedReceipt({
+          plan,
+          receipts,
+          confirmedEffects,
+          diagnostics: [...diagnostics, message(error)],
+          remaining: candidate,
+        });
+      }
+      if (!status.confirmed) {
+        return incompleteMergedReceipt({
+          plan,
+          receipts,
+          confirmedEffects,
+          diagnostics: [...diagnostics, status.reason],
+          remaining: candidate,
+        });
+      }
+      confirmedEffects.push(
+        `Confirmed Project item ${candidate.itemId} is done for Issue #${candidate.issueNumber}.`,
+      );
+
+      const closeAuthority = await this.assertLeadership();
+      if (!closeAuthority?.asserted) {
+        receipts.push(receiptFor(candidate, "confirmed", "pending"));
+        return incompleteMergedReceipt({
+          plan,
+          receipts,
+          confirmedEffects,
+          diagnostics: [
+            ...diagnostics,
+            closeAuthority?.reason ?? "Leadership was not confirmed before Issue closure.",
+          ],
+          remaining: candidate,
+        });
+      }
+
+      let closure;
+      try {
+        closure = await this.store.confirmMergedIssueClosure(candidate.itemId, {
+          expectedIssueUrl: candidate.issueUrl,
+        });
+      } catch (error) {
+        receipts.push(receiptFor(candidate, "confirmed", "pending"));
+        return incompleteMergedReceipt({
+          plan,
+          receipts,
+          confirmedEffects,
+          diagnostics: [...diagnostics, message(error)],
+          remaining: candidate,
+        });
+      }
+      if (!closure.confirmed) {
+        receipts.push(receiptFor(candidate, "confirmed", "pending"));
+        return incompleteMergedReceipt({
+          plan,
+          receipts,
+          confirmedEffects,
+          diagnostics: [...diagnostics, closure.reason],
+          remaining: candidate,
+        });
+      }
+      receipts.push(
+        receiptFor(
+          candidate,
+          "confirmed",
+          closure.alreadyClosed ? "already-closed" : "confirmed",
+        ),
+      );
+      confirmedEffects.push(
+        closure.alreadyClosed
+          ? `Confirmed Issue #${candidate.issueNumber} was already closed.`
+          : `Confirmed Issue #${candidate.issueNumber} is closed.`,
+      );
+    }
+    return mergedReceipt({
+      plan,
+      receipts,
+      confirmedEffects,
+      diagnostics,
+      remainingSteps: [],
+    });
+  }
+}
+
+function mergedPullRequest(item) {
+  return item.linkedPullRequests?.find(
+    (pullRequest) =>
+      typeof pullRequest?.url === "string" &&
+      pullRequest.url &&
+      (pullRequest.state?.toLowerCase() === "merged" || Boolean(pullRequest.mergedAt)),
+  );
+}
+
+function candidateFrom(item, pullRequest) {
+  return {
+    itemId: item.id,
+    issueNumber: item.number,
+    issueUrl: item.url,
+    pullRequestUrl: pullRequest.url,
+  };
+}
+
+function receiptFor(candidate, projectStatus, issueStatus) {
+  return {
+    itemId: candidate.itemId,
+    issueNumber: candidate.issueNumber,
+    issueUrl: candidate.issueUrl,
+    pullRequestUrl: candidate.pullRequestUrl,
+    projectStatus,
+    issueStatus,
+  };
+}
+
+function incompleteMergedReceipt({
+  plan,
+  receipts,
+  confirmedEffects,
+  diagnostics,
+  remaining,
+}) {
+  return mergedReceipt({
+    status: "incomplete",
+    plan,
+    receipts,
+    confirmedEffects,
+    diagnostics,
+    remainingSteps: [
+      `Confirm Project completion and close Issue #${remaining.issueNumber} for ${remaining.pullRequestUrl}.`,
+    ],
+  });
+}
+
+function mergedReceipt({
+  status = "confirmed",
+  plan,
+  receipts = [],
+  confirmedEffects = [],
+  diagnostics = [],
+  remainingSteps,
+}) {
+  return createPanCommandResult({
+    status,
+    operation: "reconcile.merged-prs",
+    domain: {
+      repository: plan.repository ?? "",
+      projectOwner: plan.projectOwner ?? "",
+      projectNumber: plan.projectNumber ?? 1,
+    },
+    receipts,
+    confirmedEffects:
+      confirmedEffects.length > 0
+        ? confirmedEffects
+        : status === "confirmed"
+          ? ["No in-review work has a confirmed merged linked pull request."]
+          : [],
+    remainingSteps,
+    diagnostics,
+    recovery: {
+      safe: true,
+      steps:
+        status === "confirmed"
+          ? []
+          : ["Retry reconciliation; confirmed Project and Issue effects are reused."],
+    },
+    snapshot: { projectId: plan.projectId },
+    expectedState: { projectMembership: plan.projectId },
+  });
+}
+
 function eligibleIssue(issue, repository) {
   return (
     issue?.repository === repository &&

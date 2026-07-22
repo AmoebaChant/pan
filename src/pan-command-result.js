@@ -23,6 +23,7 @@ export function createPanCommandResult({
   snapshot,
   expectedState,
   leadership,
+  receipts,
 } = {}) {
   return validatePanCommandResult({
     version: COMMAND_RESULT_VERSION,
@@ -37,6 +38,7 @@ export function createPanCommandResult({
     ...(snapshot === undefined ? {} : { snapshot }),
     ...(expectedState === undefined ? {} : { expectedState }),
     ...(leadership === undefined ? {} : { leadership }),
+    ...(receipts === undefined ? {} : { receipts }),
   });
 }
 
@@ -57,6 +59,7 @@ export function validatePanCommandResult(result) {
       "snapshot",
       "expectedState",
       "leadership",
+      "receipts",
     ]),
     "command result",
   );
@@ -81,6 +84,14 @@ export function validatePanCommandResult(result) {
   }
   if (result.leadership !== undefined) {
     validateIdentity(result.leadership, "command result.leadership");
+  }
+  if (result.receipts !== undefined) {
+    if (!Array.isArray(result.receipts)) {
+      fail("command result.receipts", "must be an array");
+    }
+    for (const [index, receipt] of result.receipts.entries()) {
+      validateIdentity(receipt, `command result.receipts[${index}]`);
+    }
   }
   if (
     result.status === "confirmed" &&

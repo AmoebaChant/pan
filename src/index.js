@@ -4,6 +4,7 @@ export { createEvidenceCommandHandlers } from "./evidence-commands.js";
 export { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 export {
   MISSING_ISSUE_INITIAL_FIELDS,
+  MergedPullRequestReconciliationService,
   ReconciliationService,
 } from "./reconciliation-service.js";
 export {

@@ -1021,6 +1021,6 @@ function usage() {
     "  pan answer <id> <text> [--json] --config <path>",
     "  pan add <title> [options] --config <path>",
     "  pan leadership <status|acquire|assert|renew|release> --schema-version 1 --config <path>",
-    "  pan reconcile missing-issues [--apply] --schema-version 1 --config <path>",
+    "  pan reconcile <missing-issues|merged-prs> [--apply] --schema-version 1 --config <path>",
   ].join("\n");
 }
