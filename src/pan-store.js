@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { IssueCatalog } from "./issue-catalog.js";
 
 const ISSUE_LIST_LIMIT = 1_000;
 const DEFAULT_PROJECT_ITEM_SAFETY_LIMIT = 1_000;
@@ -447,6 +448,15 @@ export class PanStore {
       complete: true,
       items,
     };
+  }
+
+  async readIssueCatalog(options) {
+    return new IssueCatalog({
+      repository: this.repository,
+      gh: this.gh,
+      now: this.now,
+      safetyLimit: this.projectItemSafetyLimit,
+    }).read(options);
   }
 
   async syncOpenIssues({ beforeMutation = async () => {} } = {}) {

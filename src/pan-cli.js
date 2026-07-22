@@ -16,6 +16,7 @@ import { loadDomainConfig } from "./domain-config.js";
 import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { createLeadershipCommandHandlers } from "./leadership-commands.js";
+import { createEvidenceCommandHandlers } from "./evidence-commands.js";
 import { PanAgentClient } from "./pan-agent-client.js";
 import { PanDaemon } from "./pan-daemon.js";
 import { PanHost } from "./pan-host.js";
@@ -74,6 +75,7 @@ export async function runPanCli(
   const helpers =
     commandHandlers ?? {
       leadership: createLeadershipCommandHandlers({ env }),
+      evidence: createEvidenceCommandHandlers(),
     };
   const helper = parsePanHelperArgs(args, { env, handlers: helpers });
   if (helper) {

@@ -1,4 +1,6 @@
 export { GhClient, GhCommandError } from "./gh-client.js";
+export { IssueCatalog } from "./issue-catalog.js";
+export { createEvidenceCommandHandlers } from "./evidence-commands.js";
 export {
   loadDomainConfig,
   migrateDomainConfig,
