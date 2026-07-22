@@ -1,7 +1,7 @@
 {
   "name": "@amoebachant/pan",
   "version": "0.1.0",
-  "description": "Shared GitHub-backed store contract for PAN orchestrators and runners.",
+  "description": "Hostless GitHub-backed personal-agent toolkit for PAN sessions and runners.",
   "type": "module",
   "exports": {
     ".": "./src/index.js"
@@ -10,12 +10,10 @@
     "pan": "./bin/pan.js"
   },
   "files": [
-    ".github/agents",
     "assets",
     "bin",
     "src",
-    "schema",
-    "docs"
+    "schema"
   ],
   "scripts": {
     "test": "node --test test/*.test.js"

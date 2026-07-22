@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/pan-action.json",
   "title": "PAN proposed action",
+  "description": "Evidence-backed action proposals. Mutations require fresh expected state and are applied only by a current writing session.",
   "oneOf": [
     {
       "$ref": "#/$defs/fieldUpdate"

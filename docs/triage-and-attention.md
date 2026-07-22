@@ -1,187 +1,109 @@
-# PAN runtime and attention
+# PAN helpers, triage, and attention
 
-The current PAN daemon keeps a private GitHub Issue backlog ready for humans and
-runners through deterministic triage rules. It is the walking-skeleton precursor
-to the PAN runtime described in [the target architecture](architecture.md).
-
-The target runtime polls and synchronizes one domain repository, invokes the PAN
-custom agent for complete portfolio reasoning, hosts conversation, and applies
-validated changes directly to the canonical GitHub Project.
-
-## Configuration
-
-PAN commands load the private domain configuration described in
-[PAN domain configuration](domain-configuration.md).
-
-```powershell
-$env:PAN_CONFIG = "C:\path\to\domain-config.json"
-```
-
-The configuration supplies the repository, Project, local domain-repository
-path, runtime cadence, and state namespace without requiring machine, terminal,
-repository checkout, or runner capability settings. Pass `--config <path>` to
-override the environment variable.
-
-`--profile` and `PAN_PROFILE` remain available as deprecated compatibility
-inputs and emit a warning. Do not provide them together with `--config` or
-`PAN_CONFIG`. `pan-runner` remains independently profile-based.
-
-## Current triage daemon
-
-```powershell
-pan daemon
-pan daemon --once
-```
-
-Only the instance holding the renewable lease on the domain repository's
-`pan-state` branch performs a poll. Each poll:
-
-1. adds open repository Issues that are missing from the Project;
-2. derives routing fields from existing Project values, the Issue body, and
-   marked PAN answers;
-3. requests missing details or blocks agent work that no online runner profile
-   can service;
-4. returns PAN-created capability blocks to `ready` when a runner appears; and
-5. orders Project items by priority and lifecycle.
-
-PAN preserves `in-progress`, `in-review`, and `done` items. It also preserves
-blocks created by runners or humans.
-
-The fixed triage and ordering policy is transitional. In the target design,
-deterministic code continues to validate lifecycle transitions and leases, but
-the PAN agent reasons about owner, requirements, commitments, and Project
-ordering using all actionable tasks and relevant workstream narrative.
-
-When no lifecycle state changes, polling backs off to five minutes. A GitHub
-rate-limit failure pauses polling for fifteen minutes before retrying. Project
-board reads use 20-item GraphQL pages and are bounded to 100 items so idle
-polling has predictable cost; PAN fails explicitly if a board outgrows that MVP
-limit.
-
-### Triage directives
-
-An Issue body or `pan answer` can include explicit directives:
+PAN helpers are stateless commands for a configured private domain. They create
+fresh evidence and return versioned JSON-friendly results rather than relying
+on a host process. Every helper requires:
 
 ```text
-workstream: orchestration/pan
-owner: agent
-priority: high
-autonomy: full-auto
-repo:example/tool
-env:local
+--schema-version 1 --config <domain-config.json>
 ```
 
-Capability requirements use `kind:value` tokens. Agent work requires exactly
-one `repo:<owner/name>` requirement, a workstream, and a task description.
-Repository requirements imply agent ownership when `owner` is unassigned;
-other work defaults to human ownership.
+`PAN_CONFIG` may provide the configuration path. `--json` prints the complete
+result. A result has a status of `confirmed`, `rejected`, `incomplete`, or
+`failed`, confirmed effects, diagnostics, recovery steps, and operation
+receipts where applicable. A non-confirmed result is not permission to assume a
+side effect occurred.
 
-## Attention commands
+## Evidence
 
 ```powershell
-pan inbox
-pan inbox --json
+pan evidence issues --schema-version 1 --config C:\domains\domain\pan.json --json
+pan evidence portfolio --schema-version 1 --config C:\domains\domain\pan.json --json
 ```
 
-The inbox contains unresolved `needs-human` records and every `in-review`
-item. It includes Issue URLs, pull-request links, and machine, terminal, or
-local-URL locators when available.
+`issues` reads the complete configured-repository Issue catalog and reports
+whether comments and relationships are complete. `portfolio` reads Project,
+Issue, workstream, and runner evidence and returns a snapshot ID plus expected
+state. Read again after incomplete evidence; only a complete,
+mutation-usable snapshot authorizes an action proposal.
+
+## Leadership
 
 ```powershell
-pan answer 42 "Use option A."
-pan answer https://github.com/example/data/issues/42 "Use option A."
+pan leadership status --schema-version 1 --config C:\domains\domain\pan.json --json
+pan leadership assert --schema-version 1 --config C:\domains\domain\pan.json --json
 ```
 
-Answers are marked Issue comments. Blocked and `needs-detail` items return to
-`ready` with `owner=agent`; PAN removes the configured human assignment,
-restores the priority captured by the request, and preserves runner resume
-affinity. Repeating the answer or either lifecycle transition is safe.
+`status` is read-only. `acquire`, `assert`, `renew`, and `release` require the
+active session's `PAN_SESSION_ID`, `PAN_LEADERSHIP_HOLDER`, and
+`PAN_LEADERSHIP_GENERATION` environment values. They return rejected results
+when authority cannot be confirmed. Continue read-only or start a new session
+after lease expiry; never invent or reuse a lost generation.
 
-Genuine worker questions are urgent attention: the structured request records
-the directly answerable prompt, locator, prior lifecycle values, and resumable
-runner affinity. Operational failures such as terminal closure, `Ctrl+C`,
-crashes, launch failures, and missing worker results are retried as agent work
-and never enter the attention inbox.
+## Reconciliation
 
 ```powershell
-pan add "Implement the feature" `
-  --body "Acceptance criteria..." `
-  --workstream orchestration/pan `
-  --repo example/tool `
-  --requirement env:local `
-  --priority high `
-  --owner agent `
-  --autonomy full-auto
+pan reconcile missing-issues --schema-version 1 --config C:\domains\domain\pan.json --json
+pan reconcile missing-issues --apply --schema-version 1 --config C:\domains\domain\pan.json --json
+pan reconcile merged-prs --apply --schema-version 1 --config C:\domains\domain\pan.json --json
 ```
 
-`--body-file` can replace `--body`; `--repo` and `--requirement` are
-repeatable. New items start as `untriaged` so the daemon can validate and
-enrich them. Add `--json` for machine-readable output.
+Both operations are dry-run without `--apply`. Apply requires confirmed
+leadership. Missing-Issue reconciliation adds absent open Issues to the Project.
+Merged-PR reconciliation verifies eligible merged pull-request delivery and
+returns per-item receipts. Refresh evidence and retry only the unconfirmed
+effects when a result is incomplete.
 
-## Target conversation
+## Actions
 
-The target `pan chat` interface attaches to the same PAN personality and domain
-context used for scheduled planning. It reads and changes the same GitHub
-Project exposed by the UI, so there is no separate conversational queue.
-
-PAN can explain ordering, accept relative-order overrides, add or reschedule
-work, answer worker questions, and promote durable conversational outcomes into
-Issues, Project fields, or workstream markdown.
-
-### Interactive mutation envelope
-
-`read_portfolio` returns a short first result block before the complete
-portfolio. Its `snapshotReference` is always available even if the complete
-portfolio is truncated:
-
-```json
-{
-  "snapshotReference": {
-    "field": "actions[].expectedState.snapshotId",
-    "value": "sha256:<64 lowercase hexadecimal characters>",
-    "usableForMutation": true
-  }
-}
+```powershell
+pan action validate --action-file C:\work\actions.json --schema-version 1 --config C:\domains\domain\pan.json --json
+pan action apply --action-file C:\work\actions.json --schema-version 1 --config C:\domains\domain\pan.json --json
 ```
 
-Every mutation action passed to `propose_actions`, including `issue-create`,
-must copy that exact `snapshotReference.value` into
-`expectedState.snapshotId`. All mutation actions in one call must reference the
-same snapshot. A validated task-creation request is:
+The action file is JSON and is limited to 1 MiB. Validation checks schema,
+policy, citations, and fresh expected state without applying a mutation.
+Apply additionally requires current leadership. Every mutation needs an
+idempotency key and the matching expected-state snapshot; stale, unknown, or
+policy-prohibited actions are rejected. Use the receipt and recovery guidance,
+refresh evidence, and submit only the affected action again.
 
-```json
-{
-  "actions": [
-    {
-      "version": 1,
-      "actionId": "create-task-unique-id",
-      "kind": "issue-create",
-      "rationale": "Why the cited evidence should become durable work.",
-      "confidence": 0.95,
-      "evidence": [
-        {
-          "kind": "workstream",
-          "locator": "workstream/path"
-        }
-      ],
-      "idempotencyKey": "stable-key-for-this-task",
-      "expectedState": {
-        "snapshotId": "sha256:<exact value from read_portfolio>"
-      },
-      "target": {
-        "repository": "owner/domain-repository",
-        "title": "Task title",
-        "body": "Task details and acceptance criteria",
-        "workstream": "workstream/path"
-      }
-    }
-  ]
-}
+## Attention
+
+```powershell
+pan attention list --schema-version 1 --config C:\domains\domain\pan.json --json
+pan attention answer 42 "Use the existing API." --schema-version 1 --config C:\domains\domain\pan.json
+pan attention add "Implement feature" --workstream product/api --repo example/tool --owner agent --schema-version 1 --config C:\domains\domain\pan.json
 ```
 
-All actions require protocol `version`, an `actionId`, supported `kind`,
-material `rationale`, `confidence` from 0 through 1, and at least one durable
-evidence citation. Mutations additionally require an `idempotencyKey`,
-`expectedState`, and kind-specific `target`; `no-op` uses `recommendation`
-instead. PAN rejects missing, mismatched, unknown, or stale snapshot references
-without applying any mutation.
+`list` reads unresolved human attention and in-review items. `answer` requires
+leadership and records a durable answer for an actionable item, restoring
+blocked agent work when appropriate. `add` requires leadership and creates an
+untriaged Issue. It accepts `--body` or `--body-file`, `--workstream`,
+`--owner`, `--priority`, `--autonomy`, and repeatable `--repo` and
+`--requirement`; do not combine `--body` and `--body-file`.
+
+The legacy `inbox`, `answer`, and `add` spellings remain aliases and print
+migration guidance. Update scripts to the `attention` family.
+
+## Workstream delivery
+
+```powershell
+pan workstream prepare product/api --rationale "Record agreed API decision" --source-turn turn-12 --schema-version 1 --config C:\domains\domain\pan.json --json
+pan workstream publish operation-id --schema-version 1 --config C:\domains\domain\pan.json --json
+```
+
+Both commands require the active session ID and confirmed leadership.
+`prepare` creates an isolated workspace and receipt for one workstream
+README. Make the intended change there, then `publish` uses the operation ID to
+commit, push, and verify it directly on the domain default branch. It returns
+commit, push, cleanup, or recovery information. This is direct PAN workstream
+delivery, not runner direct-delivery policy and not a pull request.
+
+## Session and migration
+
+Use `pan session --config <path>` for interactive PAN work. `pan start`,
+`stop`, `host`, `connect`, `daemon`, `chat`, and `review` are retired because
+PAN has no host, endpoint, token, MCP bridge, or detached scheduler. Exit and
+restart the foreground session after domain/session/scheduling changes. See
+[domain configuration](domain-configuration.md) and [runner](runner.md).

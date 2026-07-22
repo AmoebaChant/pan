@@ -1,67 +1,47 @@
 # Store contract
 
-PAN keeps reusable behavior in the tool repository and all user-specific state
-in a private domain repository. One PAN instance connects to one domain
-repository.
+One PAN domain is one private GitHub repository plus one GitHub Project. The
+public package contains no domain workstreams, Issues, machine paths,
+credentials, leases, or runner state.
 
-## Workstreams
+## Workstreams and queue
 
-Each workstream is a folder containing a `README.md`:
+Workstream narrative lives at `workstreams/<path>/README.md`; directory nesting
+is the hierarchy. The Project `workstream` field stores that slash-separated
+path. Project ordering is the single canonical queue for humans and runners.
+PAN updates that ordering directly and never maintains a second queue.
 
-```text
-workstreams/
-  <path>/
-    README.md
-```
-
-Folder nesting is the hierarchy. The Project `workstream` field stores the full
-path relative to `workstreams/`, using `/` separators. For example:
-`rendering/performance`.
-
-The relationship is stored in a Project field rather than a label because
-GitHub labels have a 50-character name limit and valid workstream paths can be
-longer.
-
-## Backlog Project fields
-
-| Field | Type | Values or format |
+| Field | Type | Meaning |
 | --- | --- | --- |
-| `owner` | Single select | `unassigned`, `human`, `agent` |
-| `Status` | Single select | `untriaged`, `needs-detail`, `ready`, `in-progress`, `in-review`, `done`, `blocked` |
-| `priority` | Single select | `urgent`, `high`, `normal`, `low` |
-| `requirements` | Text | One capability requirement per line, such as `repo:example/tool` or `env:local` |
-| `autonomy` | Single select | `manual`, `full-auto`, `agent-reviewer` |
-| `lease-until` | Text | RFC 3339 UTC timestamp; empty when unleased |
-| `claimed-by` | Text | Stable runner identity; empty when unclaimed |
-| `workstream` | Text | Full path relative to `workstreams/` |
+| `owner` | single select | `unassigned`, `human`, or `agent` |
+| `Status` | single select | `untriaged`, `needs-detail`, `ready`, `in-progress`, `in-review`, `done`, `blocked` |
+| `priority` | single select | `urgent`, `high`, `normal`, or `low` |
+| `requirements` | text | newline-delimited capabilities such as `repo:owner/repo` |
+| `autonomy` | single select | `manual`, `full-auto`, or `agent-reviewer` |
+| `lease-until` | text | RFC 3339 UTC expiry |
+| `claimed-by` | text | stable runner identity |
+| `workstream` | text | path relative to `workstreams/` |
 
-`Status` is GitHub's built-in Project field, with its options replaced by PAN's
-lifecycle.
+`schema/project-fields.json` is the machine-readable manifest. `PanStore`
+validates fields and select values before mutation.
 
-A runner release to `done` also closes the Issue as completed. Pull-request
-delivery links the PR to the source Issue and remains open in `in-review`.
-The PAN host observes linked PRs and moves the item to `done`, closing the Issue
-as completed, after a linked PR merges.
+## Evidence, reconciliation, and delivery
 
-Project item ordering is the canonical queue for both human and agent work.
-Saved views filter that ordering by owner and lifecycle. PAN must update the
-Project directly rather than maintaining a separate generated queue.
+Complete portfolio evidence preserves Project order, Issue metadata and
+comments, workstream revisions, runner availability, and expected-state
+identities. A snapshot is usable for mutation only when complete. Actions must
+cite durable evidence and use its fresh expected state.
 
-## Data boundary
+`reconcile missing-issues` adds open repository Issues missing from the Project
+deterministically. `reconcile merged-prs --apply` records completed
+pull-request delivery after confirming its merge. Direct runner delivery needs
+no pull request: the runner confirms the reported commit is on the default
+branch before completing the Issue and Project item.
 
-The public tool repository must not contain workstream content, Issues, shared
-domain playbooks, machine settings, runner advertisements, leases, locators,
-credentials, or other user-specific state. A PAN installation points the tool
-at its own private domain repository.
+## Leadership
 
-## Orchestrator leader lease
-
-The singleton PAN runtime stores its renewable leader lease at
-`.pan/leader.json` on a dedicated `pan-state` branch in the private data
-repository. Updates use the GitHub Contents API's expected blob SHA, so
-competing instances cannot both renew from the same version. Keeping the lease
-on a state branch avoids heartbeat commits on the domain repository's default
-branch. The lease records the host machine and PID. A new PAN process may
-replace an otherwise active lease only when it is on the same machine and the
-recorded process is no longer running; remote and unverifiable holders remain
-protected until expiry.
+The foreground session's renewable leader lease is stored on the configured
+state branch in the private domain repository. It uses expected GitHub blob
+state so competing sessions cannot both renew it. Only the current writing
+session's identity may execute helpers that mutate domain state. A lost lease
+ends the session; a new session must acquire authority again.

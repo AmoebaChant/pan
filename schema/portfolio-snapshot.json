@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/portfolio-snapshot.json",
   "title": "PAN portfolio evidence snapshot",
+  "description": "Complete domain evidence and expected-state identities used to authorize PAN recommendations and mutations.",
   "type": "object",
   "additionalProperties": false,
   "required": [

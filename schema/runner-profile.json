@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/runner-profile.json",
   "title": "PAN runner capability profile",
+  "description": "Private machine configuration for an independent PAN runner; do not publish profile values.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -118,6 +119,25 @@
           "repositories": { "minProperties": 1 }
         }
       }
+    }
+  ],
+  "examples": [
+    {
+      "version": 1,
+      "id": "machine-a",
+      "machine": "machine-a",
+      "online": false,
+      "maxConcurrentDaemons": 1,
+      "capabilities": ["env:local", "tool:copilot-cli"],
+      "store": {
+        "repository": "example/personal-domain",
+        "projectOwner": "example",
+        "projectNumber": 12
+      },
+      "repositories": {},
+      "workspaceRoot": "C:\\pan-worktrees",
+      "stateDirectory": "C:\\pan-state",
+      "terminal": { "type": "windows-terminal" }
     }
   ]
 }

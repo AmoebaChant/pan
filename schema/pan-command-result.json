@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/pan-command-result.json",
   "title": "PAN helper command result",
+  "description": "The confirmed, rejected, incomplete, or failed outcome of one stateless PAN helper operation.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -300,7 +301,24 @@
             "minLength": 1
           }
         }
-      }
+      },
+      "examples": [
+        {
+          "version": 1,
+          "status": "confirmed",
+          "operation": "evidence.portfolio",
+          "operationId": "operation-123",
+          "domain": {
+            "repository": "example/personal-domain",
+            "projectOwner": "example",
+            "projectNumber": 12
+          },
+          "confirmedEffects": ["Read complete portfolio evidence."],
+          "remainingSteps": [],
+          "diagnostics": [],
+          "recovery": { "safe": true, "steps": [] }
+        }
+      ]
     }
   }
 }

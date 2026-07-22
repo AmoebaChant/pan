@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/domain-config.json",
   "title": "PAN domain runtime configuration",
+  "description": "Configuration for one private PAN domain and its foreground Copilot session. It contains no runner-machine settings or credentials.",
   "oneOf": [
     { "$ref": "#/$defs/version1" },
     { "$ref": "#/$defs/version2" }
@@ -175,6 +176,19 @@
       "items": {
         "enum": ["field-update", "canonical-reorder", "relative-precedence", "issue-create", "issue-comment", "needs-human", "no-op"]
       }
-    }
+    },
+    "examples": [
+      {
+        "version": 2,
+        "domain": {
+          "repository": "example/personal-domain",
+          "projectOwner": "example",
+          "projectNumber": 12,
+          "path": "C:\\domains\\personal-domain"
+        },
+        "state": { "branch": "pan-state", "path": ".pan" },
+        "session": { "agent": { "name": "pan" } }
+      }
+    ]
   }
 }

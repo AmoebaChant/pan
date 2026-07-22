@@ -1,165 +1,112 @@
 # PAN
 
-PAN (Personal Agent Nexus) is a reusable personal chief-of-staff agent for a
-GitHub-backed domain of human and agent work. It reasons across tasks and
-workstream narrative, maintains the canonical Project queue, delegates
-compatible execution, and explains its decisions.
+PAN is a hostless personal-agent toolkit for one private GitHub-backed domain of
+work. GitHub Issues, Project fields, Project order, and workstream markdown are
+the durable record; PAN does not run a localhost host, MCP bridge, daemon, or
+detached scheduler.
 
-This repository contains only generic agents, runtime behavior, tools, schemas,
-protocols, and conventions. User-specific workstreams, backlog items, machine
-settings, runner state, leases, and credentials belong outside it.
+The published package contains reusable code, schemas, and Copilot assets only.
+Domain repositories hold workstreams, runner profiles, machine paths, leases,
+credentials, and all other private data.
 
-## Status
+## Install and set up
 
-The walking skeleton includes the shared store, local runner, singleton
-rule-based daemon, and attention CLI. The target architecture adds the PAN
-custom agent, complete portfolio reasoning, canonical Project ordering,
-conversation, and playbook-based runner matching.
-
-See [PAN's goals](docs/goals.md) and the
-[target architecture](docs/architecture.md).
-
-## Domain model
-
-One PAN instance connects to one private **domain repository**. Repository names
-are arbitrary. Separate domains have independent PAN instances and do not
-silently share knowledge.
-
-- Workstream narrative lives at `workstreams/<path>/README.md` in a private
-  domain repository.
-- Backlog items are Issues in that domain repository.
-- A private GitHub Project supplies lifecycle, routing, priority, and lease
-  fields.
-- The Project's `workstream` text field joins an Issue to its full workstream
-  path.
-- Project ordering is the canonical human and agent queue. PAN updates that
-  ordering directly; it does not maintain a separate generated queue.
-
-See [the store contract](docs/store-schema.md) and its
-[machine-readable field manifest](schema/project-fields.json).
-
-## Node module
-
-The package exports:
-
-- `GhClient`, a safe subprocess wrapper around the authenticated `gh` CLI.
-- `PanStore`, with helpers to create Issue-backed items, set Project fields,
-  list by filter, and claim, heartbeat, or release leases.
-
-The implementation has no runtime dependencies and requires Node 22 or newer.
-See the [schema module contract](docs/schema-module.md) for API usage.
-
-## PAN agent and target runtime
-
-The package ships a generic `.github/agents/pan.agent.md` custom-agent definition
-for both autonomous portfolio reviews and interactive conversation. It defines
-PAN's reusable personality, complete-portfolio reasoning standards, authority
-boundaries, versioned output expectations, and named PAN-only tools without
-embedding domain or machine values.
-
-The local PAN runtime polls and synchronizes one configured domain, schedules
-PAN turns, hosts conversation, validates proposed actions, and maintains the
-singleton lease. The runtime supplies private domain context; the agent
-definition remains reusable.
-
-The runtime decides when PAN should think; PAN decides how the portfolio should
-change. See [the target architecture](docs/architecture.md).
-
-Start with the setup wizard:
+PAN requires Node.js 22+, an authenticated `gh` CLI with Project access, and
+Copilot CLI for interactive PAN sessions and runners.
 
 ```powershell
+npm install --global @amoebachant/pan
+pan assets install
 pan setup
 ```
 
-It creates a private domain repository and GitHub Project, clones and bootstraps
-the repository, writes `pan.json` with the absolute clone path, and creates an
-offline runner profile. Copilot tool approval defaults to `prompt`; selecting
-`allow-all` is an explicit opt-in recorded in that private runner profile.
+`pan setup` creates a private domain repository and GitHub Project, writes a
+version-2 domain configuration, and creates an offline runner profile. Supply
+`--repository`, `--path`, `--project-owner`, `--project-title`, and
+`--approval-mode prompt|allow-all` to automate the wizard. `allow-all` is an
+explicit machine-local approval choice; `prompt` is the default.
+
+Use `pan assets status` to inspect the current user's installed agent,
+instructions, and skills. Use `pan assets repair` after an upgrade or to repair
+missing or changed assets; `--force` replaces changed destinations.
+
+## Start PAN
 
 ```powershell
-# Terminal 1: visible host and activity log
-pan start --config C:\path\to\domain-config.json
-
-# Terminal 2: visible coding runner and activity log
-pan-runner --profile C:\path\to\runner.json
-
-# Terminal 3: attached interactive Copilot session
-pan connect --config C:\path\to\domain-config.json
-
-pan stop --config C:\path\to\domain-config.json
-pan review --config C:\path\to\domain-config.json
-pan review --apply --config C:\path\to\domain-config.json
-pan chat "What should I work on next?" --config C:\path\to\domain-config.json
-pan daemon --config C:\path\to\domain-config.json
+pan session --config C:\domains\personal-domain\pan.json
 ```
 
-`start` runs the localhost-only PAN host in the current terminal and tees
-timestamped activity to its runtime `host.log`. Press `Ctrl+C` to release
-leadership and stop it. `connect` starts Copilot in the current terminal with
-the PAN agent and authenticated MCP bridge. The configured `agent.model` is
-passed explicitly; `--model <id>` overrides it for that interactive session,
-and `/model` shows or changes the active model.
+The foreground session validates the domain and installed assets, attempts to
+acquire the domain leadership lease, then starts an ordinary interactive
+Copilot session with the PAN agent. A leader is a **writing** session; a
+concurrent session is **read-only** and cannot mutate the domain or schedule
+reviews. Exit the Copilot session to release leadership and stop PAN. Start a
+new session to resume; nothing continues after exit.
 
-Autonomous scheduled reviews are dry-run by default; add `--apply` to `start`
-to let them apply validated changes. The previous detached experience remains
-available through `start --background`, but foreground services are the
-recommended transparent workflow.
+Set `PAN_CONFIG` instead of repeatedly passing `--config`. Sessions use the
+configured model and optional product-context roots. Configuration, session, or
+scheduling changes take effect only after exiting and starting a new session.
+Restart `pan-runner` only when its runner profile changes.
 
-An optional self-repair policy can turn unexpected scheduled-review failures
-into deduplicated ready tasks for a dedicated pull-request runner playbook. PAN
-keeps the original failure visible, does not retry a failing repair queue
-recursively, and never merges the resulting pull request automatically.
+`pan start`, `stop`, `host`, `connect`, `daemon`, `chat`, and `review` are
+retired. Their replacement is the foreground `pan session` command.
 
-`review` is a dry run unless `--apply` is present. `chat` applies validated
-proposals by default; add `--dry-run` for advice only. Reviews, conversation,
-and the daemon use the same generic PAN agent and complete domain snapshot.
+## Scheduling
 
-## Runner daemon
+Writing sessions may ask Copilot to create one session-scoped native recurring
+schedule. Scheduling has no catch-up runs and relies on Copilot's session queue
+to avoid overlap. `startup` is `immediate`, `after-interval`, or `manual`;
+review intervals are capped at one hour per native schedule trigger. Failed or
+incomplete reviews stay visible in the session and use the configured bounded
+retry guidance. If native scheduling is unavailable, start a read-only session
+or create the displayed `/every` command manually in the interactive session.
 
-`pan-runner` loads a private machine profile containing reusable playbooks,
-pulls compatible ready work, claims it with a renewable lease, and launches a
-headed Copilot CLI task in an isolated worktree. Global and per-playbook
-capacity allow independent task classes to run concurrently without sharing
-branches or consuming each other's reserved playbook slots.
-It remains attached to its terminal, logs claims, capacity, heartbeats,
-worktree launches, results, and delivery handoffs, and tees the same output to
-`<stateDirectory>\runner.log`. Each coding worker opens in a visible Windows
-Terminal tab with interactive Copilot chrome and steering, and keeps lifecycle
-details in its own `copilot.log`. Pressing `Ctrl+C` stops active workers before
-the runner releases their leases. The Issue comments form an append-only
-execution journal with start/resume locators, operational stops, questions,
-answers, and validated delivery results. Completed workers stop Copilot and
-close their terminal tabs automatically; blocked task terminals remain open
-with the attention request.
+See [domain configuration](docs/domain-configuration.md) for the version-2
+schema and migration guidance.
 
-See the [runner contract and profile format](docs/runner.md).
+## Stateless helper commands
 
-## Triage and attention
-
-With domain configuration, `pan daemon` is the reasoning runtime: it polls and
-synchronizes the domain, invokes PAN, and applies validated changes to the
-canonical Project. Legacy runner-profile mode retains deterministic triage for
-compatibility.
-`pan inbox`, `pan answer`, and `pan add` provide the human attention surface.
-
-PAN commands use an independent domain configuration. Pass
-`--config <path>` or set `PAN_CONFIG`. `pan-runner` continues to use its machine
-runner profile independently.
+PAN's agent uses one-shot helper processes against fresh GitHub and workstream
+evidence. Every helper requires `--schema-version 1`, a domain configuration,
+and normally returns a versioned result with `confirmed`, `rejected`,
+`incomplete`, or `failed` status. Mutating helpers require the active session's
+leadership environment and fail safely when it cannot be confirmed.
 
 ```powershell
-$env:PAN_CONFIG = "C:\path\to\domain-config.json"
-pan daemon --once
-pan inbox
-pan answer 42 "Use the existing API."
-pan add "Implement the feature" --body "Acceptance criteria..." `
-  --workstream orchestration/pan --repo example/tool
+pan evidence portfolio --schema-version 1 --config C:\domains\personal-domain\pan.json --json
+pan reconcile missing-issues --apply --schema-version 1 --config C:\domains\personal-domain\pan.json
+pan attention list --schema-version 1 --config C:\domains\personal-domain\pan.json
 ```
 
-`--profile` and `PAN_PROFILE` remain as deprecated PAN-command compatibility
-options during migration. Do not combine domain configuration and runner profile
-inputs.
+The helper families are documented in
+[triage and attention](docs/triage-and-attention.md). Use
+[the action schema](schema/pan-action.json) for proposed mutations and require
+fresh expected-state evidence before applying them.
 
-See [PAN triage and attention](docs/triage-and-attention.md).
+## Runner
+
+`pan-runner` is independent of PAN-session leadership. It reads a private
+machine profile, claims compatible `owner=agent`, `ready` work in canonical
+Project order, and launches an isolated worktree session.
+
+```powershell
+pan-runner --profile C:\domains\personal-domain\runners\machine-a.json --validate-profile
+pan-runner --profile C:\domains\personal-domain\runners\machine-a.json --once
+```
+
+Runner playbooks default to pull-request delivery. A playbook may use direct
+delivery only when explicitly authorized; direct delivery validates that the
+reported commit reached the configured default branch, then closes the Issue.
+Pull-request delivery leaves work in review until a later reconciliation records
+the merged pull request. See [runner](docs/runner.md).
+
+## Node module
+
+The package exports the GitHub store, hostless session, helper-command,
+configuration, action, reconciliation, workstream-delivery, runner, and schema
+support APIs from `@amoebachant/pan`. See
+[the schema module contract](docs/schema-module.md) and
+[the store contract](docs/store-schema.md).
 
 ```powershell
 npm test

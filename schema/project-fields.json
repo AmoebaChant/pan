@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "description": "Required GitHub Project fields for the canonical PAN queue. This manifest contains field names and formats, never project values.",
   "fields": [
     {
       "key": "owner",
