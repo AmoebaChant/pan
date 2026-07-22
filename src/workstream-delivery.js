@@ -467,6 +467,14 @@ export class WorkstreamDeliveryService {
         "--others",
         "--exclude-standard",
       ]),
+      this.#run([
+        "-C",
+        receipt.workspace,
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+      ]),
     ]);
     const records = [
       ...new Set(
