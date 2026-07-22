@@ -527,7 +527,12 @@ export class PanStore {
     const current = await this.#requireItem(itemId);
     const holder = current.fields.claimedBy;
     const leaseIsActive =
-      holder && !isExpired(current.fields.leaseUntil, this.now());
+      holder &&
+      !isResumeAffinity(holder) &&
+      !isExpired(current.fields.leaseUntil, this.now());
+    if (isResumeAffinity(holder) && !resumeAffinityAllows(holder, runner)) {
+      return { claimed: false, reason: "resume-affinity", item: current };
+    }
     if (leaseIsActive && holder !== runner) {
       return { claimed: false, reason: "leased", item: current };
     }
@@ -610,9 +615,14 @@ export class PanStore {
     assignee,
     status = "ready",
     force = false,
+    allowExpired = false,
+    resumeAffinity,
   }) {
     if (!runner && !force) {
       throw new TypeError("runner is required unless force is true");
+    }
+    if (resumeAffinity && status !== "ready") {
+      throw new TypeError("resumeAffinity requires ready status");
     }
 
     const current = await this.#requireItem(itemId);
@@ -621,6 +631,7 @@ export class PanStore {
     }
     if (
       !force &&
+      !allowExpired &&
       isExpired(current.fields.leaseUntil, this.now())
     ) {
       return { released: false, reason: "lease-expired", item: current };
@@ -630,7 +641,7 @@ export class PanStore {
     let assigneeRemoved = false;
     try {
       await this.setFields(itemId, {
-        claimedBy: null,
+        claimedBy: resumeAffinity ?? null,
         leaseUntil: null,
         ...(status ? { status } : {}),
       });
@@ -640,7 +651,7 @@ export class PanStore {
       }
 
       const expected = {
-        claimedBy: "",
+        claimedBy: resumeAffinity ?? "",
         leaseUntil: "",
         ...(status ? { status } : {}),
       };
@@ -1093,7 +1104,9 @@ function matchesFilters(item, filters, now) {
       }
     } else if (key === "claimable") {
       const claimable =
-        !item.fields.claimedBy || isExpired(item.fields.leaseUntil, now);
+        !item.fields.claimedBy ||
+        isResumeAffinity(item.fields.claimedBy) ||
+        isExpired(item.fields.leaseUntil, now);
       if (Boolean(expected) !== claimable) {
         return false;
       }
@@ -1174,6 +1187,14 @@ function isExpired(leaseUntil, now) {
   }
   const parsed = Date.parse(leaseUntil);
   return !Number.isFinite(parsed) || parsed <= now.getTime();
+}
+
+function isResumeAffinity(claimedBy) {
+  return claimedBy?.startsWith("resume:");
+}
+
+function resumeAffinityAllows(affinity, runner) {
+  return runner.replace(/\/slot-\d+$/, "") === affinity.slice("resume:".length);
 }
 
 function lastNonEmptyLine(value) {

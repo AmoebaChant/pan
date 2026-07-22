@@ -29,6 +29,11 @@ export function buildTaskCopilotArgs(task, taskPrompt) {
       String(task.copilot.maxAiCredits),
     );
   }
+  if (task.copilot.resume && !task.copilot.resumeWithSessionId) {
+    args.push(`--resume=${task.copilot.sessionId}`);
+  } else if (task.copilot.sessionId) {
+    args.push("--session-id", task.copilot.sessionId);
+  }
   if (task.copilot.model) {
     args.push("--model", task.copilot.model);
   }

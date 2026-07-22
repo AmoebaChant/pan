@@ -1,4 +1,8 @@
-import { formatNeedsHuman } from "./needs-human.js";
+import {
+  formatNeedsHuman,
+  formatNeedsHumanResolved,
+  latestNeedsHuman,
+} from "./needs-human.js";
 import {
   matchingPlaybook,
   normalizePlaybooks,
@@ -73,6 +77,8 @@ export class RunnerDaemon {
       this.logger.info?.("Runner is offline; skipping poll.");
       return 0;
     }
+    await this.#recoverLegacyRunnerStops();
+    await this.#recoverInterruptedTasks();
     const freeSlots =
       this.profile.maxConcurrentDaemons - this.active.size;
     if (freeSlots <= 0) {
@@ -98,7 +104,17 @@ export class RunnerDaemon {
       if (started >= freeSlots) {
         break;
       }
-      const playbook = matchingPlaybook(item, this.profile, activeCounts);
+      const affinity = resumableAffinity(item.fields.claimedBy);
+      const eligibleProfile = affinity
+        ? {
+            ...this.profile,
+            playbooks: this.profile.playbooks.filter(
+              (candidate) =>
+                runnerResumeAffinity(this.profile.id, candidate.id) === affinity,
+            ),
+          }
+        : this.profile;
+      const playbook = matchingPlaybook(item, eligibleProfile, activeCounts);
       if (!playbook) {
         this.logger.info?.(
           `Skipping task #${item.number}: no compatible playbook with free capacity.`,
@@ -184,6 +200,7 @@ export class RunnerDaemon {
         runner,
         playbook,
         deadline,
+        resumeAffinity: runnerResumeAffinity(this.profile.id, playbook.id),
       });
       const result = await waitForTask({
         handle,
@@ -241,6 +258,41 @@ export class RunnerDaemon {
         return;
       }
 
+      if (result.status === "interrupted") {
+        const resumeAffinity = runnerResumeAffinity(
+          this.profile.id,
+          playbook.id,
+        );
+        let release;
+        try {
+          release = await retry(() =>
+            this.store.release({
+              itemId: item.id,
+              runner,
+              assignee: this.profile.githubAssignee,
+              status: "ready",
+              resumeAffinity,
+            }),
+          );
+        } catch (error) {
+          error.code = "PAN_INTERRUPTED_REQUEUE_FAILED";
+          throw error;
+        }
+        if (!release.released) {
+          const error = new Error(
+            `Unable to requeue interrupted task: ${release.reason}`,
+          );
+          error.code = "PAN_INTERRUPTED_REQUEUE_FAILED";
+          throw error;
+        }
+        await handle.markRequeued?.();
+        this.logger.info?.(
+          `Task #${item.number} returned to ready with resumable local state.`,
+        );
+        return;
+      }
+
+      await handle.clearResumeState?.();
       const record = {
         kind: result.budgetExceeded ? "approval" : "question",
         prompt: result.summary,
@@ -263,10 +315,21 @@ export class RunnerDaemon {
       );
     } catch (error) {
       if (error.code === "PAN_LEASE_LOST") {
+        await handle?.clearResumeState?.();
         this.logger.warn?.(
           `Stopped task #${item.number} after losing its lease.`,
         );
         return;
+      }
+      if (error.code === "PAN_INTERRUPTED_REQUEUE_FAILED") {
+        this.logger.warn?.(
+          `Task #${item.number} remains resumable and will be requeued on the next runner poll.`,
+          error,
+        );
+        return;
+      }
+      if (error.code !== "PAN_INTERRUPTED_REQUEUE_FAILED") {
+        await handle?.clearResumeState?.();
       }
       try {
         await heartbeat.renewNow();
@@ -382,6 +445,104 @@ export class RunnerDaemon {
     ).toISOString();
   }
 
+  async #recoverInterruptedTasks() {
+    const interrupted = await this.executor.listInterruptedTasks?.();
+    for (const task of interrupted ?? []) {
+      try {
+        if (!resumableAffinity(task.resumeAffinity)) {
+          this.logger.error(
+            `Interrupted task #${task.issueNumber ?? "unknown"} has no valid resume affinity; preserving it for manual recovery.`,
+          );
+          continue;
+        }
+        const release = await retry(() =>
+          this.store.release({
+            itemId: task.itemId,
+            runner: task.runner,
+            assignee: this.profile.githubAssignee,
+            status: "ready",
+            allowExpired: true,
+            resumeAffinity: task.resumeAffinity,
+          }),
+        );
+        if (!release.released) {
+          const alreadyRequeued =
+            release.reason === "not-owner" &&
+            release.item?.fields?.status === "ready" &&
+            release.item?.fields?.claimedBy === task.resumeAffinity;
+          if (!alreadyRequeued) {
+            this.logger.warn?.(
+              `Skipped interrupted-task recovery for #${task.issueNumber ?? "unknown"}: ${release.reason}.`,
+            );
+            continue;
+          }
+        }
+        await this.executor.markInterruptedRequeued?.(task);
+        this.logger.info?.(
+          `Recovered interrupted task #${task.issueNumber ?? "unknown"} to ready.`,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Unable to recover interrupted task #${task.issueNumber ?? "unknown"}; continuing with normal polling.`,
+          error,
+        );
+      }
+    }
+  }
+
+  async #recoverLegacyRunnerStops() {
+    const blocked = await this.store.listByFilter({
+      owner: "agent",
+      status: "blocked",
+      unclaimed: true,
+    });
+    for (const item of blocked) {
+      const comments = await this.store.listComments(item);
+      const pending = latestNeedsHuman(comments);
+      if (!/^Runner failure: Runner stopped(?:$|:)/i.test(pending?.prompt ?? "")) {
+        continue;
+      }
+      const recoveryRunner = `${this.profile.id}/legacy-recovery/slot-1`;
+      const claim = await this.store.claimWithLease({
+        itemId: item.id,
+        runner: recoveryRunner,
+        leaseUntil: this.#leaseUntil(),
+        status: "in-progress",
+      });
+      if (!claim.claimed) {
+        continue;
+      }
+      const release = await retry(() =>
+        this.store.release({
+          itemId: item.id,
+          runner: recoveryRunner,
+          status: "ready",
+        }),
+      );
+      if (!release.released) {
+        throw new Error(
+          `Unable to recover legacy runner-stopped task #${item.number}: ${release.reason}`,
+        );
+      }
+      try {
+        await this.store.addComment(
+          item,
+          formatNeedsHumanResolved(
+            "Runner shutdown is not a human blocker; the task returned to ready.",
+          ),
+        );
+      } catch (error) {
+        this.logger.error(
+          `Unable to mark stale runner attention resolved for task #${item.number}`,
+          error,
+        );
+      }
+      this.logger.info?.(
+        `Recovered legacy runner-stopped task #${item.number} to ready.`,
+      );
+    }
+  }
+
   #activePlaybookCounts() {
     const counts = new Map();
     for (const entry of this.active.values()) {
@@ -426,6 +587,16 @@ function repositoryFor(item) {
     );
   }
   return repository;
+}
+
+function runnerResumeAffinity(runnerId, playbookId) {
+  return playbookId === "legacy"
+    ? `resume:${runnerId}`
+    : `resume:${runnerId}/${playbookId}`;
+}
+
+function resumableAffinity(claimedBy) {
+  return claimedBy?.startsWith("resume:") ? claimedBy : undefined;
 }
 
 function startHeartbeat({
@@ -504,6 +675,13 @@ async function waitForTask({
       })),
     ]);
     if (outcome.error) {
+      if (outcome.error.code === "PAN_RUNNER_STOPPED") {
+        await handle.interrupt(outcome.error.message);
+        return {
+          status: "interrupted",
+          summary: outcome.error.message,
+        };
+      }
       await handle.cancel(outcome.error.message);
       throw outcome.error;
     }

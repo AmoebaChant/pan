@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
+  readdir,
   readFile,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -32,6 +34,8 @@ export class LocalTaskExecutor {
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
     randomId = randomUUID,
+    sessionIdFactory = randomUUID,
+    launchIdFactory = randomUUID,
     workerIsAlive = processIsAlive,
     terminateWorker = terminateProcessByPid,
     logger = console,
@@ -42,12 +46,21 @@ export class LocalTaskExecutor {
     this.now = now;
     this.sleep = sleep;
     this.randomId = randomId;
+    this.sessionIdFactory = sessionIdFactory;
+    this.launchIdFactory = launchIdFactory;
     this.workerIsAlive = workerIsAlive;
     this.terminateWorker = terminateWorker;
     this.logger = logger;
   }
 
-  async start({ item, repository, runner, playbook, deadline }) {
+  async start({
+    item,
+    repository,
+    runner,
+    playbook,
+    deadline,
+    resumeAffinity,
+  }) {
     const repositoryConfig = this.profile.repositories[repository];
     if (!repositoryConfig) {
       throw new Error(`Runner cannot service repository ${repository}`);
@@ -61,6 +74,22 @@ export class LocalTaskExecutor {
 
     await mkdir(this.profile.workspaceRoot, { recursive: true });
     await mkdir(this.profile.stateDirectory, { recursive: true });
+    const resumePath = taskResumePath(this.profile.stateDirectory, item.id);
+    const resumed = await this.#resumeTask({
+      item,
+      repository,
+      repositoryConfig,
+      runner,
+      playbook: selectedPlaybook,
+      delivery,
+      deadline,
+      resumePath,
+      resumeAffinity,
+    });
+    if (resumed) {
+      return resumed;
+    }
+
     const allocation = await this.#allocateTask(item);
     const { taskName, branch, worktreePath, statePath } = allocation;
     if (branch === repositoryConfig.defaultBranch) {
@@ -112,6 +141,9 @@ export class LocalTaskExecutor {
         item.fields.workstream,
       );
       const workstream = await readFile(workstreamPath, "utf8");
+      const launchId = this.launchIdFactory();
+      const paths = taskStatePaths(statePath, launchId);
+      const sessionId = this.sessionIdFactory();
       const context = {
         version: 1,
         runner,
@@ -140,24 +172,34 @@ export class LocalTaskExecutor {
           sourcePath: workstreamPath,
           content: workstream,
         },
-        paths: {
-          statePath,
-          agentResult: path.join(statePath, "agent-result.json"),
-          result: path.join(statePath, "result.json"),
-          needsHuman: path.join(statePath, "needs-human.json"),
-          log: path.join(statePath, "copilot.log"),
-          worker: path.join(statePath, "worker.json"),
-          cancel: path.join(statePath, "cancel.json"),
-        },
+        paths,
         copilot: {
           executable: this.profile.copilot.executable,
           model: this.profile.copilot.model,
           ...this.profile.taskBudget,
           deadline,
+          sessionId,
+          resume: false,
         },
       };
-      const contextPath = path.join(statePath, "context.json");
-      await writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`);
+      const contextPath = taskContextPath(statePath, launchId);
+      await writeTaskContext(statePath, contextPath, context);
+      await writeResumePointer(resumePath, {
+        statePath,
+        contextPath,
+        sessionId,
+        itemId: item.id,
+        issueNumber: item.number,
+        runner,
+        target: context.target,
+        launchPaths: {
+          worker: paths.worker,
+          cancel: paths.cancel,
+        },
+        resumeAffinity,
+        requeue: false,
+        savedAt: this.now().toISOString(),
+      });
 
       const title = terminalTitle(item);
       await launchTerminal({
@@ -170,10 +212,11 @@ export class LocalTaskExecutor {
         spawnProcess: this.spawnProcess,
       });
 
-      return new LocalTaskHandle({
+      return this.#createHandle({
         item,
         repository,
         repositoryConfig,
+        runner,
         expectedRemote,
         baseCommit,
         profile: this.profile,
@@ -183,20 +226,13 @@ export class LocalTaskExecutor {
         branch,
         worktreePath,
         statePath,
-        resultPath: context.paths.result,
-        needsHumanPath: context.paths.needsHuman,
-        workerPath: context.paths.worker,
-        cancelPath: context.paths.cancel,
-        workerStartDeadline:
-          this.now().getTime() + WORKER_START_GRACE_MS,
-        workerIsAlive: this.workerIsAlive,
-        terminateWorker: this.terminateWorker,
-        logger: this.logger,
-        now: () => this.now().getTime(),
+        paths,
         deadline,
         delivery,
-        coordinateDelivery: (action) =>
-          this.#coordinateDelivery(repository, action),
+        resumePath,
+        sessionId,
+        contextPath,
+        resumeAffinity,
       });
     } catch (error) {
       const cleanupErrors = [];
@@ -224,6 +260,11 @@ export class LocalTaskExecutor {
       }
       try {
         await rm(statePath, { recursive: true, force: true });
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      try {
+        await rm(resumePath, { force: true });
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
@@ -257,6 +298,287 @@ export class LocalTaskExecutor {
       }
     }
     throw new Error(`Unable to allocate unique workspace for issue ${item.number}`);
+  }
+
+  async #resumeTask({
+    item,
+    repository,
+    repositoryConfig,
+    runner,
+    playbook,
+    delivery,
+    deadline,
+    resumePath,
+    resumeAffinity,
+  }) {
+    const pointer = await readJsonIfReady(resumePath);
+    if (!pointer) {
+      return undefined;
+    }
+    if (
+      pointer.version !== 1 ||
+      typeof pointer.statePath !== "string" ||
+      typeof pointer.contextPath !== "string" ||
+      typeof pointer.sessionId !== "string" ||
+      !validSavedTarget(pointer.target) ||
+      !pointer.launchPaths
+    ) {
+      throw new Error(`Saved task state is invalid for issue ${item.number}`);
+    }
+    const statePath = confinedStatePath(
+      this.profile.stateDirectory,
+      pointer.statePath,
+    );
+    const previousContextPath = confinedChildPath(
+      statePath,
+      pointer.contextPath,
+    );
+    const previous = await readJsonIfReady(previousContextPath);
+    if (
+      !previous ||
+      previous.issue?.number !== item.number ||
+      previous.issue?.repository !== item.repository ||
+      pointer.itemId !== item.id ||
+      previous.target?.repository !== repository ||
+      previous.playbook?.id !== playbook.id ||
+      previous.copilot?.sessionId !== pointer.sessionId
+    ) {
+      throw new Error(`Saved task context does not match issue ${item.number}`);
+    }
+
+    const expectedRemote = await this.#run(deadline, "git", [
+      "-C",
+      repositoryConfig.path,
+      "remote",
+      "get-url",
+      "origin",
+    ]);
+    const remoteRepository = normalizeGitHubRepositoryUrl(expectedRemote);
+    if (remoteRepository?.toLowerCase() !== repository.toLowerCase()) {
+      throw new Error(
+        `Configured path origin is ${remoteRepository ?? "not a GitHub repository"}, expected ${repository}`,
+      );
+    }
+    const savedWorktreeRemote = await this.#run(deadline, "git", [
+      "-C",
+      pointer.target.worktreePath,
+      "remote",
+      "get-url",
+      "origin",
+    ]);
+    if (savedWorktreeRemote !== expectedRemote) {
+      throw new Error("Saved task worktree has an unexpected origin URL");
+    }
+    await this.#stopPreviousLaunch(statePath, pointer.launchPaths);
+
+    const workstreamPath = await resolveConfinedWorkstreamReadme(
+      this.profile.store.path,
+      item.fields.workstream,
+    );
+    const launchId = this.launchIdFactory();
+    const paths = taskStatePaths(statePath, launchId);
+    const context = {
+      ...previous,
+      runner,
+      issue: {
+        number: item.number,
+        title: item.title,
+        body: item.body,
+        url: item.url,
+        repository: item.repository,
+        comments: item.comments ?? [],
+      },
+      target: pointer.target,
+      playbook: {
+        id: playbook.id,
+        instructions: playbook.instructions,
+        delivery,
+      },
+      workstream: {
+        path: item.fields.workstream,
+        sourcePath: workstreamPath,
+        content: await readFile(workstreamPath, "utf8"),
+      },
+      paths,
+      copilot: {
+        executable: this.profile.copilot.executable,
+        model: this.profile.copilot.model,
+        ...this.profile.taskBudget,
+        deadline,
+        sessionId: pointer.sessionId,
+        resume: true,
+        resumeWithSessionId: true,
+      },
+    };
+    const contextPath = taskContextPath(statePath, launchId);
+    await writeTaskContext(statePath, contextPath, context);
+    await writeResumePointer(resumePath, {
+      statePath,
+      contextPath,
+      sessionId: pointer.sessionId,
+      itemId: item.id,
+      issueNumber: item.number,
+      runner,
+      target: pointer.target,
+      launchPaths: {
+        worker: paths.worker,
+        cancel: paths.cancel,
+      },
+      resumeAffinity,
+      requeue: false,
+      savedAt: this.now().toISOString(),
+    });
+
+    const title = terminalTitle(item);
+    await launchTerminal({
+      executable: this.profile.terminal.executable,
+      window: this.profile.terminal.window,
+      profile: this.profile.terminal.profile,
+      title,
+      workerPath: WORKER_PATH,
+      contextPath,
+      spawnProcess: this.spawnProcess,
+    });
+
+    return this.#createHandle({
+      item,
+      repository,
+      repositoryConfig,
+      runner,
+      expectedRemote,
+      baseCommit: pointer.target.baseCommit,
+      title,
+      branch: pointer.target.branch,
+      worktreePath: pointer.target.worktreePath,
+      statePath,
+      paths,
+      deadline,
+      delivery,
+      resumePath,
+      sessionId: pointer.sessionId,
+      contextPath,
+      resumeAffinity,
+    });
+  }
+
+  async #stopPreviousLaunch(statePath, launchPaths) {
+    const cancelPath = confinedChildPath(statePath, launchPaths.cancel);
+    const workerPath = confinedChildPath(statePath, launchPaths.worker);
+    await writeJsonAtomic(cancelPath, {
+      status: "interrupted",
+      summary: "A new runner launch superseded this task process.",
+    });
+    const worker = await readJsonIfReady(workerPath);
+    if (
+      !Number.isInteger(worker?.pid) ||
+      worker.pid <= 0 ||
+      !this.workerIsAlive(worker.pid)
+    ) {
+      await rm(workerPath, { force: true });
+      return;
+    }
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      await this.sleep(100);
+      if (!this.workerIsAlive(worker.pid)) {
+        await rm(workerPath, { force: true });
+        return;
+      }
+    }
+    throw new Error(
+      `Previous task worker ${worker.pid} is still active; refusing to start a duplicate.`,
+    );
+  }
+
+  async listInterruptedTasks() {
+    let entries;
+    try {
+      entries = await readdir(this.profile.stateDirectory);
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return [];
+      }
+      throw error;
+    }
+    const tasks = [];
+    for (const entry of entries) {
+      if (!/^resume-[a-f0-9]+\.json$/.test(entry)) {
+        continue;
+      }
+      const resumePath = path.join(this.profile.stateDirectory, entry);
+      const pointer = await readJsonIfReady(resumePath);
+      if (
+        pointer?.requeue === true &&
+        pointer.itemId &&
+        typeof pointer.runner === "string"
+      ) {
+        tasks.push({
+          resumePath,
+          itemId: pointer.itemId,
+          runner: pointer.runner,
+          resumeAffinity: pointer.resumeAffinity,
+          issueNumber: pointer.issueNumber,
+        });
+      }
+    }
+    return tasks;
+  }
+
+  async markInterruptedRequeued(task) {
+    await markResumePointerRequeued(task.resumePath, this.now().toISOString());
+  }
+
+  #createHandle({
+    item,
+    repository,
+    repositoryConfig,
+    runner,
+    expectedRemote,
+    baseCommit,
+    title,
+    branch,
+    worktreePath,
+    statePath,
+    paths,
+    deadline,
+    delivery,
+    resumePath,
+    sessionId,
+    contextPath,
+    resumeAffinity,
+  }) {
+    return new LocalTaskHandle({
+      item,
+      repository,
+      repositoryConfig,
+      runner,
+      expectedRemote,
+      baseCommit,
+      profile: this.profile,
+      commands: this.commands,
+      sleep: this.sleep,
+      title,
+      branch,
+      worktreePath,
+      statePath,
+      resultPath: paths.result,
+      needsHumanPath: paths.needsHuman,
+      workerPath: paths.worker,
+      cancelPath: paths.cancel,
+      workerStartDeadline:
+        this.now().getTime() + WORKER_START_GRACE_MS,
+      workerIsAlive: this.workerIsAlive,
+      terminateWorker: this.terminateWorker,
+      logger: this.logger,
+      now: () => this.now().getTime(),
+      deadline,
+      delivery,
+      resumePath,
+      sessionId,
+      contextPath,
+      resumeAffinity,
+      coordinateDelivery: (action) =>
+        this.#coordinateDelivery(repository, action),
+    });
   }
 
   async #run(deadline, executable, args) {
@@ -353,14 +675,70 @@ class LocalTaskHandle {
   }
 
   async cancel(summary = "The task worker was stopped.", details = {}) {
-    if (this.cancelPromise) {
-      return this.cancelPromise;
-    }
-    this.cancelledResult = {
+    return this.#stop({
       status: "failed",
       summary,
       ...details,
-    };
+    });
+  }
+
+  async interrupt(summary = "The runner was stopped.") {
+    await writeResumePointer(this.resumePath, {
+      statePath: this.statePath,
+      contextPath: this.contextPath,
+      sessionId: this.sessionId,
+      itemId: this.item.id,
+      issueNumber: this.item.number,
+      runner: this.runner,
+      target: {
+        repository: this.repository,
+        defaultBranch: this.repositoryConfig.defaultBranch,
+        baseCommit: this.baseCommit,
+        branch: this.branch,
+        worktreePath: this.worktreePath,
+      },
+      launchPaths: {
+        worker: this.workerPath,
+        cancel: this.cancelPath,
+      },
+      resumeAffinity: this.resumeAffinity,
+      requeue: true,
+      savedAt: new Date(this.now()).toISOString(),
+    });
+    return this.#stop({
+      status: "interrupted",
+      summary,
+    });
+  }
+
+  async clearResumeState() {
+    await rm(this.resumePath, { force: true });
+  }
+
+  async markRequeued() {
+    await markResumePointerRequeued(
+      this.resumePath,
+      new Date(this.now()).toISOString(),
+    );
+  }
+
+  async setResumeAffinity(resumeAffinity) {
+    this.resumeAffinity = resumeAffinity;
+    const pointer = await readJsonIfReady(this.resumePath);
+    if (!pointer) {
+      return;
+    }
+    await writeResumePointer(this.resumePath, {
+      ...pointer,
+      resumeAffinity,
+    });
+  }
+
+  async #stop(result) {
+    if (this.cancelPromise) {
+      return this.cancelPromise;
+    }
+    this.cancelledResult = result;
     this.cancelPromise = (async () => {
       try {
         await writeFile(
@@ -385,6 +763,7 @@ class LocalTaskHandle {
             }
           }
         }
+        await rm(this.workerPath, { force: true });
       } finally {
         this.resolveCancellation(this.cancelledResult);
       }
@@ -473,6 +852,7 @@ class LocalTaskHandle {
           )
         : await this.#deliverPullRequest(result, { assertLease });
     await this.#cleanupDeliveredWorktree();
+    await this.clearResumeState();
     return delivery;
   }
 
@@ -652,6 +1032,91 @@ async function readJsonIfReady(filePath) {
     }
     throw error;
   }
+}
+
+async function writeJsonAtomic(filePath, value) {
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
+  await rename(temporary, filePath);
+}
+
+async function writeTaskContext(statePath, contextPath, context) {
+  await Promise.all([
+    writeJsonAtomic(path.join(statePath, "context.json"), context),
+    writeJsonAtomic(contextPath, context),
+  ]);
+}
+
+async function writeResumePointer(resumePath, value) {
+  await writeJsonAtomic(resumePath, {
+    version: 1,
+    ...value,
+  });
+}
+
+async function markResumePointerRequeued(resumePath, requeuedAt) {
+  const pointer = await readJsonIfReady(resumePath);
+  if (!pointer) {
+    return;
+  }
+  await writeResumePointer(resumePath, {
+    ...pointer,
+    requeue: false,
+    requeuedAt,
+  });
+}
+
+function taskStatePaths(statePath, launchId) {
+  return {
+    statePath,
+    agentResult: path.join(statePath, `agent-result-${launchId}.json`),
+    result: path.join(statePath, `result-${launchId}.json`),
+    needsHuman: path.join(statePath, `needs-human-${launchId}.json`),
+    log: path.join(statePath, "copilot.log"),
+    worker: path.join(statePath, `worker-${launchId}.json`),
+    cancel: path.join(statePath, `cancel-${launchId}.json`),
+  };
+}
+
+function taskContextPath(statePath, launchId) {
+  return path.join(statePath, `context-${launchId}.json`);
+}
+
+function taskResumePath(stateDirectory, itemId) {
+  const key = createHash("sha256").update(String(itemId)).digest("hex").slice(0, 24);
+  return path.join(stateDirectory, `resume-${key}.json`);
+}
+
+function confinedStatePath(stateDirectory, savedPath) {
+  const root = path.resolve(stateDirectory);
+  const resolved = path.resolve(savedPath);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Saved task state path is outside the runner state directory");
+  }
+  return resolved;
+}
+
+function confinedChildPath(parentPath, savedPath) {
+  const parent = path.resolve(parentPath);
+  const resolved = path.resolve(savedPath);
+  const relative = path.relative(parent, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Saved task context is outside its state directory");
+  }
+  return resolved;
+}
+
+function validSavedTarget(target) {
+  return (
+    target &&
+    typeof target === "object" &&
+    typeof target.repository === "string" &&
+    typeof target.defaultBranch === "string" &&
+    typeof target.baseCommit === "string" &&
+    typeof target.branch === "string" &&
+    typeof target.worktreePath === "string"
+  );
 }
 
 function normalizeNeedsHuman(record, handle) {

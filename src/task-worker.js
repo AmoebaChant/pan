@@ -40,7 +40,9 @@ await writeJsonAtomic(context.paths.worker, {
   pid: process.pid,
   startedAt: new Date().toISOString(),
 });
-const cancellation = await readAgentResult(context.paths.cancel);
+const cancellation = await readAgentResult(context.paths.cancel, {
+  allowInterrupted: true,
+});
 if (cancellation) {
   throw new Error(cancellation.summary);
 }
@@ -51,10 +53,20 @@ const child = spawn(
   buildTaskCopilotSpawnOptions(context, workerEnv),
 );
 let termination;
+let cancellationCheck;
 const stopChild = () => {
   termination ??= terminateReliably(child);
   return termination;
 };
+cancellationCheck = setInterval(async () => {
+  const record = await readAgentResult(context.paths.cancel, {
+    allowInterrupted: true,
+  });
+  if (record) {
+    clearInterval(cancellationCheck);
+    void stopChild();
+  }
+}, 500);
 process.once("SIGTERM", () => {
   void stopChild().finally(() => process.exit(0));
 });
@@ -77,6 +89,7 @@ const exit = await new Promise((resolve) => {
   child.once("close", (code, signal) => resolve({ code, signal }));
 });
 clearTimeout(timeout);
+clearInterval(cancellationCheck);
 await termination;
 
 let result = runtimeError
@@ -115,12 +128,17 @@ function parseContextPath(args) {
   return path.resolve(args[index + 1]);
 }
 
-async function readAgentResult(filePath) {
+async function readAgentResult(filePath, { allowInterrupted = false } = {}) {
   try {
     const value = JSON.parse(await readFile(filePath, "utf8"));
     if (
       !value ||
-      !["completed", "blocked", "failed"].includes(value.status) ||
+      ![
+        "completed",
+        "blocked",
+        "failed",
+        ...(allowInterrupted ? ["interrupted"] : []),
+      ].includes(value.status) ||
       typeof value.summary !== "string"
     ) {
       return undefined;
