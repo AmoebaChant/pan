@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-22 | Execute implementation_plan/04_04_session_leadership_supervision.md | execute-implementation-plan | |
 | | T-23 | Execute implementation_plan/04_05_native_schedule_bootstrap.md | execute-implementation-plan | |
 | | T-24 | Execute implementation_plan/05_01_runner_delivery_policy.md | execute-implementation-plan | |
 | | T-25 | Execute implementation_plan/05_02_host_command_migration.md | execute-implementation-plan | |
@@ -40,5 +39,6 @@
 | | T-19 | Execute implementation_plan/04_01_user_scoped_pan_assets.md | execute-implementation-plan | done 2026-07-22 · 72028c2 · targeted and full tests passed |
 | | T-20 | Execute implementation_plan/04_02_asset_install_status_repair.md | execute-implementation-plan | done 2026-07-22 · 9ddb454 · targeted and full tests passed |
 | | T-21 | Execute implementation_plan/04_03_hostless_session_launch.md | execute-implementation-plan | done 2026-07-22 · 68bd3f8–9bd256f · targeted and full tests passed |
+| | T-22 | Execute implementation_plan/04_04_session_leadership_supervision.md | execute-implementation-plan | done 2026-07-22 · 6739edf · targeted and full tests passed |
 
 ## Untriaged
