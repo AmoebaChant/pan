@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-07 | Execute implementation_plan/01_02_stateless_command_envelope.md | execute-implementation-plan | |
 | | T-08 | Execute implementation_plan/01_03_leadership_helper_commands.md | execute-implementation-plan | |
 | | T-09 | Execute implementation_plan/02_01_complete_issue_catalog.md | execute-implementation-plan | |
 | | T-10 | Execute implementation_plan/02_02_complete_evidence_snapshot_v2.md | execute-implementation-plan | |
@@ -40,5 +39,6 @@
 | | T-04 | Architecture | write-architecture | done 2026-07-22 · architecture.md |
 | | T-05 | Implementation plan | write-implementation-plan | done 2026-07-22 · implementation_plan/ |
 | | T-06 | Execute implementation_plan/01_01_domain_config_v2_migration.md | execute-implementation-plan | done 2026-07-22 · d6ffba3 · targeted and full tests passed |
+| | T-07 | Execute implementation_plan/01_02_stateless_command_envelope.md | execute-implementation-plan | done 2026-07-22 · bfb2ff8 · targeted and full tests passed |
 
 ## Untriaged
