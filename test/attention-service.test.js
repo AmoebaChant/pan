@@ -51,6 +51,7 @@ test("answers pending attention and restores agent work to ready", async () => {
     owner: "human",
     priority: "urgent",
   });
+
   const store = new FakeStore([item]);
   store.commentMap.set(item.id, [
     {
@@ -85,6 +86,51 @@ test("answers pending attention and restores agent work to ready", async () => {
     undefined,
   );
   assert.match(store.commentMap.get(item.id).at(-2).body, /Use option A/);
+});
+
+test("rejects an answer without unresolved attention before making side effects", async () => {
+  const item = makeItem({ status: "ready" });
+  const store = new FakeStore([item]);
+
+  await assert.rejects(
+    new AttentionService({ store, humanAssignee: "octocat" }).answer(
+      item.number,
+      "Use option A.",
+    ),
+    /no unresolved needs-human record/,
+  );
+
+  assert.equal(store.commentMap.size, 0);
+  assert.equal(item.fields.status, "ready");
+});
+
+test("does not record an answer after leadership is lost", async () => {
+  const item = makeItem({ status: "blocked", owner: "human" });
+  const store = new FakeStore([item]);
+  store.commentMap.set(item.id, [
+    {
+      body: formatNeedsHuman({
+        kind: "question",
+        prompt: "Choose an option.",
+        priorState: { priority: "normal" },
+      }),
+    },
+  ]);
+
+  await assert.rejects(
+    new AttentionService({
+      store,
+      humanAssignee: "octocat",
+      assertLeadership: async () => ({
+        asserted: false,
+        reason: "Leadership was lost.",
+      }),
+    }).answer(item.number, "Use option A."),
+    /Leadership was lost/,
+  );
+
+  assert.equal(store.commentMap.get(item.id).length, 1);
+  assert.equal(item.fields.status, "blocked");
 });
 
 test("retries the attention resolution after an answer comment already landed", async () => {

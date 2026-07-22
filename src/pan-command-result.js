@@ -24,6 +24,7 @@ export function createPanCommandResult({
   expectedState,
   leadership,
   receipts,
+  data,
 } = {}) {
   return validatePanCommandResult({
     version: COMMAND_RESULT_VERSION,
@@ -39,6 +40,7 @@ export function createPanCommandResult({
     ...(expectedState === undefined ? {} : { expectedState }),
     ...(leadership === undefined ? {} : { leadership }),
     ...(receipts === undefined ? {} : { receipts }),
+    ...(data === undefined ? {} : { data }),
   });
 }
 
@@ -60,6 +62,7 @@ export function validatePanCommandResult(result) {
       "expectedState",
       "leadership",
       "receipts",
+      "data",
     ]),
     "command result",
   );
@@ -92,6 +95,9 @@ export function validatePanCommandResult(result) {
     for (const [index, receipt] of result.receipts.entries()) {
       validateIdentity(receipt, `command result.receipts[${index}]`);
     }
+  }
+  if (result.data !== undefined) {
+    validateData(result.data, "command result.data");
   }
   if (
     result.status === "confirmed" &&
@@ -176,6 +182,15 @@ function validateRecovery(recovery) {
     fail("command result.recovery.safe", "must be a boolean");
   }
   requireStringArray(recovery.steps, "command result.recovery.steps");
+}
+
+function validateData(data, field) {
+  requireRecord(data, field);
+  try {
+    JSON.stringify(data);
+  } catch {
+    fail(field, "must contain JSON-compatible values");
+  }
 }
 
 function requireRecord(value, field) {

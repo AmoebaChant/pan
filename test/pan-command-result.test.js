@@ -54,6 +54,27 @@ test("preserves partial effects and turns dependency failures into failed result
     confirmedEffects: ["Created the GitHub Issue #42."],
     remainingSteps: ["Add Issue #42 to the configured Project."],
   });
+
+  test("preserves JSON-compatible command payloads inside the envelope", () => {
+    const result = createPanCommandResult({
+      ...baseResult("confirmed"),
+      data: {
+        id: 42,
+        issueUrl: "https://github.com/example/domain/issues/42",
+        entries: [{ locator: { machine: "machine-a" } }],
+      },
+    });
+
+    assert.deepEqual(result.data.entries[0].locator, { machine: "machine-a" });
+    assert.throws(
+      () =>
+        validatePanCommandResult({
+          ...baseResult("confirmed"),
+          data: [],
+        }),
+      /command result\.data must be an object/,
+    );
+  });
   assert.equal(commandResultExitCode(incomplete), 1);
   assert.deepEqual(incomplete.confirmedEffects, [
     "Created the GitHub Issue #42.",

@@ -42,7 +42,8 @@
         "minProperties": 1,
         "additionalProperties": { "type": ["string", "number", "boolean"] }
       }
-    }
+    },
+    "data": { "type": "object" }
   },
   "allOf": [
     {

@@ -17,6 +17,7 @@ import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { createLeadershipCommandHandlers } from "./leadership-commands.js";
 import { createEvidenceCommandHandlers } from "./evidence-commands.js";
+import { createAttentionCommandHandlers } from "./attention-commands.js";
 import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 import { PanAgentClient } from "./pan-agent-client.js";
 import { PanDaemon } from "./pan-daemon.js";
@@ -77,6 +78,7 @@ export async function runPanCli(
     commandHandlers ?? {
       leadership: createLeadershipCommandHandlers({ env }),
       evidence: createEvidenceCommandHandlers(),
+      attention: createAttentionCommandHandlers({ env }),
       reconcile: createReconciliationCommandHandlers({ env }),
     };
   const helper = parsePanHelperArgs(args, { env, handlers: helpers });
@@ -568,16 +570,24 @@ export function parsePanHelperArgs(
   const specification = handler.specification ?? {};
   const allowedOptions = new Set(specification.options ?? []);
   const allowedFlags = new Set(specification.flags ?? []);
+  const repeatableOptions = new Set(specification.repeatableOptions ?? []);
+  const positionalNames = specification.positionals ?? [];
   const options = {};
+  let positionalIndex = 0;
   let json = false;
   let config = env.PAN_CONFIG;
   let schemaVersion;
   for (let index = 0; index < remaining.length; index += 1) {
     const token = remaining[index];
     if (!token.startsWith("--")) {
-      throw new TypeError(
-        `Unexpected positional argument for pan ${family} ${operation}: ${token}`,
-      );
+      const name = positionalNames[positionalIndex++];
+      if (!name) {
+        throw new TypeError(
+          `Unexpected positional argument for pan ${family} ${operation}: ${token}`,
+        );
+      }
+      options[name] = token;
+      continue;
     }
     if (token === "--json") {
       if (json) {
@@ -616,15 +626,19 @@ export function parsePanHelperArgs(
       options[name] = true;
       continue;
     }
-    if (allowedOptions.has(name)) {
-      if (Object.hasOwn(options, name)) {
+    if (allowedOptions.has(name) || repeatableOptions.has(name)) {
+      if (Object.hasOwn(options, name) && !repeatableOptions.has(name)) {
         throw new TypeError(`--${name} may only be specified once`);
       }
       const value = remaining[++index];
       if (!value || value.startsWith("--")) {
         throw new TypeError(`--${name} requires a value`);
       }
-      options[name] = value;
+      if (repeatableOptions.has(name)) {
+        (options[name] ??= []).push(value);
+      } else {
+        options[name] = value;
+      }
       continue;
     }
     throw new TypeError(`Unknown option for pan ${family} ${operation}: --${name}`);
@@ -634,6 +648,14 @@ export function parsePanHelperArgs(
   }
   if (!config) {
     throw new TypeError("PAN helper commands require --config or PAN_CONFIG");
+  }
+  if (positionalIndex !== positionalNames.length) {
+    throw new TypeError(
+      `pan ${family} ${operation} requires ${positionalNames
+        .slice(positionalIndex)
+        .map((name) => `<${name}>`)
+        .join(" ")}`,
+    );
   }
   return { family, operation, config, json, options, schemaVersion };
 }
