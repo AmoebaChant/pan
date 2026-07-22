@@ -30,7 +30,7 @@ test("loads a capability profile and applies runner defaults", async () => {
       maxAutopilotContinues: undefined,
     });
     assert.equal(profile.terminal.executable, "wt");
-    assert.equal(profile.terminal.profile, "PowerShell");
+    assert.equal(profile.terminal.profile, undefined);
     assert.equal(profile.copilot.approvalMode, "prompt");
     assert.equal(profile.profilePath, profilePath);
     assert.equal(profile.store.path, directory);

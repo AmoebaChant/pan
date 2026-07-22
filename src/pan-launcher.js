@@ -29,6 +29,7 @@ export async function startPan({
   openTerminal = true,
   agentName = "pan",
   model,
+  terminalProfile,
   env = process.env,
   spawnProcess = spawn,
   fetchImpl = fetch,
@@ -69,11 +70,11 @@ export async function startPan({
     });
     if (openTerminal) {
       await launchInteractiveTerminal({
-        configPath: resolvedConfig,
         mcpConfig: paths.mcpConfig,
         toolRoot,
         agentName,
         model,
+        terminalProfile,
         spawnProcess,
         env,
       });
@@ -236,16 +237,14 @@ async function launchHost({
 }
 
 async function launchInteractiveTerminal({
-  configPath,
   mcpConfig,
   toolRoot,
   agentName,
   model,
+  terminalProfile,
   spawnProcess,
   env,
 }) {
-  const domain = path.basename(configPath, path.extname(configPath));
-  const title = `PAN - ${domain}`;
   const copilotArgs = buildInteractiveCopilotArgs({
     toolRoot,
     mcpConfig,
@@ -258,10 +257,11 @@ async function launchInteractiveTerminal({
       "-w",
       "0",
       "nt",
+      ...(terminalProfile ? ["-p", terminalProfile] : []),
       "-d",
       toolRoot,
       "--title",
-      title,
+      "Pan",
       "--suppressApplicationTitle",
       "copilot",
       ...copilotArgs,

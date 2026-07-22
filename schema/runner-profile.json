@@ -82,7 +82,11 @@
         "type": { "const": "windows-terminal" },
         "executable": { "type": "string", "minLength": 1 },
         "window": { "type": "string", "minLength": 1 },
-        "profile": { "type": "string", "minLength": 1 }
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional Windows Terminal profile name for this machine."
+        }
       }
     },
     "copilot": {

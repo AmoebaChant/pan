@@ -41,6 +41,7 @@ test("opens a headed PAN session connected to an existing host", async () => {
       LOCALAPPDATA: localAppData,
       PAN_WINDOWS_TERMINAL: "wt-test.exe",
     },
+    terminalProfile: "PowerShell",
     spawnProcess,
     fetchImpl: async () => ({ ok: true }),
   });
@@ -48,6 +49,14 @@ test("opens a headed PAN session connected to an existing host", async () => {
   assert.equal(result.started, false);
   assert.equal(result.terminalOpened, true);
   assert.equal(launches[0].executable, "wt-test.exe");
+  assert.equal(
+    launches[0].args[launches[0].args.indexOf("-p") + 1],
+    "PowerShell",
+  );
+  assert.equal(
+    launches[0].args[launches[0].args.indexOf("--title") + 1],
+    "Pan",
+  );
   assert.ok(launches[0].args.includes("--suppressApplicationTitle"));
   assert.ok(launches[0].args.includes("--agent"));
   assert.ok(launches[0].args.includes("pan"));
@@ -58,6 +67,42 @@ test("opens a headed PAN session connected to an existing host", async () => {
     mcp.mcpServers["pan-tools"].env.PAN_RUNTIME_STATE,
     paths.stateFile,
   );
+});
+
+test("uses the Windows Terminal default profile when none is configured", async () => {
+  const localAppData = await mkdtemp(path.join(os.tmpdir(), "pan-launcher-"));
+  const configPath = path.join(localAppData, "domain.json");
+  const toolRoot = path.resolve(".");
+  const paths = runtimePaths(configPath, { LOCALAPPDATA: localAppData });
+  await mkdir(paths.directory, { recursive: true });
+  await writeFile(
+    paths.stateFile,
+    JSON.stringify({
+      endpoint: "http://127.0.0.1:43127",
+      token: "secret",
+      autonomousApply: false,
+    }),
+  );
+  let launch;
+  const spawnProcess = (executable, args, options) => {
+    launch = { executable, args, options };
+    const child = new EventEmitter();
+    child.unref = () => {};
+    process.nextTick(() => child.emit("spawn"));
+    return child;
+  };
+
+  await startPan({
+    configPath,
+    toolRoot,
+    env: { LOCALAPPDATA: localAppData },
+    spawnProcess,
+    fetchImpl: async () => ({ ok: true }),
+  });
+
+  assert.ok(!launch.args.includes("-p"));
+  assert.equal(launch.args[launch.args.indexOf("--title") + 1], "Pan");
+  assert.ok(launch.args.includes("--suppressApplicationTitle"));
 });
 
 test("requires a restart to change autonomous apply mode", async () => {

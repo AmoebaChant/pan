@@ -127,6 +127,43 @@ final responses. Include evidence, rationale, confidence, expected mutable
 state, and an idempotency key for every proposed mutation. Report confirmed,
 rejected, and incomplete effects separately.
 
+Call `propose_actions` with one object whose required `actions` field is a
+non-empty array. Every mutation requires `version`, `actionId`, `kind`,
+`evidence`, `rationale`, `confidence`, `idempotencyKey`, `expectedState`, and
+`target`. Use this shape directly rather than retrying with schema wrappers:
+
+```json
+{
+  "actions": [
+    {
+      "version": 1,
+      "actionId": "record-decision-42",
+      "kind": "issue-comment",
+      "evidence": [
+        {
+          "kind": "issue",
+          "locator": "https://github.com/owner/domain/issues/42",
+          "revision": "comment-7"
+        }
+      ],
+      "rationale": "Record the confirmed decision in the canonical Issue.",
+      "confidence": 0.95,
+      "idempotencyKey": "turn-42:record-decision",
+      "expectedState": {
+        "snapshotId": "snapshot-42"
+      },
+      "target": {
+        "issueUrl": "https://github.com/owner/domain/issues/42",
+        "body": "Decision: use the existing API."
+      }
+    }
+  ]
+}
+```
+
+For a `no-op`, omit `idempotencyKey`, `expectedState`, and `target`, and include
+`recommendation`.
+
 Durable decisions, commitments, and questions must be proposed for recording in
 the canonical domain. Conversation history alone is never durable state.
 
