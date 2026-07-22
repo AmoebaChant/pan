@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "source": "agents/pan.agent.md",
+      "destination": "agents/pan.agent.md",
+      "sha256": "0f376870050ce79407295f864d53a59af9d20f081e8f5dff4afcc5f53b7e7d20"
+    },
+    {
+      "source": "instructions/pan.instructions.md",
+      "destination": "instructions/pan.instructions.md",
+      "sha256": "fc5a7a6796bd77ff28f6cf6ef3e7b03571ec2d1605b777b2a45baa577c3b9eaf"
+    },
+    {
+      "source": "skills/pan-attention/SKILL.md",
+      "destination": "skills/pan-attention/SKILL.md",
+      "sha256": "d4a6fa05ec8035ed456cae420e8bf49e5ec86e3afdb311d4d4d30a918e16a133"
+    },
+    {
+      "source": "skills/pan-portfolio/SKILL.md",
+      "destination": "skills/pan-portfolio/SKILL.md",
+      "sha256": "08a149a026e6d5e7a8a42f6c40cd5828e342007e987a8a54f7a8e731dde1eb9f"
+    },
+    {
+      "source": "skills/pan-workstream/SKILL.md",
+      "destination": "skills/pan-workstream/SKILL.md",
+      "sha256": "1a7f645fcada10916c4713445f7f768bdb21a1576b4481aae831ef2fa3622599"
+    }
+  ]
+}

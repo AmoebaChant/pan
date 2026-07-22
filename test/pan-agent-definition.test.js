@@ -1,28 +1,15 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-import { validatePanAction } from "../src/index.js";
+const ASSET_ROOT = path.resolve("assets/copilot");
+const AGENT_PATH = path.join(ASSET_ROOT, "agents/pan.agent.md");
+const INSTRUCTIONS_PATH = path.join(ASSET_ROOT, "instructions/pan.instructions.md");
+const MANIFEST_PATH = path.join(ASSET_ROOT, "manifest.json");
 
-const AGENT_PATH = path.resolve(".github/agents/pan.agent.md");
-const ALLOWED_TOOLS = [
-  "pan-tools/read_portfolio",
-  "pan-tools/read_workstream",
-  "pan-tools/read_issue",
-  "pan-tools/read_runner_availability",
-  "pan-tools/read_config",
-  "pan-tools/update_config",
-  "pan-tools/read_runner_profile",
-  "pan-tools/update_runner_profile",
-  "pan-tools/propose_actions",
-  "view",
-];
-
-test("defines one selectable generic PAN identity for review and chat", async () => {
+test("defines one user-scoped hostless PAN identity", async () => {
   const source = await readFile(AGENT_PATH, "utf8");
   const { frontmatter, body } = parseAgent(source);
 
@@ -30,70 +17,86 @@ test("defines one selectable generic PAN identity for review and chat", async ()
   assert.match(frontmatter.description, /chief-of-staff agent/i);
   assert.equal(frontmatter["disable-model-invocation"], "true");
   assert.equal(frontmatter["user-invocable"], "true");
-  assert.deepEqual(frontmatter.tools, ALLOWED_TOOLS);
-  assert.match(body, /Autonomous reviews and interactive conversations/);
-  assert.match(body, /same agent/);
+  assert.equal(frontmatter.tools, undefined);
+  assert.match(body, /Interactive and scheduled turns/i);
+  assert.match(body, /ordinary built-in file, search, git, shell, and GitHub/i);
+  assert.match(body, /Tool availability is not authority/i);
 });
 
-test("states complete-portfolio, evidence, uncertainty, and authority invariants", async () => {
-  const source = await readFile(AGENT_PATH, "utf8");
+test("shares hostless evidence, authority, and scheduling instructions", async () => {
+  const source = await readFile(INSTRUCTIONS_PATH, "utf8");
 
   for (const heading of [
-    "# Purpose",
-    "# Communication",
-    "# Portfolio reasoning",
-    "# Evidence and uncertainty",
-    "# Authority and actions",
-    "# Output protocol",
-    "# Boundaries",
+    "# PAN domain instructions",
+    "## Evidence and recommendations",
+    "## Authority and mutations",
+    "## Session behavior",
   ]) {
     assert.match(source, new RegExp(`^${escapeRegex(heading)}$`, "m"));
   }
-  assert.match(source, /classify\s+every Project item/i);
-  assert.match(source, /facts, interpretations, assumptions, and uncertainties/i);
-  assert.match(source, /runtime policy validates/i);
-  assert.match(source, /PAN protocol version 1/i);
-  assert.match(source, /snapshotReference\.value/);
-  assert.match(source, /expectedState\.snapshotId/);
-  assert.match(source, /This includes `issue-create`/);
-  assert.match(source, /"kind": "issue-create"/);
-  assert.match(source, /Do not use shell commands/i);
-  assert.match(source, /do\s+not create or maintain a second queue/i);
+  assert.match(source, /fresh snapshot/i);
+  assert.match(source, /classify the complete portfolio/i);
+  assert.match(
+    source,
+    /facts, interpretations,\s+assumptions, and uncertainties/i,
+  );
+  assert.match(source, /current PAN leadership/i);
+  assert.match(source, /native Copilot periodic review/i);
+  assert.match(source, /read-only product-context roots/i);
+  assert.match(source, /pan evidence portfolio/i);
+  assert.match(source, /pan action validate/i);
+  assert.match(source, /pan action apply/i);
 });
 
-test("advertises only named PAN tools and no broad grants", async () => {
-  const { frontmatter } = parseAgent(await readFile(AGENT_PATH, "utf8"));
+test("packages bounded portfolio, workstream, and attention skills", async () => {
+  const expected = {
+    "pan-attention": ["pan attention list", "pan attention answer", "pan attention add"],
+    "pan-portfolio": [
+      "pan evidence portfolio",
+      "pan reconcile missing-issues",
+      "pan reconcile merged-prs",
+      "pan action validate",
+      "pan action apply",
+    ],
+    "pan-workstream": ["pan workstream prepare", "pan workstream publish"],
+  };
 
-  assert.deepEqual(frontmatter.tools, ALLOWED_TOOLS);
-  for (const broadTool of [
-    "*",
-    "execute",
-    "shell",
-    "powershell",
-    "read",
-    "edit",
-    "search",
-    "github",
-  ]) {
-    assert.ok(!frontmatter.tools.includes(broadTool));
+  for (const [name, commands] of Object.entries(expected)) {
+    const source = await readFile(path.join(ASSET_ROOT, "skills", name, "SKILL.md"), "utf8");
+    const { frontmatter } = parseAgent(source);
+    assert.equal(frontmatter.name, name);
+    assert.ok(frontmatter.description);
+    for (const command of commands) {
+      assert.match(source, new RegExp(escapeRegex(command)));
+    }
   }
 });
 
-test("includes a schema-valid propose_actions example", async () => {
-  const source = await readFile(AGENT_PATH, "utf8");
-  const match = source.match(
-    /Call `propose_actions`[\s\S]*?```json\r?\n([\s\S]*?)\r?\n```/,
-  );
+test("manifest covers every distributed asset with its content hash", async () => {
+  const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"));
+  const files = await assetFiles(ASSET_ROOT);
+  const distributed = files.filter((file) => file !== "manifest.json").sort();
 
-  assert.ok(match, "agent definition must include a JSON action example");
-  const request = JSON.parse(match[1]);
-  assert.equal(request.actions.length, 1);
-  assert.deepEqual(validatePanAction(request.actions[0]), request.actions[0]);
+  assert.equal(manifest.version, 1);
+  assert.deepEqual(
+    manifest.assets.map((entry) => entry.source).sort(),
+    distributed,
+  );
+  for (const asset of manifest.assets) {
+    assert.equal(asset.destination, asset.source);
+    assert.match(asset.sha256, /^[a-f0-9]{64}$/);
+    const content = await readFile(path.join(ASSET_ROOT, asset.source));
+    assert.equal(asset.sha256, createHash("sha256").update(content).digest("hex"));
+  }
 });
 
-test("contains no private identity, repository, fixture, or machine paths", async () => {
-  const source = await readFile(AGENT_PATH, "utf8");
-
+test("hostless assets contain no private identity, repository, or machine paths", async () => {
+  const contents = await Promise.all(
+    (await assetFiles(ASSET_ROOT))
+      .filter((file) => file !== "manifest.json")
+      .map((file) => readFile(path.join(ASSET_ROOT, file), "utf8")),
+  );
+  const source = contents.join("\n");
   for (const privateValue of [
     "AmoebaChant",
     "kevbrown",
@@ -111,56 +114,17 @@ test("contains no private identity, repository, fixture, or machine paths", asyn
   }
 });
 
-test(
-  "opt-in live check discovers and selects the repository PAN agent",
-  { skip: process.env.PAN_LIVE_COPILOT_SPIKE !== "1", timeout: 120_000 },
-  async () => {
-    const child = spawn(
-      process.env.COPILOT_EXECUTABLE ?? "copilot",
-      [
-        "-C",
-        path.resolve("."),
-        "-p",
-        "State your role in one sentence without using tools.",
-        "--agent",
-        "pan",
-        "--no-ask-user",
-        "--disable-builtin-mcps",
-        "--no-remote",
-        "--no-auto-update",
-        "--disallow-temp-dir",
-        "--output-format",
-        "json",
-        "--stream",
-        "off",
-        "--session-id",
-        randomUUID(),
-      ],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      },
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-
-    const [code] = await once(child, "close");
-    assert.equal(code, 0, stderr);
-    const events = stdout.trim().split(/\r?\n/).map(JSON.parse);
-    const discovery = events.find(
-      (event) => event.type === "session.custom_agents_updated",
-    );
-    assert.ok(discovery.data.agents.some((agent) => agent.id === "pan"));
-    assert.equal(events.at(-1).type, "result");
-    assert.equal(events.at(-1).exitCode, 0);
-  },
-);
+async function assetFiles(directory, relative = "") {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(entries.map(async (entry) => {
+    const child = path.join(relative, entry.name);
+    if (entry.isDirectory()) {
+      return assetFiles(path.join(directory, entry.name), child);
+    }
+    return [child.replaceAll("\\", "/")];
+  }));
+  return files.flat();
+}
 
 function parseAgent(source) {
   const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);

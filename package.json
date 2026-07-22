@@ -12,6 +12,7 @@
   },
   "files": [
     ".github/agents",
+    "assets",
     "bin",
     "src",
     "schema",
