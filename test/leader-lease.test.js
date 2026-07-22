@@ -63,6 +63,112 @@ test("cannot renew a lease after another holder takes it", async () => {
   });
 });
 
+test("reclaims an active lease held by a dead process on the same machine", async () => {
+  const stateFile = new MemoryStateFile();
+  stateFile.value = {
+    version: 1,
+    holder: "machine-a/pan-1234",
+    machine: "machine-a",
+    pid: 1234,
+    token: "old-token",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  stateFile.version = 1;
+  const lease = new LeaderLease({
+    stateFile,
+    holder: "machine-a/pan-5678",
+    machine: "machine-a",
+    pid: 5678,
+    isProcessAlive: () => false,
+    tokenFactory: () => "new-token",
+  });
+
+  const result = await lease.acquire();
+
+  assert.equal(result.acquired, true);
+  assert.equal(result.reclaimed.pid, 1234);
+  assert.equal(stateFile.value.holder, "machine-a/pan-5678");
+  assert.equal(stateFile.value.machine, "machine-a");
+  assert.equal(stateFile.value.pid, 5678);
+});
+
+test("reclaims a legacy local lease whose PID is encoded in its holder", async () => {
+  const stateFile = new MemoryStateFile();
+  stateFile.value = {
+    version: 1,
+    holder: "machine-a/pan-1234",
+    token: "old-token",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  stateFile.version = 1;
+  const lease = new LeaderLease({
+    stateFile,
+    holder: "machine-a/pan-5678",
+    machine: "machine-a",
+    pid: 5678,
+    isProcessAlive: () => false,
+    tokenFactory: () => "new-token",
+  });
+
+  assert.equal((await lease.acquire()).acquired, true);
+});
+
+test("preserves an active lease when its local process is still alive", async () => {
+  const stateFile = new MemoryStateFile();
+  stateFile.value = {
+    version: 1,
+    holder: "machine-a/pan-1234",
+    machine: "machine-a",
+    pid: 1234,
+    token: "old-token",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  stateFile.version = 1;
+  const lease = new LeaderLease({
+    stateFile,
+    holder: "machine-a/pan-5678",
+    machine: "machine-a",
+    pid: 5678,
+    isProcessAlive: () => true,
+    tokenFactory: () => "new-token",
+  });
+
+  const result = await lease.acquire();
+
+  assert.equal(result.acquired, false);
+  assert.equal(result.lease.holder, "machine-a/pan-1234");
+});
+
+test("never reclaims an active lease from another machine", async () => {
+  const stateFile = new MemoryStateFile();
+  stateFile.value = {
+    version: 1,
+    holder: "machine-b/pan-1234",
+    machine: "machine-b",
+    pid: 1234,
+    token: "old-token",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  stateFile.version = 1;
+  let checkedProcess = false;
+  const lease = new LeaderLease({
+    stateFile,
+    holder: "machine-a/pan-5678",
+    machine: "machine-a",
+    pid: 5678,
+    isProcessAlive: () => {
+      checkedProcess = true;
+      return false;
+    },
+    tokenFactory: () => "new-token",
+  });
+
+  const result = await lease.acquire();
+
+  assert.equal(result.acquired, false);
+  assert.equal(checkedProcess, false);
+});
+
 class MemoryStateFile {
   value = undefined;
   version = 0;

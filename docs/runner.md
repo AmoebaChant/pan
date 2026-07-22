@@ -115,10 +115,12 @@ For each task it:
 4. posts structured needs-human records, including the machine, terminal title,
    and optional local URL;
 5. commits any remaining changes and follows the playbook delivery policy:
-   `pull-request` pushes the task branch, leaves the Issue open, and moves the
-   item to `in-review`; `direct` serializes delivery for the repository, rebases
-   onto the latest default branch, pushes it, moves the item to `done`, and
-   closes the Issue as completed.
+   `pull-request` pushes the task branch, links the PR to the source Issue,
+   leaves the Issue open, and moves the item to `in-review`; the PAN host moves
+   it to `done` and closes the Issue after the linked PR merges. `direct`
+   serializes delivery for the repository, rebases onto the latest default
+   branch, pushes it, moves the item to `done`, and closes the Issue as
+   completed.
 
 The worker denies Copilot access to `git push`, GitHub CLI commands, and the
 built-in GitHub MCP. The runner alone owns push and delivery.
@@ -176,6 +178,7 @@ The worker receives the canonical Issue body, comments and answers, workstream
 README, target branch/worktree, and playbook instructions. It implements and
 validates the change. The runner independently owns the lease, creates a
 collision-resistant isolated worktree, commits remaining changes, and applies
-the playbook delivery policy. Pull-request delivery records the PR and moves the
-task to `in-review` while its pull request awaits review; direct delivery records
+the playbook delivery policy. Pull-request delivery records and links the PR, then moves the task to
+`in-review` while its pull request awaits review. The PAN host completes the
+task and closes the Issue after the linked PR merges. Direct delivery records
 the commit, moves the item to `done`, and closes the Issue as completed.

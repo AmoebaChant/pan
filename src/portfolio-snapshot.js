@@ -279,6 +279,9 @@ function normalizeItem(item) {
     assignees: [...(item.assignees ?? [])],
     labels: [...(item.labels ?? [])],
     comments: (item.comments ?? []).map((comment) => ({ ...comment })),
+    linkedPullRequests: (item.linkedPullRequests ?? []).map((pullRequest) => ({
+      ...pullRequest,
+    })),
     fields: { ...(item.fields ?? {}) },
     requirements: [...(item.requirements ?? [])],
   };

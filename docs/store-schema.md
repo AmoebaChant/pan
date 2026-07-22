@@ -39,8 +39,9 @@ longer.
 lifecycle.
 
 A runner release to `done` also closes the Issue as completed. Pull-request
-delivery remains open in `in-review`; it must not be closed before review is
-complete.
+delivery links the PR to the source Issue and remains open in `in-review`.
+The PAN host observes linked PRs and moves the item to `done`, closing the Issue
+as completed, after a linked PR merges.
 
 Project item ordering is the canonical queue for both human and agent work.
 Saved views filter that ordering by owner and lifecycle. PAN must update the
@@ -60,4 +61,7 @@ The singleton PAN runtime stores its renewable leader lease at
 repository. Updates use the GitHub Contents API's expected blob SHA, so
 competing instances cannot both renew from the same version. Keeping the lease
 on a state branch avoids heartbeat commits on the domain repository's default
-branch.
+branch. The lease records the host machine and PID. A new PAN process may
+replace an otherwise active lease only when it is on the same machine and the
+recorded process is no longer running; remote and unverifiable holders remain
+protected until expiry.

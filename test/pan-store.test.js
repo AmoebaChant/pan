@@ -562,6 +562,119 @@ test("keeps an Issue open when completed work enters review", async () => {
   assert.deepEqual(gh.issueStateEdits, []);
 });
 
+test("completes in-review work after its linked pull request merges", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        status: "in-review",
+        linkedPullRequests: [
+          {
+            number: 42,
+            url: "https://github.com/AmoebaChant/pan/pull/42",
+            state: "MERGED",
+            mergedAt: "2026-07-17T19:30:00Z",
+            repository: "AmoebaChant/pan",
+          },
+        ],
+      }),
+    ],
+  });
+
+  const result = await store.reconcileMergedPullRequests();
+
+  assert.deepEqual(result, {
+    scanned: 1,
+    completed: [
+      {
+        itemId: "item-1",
+        issueNumber: 1,
+        pullRequestUrl: "https://github.com/AmoebaChant/pan/pull/42",
+      },
+    ],
+  });
+  assert.equal((await store.getItem("item-1")).fields.status, "done");
+  assert.deepEqual(gh.issueStateEdits, [
+    { number: 1, action: "close", reason: "completed" },
+  ]);
+});
+
+test("leaves in-review work unchanged while its linked pull request is open", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        status: "in-review",
+        linkedPullRequests: [
+          {
+            number: 42,
+            url: "https://github.com/AmoebaChant/pan/pull/42",
+            state: "OPEN",
+            mergedAt: null,
+            repository: "AmoebaChant/pan",
+          },
+        ],
+      }),
+    ],
+  });
+
+  const result = await store.reconcileMergedPullRequests();
+
+  assert.deepEqual(result, { scanned: 1, completed: [] });
+  assert.equal((await store.getItem("item-1")).fields.status, "in-review");
+  assert.deepEqual(gh.issueStateEdits, []);
+});
+
+test("marks an auto-closed linked Issue done without closing it again", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        status: "in-review",
+        state: "CLOSED",
+        linkedPullRequests: [
+          {
+            number: 42,
+            url: "https://github.com/AmoebaChant/pan/pull/42",
+            state: "MERGED",
+            mergedAt: "2026-07-17T19:30:00Z",
+            repository: "AmoebaChant/pan",
+          },
+        ],
+      }),
+    ],
+  });
+
+  const result = await store.reconcileMergedPullRequests();
+
+  assert.equal(result.completed.length, 1);
+  assert.equal((await store.getItem("item-1")).fields.status, "done");
+  assert.deepEqual(gh.issueStateEdits, []);
+});
+
+test("restores review status when merged PR Issue closure fails", async () => {
+  const { store } = fixture({
+    items: [
+      makeItem({
+        status: "in-review",
+        linkedPullRequests: [
+          {
+            number: 42,
+            url: "https://github.com/AmoebaChant/pan/pull/42",
+            state: "MERGED",
+            mergedAt: "2026-07-17T19:30:00Z",
+            repository: "AmoebaChant/pan",
+          },
+        ],
+      }),
+    ],
+    failIssueClose: true,
+  });
+
+  await assert.rejects(
+    store.reconcileMergedPullRequests(),
+    /Issue closure failed/,
+  );
+  assert.equal((await store.getItem("item-1")).fields.status, "in-review");
+});
+
 test("restores a claimed task when closing its Issue fails", async () => {
   const { store, gh } = fixture({
     items: [
@@ -1016,6 +1129,18 @@ class FakeGh {
                 })),
                 pageInfo: { hasNextPage: this.truncatedComments },
               },
+              closedByPullRequestsReferences: {
+                nodes: item.linkedPullRequests.map((pullRequest) => ({
+                  number: pullRequest.number,
+                  url: pullRequest.url,
+                  state: pullRequest.state,
+                  mergedAt: pullRequest.mergedAt,
+                  repository: {
+                    nameWithOwner: pullRequest.repository,
+                  },
+                })),
+                pageInfo: { hasNextPage: false },
+              },
             }),
       },
     };
@@ -1038,6 +1163,7 @@ function makeItem({
   assignees = [],
   labels = [],
   comments = [],
+  linkedPullRequests = [],
   contentType = "Issue",
   state = "OPEN",
   createdAt = "2026-07-17T18:00:00Z",
@@ -1059,6 +1185,7 @@ function makeItem({
     assignees,
     labels,
     comments,
+    linkedPullRequests,
     owner,
     Status: status,
     priority,

@@ -90,6 +90,55 @@ test("queues a repair task after a scheduled review failure", async () => {
   assert.equal(report.options.model, "gpt-5.6-sol");
 });
 
+test("reconciles merged pull requests before a scheduled review", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pan-host-"));
+  const controller = new AbortController();
+  const calls = [];
+  const host = new PanHost({
+    stateFile: path.join(directory, "host.json"),
+    token: "secret",
+    pollIntervalSeconds: 0.01,
+    heartbeatSeconds: 60,
+    taskStore: {
+      reconcileMergedPullRequests: async () => {
+        calls.push("reconcile");
+        return {
+          scanned: 1,
+          completed: [
+            {
+              itemId: "item-1",
+              issueNumber: 1,
+              pullRequestUrl: "https://github.com/example/tool/pull/42",
+            },
+          ],
+        };
+      },
+    },
+    reviewService: {
+      run: async () => {
+        calls.push("review");
+        controller.abort();
+        return { response: { recommendation: "No changes." } };
+      },
+      applyActions: async () => assert.fail("not called"),
+    },
+    toolRegistry: { dispatch: async () => assert.fail("not called") },
+    leaderLease: {
+      acquire: async () => ({ acquired: true }),
+      heartbeat: async () => ({ renewed: true }),
+      release: async () => ({ released: true }),
+    },
+    logger: {
+      info() {},
+      error() {},
+    },
+  });
+
+  await host.run({ signal: controller.signal });
+
+  assert.deepEqual(calls, ["reconcile", "review"]);
+});
+
 test("waits for in-flight repair reporting before releasing leadership", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pan-host-"));
   const controller = new AbortController();

@@ -35,7 +35,8 @@ export class AttentionService {
         kind: needsHuman?.kind ?? "review",
         prompt: needsHuman?.prompt ?? "Review the completed work.",
         locator: needsHuman?.locator,
-        pullRequestUrl: pullRequestUrl(comments),
+        pullRequestUrl:
+          item.linkedPullRequests?.[0]?.url ?? pullRequestUrl(comments),
       });
     }
     const byId = new Map(items.map((item) => [item.id, item]));

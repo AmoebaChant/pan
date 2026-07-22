@@ -381,6 +381,7 @@ test("runs the host in the foreground and exposes its configured model", async (
   const options = calls.find(([kind]) => kind === "host")[1];
   assert.equal(options.model, "gpt-5.6-sol");
   assert.equal(options.repairService.policy.repository, "example/pan");
+  assert.equal(typeof options.taskStore.readCanonicalProject, "function");
   assert.equal(options.stateFile, "C:\\runtime\\host.json");
   assert.ok(
     calls.some(

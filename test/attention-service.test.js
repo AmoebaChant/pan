@@ -9,7 +9,17 @@ import {
 
 test("lists unresolved attention and in-review work with locators", async () => {
   const blocked = makeItem({ status: "blocked" });
-  const review = makeItem({ id: "item-2", number: 2, status: "in-review" });
+  const review = makeItem({
+    id: "item-2",
+    number: 2,
+    status: "in-review",
+    linkedPullRequests: [
+      {
+        url: "https://github.com/example/tool/pull/42",
+        state: "open",
+      },
+    ],
+  });
   const store = new FakeStore([blocked, review]);
   store.commentMap.set(blocked.id, [
     {
@@ -20,15 +30,6 @@ test("lists unresolved attention and in-review work with locators", async () => 
       }),
     },
   ]);
-  store.commentMap.set(review.id, [
-    {
-      body: [
-        "<!-- pan:runner-result -->",
-        "Pull request: https://github.com/example/tool/pull/42",
-      ].join("\n"),
-    },
-  ]);
-
   const entries = await new AttentionService({ store }).inbox();
   const blockedEntry = entries.find((entry) => entry.id === 1);
   const reviewEntry = entries.find((entry) => entry.id === 2);
@@ -152,6 +153,7 @@ function makeItem({
   requirements = ["repo:example/tool"],
   autonomy = "full-auto",
   workstream = "orchestration/pan",
+  linkedPullRequests = [],
 } = {}) {
   return {
     id,
@@ -160,6 +162,7 @@ function makeItem({
     body: "Do it.",
     url: `https://github.com/example/data/issues/${number}`,
     state: "open",
+    linkedPullRequests,
     requirements,
     fields: {
       status,

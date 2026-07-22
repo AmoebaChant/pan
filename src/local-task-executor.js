@@ -894,6 +894,8 @@ class LocalTaskHandle {
         this.item.title,
         "--body",
         [
+          `Closes ${this.item.repository}#${this.item.number}`,
+          "",
           `Source task: ${this.item.url}`,
           "",
           result.summary || "Completed by a PAN runner.",

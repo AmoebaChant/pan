@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { processIsAlive } from "./process-tree.js";
+
 const DEFAULT_BRANCH = "pan-state";
 const DEFAULT_PATH = ".pan/leader.json";
 
@@ -136,6 +138,9 @@ export class LeaderLease {
     leaseSeconds = 120,
     now = () => new Date(),
     tokenFactory = randomUUID,
+    machine,
+    pid,
+    isProcessAlive = processIsAlive,
   }) {
     if (!stateFile?.read || !stateFile?.write) {
       throw new TypeError("stateFile must provide read() and write()");
@@ -146,20 +151,35 @@ export class LeaderLease {
     if (!Number.isFinite(leaseSeconds) || leaseSeconds <= 0) {
       throw new TypeError("leaseSeconds must be positive");
     }
+    if (
+      (machine === undefined) !== (pid === undefined) ||
+      (machine !== undefined && !machine?.trim()) ||
+      (pid !== undefined && (!Number.isInteger(pid) || pid <= 0))
+    ) {
+      throw new TypeError(
+        "machine and a positive integer pid must be provided together",
+      );
+    }
+    if (typeof isProcessAlive !== "function") {
+      throw new TypeError("isProcessAlive must be a function");
+    }
     this.stateFile = stateFile;
     this.holder = holder;
     this.leaseSeconds = leaseSeconds;
     this.now = now;
     this.tokenFactory = tokenFactory;
+    this.machine = machine;
+    this.pid = pid;
+    this.isProcessAlive = isProcessAlive;
     this.token = undefined;
   }
 
   async acquire() {
     const current = await this.stateFile.read();
-    if (
-      isActive(current.value, this.now()) &&
-      current.value.holder !== this.holder
-    ) {
+    const active = isActive(current.value, this.now());
+    const abandonedLease =
+      active && this.#isAbandonedLocalLease(current.value);
+    if (active && !abandonedLease) {
       return { acquired: false, lease: current.value };
     }
     const lease = this.#newLease(this.tokenFactory());
@@ -175,7 +195,11 @@ export class LeaderLease {
       return { acquired: false, reason: "not-confirmed" };
     }
     this.token = lease.token;
-    return { acquired: true, lease: confirmed.value };
+    return {
+      acquired: true,
+      lease: confirmed.value,
+      ...(abandonedLease ? { reclaimed: current.value } : {}),
+    };
   }
 
   async heartbeat() {
@@ -224,12 +248,43 @@ export class LeaderLease {
     return {
       version: 1,
       holder: this.holder,
+      ...(this.machine === undefined
+        ? {}
+        : { machine: this.machine, pid: this.pid }),
       token,
       expiresAt: new Date(
         this.now().getTime() + this.leaseSeconds * 1_000,
       ).toISOString(),
     };
   }
+
+  #isAbandonedLocalLease(lease) {
+    if (this.machine === undefined) {
+      return false;
+    }
+    const leaseHolder = leaseProcess(lease);
+    return (
+      leaseHolder?.machine === this.machine &&
+      leaseHolder.pid !== this.pid &&
+      !this.isProcessAlive(leaseHolder.pid)
+    );
+  }
+}
+
+function leaseProcess(lease) {
+  if (
+    typeof lease?.machine === "string" &&
+    lease.machine &&
+    Number.isInteger(lease.pid) &&
+    lease.pid > 0
+  ) {
+    return { machine: lease.machine, pid: lease.pid };
+  }
+  const match = lease?.holder?.match(/^(.+)\/pan-(\d+)$/);
+  const pid = Number(match?.[2]);
+  return match && Number.isSafeInteger(pid) && pid > 0
+    ? { machine: match[1], pid }
+    : undefined;
 }
 
 function isActive(lease, now) {

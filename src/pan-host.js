@@ -15,6 +15,7 @@ export class PanHost {
     heartbeatSeconds = 30,
     autonomousApply = false,
     repairService,
+    taskStore,
     model,
     logger = console,
     host = "127.0.0.1",
@@ -35,6 +36,11 @@ export class PanHost {
     if (repairService && !repairService.reportFailure) {
       throw new TypeError("repairService must provide reportFailure()");
     }
+    if (taskStore && !taskStore.reconcileMergedPullRequests) {
+      throw new TypeError(
+        "taskStore must provide reconcileMergedPullRequests()",
+      );
+    }
     this.reviewService = reviewService;
     this.toolRegistry = toolRegistry;
     this.leaderLease = leaderLease;
@@ -44,6 +50,7 @@ export class PanHost {
     this.heartbeatSeconds = heartbeatSeconds;
     this.autonomousApply = autonomousApply;
     this.repairService = repairService;
+    this.taskStore = taskStore;
     this.model = model;
     this.logger = logger;
     this.host = host;
@@ -61,6 +68,11 @@ export class PanHost {
       );
     }
     this.logger.info?.("Domain leadership acquired.");
+    if (acquisition.reclaimed) {
+      this.logger.info?.(
+        `Reclaimed leadership from stopped local process ${acquisition.reclaimed.pid ?? acquisition.reclaimed.holder}.`,
+      );
+    }
     const guard = startLeaseGuard(
       this.leaderLease,
       this.heartbeatSeconds,
@@ -94,6 +106,18 @@ export class PanHost {
             return;
           }
           try {
+            if (this.taskStore) {
+              this.logger.info?.("Reconciling merged pull requests.");
+              const reconciliation =
+                await this.taskStore.reconcileMergedPullRequests({
+                  signal: controller.signal,
+                });
+              for (const completed of reconciliation.completed) {
+                this.logger.info?.(
+                  `Task #${completed.issueNumber} moved to done after ${completed.pullRequestUrl} merged.`,
+                );
+              }
+            }
             this.logger.info?.("Starting scheduled portfolio review.");
             const result = await this.reviewService.run({
               apply: this.autonomousApply,

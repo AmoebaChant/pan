@@ -155,6 +155,7 @@ export async function runPanCli(
         heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
         autonomousApply: parsed.apply,
         repairService: services.repairService,
+        taskStore: store,
         model: configuration.agent?.model,
         logger,
       }).run({ signal: controller.signal });
@@ -575,6 +576,8 @@ function createLeaderLease({ configuration, gh, pid }) {
       filePath: configuration.runtime.leaderPath,
     }),
     holder: `${configuration.runtime.machine}/pan-${pid}`,
+    machine: configuration.runtime.machine,
+    pid,
     leaseSeconds: configuration.runtime.leaderLeaseSeconds,
   });
 }

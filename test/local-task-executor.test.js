@@ -419,6 +419,44 @@ test("rebases and retries concurrent direct delivery to the default branch", asy
   }
 });
 
+test("links pull-request delivery to its source Issue", async () => {
+  const fixture = await createFixture();
+  const commands = new PullRequestDeliveryCommands();
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: successfulSpawn,
+    randomId: () => "pull-request-delivery",
+  });
+
+  try {
+    const handle = await executor.start(makeStartOptions(9));
+    commands.branch = handle.branch;
+
+    const delivery = await handle.complete({
+      status: "completed",
+      summary: "Implemented through review.",
+    });
+
+    assert.deepEqual(delivery, {
+      mode: "pull-request",
+      url: "https://github.com/example/tool/pull/42",
+    });
+    const create = commands.calls.find(
+      ({ executable, args }) =>
+        executable === "gh" &&
+        args[0] === "pr" &&
+        args[1] === "create",
+    );
+    assert.match(
+      create.args[create.args.indexOf("--body") + 1],
+      /^Closes example\/data#9$/m,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 class FakeCommands {
   constructor() {
     this.calls = [];
@@ -428,6 +466,31 @@ class FakeCommands {
     this.calls.push({ executable, args, options });
     if (args.includes("get-url")) {
       return "https://github.com/example/tool.git";
+    }
+    return "";
+  }
+}
+
+class PullRequestDeliveryCommands extends FakeCommands {
+  async run(executable, args, options = {}) {
+    this.calls.push({ executable, args, options });
+    if (args.includes("get-url")) {
+      return "https://github.com/example/tool.git";
+    }
+    if (args.includes("--show-current")) {
+      return this.branch;
+    }
+    if (args.includes("--porcelain")) {
+      return " M src/file.js";
+    }
+    if (args.includes("rev-list")) {
+      return "1";
+    }
+    if (args.includes("rev-parse")) {
+      return "0123456789abcdef0123456789abcdef01234567";
+    }
+    if (executable === "gh" && args[0] === "pr" && args[1] === "create") {
+      return "https://github.com/example/tool/pull/42";
     }
     return "";
   }

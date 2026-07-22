@@ -75,6 +75,20 @@ const PROJECT_ITEM_SELECTION = `
           hasNextPage
         }
       }
+      closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+        nodes {
+          number
+          url
+          state
+          mergedAt
+          repository {
+            nameWithOwner
+          }
+        }
+        pageInfo {
+          hasNextPage
+        }
+      }
     }
   }
 `;
@@ -355,6 +369,76 @@ export class PanStore {
     return this.#listItems();
   }
 
+  async reconcileMergedPullRequests({ signal } = {}) {
+    const items = await this.listByFilter({ status: "in-review" });
+    const completed = [];
+    for (const item of items) {
+      signal?.throwIfAborted();
+      const result = await this.completeMergedPullRequest(item.id, { signal });
+      if (result.completed) {
+        completed.push({
+          itemId: result.item.id,
+          issueNumber: result.item.number,
+          pullRequestUrl: result.pullRequest.url,
+        });
+      }
+    }
+    return { scanned: items.length, completed };
+  }
+
+  async completeMergedPullRequest(itemId, { signal } = {}) {
+    if (!itemId) {
+      throw new TypeError("itemId is required");
+    }
+    const current = await this.#requireItem(itemId, { signal });
+    if (current.fields.status !== "in-review") {
+      return { completed: false, reason: "not-in-review", item: current };
+    }
+    const pullRequest = current.linkedPullRequests.find(
+      (candidate) => candidate.state === "merged" || candidate.mergedAt,
+    );
+    if (!pullRequest) {
+      return {
+        completed: false,
+        reason: "pull-request-not-merged",
+        item: current,
+      };
+    }
+
+    const closesIssue = current.state !== "closed";
+    try {
+      await this.setFields(itemId, { status: "done" }, { signal });
+      const confirmed = await this.#confirmFields(
+        itemId,
+        { status: "done" },
+        { signal },
+      );
+      if (!confirmed) {
+        await this.#restoreReviewStatus(itemId);
+        return {
+          completed: false,
+          reason: "completion-not-confirmed",
+          item: await this.#requireItem(itemId, { signal }),
+        };
+      }
+      if (closesIssue) {
+        await this.#closeIssue(confirmed, { signal });
+        confirmed.state = "closed";
+      }
+      return { completed: true, item: confirmed, pullRequest };
+    } catch (error) {
+      try {
+        await this.#restoreReviewStatus(itemId);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          "Merged pull request completion failed and the PAN task could not be restored",
+        );
+      }
+      throw error;
+    }
+  }
+
   async readCanonicalProject() {
     const items = await this.#listItems();
     return {
@@ -404,7 +488,7 @@ export class PanStore {
     return added > 0 ? this.#listItems() : items;
   }
 
-  async getItem(itemId) {
+  async getItem(itemId, { signal } = {}) {
     if (!itemId) {
       throw new TypeError("itemId is required");
     }
@@ -416,7 +500,7 @@ export class PanStore {
       `query=${PROJECT_ITEM_QUERY}`,
       "-f",
       `itemId=${itemId}`,
-    ]);
+    ], { signal });
     return normalizeGraphQlItem(result.data?.node, schema, this.repository);
   }
 
@@ -875,8 +959,8 @@ export class PanStore {
     return nodes;
   }
 
-  async #requireItem(itemId) {
-    const item = await this.getItem(itemId);
+  async #requireItem(itemId, { signal } = {}) {
+    const item = await this.getItem(itemId, { signal });
     if (!item) {
       throw new Error(`Project item not found: ${itemId}`);
     }
@@ -896,9 +980,10 @@ export class PanStore {
     throw new Error(`Project item did not become visible: ${itemId}`);
   }
 
-  async #confirmFields(itemId, expected) {
+  async #confirmFields(itemId, expected, { signal } = {}) {
     for (let attempt = 0; attempt < CONFIRM_ATTEMPTS; attempt += 1) {
-      const item = await this.getItem(itemId);
+      signal?.throwIfAborted();
+      const item = await this.getItem(itemId, { signal });
       if (
         item &&
         Object.entries(expected).every(
@@ -912,6 +997,19 @@ export class PanStore {
       }
     }
     return undefined;
+  }
+
+  async #restoreReviewStatus(itemId) {
+    await this.setFields(itemId, { status: "in-review" });
+    const restored = await this.#confirmFields(
+      itemId,
+      { status: "in-review" },
+    );
+    if (!restored) {
+      throw new Error(
+        `Unable to restore PAN task ${itemId} after merged pull request completion failed`,
+      );
+    }
   }
 
   async #editAssignee(item, flag, assignee) {
@@ -929,7 +1027,7 @@ export class PanStore {
     ]);
   }
 
-  async #closeIssue(item) {
+  async #closeIssue(item, { signal } = {}) {
     if (!item.number) {
       throw new Error(`Project item ${item.id} is not an Issue`);
     }
@@ -941,7 +1039,7 @@ export class PanStore {
       item.repository || this.repository,
       "--reason",
       "completed",
-    ]);
+    ], { signal });
   }
 }
 
@@ -980,6 +1078,12 @@ function normalizeGraphQlItem(item, schema, defaultRepository) {
     content.comments,
     100,
   );
+  const linkedPullRequests = requireCompleteConnection(
+    item.id,
+    "linked pull requests",
+    content.closedByPullRequestsReferences,
+    10,
+  );
   const fields = Object.fromEntries(
     Object.values(schema.fields).map((field) => [field.key, ""]),
   );
@@ -1011,8 +1115,36 @@ function normalizeGraphQlItem(item, schema, defaultRepository) {
     comments: comments.map((comment) =>
       normalizeComment(item.id, comment),
     ),
+    linkedPullRequests: linkedPullRequests.map((pullRequest) =>
+      normalizePullRequest(item.id, pullRequest),
+    ),
     fields,
     requirements: parseRequirements(fields.requirements),
+  };
+}
+
+function normalizePullRequest(itemId, pullRequest) {
+  if (
+    !pullRequest ||
+    !Number.isInteger(pullRequest.number) ||
+    typeof pullRequest.url !== "string" ||
+    !pullRequest.url ||
+    typeof pullRequest.state !== "string" ||
+    (pullRequest.mergedAt !== null &&
+      pullRequest.mergedAt !== undefined &&
+      !Number.isFinite(Date.parse(pullRequest.mergedAt))) ||
+    typeof pullRequest.repository?.nameWithOwner !== "string"
+  ) {
+    throw new Error(
+      `Project item ${itemId} has incomplete linked pull request evidence`,
+    );
+  }
+  return {
+    number: pullRequest.number,
+    url: pullRequest.url,
+    state: pullRequest.state.toLowerCase(),
+    mergedAt: pullRequest.mergedAt ?? null,
+    repository: pullRequest.repository.nameWithOwner,
   };
 }
 
