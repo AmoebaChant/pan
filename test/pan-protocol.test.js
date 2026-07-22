@@ -4,9 +4,12 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  isHostlessLiveAction,
   normalizePanFinalResponse,
+  PAN_ACTION_VERSION,
   PAN_PROTOCOL_VERSION,
   validatePanAction,
+  validatePanActionGroup,
   validatePanFinalResponse,
   validatePanToolMessage,
   validatePanTurnRequest,
@@ -85,6 +88,93 @@ test("validates every planned PAN action kind", () => {
   }
 });
 
+test("validates resource-specific version 2 action state", () => {
+  assert.equal(PAN_ACTION_VERSION, 2);
+  const versionTwoActions = [
+    v2Mutation("field-update", {
+      itemId: "PVTI_1",
+      field: "priority",
+      value: "high",
+    }, {
+      projectField: {
+        itemId: "PVTI_1",
+        field: "priority",
+        value: "normal",
+        revision: "sha256:fields",
+      },
+      leadership: { generation: "leader-1" },
+    }),
+    v2Mutation("canonical-reorder", {
+      orderedItemIds: ["PVTI_2", "PVTI_1"],
+    }, {
+      projectOrder: {
+        itemIds: ["PVTI_1", "PVTI_2"],
+        revision: "sha256:order",
+      },
+      leadership: { generation: "leader-1" },
+    }),
+    v2Mutation("relative-precedence", {
+      beforeItemId: "PVTI_1",
+      afterItemId: "PVTI_2",
+    }, {
+      projectOrder: {
+        itemIds: ["PVTI_1", "PVTI_2"],
+        revision: "sha256:order",
+      },
+      leadership: { generation: "leader-1" },
+    }),
+    v2Mutation("issue-create", {
+      repository: "example/domain",
+      title: "Follow up",
+    }, {
+      issueCatalog: { revision: "sha256:catalog" },
+      leadership: { generation: "leader-1" },
+    }),
+    v2Mutation("issue-comment", {
+      issueUrl: "https://github.com/example/domain/issues/42",
+      body: "A durable comment.",
+    }, {
+      issueCatalog: { revision: "sha256:catalog" },
+      issue: {
+        url: "https://github.com/example/domain/issues/42",
+        state: "open",
+        revision: "issue-42:7",
+      },
+      leadership: { generation: "leader-1" },
+    }),
+    v2Mutation("needs-human", {
+      issueUrl: "https://github.com/example/domain/issues/42",
+      prompt: "Which deadline is authoritative?",
+      kind: "question",
+    }, {
+      issue: {
+        url: "https://github.com/example/domain/issues/42",
+        state: "open",
+        revision: "issue-42:7",
+      },
+      attention: { recordId: "attention-42", revision: "attention:5" },
+      leadership: { generation: "leader-1" },
+    }),
+    v2Mutation("workstream-update", {
+      preparedOperationId: "prepare-42",
+      workstreamPath: "planning/example",
+    }, {
+      workstream: {
+        path: "planning/example",
+        blobRevision: "sha256:blob",
+        baseRevision: "main:123",
+      },
+      leadership: { generation: "leader-1" },
+    }),
+  ];
+
+  for (const action of versionTwoActions) {
+    assert.deepEqual(validatePanAction(action), action);
+    assert.equal(isHostlessLiveAction(action), true);
+  }
+  assert.equal(isHostlessLiveAction(actions[0]), false);
+});
+
 test("validates autonomous and interactive turn requests", () => {
   const base = {
     version: 1,
@@ -130,8 +220,8 @@ test("validates autonomous and interactive turn requests", () => {
 
 test("rejects unknown versions, action kinds, and malformed citations", () => {
   assert.throws(
-    () => validatePanAction({ ...actions[0], version: 2 }),
-    /action\.version must be supported version 1/,
+    () => validatePanAction({ ...actions[0], version: 3 }),
+    /action\.version must be supported version 1 or 2/,
   );
   assert.throws(
     () => validatePanAction({ ...actions[0], kind: "run-shell" }),
@@ -144,6 +234,81 @@ test("rejects unknown versions, action kinds, and malformed citations", () => {
         evidence: [{ kind: "issue", locator: "" }],
       }),
     /action\.evidence\[0\]\.locator must be a non-empty string/,
+  );
+});
+
+test("rejects global snapshots, unrelated resources, and mismatched version 2 state", () => {
+  const action = v2Mutation("field-update", {
+    itemId: "PVTI_1",
+    field: "priority",
+    value: "high",
+  }, {
+    projectField: {
+      itemId: "PVTI_1",
+      field: "priority",
+      value: "normal",
+      revision: "sha256:fields",
+    },
+    leadership: { generation: "leader-1" },
+  });
+
+  assert.throws(
+    () =>
+      validatePanAction({
+        ...action,
+        expectedState: { snapshotId: "stale-global-snapshot" },
+      }),
+    /expectedState\.snapshotId is not supported/,
+  );
+  assert.throws(
+    () =>
+      validatePanAction({
+        ...action,
+        expectedState: {
+          ...action.expectedState,
+          issueCatalog: { revision: "sha256:catalog" },
+        },
+      }),
+    /must only describe resources used by field-update/,
+  );
+  assert.throws(
+    () =>
+      validatePanAction({
+        ...action,
+        expectedState: {
+          ...action.expectedState,
+          projectField: {
+            ...action.expectedState.projectField,
+            field: "owner",
+          },
+        },
+      }),
+    /must identify the same item and field as the target/,
+  );
+  assert.throws(
+    () => validatePanAction({ ...action, surprise: true }),
+    /action\.surprise is not supported/,
+  );
+});
+
+test("accepts independent groups and rejects unsupported atomic groups", () => {
+  const action = v2Mutation("issue-create", {
+    repository: "example/domain",
+    title: "Follow up",
+  }, {
+    issueCatalog: { revision: "sha256:catalog" },
+    leadership: { generation: "leader-1" },
+  });
+  const group = {
+    version: 2,
+    groupId: "group-1",
+    semantics: "independent",
+    actions: [action],
+  };
+  assert.deepEqual(validatePanActionGroup(group), group);
+  assert.throws(
+    () => validatePanActionGroup({ ...group, semantics: "all-or-none" }),
+    /all-or-none groups are not supported/,
   );
 });
 
@@ -267,6 +432,42 @@ test("validates confirmed and incomplete tool results", () => {
   );
 });
 
+test("validates structured action effect records with recovery", () => {
+  const message = validatePanToolMessage({
+    version: 1,
+    type: "tool-result",
+    requestId: "request-2",
+    turnId: "turn-1",
+    operation: "apply_action",
+    status: "incomplete",
+    confirmedEffects: [
+      {
+        actionId: "action-1",
+        groupId: "group-1",
+        summary: "The Issue was created.",
+        resource: "issue",
+        externalIdentity: "https://github.com/example/domain/issues/42",
+        confirmedState: { state: "open" },
+        recovery: ["Register the existing Issue in the Project."],
+      },
+    ],
+    incompleteEffects: [
+      {
+        actionId: "action-1",
+        groupId: "group-1",
+        summary: "Project registration failed.",
+        resource: "project-membership",
+        externalIdentity: "PVTI_1",
+        confirmedState: { present: false },
+        remainingSteps: ["Register the existing Issue in the Project."],
+        recovery: ["Retry Project registration without creating another Issue."],
+      },
+    ],
+  });
+
+  assert.equal(message.incompleteEffects[0].resource, "project-membership");
+});
+
 test("protocol JSON schemas are committed as valid versioned JSON", async () => {
   for (const file of [
     "schema/pan-action.json",
@@ -278,3 +479,22 @@ test("protocol JSON schemas are committed as valid versioned JSON", async () => 
     assert.match(schema.$id, /\/schema\/pan-/);
   }
 });
+
+function v2Mutation(kind, target, expectedState) {
+  return {
+    version: 2,
+    actionId: `action-v2-${kind}`,
+    kind,
+    domain: {
+      repository: "example/domain",
+      projectOwner: "example",
+      projectNumber: 12,
+    },
+    evidence: [citation],
+    rationale: `Apply ${kind} using complete, current resource evidence.`,
+    confidence: 0.9,
+    idempotencyKey: `turn-2:${kind}`,
+    expectedState,
+    target,
+  };
+}

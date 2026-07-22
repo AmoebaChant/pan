@@ -23,8 +23,8 @@ test("validates every command outcome with domain identity and recovery", () => 
 
 test("rejects missing and inconsistent envelope fields", () => {
   assert.throws(
-    () => validatePanCommandResult({ ...baseResult("confirmed"), version: 2 }),
-    /command result\.version must be 1/,
+    () => validatePanCommandResult({ ...baseResult("confirmed"), version: 3 }),
+    /command result\.version must be 1 or 2/,
   );
   assert.throws(
     () =>
@@ -45,6 +45,40 @@ test("rejects missing and inconsistent envelope fields", () => {
         recovery: { safe: "yes", steps: [] },
       }),
     /recovery\.safe must be a boolean/,
+  );
+});
+
+test("validates version 2 structured action effects", () => {
+  const result = createPanCommandResult({
+    ...baseResult("incomplete"),
+    version: 2,
+    confirmedEffects: [
+      effect({
+        resource: "issue",
+        externalIdentity: "https://github.com/example/domain/issues/42",
+        confirmedState: { state: "open" },
+      }),
+    ],
+    incompleteEffects: [
+      effect({
+        resource: "project-membership",
+        externalIdentity: "PVTI_1",
+        confirmedState: { present: false },
+        remainingSteps: ["Register the existing Issue in the Project."],
+      }),
+    ],
+    remainingSteps: ["Register the existing Issue in the Project."],
+  });
+
+  assert.equal(result.version, 2);
+  assert.equal(result.confirmedEffects[0].groupId, "group-1");
+  assert.throws(
+    () =>
+      validatePanCommandResult({
+        ...result,
+        incompleteEffects: [],
+      }),
+    /must identify incomplete resource effects/,
   );
 });
 
@@ -117,5 +151,22 @@ function baseResult(status) {
     recovery: { safe: true, steps: [] },
     snapshot: { id: "snapshot-1" },
     expectedState: { projectRevision: "revision-1" },
+  };
+}
+
+function effect({
+  resource,
+  externalIdentity,
+  confirmedState,
+  remainingSteps,
+}) {
+  return {
+    actionId: "action-1",
+    groupId: "group-1",
+    resource,
+    externalIdentity,
+    confirmedState,
+    ...(remainingSteps === undefined ? {} : { remainingSteps }),
+    recovery: ["Refresh current evidence and retry the remaining operation."],
   };
 }

@@ -25,6 +25,7 @@ export {
   createPanCommandResult,
   PanCommandError,
   PAN_COMMAND_RESULT_STATUSES,
+  PAN_LEGACY_COMMAND_RESULT_VERSION,
   PAN_COMMAND_RESULT_VERSION,
   validatePanCommandResult,
 } from "./pan-command-result.js";
@@ -116,8 +117,13 @@ export { RunnerDaemon } from "./runner-daemon.js";
 export { acquireRunnerLock } from "./runner-lock.js";
 export {
   normalizePanFinalResponse,
+  isHostlessLiveAction,
+  PAN_ACTION_GROUP_SEMANTICS,
+  PAN_ACTION_VERSION,
+  PAN_LEGACY_ACTION_VERSION,
   PAN_PROTOCOL_VERSION,
   validatePanAction,
+  validatePanActionGroup,
   validatePanFinalResponse,
   validatePanToolMessage,
   validatePanTurnRequest,

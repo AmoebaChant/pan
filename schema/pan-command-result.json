@@ -4,55 +4,291 @@
   "title": "PAN helper command result",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "status", "operation", "operationId", "domain", "confirmedEffects", "remainingSteps", "diagnostics", "recovery"],
+  "required": [
+    "version",
+    "status",
+    "operation",
+    "operationId",
+    "domain",
+    "confirmedEffects",
+    "remainingSteps",
+    "diagnostics",
+    "recovery"
+  ],
   "properties": {
-    "version": { "const": 1 },
-    "status": { "enum": ["confirmed", "rejected", "incomplete", "failed"] },
-    "operation": { "type": "string", "minLength": 1 },
-    "operationId": { "type": "string", "minLength": 1 },
+    "version": {
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "status": {
+      "enum": [
+        "confirmed",
+        "rejected",
+        "incomplete",
+        "failed"
+      ]
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "operationId": {
+      "type": "string",
+      "minLength": 1
+    },
     "domain": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "projectOwner", "projectNumber"],
+      "required": [
+        "repository",
+        "projectOwner",
+        "projectNumber"
+      ],
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
-        "projectOwner": { "type": "string", "minLength": 1 },
-        "projectNumber": { "type": "integer", "minimum": 1 }
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectOwner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectNumber": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
-    "confirmedEffects": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-    "remainingSteps": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-    "diagnostics": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "confirmedEffects": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effect"
+          }
+        }
+      ]
+    },
+    "remainingSteps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "recovery": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["safe", "steps"],
+      "required": [
+        "safe",
+        "steps"
+      ],
       "properties": {
-        "safe": { "type": "boolean" },
-        "steps": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        "safe": {
+          "type": "boolean"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     },
-    "snapshot": { "type": "object", "minProperties": 1 },
-    "expectedState": { "type": "object", "minProperties": 1 },
-    "leadership": { "type": "object", "minProperties": 1 },
+    "snapshot": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "expectedState": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "leadership": {
+      "type": "object",
+      "minProperties": 1
+    },
     "receipts": {
       "type": "array",
       "items": {
         "type": "object",
         "minProperties": 1,
-        "additionalProperties": { "type": ["string", "number", "boolean"] }
+        "additionalProperties": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
       }
     },
-    "data": { "type": "object" }
+    "data": {
+      "type": "object"
+    },
+    "incompleteEffects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/effect"
+      }
+    }
   },
   "allOf": [
     {
-      "if": { "properties": { "status": { "const": "confirmed" } }, "required": ["status"] },
-      "then": { "properties": { "remainingSteps": { "maxItems": 0 } } }
+      "if": {
+        "properties": {
+          "status": {
+            "const": "confirmed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "remainingSteps": {
+            "maxItems": 0
+          }
+        }
+      }
     },
     {
-      "if": { "properties": { "status": { "const": "incomplete" } }, "required": ["status"] },
-      "then": { "properties": { "remainingSteps": { "minItems": 1 } } }
+      "if": {
+        "properties": {
+          "status": {
+            "const": "incomplete"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "remainingSteps": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "version"
+        ]
+      },
+      "then": {
+        "properties": {
+          "confirmedEffects": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "incompleteEffects"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "version": {
+            "const": 2
+          },
+          "status": {
+            "const": "incomplete"
+          }
+        },
+        "required": [
+          "version",
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "incompleteEffects"
+        ],
+        "properties": {
+          "incompleteEffects": {
+            "minItems": 1
+          }
+        }
+      }
     }
-  ]
+  ],
+  "$defs": {
+    "effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actionId",
+        "resource",
+        "externalIdentity",
+        "confirmedState",
+        "recovery"
+      ],
+      "properties": {
+        "actionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "groupId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "externalIdentity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confirmedState": {
+          "type": "object",
+          "minProperties": 1
+        },
+        "remainingSteps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "recovery": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
 }

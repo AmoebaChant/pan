@@ -23,6 +23,15 @@
     },
     {
       "$ref": "#/$defs/noOp"
+    },
+    {
+      "$ref": "#/$defs/v2Action"
+    },
+    {
+      "$ref": "#/$defs/actionGroup"
+    },
+    {
+      "$ref": "#/$defs/v2NoOp"
     }
   ],
   "$defs": {
@@ -379,6 +388,662 @@
           }
         }
       ]
+    },
+    "v2ExpectedState": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "projectField": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "itemId",
+            "field",
+            "value",
+            "revision"
+          ],
+          "properties": {
+            "itemId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "field": {
+              "type": "string",
+              "minLength": 1
+            },
+            "value": true,
+            "revision": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "projectOrder": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "itemIds",
+            "revision"
+          ],
+          "properties": {
+            "itemIds": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "projectMembership": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "issueUrl",
+            "present",
+            "revision"
+          ],
+          "properties": {
+            "issueUrl": {
+              "type": "string",
+              "minLength": 1
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "issueCatalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "revision"
+          ],
+          "properties": {
+            "revision": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "issue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "state",
+            "revision"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state": {
+              "type": "string",
+              "minLength": 1
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "workstream": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "blobRevision",
+            "baseRevision"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "blobRevision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "baseRevision": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "attention": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "recordId",
+            "revision"
+          ],
+          "properties": {
+            "recordId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "leadership": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generation"
+          ],
+          "properties": {
+            "generation": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "v2Domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "projectOwner",
+        "projectNumber"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectOwner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectNumber": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "v2Action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "actionId",
+        "kind",
+        "domain",
+        "evidence",
+        "rationale",
+        "confidence",
+        "idempotencyKey",
+        "expectedState",
+        "target"
+      ],
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "actionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "field-update",
+            "canonical-reorder",
+            "relative-precedence",
+            "issue-create",
+            "issue-comment",
+            "needs-human",
+            "workstream-update"
+          ]
+        },
+        "domain": {
+          "$ref": "#/$defs/v2Domain"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/citation"
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedState": {
+          "$ref": "#/$defs/v2ExpectedState"
+        },
+        "target": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "field-update"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "itemId",
+                  "field",
+                  "value"
+                ],
+                "properties": {
+                  "itemId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "field": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "value": true
+                }
+              },
+              "expectedState": {
+                "required": [
+                  "projectField",
+                  "leadership"
+                ],
+                "maxProperties": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "canonical-reorder"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "orderedItemIds"
+                ],
+                "properties": {
+                  "orderedItemIds": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "expectedState": {
+                "required": [
+                  "projectOrder",
+                  "leadership"
+                ],
+                "maxProperties": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "relative-precedence"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "beforeItemId",
+                  "afterItemId"
+                ],
+                "properties": {
+                  "beforeItemId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "afterItemId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "expectedState": {
+                "required": [
+                  "projectOrder",
+                  "leadership"
+                ],
+                "maxProperties": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "issue-create"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "repository",
+                  "title"
+                ],
+                "properties": {
+                  "repository": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "body": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "workstream": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "expectedState": {
+                "required": [
+                  "issueCatalog",
+                  "leadership"
+                ],
+                "maxProperties": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "issue-comment"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "issueUrl",
+                  "body"
+                ],
+                "properties": {
+                  "issueUrl": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "body": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "expectedState": {
+                "required": [
+                  "issueCatalog",
+                  "issue",
+                  "leadership"
+                ],
+                "maxProperties": 3
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "needs-human"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "issueUrl",
+                  "prompt",
+                  "kind"
+                ],
+                "properties": {
+                  "issueUrl": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "enum": [
+                      "question",
+                      "approval",
+                      "local-ui"
+                    ]
+                  }
+                }
+              },
+              "expectedState": {
+                "required": [
+                  "issue",
+                  "attention",
+                  "leadership"
+                ],
+                "maxProperties": 3
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "workstream-update"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "preparedOperationId",
+                  "workstreamPath"
+                ],
+                "properties": {
+                  "preparedOperationId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "workstreamPath": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "expectedState": {
+                "required": [
+                  "workstream",
+                  "leadership"
+                ],
+                "maxProperties": 2
+              }
+            }
+          }
+        }
+      ]
+    },
+    "actionGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "groupId",
+        "semantics",
+        "actions"
+      ],
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "groupId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "semantics": {
+          "enum": [
+            "independent",
+            "all-or-none"
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/v2Action"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "semantics": {
+                "const": "all-or-none"
+              }
+            },
+            "required": [
+              "semantics"
+            ]
+          },
+          "then": false
+        }
+      ]
+    },
+    "v2NoOp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "actionId",
+        "kind",
+        "evidence",
+        "rationale",
+        "confidence",
+        "recommendation"
+      ],
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "actionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "no-op"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/citation"
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }

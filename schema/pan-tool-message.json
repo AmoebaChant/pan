@@ -40,8 +40,72 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "groupId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "externalIdentity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confirmedState": {
+          "type": "object",
+          "minProperties": 1
+        },
+        "recovery": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "groupId"
+                ]
+              },
+              {
+                "required": [
+                  "resource"
+                ]
+              },
+              {
+                "required": [
+                  "externalIdentity"
+                ]
+              },
+              {
+                "required": [
+                  "confirmedState"
+                ]
+              },
+              {
+                "required": [
+                  "recovery"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "resource",
+              "externalIdentity",
+              "confirmedState",
+              "recovery"
+            ]
+          }
+        }
+      ]
     },
     "base": {
       "type": "object",

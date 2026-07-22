@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-const COMMAND_RESULT_VERSION = 1;
+const LEGACY_COMMAND_RESULT_VERSION = 1;
+const COMMAND_RESULT_VERSION = 2;
 const STATUSES = new Set(["confirmed", "rejected", "incomplete", "failed"]);
 
 export class PanCommandError extends Error {
@@ -12,11 +13,13 @@ export class PanCommandError extends Error {
 }
 
 export function createPanCommandResult({
+  version = LEGACY_COMMAND_RESULT_VERSION,
   status,
   operation,
   operationId = randomUUID(),
   domain,
   confirmedEffects = [],
+  incompleteEffects = [],
   remainingSteps = [],
   diagnostics = [],
   recovery = { safe: true, steps: [] },
@@ -27,12 +30,13 @@ export function createPanCommandResult({
   data,
 } = {}) {
   return validatePanCommandResult({
-    version: COMMAND_RESULT_VERSION,
+    version,
     status,
     operation,
     operationId,
     domain,
     confirmedEffects,
+    ...(incompleteEffects.length === 0 ? {} : { incompleteEffects }),
     remainingSteps,
     diagnostics,
     recovery,
@@ -55,6 +59,7 @@ export function validatePanCommandResult(result) {
       "operationId",
       "domain",
       "confirmedEffects",
+      "incompleteEffects",
       "remainingSteps",
       "diagnostics",
       "recovery",
@@ -66,8 +71,14 @@ export function validatePanCommandResult(result) {
     ]),
     "command result",
   );
-  if (result.version !== COMMAND_RESULT_VERSION) {
-    fail("command result.version", `must be ${COMMAND_RESULT_VERSION}`);
+  if (
+    result.version !== LEGACY_COMMAND_RESULT_VERSION &&
+    result.version !== COMMAND_RESULT_VERSION
+  ) {
+    fail(
+      "command result.version",
+      `must be ${LEGACY_COMMAND_RESULT_VERSION} or ${COMMAND_RESULT_VERSION}`,
+    );
   }
   if (!STATUSES.has(result.status)) {
     fail("command result.status", `must be one of ${[...STATUSES].join(", ")}`);
@@ -75,7 +86,21 @@ export function validatePanCommandResult(result) {
   requireString(result.operation, "command result.operation");
   requireString(result.operationId, "command result.operationId");
   validateDomain(result.domain);
-  requireStringArray(result.confirmedEffects, "command result.confirmedEffects");
+  if (result.version === LEGACY_COMMAND_RESULT_VERSION) {
+    requireStringArray(result.confirmedEffects, "command result.confirmedEffects");
+    if (result.incompleteEffects !== undefined) {
+      fail(
+        "command result.incompleteEffects",
+        "is only supported by version 2 command results",
+      );
+    }
+  } else {
+    validateEffects(result.confirmedEffects, "command result.confirmedEffects");
+    validateEffects(
+      result.incompleteEffects ?? [],
+      "command result.incompleteEffects",
+    );
+  }
   requireStringArray(result.remainingSteps, "command result.remainingSteps");
   requireStringArray(result.diagnostics, "command result.diagnostics");
   validateRecovery(result.recovery);
@@ -115,6 +140,16 @@ export function validatePanCommandResult(result) {
     fail(
       "command result.remainingSteps",
       "must name remaining required steps when status is incomplete",
+    );
+  }
+  if (
+    result.version === COMMAND_RESULT_VERSION &&
+    result.status === "incomplete" &&
+    (result.incompleteEffects?.length ?? 0) === 0
+  ) {
+    fail(
+      "command result.incompleteEffects",
+      "must identify incomplete resource effects when status is incomplete",
     );
   }
   return structuredClone(result);
@@ -184,6 +219,40 @@ function validateRecovery(recovery) {
   requireStringArray(recovery.steps, "command result.recovery.steps");
 }
 
+function validateEffects(effects, field) {
+  if (!Array.isArray(effects)) {
+    fail(field, "must be an array");
+  }
+  for (const [index, effect] of effects.entries()) {
+    const effectPath = `${field}[${index}]`;
+    requireRecord(effect, effectPath);
+    rejectUnexpectedKeys(
+      effect,
+      new Set([
+        "actionId",
+        "groupId",
+        "resource",
+        "externalIdentity",
+        "confirmedState",
+        "remainingSteps",
+        "recovery",
+      ]),
+      effectPath,
+    );
+    requireString(effect.actionId, `${effectPath}.actionId`);
+    if (effect.groupId !== undefined) {
+      requireString(effect.groupId, `${effectPath}.groupId`);
+    }
+    requireString(effect.resource, `${effectPath}.resource`);
+    requireString(effect.externalIdentity, `${effectPath}.externalIdentity`);
+    validateIdentity(effect.confirmedState, `${effectPath}.confirmedState`);
+    if (effect.remainingSteps !== undefined) {
+      requireStringArray(effect.remainingSteps, `${effectPath}.remainingSteps`);
+    }
+    requireStringArray(effect.recovery, `${effectPath}.recovery`);
+  }
+}
+
 function validateData(data, field) {
   requireRecord(data, field);
   try {
@@ -227,4 +296,5 @@ function fail(field, correction) {
 }
 
 export const PAN_COMMAND_RESULT_VERSION = COMMAND_RESULT_VERSION;
+export const PAN_LEGACY_COMMAND_RESULT_VERSION = LEGACY_COMMAND_RESULT_VERSION;
 export const PAN_COMMAND_RESULT_STATUSES = Object.freeze([...STATUSES]);
