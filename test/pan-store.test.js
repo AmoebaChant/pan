@@ -917,6 +917,53 @@ test("adds open repository Issues missing from the Project", async () => {
   assert.equal(items[1].number, 2);
 });
 
+test("finds existing Issue membership and adds a missing Issue without cleanup", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ number: 1 })],
+    openIssues: [
+      {
+        number: 2,
+        title: "Existing Issue",
+        body: "",
+        url: "https://github.com/AmoebaChant/pan-work/issues/2",
+        state: "OPEN",
+      },
+    ],
+  });
+  const snapshot = await store.readCanonicalProject();
+
+  const existing = await store.findProjectIssueMembership(
+    "https://github.com/AmoebaChant/pan-work/issues/1",
+    { expectedProjectId: snapshot.id },
+  );
+  const added = await store.ensureIssueProjectMembership(
+    "https://github.com/AmoebaChant/pan-work/issues/2",
+    { expectedProjectId: snapshot.id },
+  );
+
+  assert.equal(existing.item.id, "item-1");
+  assert.equal(added.added, true);
+  assert.equal(added.item.id, "item-2");
+  assert.deepEqual(gh.deletedIssues, []);
+});
+
+test("confirms each required Project field and retains partial registration failures", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ owner: "", status: "", priority: "", autonomy: "" })],
+    failProjectEdit: true,
+  });
+
+  const failed = await store.ensureItemFields("item-1", {
+    owner: "unassigned",
+    status: "untriaged",
+  });
+
+  assert.equal(failed.complete, false);
+  assert.deepEqual(failed.confirmedFields, []);
+  assert.equal((await store.getItem("item-1")).id, "item-1");
+  assert.deepEqual(gh.deletedIssues, []);
+});
+
 test("updates Project item ordering", async () => {
   const { store, gh } = fixture();
 

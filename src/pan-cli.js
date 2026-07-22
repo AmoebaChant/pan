@@ -17,6 +17,7 @@ import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { createLeadershipCommandHandlers } from "./leadership-commands.js";
 import { createEvidenceCommandHandlers } from "./evidence-commands.js";
+import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 import { PanAgentClient } from "./pan-agent-client.js";
 import { PanDaemon } from "./pan-daemon.js";
 import { PanHost } from "./pan-host.js";
@@ -76,6 +77,7 @@ export async function runPanCli(
     commandHandlers ?? {
       leadership: createLeadershipCommandHandlers({ env }),
       evidence: createEvidenceCommandHandlers(),
+      reconcile: createReconciliationCommandHandlers({ env }),
     };
   const helper = parsePanHelperArgs(args, { env, handlers: helpers });
   if (helper) {
@@ -1019,5 +1021,6 @@ function usage() {
     "  pan answer <id> <text> [--json] --config <path>",
     "  pan add <title> [options] --config <path>",
     "  pan leadership <status|acquire|assert|renew|release> --schema-version 1 --config <path>",
+    "  pan reconcile missing-issues [--apply] --schema-version 1 --config <path>",
   ].join("\n");
 }

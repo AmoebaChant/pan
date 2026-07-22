@@ -335,3 +335,48 @@ test("dispatches a strict helper command with one fresh command context", async 
   assert.equal(output.length, 1);
   assert.equal(JSON.parse(output[0]).operation, "evidence.snapshot");
 });
+
+test("dispatches reconcile missing-issues with an opt-in apply flag", async () => {
+  const output = [];
+  const handler = Object.assign(
+    async ({ context, options }) => ({
+      version: 1,
+      status: "confirmed",
+      operation: "reconcile.missing-issues",
+      operationId: "reconcile-1",
+      domain: context.domain,
+      confirmedEffects: [options.apply ? "Applied reconciliation." : "Planned reconciliation."],
+      remainingSteps: [],
+      diagnostics: [],
+      recovery: { safe: true, steps: [] },
+    }),
+    { specification: { flags: ["apply"] } },
+  );
+
+  const result = await runPanCli(
+    [
+      "reconcile",
+      "missing-issues",
+      "--schema-version",
+      "1",
+      "--config",
+      "domain.json",
+      "--apply",
+      "--json",
+    ],
+    {
+      commandHandlers: { reconcile: { "missing-issues": handler } },
+      commandContextFactory: async () => ({
+        domain: {
+          repository: "example/domain",
+          projectOwner: "example",
+          projectNumber: 12,
+        },
+      }),
+      stdout: { write: (value) => output.push(value) },
+    },
+  );
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(JSON.parse(output[0]).confirmedEffects[0], "Applied reconciliation.");
+});

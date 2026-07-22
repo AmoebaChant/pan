@@ -318,6 +318,110 @@ export class PanStore {
     }
   }
 
+  async findProjectIssueMembership(issueUrl, { expectedProjectId } = {}) {
+    if (!isIssueUrl(issueUrl)) {
+      throw new TypeError("a GitHub Issue URL is required");
+    }
+    const snapshot = await this.readCanonicalProject();
+    if (!snapshot.complete) {
+      throw new Error("Project membership evidence is incomplete");
+    }
+    if (expectedProjectId && snapshot.id !== expectedProjectId) {
+      throw new Error("Project membership changed after reconciliation planning");
+    }
+    return {
+      snapshot,
+      item: snapshot.items.find(
+        (item) => item.contentClassification === "domain-issue" && item.url === issueUrl,
+      ),
+    };
+  }
+
+  async ensureIssueProjectMembership(
+    issueUrl,
+    { expectedProjectId, signal } = {},
+  ) {
+    const membership = await this.findProjectIssueMembership(issueUrl, {
+      expectedProjectId,
+    });
+    if (membership.item) {
+      return {
+        item: membership.item,
+        added: false,
+        projectId: membership.snapshot.id,
+      };
+    }
+    signal?.throwIfAborted();
+    const added = await this.gh.runJson([
+      "project",
+      "item-add",
+      String(this.projectNumber),
+      "--owner",
+      this.projectOwner,
+      "--url",
+      issueUrl,
+      "--format",
+      "json",
+    ], { signal });
+    if (!added.id) {
+      throw new Error("gh project item-add returned no Project item ID");
+    }
+    return {
+      item: await this.#confirmItem(added.id),
+      added: true,
+      projectId: membership.snapshot.id,
+    };
+  }
+
+  async ensureItemFields(itemId, values, { signal } = {}) {
+    if (!itemId) {
+      throw new TypeError("itemId is required");
+    }
+    const schema = await this.getSchema();
+    validateFieldValues(values, schema);
+    let item = await this.#requireItem(itemId, { signal });
+    const confirmedFields = [];
+    for (const [key, value] of Object.entries(values)) {
+      if ((item.fields[key] ?? "") === value) {
+        confirmedFields.push(key);
+        continue;
+      }
+      try {
+        await this.setFields(itemId, { [key]: value }, { signal });
+        const confirmed = await this.#confirmFields(itemId, { [key]: value }, { signal });
+        if (!confirmed) {
+          return {
+            item,
+            complete: false,
+            confirmedFields,
+            remainingFields: Object.keys(values).filter(
+              (field) => !confirmedFields.includes(field),
+            ),
+            error: `Project field ${key} was not confirmed for ${itemId}`,
+          };
+        }
+        item = confirmed;
+        confirmedFields.push(key);
+      } catch (error) {
+        return {
+          item,
+          complete: false,
+          confirmedFields,
+          remainingFields: Object.keys(values).filter(
+            (field) => !confirmedFields.includes(field),
+          ),
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    return {
+      item,
+      complete: true,
+      confirmedFields,
+      remainingFields: [],
+    };
+  }
+
   async setFields(itemId, values, { signal } = {}) {
     if (!itemId) {
       throw new TypeError("itemId is required");
