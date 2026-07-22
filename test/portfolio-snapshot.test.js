@@ -95,6 +95,28 @@ test("treats an absent workstream on needs-detail work as known missing evidence
   );
 });
 
+test("identifies how to repair an actionable item with no workstream", async () => {
+  const snapshot = await builder({
+    items: [
+      item("42", {
+        status: "ready",
+        workstream: "",
+      }),
+    ],
+  }).build();
+
+  assert.equal(snapshot.complete, false);
+  assert.equal(snapshot.usableForMutation, false);
+  assert.deepEqual(snapshot.diagnostics, [
+    {
+      source: "item:42",
+      code: "missing-workstream",
+      message:
+        'Project item 42 (Issue #42 "Task 42", https://github.com/example/domain/issues/42) has status ready but no workstream reference; set its Project workstream field to a valid workstream path, or move it to needs-detail until the reference is known',
+    },
+  ]);
+});
+
 test("propagates partial source diagnostics to mutation readiness", async () => {
   const snapshot = await builder({
     workstreamComplete: false,
