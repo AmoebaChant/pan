@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -176,6 +176,147 @@ export class WorkstreamDeliveryService {
     }
   }
 
+  async publish({ operationId, sessionId, workstreamPath } = {}) {
+    requireOperationId(operationId);
+    requireText(sessionId, "sessionId");
+    const receipt = await this.#readReceipt(operationId);
+    this.#validateReceipt(receipt, { operationId, sessionId });
+    if (workstreamPath !== undefined && workstreamPath !== receipt.workstream.path) {
+      throw new Error("Workstream operation does not match the requested workstream path");
+    }
+    const expiresAt = Date.parse(receipt.expiresAt);
+    if (!Number.isFinite(expiresAt) || this.now().getTime() > expiresAt) {
+      return rejected(
+        "The prepared workstream operation has expired.",
+        "Prepare a fresh workspace against the current default branch before publishing.",
+      );
+    }
+    const authority = await this.assertLeadership();
+    if (!authority?.asserted) {
+      return rejected(
+        `Workstream publication requires current leadership${authority?.reason ? `: ${authority.reason}` : "."}`,
+        "Restore leadership and re-evaluate the prepared workspace before publishing.",
+      );
+    }
+
+    await this.#verifyRepository();
+    const marker = workstreamMarker(receipt);
+    const branch = receipt.target.defaultBranch;
+    await this.#fetch(branch);
+    const previous = await this.#publishedCommit(marker, branch);
+    if (previous) {
+      return confirmedPublication(
+        previous,
+        branch,
+        await this.#completeCleanup(receipt),
+        { duplicate: true },
+      );
+    }
+    const remote = await this.#validateRemoteState(receipt);
+    if (!remote.valid) {
+      return rejected(
+        remote.reason,
+        "Prepare a fresh workspace and re-evaluate the workstream update against the current remote state.",
+      );
+    }
+    let commit = receipt.delivery?.commit;
+    if (!commit) {
+      let workspace;
+      try {
+        workspace = await this.#validateWorkspace(receipt);
+      } catch (error) {
+        return rejected(
+          error.message,
+          "Remove unrelated, generated, deleted, or symbolic-link changes from the isolated workspace before retrying.",
+        );
+      }
+      if (!workspace.changed) {
+        return {
+          status: "confirmed",
+          noChange: true,
+          diagnostics: ["The prepared workstream file has no changes to publish."],
+          cleanup: await this.#completeCleanup(receipt),
+        };
+      }
+      const beforeCommit = await this.#readyForMutation(receipt);
+      if (!beforeCommit.valid) {
+        return rejected(
+          beforeCommit.reason,
+          "Prepare a fresh workspace and re-evaluate the workstream update before committing.",
+        );
+      }
+      await this.#run([
+        "-C",
+        receipt.workspace,
+        "add",
+        "--",
+        receipt.workstream.sourcePath,
+      ]);
+      await this.#run([
+        "-C",
+        receipt.workspace,
+        "commit",
+        "-m",
+        `PAN workstream update: ${receipt.workstream.path}`,
+        "-m",
+        commitMetadata(receipt, marker),
+      ]);
+      commit = await this.#run(["-C", receipt.workspace, "rev-parse", "HEAD"]);
+      receipt.delivery = { commit, marker, committedAt: this.now().toISOString() };
+      await this.#writeReceipt(receipt);
+    }
+
+    const beforePush = await this.#readyForMutation(receipt);
+    if (!beforePush.valid) {
+      return incompletePublication(
+        commit,
+        branch,
+        beforePush.reason,
+        "The local commit is retained in the isolated workspace. Restore leadership or refresh remote state before deciding whether it can be pushed.",
+      );
+    }
+    try {
+      await this.#run([
+        "-C",
+        receipt.workspace,
+        "push",
+        "origin",
+        `HEAD:${branch}`,
+      ]);
+    } catch (error) {
+      await this.#fetch(branch);
+      const confirmed = await this.#publishedCommit(marker, branch);
+      if (confirmed) {
+        return confirmedPublication(
+          confirmed,
+          branch,
+          await this.#completeCleanup(receipt),
+        );
+      }
+      return incompletePublication(
+        commit,
+        branch,
+        `Push was not confirmed: ${error.message}`,
+        "The local commit is retained in the isolated workspace. Refresh the remote branch, resolve permissions, protection, or concurrent changes, then retry safely.",
+      );
+    }
+    await this.#fetch(branch);
+    const confirmed = await this.#publishedCommit(marker, branch);
+    if (!confirmed) {
+      return incompletePublication(
+        commit,
+        branch,
+        "The push command completed, but the remote default branch does not confirm the workstream commit.",
+        "Do not create another commit. Refresh the remote branch and retry confirmation with this operation ID.",
+      );
+    }
+    return confirmedPublication(
+      confirmed,
+      branch,
+      await this.#completeCleanup(receipt),
+    );
+  }
+
   async #verifyRepository() {
     const [root, remote] = await Promise.all([
       this.#run(["-C", this.repositoryPath, "rev-parse", "--show-toplevel"]),
@@ -193,6 +334,195 @@ export class WorkstreamDeliveryService {
       throw new Error(
         `Configured path origin is ${actualRepository ?? "not a GitHub repository"}, expected ${this.repository}`,
       );
+    }
+  }
+
+  async #readReceipt(operationId) {
+    const operationPath = path.join(this.operationDirectory, operationId);
+    if (!isChildPath(this.operationDirectory, operationPath)) {
+      throw new Error("Operation ID escapes the PAN operation directory");
+    }
+    try {
+      return JSON.parse(
+        await readFile(path.join(operationPath, "receipt.json"), "utf8"),
+      );
+    } catch (error) {
+      throw new Error(`Unable to read workstream operation ${operationId}: ${error.message}`, {
+        cause: error,
+      });
+    }
+  }
+
+  #validateReceipt(receipt, { operationId, sessionId }) {
+    if (!receipt || receipt.version !== RECEIPT_VERSION) {
+      throw new Error("Workstream operation receipt has an unsupported version");
+    }
+    if (receipt.operationId !== operationId || receipt.sessionId !== sessionId) {
+      throw new Error("Workstream operation does not belong to this session");
+    }
+    if (
+      receipt.domain?.repository !== this.repository ||
+      path.resolve(receipt.domain?.path ?? "") !== this.repositoryPath
+    ) {
+      throw new Error("Workstream operation does not match the configured domain");
+    }
+    validateWorkstreamPath(receipt.workstream?.path);
+    if (
+      receipt.workstream.sourcePath !==
+      `workstreams/${receipt.workstream.path}/README.md`
+    ) {
+      throw new Error("Workstream operation has an invalid source path");
+    }
+    if (
+      typeof receipt.target?.defaultBranch !== "string" ||
+      !receipt.target.defaultBranch ||
+      !/^[0-9a-f]{40,64}$/.test(receipt.target.baseCommit ?? "")
+    ) {
+      throw new Error("Workstream operation has an invalid remote target");
+    }
+    const workspace = path.join(this.operationDirectory, operationId, "worktree");
+    if (path.resolve(receipt.workspace ?? "") !== path.resolve(workspace)) {
+      throw new Error("Workstream operation has an invalid workspace");
+    }
+    if (
+      path.resolve(receipt.filePath ?? "") !==
+      path.resolve(receipt.workspace, receipt.workstream.sourcePath)
+    ) {
+      throw new Error("Workstream operation has an invalid file path");
+    }
+  }
+
+  async #writeReceipt(receipt) {
+    await writeFile(
+      receipt.cleanup.receiptPath,
+      `${JSON.stringify(receipt, null, 2)}\n`,
+    );
+  }
+
+  async #fetch(branch) {
+    await this.#run(["-C", this.repositoryPath, "fetch", "origin", branch]);
+  }
+
+  async #validateRemoteState(receipt) {
+    const branch = receipt.target.defaultBranch;
+    const baseCommit = await this.#run([
+      "-C",
+      this.repositoryPath,
+      "rev-parse",
+      `origin/${branch}`,
+    ]);
+    if (baseCommit !== receipt.target.baseCommit) {
+      return {
+        valid: false,
+        reason: `Remote default branch ${branch} advanced from the prepared base.`,
+      };
+    }
+    const actualBlob = await this.#blobAt(
+      baseCommit,
+      receipt.workstream.sourcePath,
+    );
+    if (actualBlob !== (receipt.workstream.expectedBlob ?? undefined)) {
+      return {
+        valid: false,
+        reason: "The prepared workstream target no longer matches the remote default branch.",
+      };
+    }
+    return { valid: true };
+  }
+
+  async #readyForMutation(receipt) {
+    const authority = await this.assertLeadership();
+    if (!authority?.asserted) {
+      return {
+        valid: false,
+        reason: `Leadership is no longer current${authority?.reason ? `: ${authority.reason}` : "."}`,
+      };
+    }
+    await this.#fetch(receipt.target.defaultBranch);
+    return this.#validateRemoteState(receipt);
+  }
+
+  async #validateWorkspace(receipt) {
+    let metadata;
+    try {
+      metadata = await lstat(receipt.filePath);
+    } catch (error) {
+      throw new Error(`Prepared workstream README.md is unavailable: ${error.message}`, {
+        cause: error,
+      });
+    }
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error("Prepared workstream README.md must be a regular file");
+    }
+    if (!(await readFile(receipt.filePath, "utf8")).trim()) {
+      throw new Error("Prepared workstream README.md must not be empty");
+    }
+    const outputs = await Promise.all([
+      this.#run(["-C", receipt.workspace, "diff", "--name-only"]),
+      this.#run(["-C", receipt.workspace, "diff", "--cached", "--name-only"]),
+      this.#run([
+        "-C",
+        receipt.workspace,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+      ]),
+    ]);
+    const records = [
+      ...new Set(
+        outputs.flatMap((output) => output.split(/\r?\n/).filter(Boolean)),
+      ),
+    ];
+    if (
+      records.some((record) => record !== receipt.workstream.sourcePath)
+    ) {
+      throw new Error(
+        "Prepared workspace contains changes outside the intended workstream README.md",
+      );
+    }
+    await this.#run(["-C", receipt.workspace, "diff", "--check"]);
+    await this.#run(["-C", receipt.workspace, "diff", "--cached", "--check"]);
+    return { changed: records.length > 0 };
+  }
+
+  async #publishedCommit(marker, branch) {
+    const output = await this.#run([
+      "-C",
+      this.repositoryPath,
+      "log",
+      `origin/${branch}`,
+      "--format=%H",
+      "--fixed-strings",
+      "--grep",
+      marker,
+      "-n",
+      "1",
+    ]);
+    return output || undefined;
+  }
+
+  async #completeCleanup(receipt) {
+    try {
+      if (receipt.cleanup.worktreeCreated) {
+        await this.#run([
+          "-C",
+          this.repositoryPath,
+          "worktree",
+          "remove",
+          "--force",
+          receipt.workspace,
+        ]);
+        receipt.cleanup.worktreeCreated = false;
+        await this.#writeReceipt(receipt);
+      }
+      return { completed: true, receiptPath: receipt.cleanup.receiptPath };
+    } catch (error) {
+      return {
+        completed: false,
+        workspace: receipt.workspace,
+        receiptPath: receipt.cleanup.receiptPath,
+        diagnostic: error.message,
+      };
     }
   }
 
@@ -309,9 +639,63 @@ function requireText(value, name) {
   }
 }
 
+function requireOperationId(value) {
+  if (
+    typeof value !== "string" ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(value)
+  ) {
+    throw new TypeError("operationId must be a safe operation identifier");
+  }
+}
+
 function isChildPath(root, candidate) {
   const relative = path.relative(root, candidate);
   return Boolean(relative) && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function workstreamMarker(receipt) {
+  return `pan-workstream:${createHash("sha256")
+    .update(`${receipt.operationId}\0${receipt.sessionId}\0${receipt.sourceTurn}`)
+    .digest("hex")}`;
+}
+
+function commitMetadata(receipt, marker) {
+  return [
+    `PAN-Workstream-Operation: ${receipt.operationId}`,
+    `PAN-Workstream-Session: ${receipt.sessionId}`,
+    `PAN-Workstream-Source-Turn: ${receipt.sourceTurn}`,
+    `PAN-Workstream-Idempotency: ${marker}`,
+    `PAN-Workstream-Rationale: ${receipt.rationale}`,
+  ].join("\n");
+}
+
+function rejected(diagnostic, step) {
+  return {
+    status: "rejected",
+    diagnostics: [diagnostic],
+    recovery: { safe: true, steps: [step] },
+  };
+}
+
+function incompletePublication(commit, branch, diagnostic, step) {
+  return {
+    status: "incomplete",
+    commitCreated: { sha: commit, branch },
+    diagnostics: [diagnostic],
+    recovery: { safe: true, steps: [step] },
+  };
+}
+
+function confirmedPublication(commit, branch, cleanup, { duplicate = false } = {}) {
+  return {
+    status: "confirmed",
+    commitCreated: { sha: commit, branch },
+    pushConfirmed: { sha: commit, branch },
+    cleanup,
+    diagnostics: duplicate
+      ? ["The workstream operation was already published."]
+      : [],
+  };
 }
 
 export function normalizeGitHubRepositoryUrl(url) {

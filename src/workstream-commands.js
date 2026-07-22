@@ -9,7 +9,7 @@ export function createWorkstreamCommandHandlers({
   leadershipHandlers = createLeadershipCommandHandlers({ env }),
 } = {}) {
   return {
-    prepare: command(async ({ context, options }) => {
+    prepare: withSpecification(async ({ context, options }) => {
       const sessionId = requireSessionId(env);
       const service = serviceFactory({
         repositoryPath: context.domain.path,
@@ -68,16 +68,85 @@ export function createWorkstreamCommandHandlers({
           expiresAt: receipt.expiresAt,
         },
       });
+    }, {
+      positionals: ["workstream"],
+      options: ["rationale", "source-turn"],
+    }),
+    publish: withSpecification(async ({ context, options }) => {
+      const sessionId = requireSessionId(env);
+      const service = serviceFactory({
+        repositoryPath: context.domain.path,
+        repository: context.domain.repository,
+        assertLeadership: async () => {
+          const result = await leadershipHandlers.assert({ context });
+          return {
+            asserted: result.status === "confirmed",
+            reason: result.diagnostics.at(-1),
+          };
+        },
+      });
+      const published = await service.publish({
+        operationId: options["operation-id"],
+        sessionId,
+      });
+      const effects = [];
+      if (published.commitCreated) {
+        effects.push(
+          `Created workstream commit ${published.commitCreated.sha} on ${published.commitCreated.branch}.`,
+        );
+      }
+      if (published.pushConfirmed) {
+        effects.push(
+          `Confirmed workstream commit ${published.pushConfirmed.sha} on remote ${published.pushConfirmed.branch}.`,
+        );
+      }
+      if (published.noChange) {
+        effects.push("No workstream changes required publication.");
+      }
+      return createPanCommandResult({
+        status: published.status,
+        operation: "workstream.publish",
+        domain: commandDomain(context),
+        confirmedEffects: effects,
+        remainingSteps:
+          published.status === "confirmed"
+            ? []
+            : published.recovery?.steps ?? [
+                "Review the reported workstream delivery state before retrying.",
+              ],
+        diagnostics: published.diagnostics ?? [],
+        recovery: published.recovery ?? { safe: true, steps: [] },
+        receipts: [
+          {
+            operationId: options["operation-id"],
+            ...(published.commitCreated
+              ? { commit: published.commitCreated.sha }
+              : {}),
+            ...(published.pushConfirmed
+              ? { pushed: published.pushConfirmed.sha }
+              : {}),
+            ...(published.cleanup?.receiptPath
+              ? { receiptPath: published.cleanup.receiptPath }
+              : {}),
+          },
+        ],
+        data: {
+          ...(published.commitCreated ?? {}),
+          ...(published.pushConfirmed
+            ? { pushedCommit: published.pushConfirmed.sha }
+            : {}),
+          cleanupCompleted: published.cleanup?.completed ?? false,
+        },
+      });
+    }, {
+      positionals: ["operation-id"],
     }),
   };
 }
 
-function command(handler) {
+function withSpecification(handler, specification) {
   return Object.assign(handler, {
-    specification: {
-      positionals: ["workstream"],
-      options: ["rationale", "source-turn"],
-    },
+    specification,
   });
 }
 

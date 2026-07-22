@@ -82,6 +82,146 @@ test("prepares a missing workstream as the only editable target", async (t) => {
   assert.equal(await readFile(result.receipt.filePath, "utf8"), "# New\n");
 });
 
+test("publishes one attributable workstream commit directly to the default branch", async (t) => {
+  const fixture = await createDomain(t);
+  const service = createService(fixture);
+  const prepared = await service.prepare({
+    workstream: "existing",
+    sessionId: "session-1",
+    rationale: "Record the durable delivery outcome.",
+    sourceTurn: "turn-1",
+  });
+  await writeFile(prepared.receipt.filePath, "# Existing\n\nPublished.\n");
+
+  const published = await service.publish({
+    operationId: prepared.receipt.operationId,
+    sessionId: "session-1",
+  });
+
+  assert.equal(published.status, "confirmed", JSON.stringify(published));
+  assert.equal(published.commitCreated.sha, published.pushConfirmed.sha);
+  assert.equal(
+    await git(fixture.domain, ["show", "origin/main:workstreams/existing/README.md"]),
+    "# Existing\n\nPublished.",
+  );
+  const message = await git(fixture.domain, [
+    "show",
+    "-s",
+    "--format=%B",
+    published.pushConfirmed.sha,
+  ]);
+  assert.match(message, /PAN-Workstream-Operation: operation-1/);
+  assert.match(message, /PAN-Workstream-Source-Turn: turn-1/);
+  assert.match(message, /PAN-Workstream-Idempotency: pan-workstream:/);
+  await assert.rejects(readFile(prepared.receipt.filePath), /ENOENT/);
+
+  const retried = await service.publish({
+    operationId: prepared.receipt.operationId,
+    sessionId: "session-1",
+  });
+  assert.equal(retried.status, "confirmed");
+  assert.equal(retried.commitCreated.sha, published.commitCreated.sha);
+  assert.match(retried.diagnostics[0], /already published/i);
+});
+
+test("confirms a no-op prepared workspace without creating a commit", async (t) => {
+  const fixture = await createDomain(t);
+  const service = createService(fixture);
+  const prepared = await service.prepare({
+    workstream: "existing",
+    sessionId: "session-1",
+  });
+
+  const result = await service.publish({
+    operationId: prepared.receipt.operationId,
+    sessionId: "session-1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.noChange, true);
+  assert.equal(result.commitCreated, undefined);
+  await assert.rejects(readFile(prepared.receipt.filePath), /ENOENT/);
+});
+
+test("rejects unrelated workspace changes and remote advances before commit", async (t) => {
+  const fixture = await createDomain(t);
+  const service = createService(fixture);
+  const prepared = await service.prepare({
+    workstream: "existing",
+    sessionId: "session-1",
+  });
+  await writeFile(prepared.receipt.filePath, "# Existing\n\nChanged.\n");
+  await writeFile(path.join(prepared.receipt.workspace, "unrelated.txt"), "changed\n");
+
+  const unrelated = await service.publish({
+    operationId: prepared.receipt.operationId,
+    sessionId: "session-1",
+  });
+  assert.equal(unrelated.status, "rejected");
+  assert.match(unrelated.diagnostics[0], /outside the intended/i);
+
+  await rm(path.join(prepared.receipt.workspace, "unrelated.txt"));
+  await writeFile(
+    path.join(fixture.seed, "workstreams", "existing", "README.md"),
+    "# Existing\n\nConcurrent update.\n",
+  );
+  await git(fixture.seed, ["add", "workstreams/existing/README.md"]);
+  await git(fixture.seed, ["commit", "-m", "Concurrent workstream update"]);
+  await git(fixture.seed, ["push", "origin", "main"]);
+
+  const advanced = await service.publish({
+    operationId: prepared.receipt.operationId,
+    sessionId: "session-1",
+  });
+  assert.equal(advanced.status, "rejected");
+  assert.match(advanced.diagnostics[0], /advanced/i);
+});
+
+test("retains a local commit when leadership is lost before push", async (t) => {
+  const fixture = await createDomain(t);
+  const prepared = await createService(fixture).prepare({
+    workstream: "existing",
+    sessionId: "session-1",
+  });
+  await writeFile(prepared.receipt.filePath, "# Existing\n\nLocal commit only.\n");
+  let assertions = 0;
+  const service = new WorkstreamDeliveryService({
+    repositoryPath: fixture.domain,
+    repository: REPOSITORY,
+    commands: fixture.commands,
+    operationDirectory: fixture.operations,
+    now: () => new Date("2026-07-22T16:00:00.000Z"),
+    assertLeadership: async () => ({
+      asserted: ++assertions < 3,
+      reason: "leadership replaced",
+    }),
+  });
+
+  const result = await service.publish({
+    operationId: prepared.receipt.operationId,
+    sessionId: "session-1",
+  });
+
+  assert.equal(result.status, "incomplete");
+  assert.match(result.diagnostics[0], /leadership/i);
+  assert.match(result.commitCreated.sha, /^[0-9a-f]{40}$/);
+  assert.equal(
+    await git(fixture.domain, ["rev-parse", "origin/main"]),
+    prepared.receipt.target.baseCommit,
+  );
+  assert.equal(
+    await git(prepared.receipt.workspace, ["rev-parse", "HEAD"]),
+    result.commitCreated.sha,
+  );
+
+  const retried = await createService(fixture).publish({
+    operationId: prepared.receipt.operationId,
+    sessionId: "session-1",
+  });
+  assert.equal(retried.status, "confirmed");
+  assert.equal(retried.pushConfirmed.sha, result.commitCreated.sha);
+});
+
 test("rejects invalid paths, origin mismatches, and unavailable leadership before creating a workspace", async (t) => {
   const fixture = await createDomain(t);
   const service = createService(fixture);
@@ -213,6 +353,50 @@ test("parses a strict workstream prepare helper and returns its exact edit path"
   assert.equal(result.data.expectedAbsent, true);
 });
 
+test("parses and dispatches a workstream publish helper", async () => {
+  const calls = [];
+  const handlers = createWorkstreamCommandHandlers({
+    env: {
+      PAN_SESSION_ID: "session-1",
+      PAN_LEADERSHIP_HOLDER: "holder-1",
+      PAN_LEADERSHIP_GENERATION: "generation-1",
+    },
+    serviceFactory: () => ({
+      publish: async (input) => {
+        calls.push(input);
+        return {
+          status: "confirmed",
+          commitCreated: { sha: "a".repeat(40), branch: "main" },
+          pushConfirmed: { sha: "a".repeat(40), branch: "main" },
+          cleanup: { completed: true },
+          diagnostics: [],
+        };
+      },
+    }),
+  });
+  const parsed = parsePanHelperArgs(
+    [
+      "workstream",
+      "publish",
+      "operation-1",
+      "--schema-version",
+      "1",
+      "--config",
+      "domain.json",
+    ],
+    { handlers: { workstream: handlers } },
+  );
+
+  assert.deepEqual(parsed.options, { "operation-id": "operation-1" });
+  const result = await handlers.publish({
+    context: commandContext(),
+    options: parsed.options,
+  });
+  assert.equal(result.status, "confirmed");
+  assert.deepEqual(calls, [{ operationId: "operation-1", sessionId: "session-1" }]);
+  assert.match(result.confirmedEffects.join(" "), /Confirmed workstream commit/);
+});
+
 async function createDomain(t) {
   const root = await mkdtemp(path.join(process.cwd(), "workstream-delivery-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -234,6 +418,8 @@ async function createDomain(t) {
   await git(seed, ["remote", "add", "origin", remote]);
   await git(seed, ["push", "-u", "origin", "main"]);
   await git(root, ["clone", remote, domain]);
+  await git(domain, ["config", "user.name", "PAN Test"]);
+  await git(domain, ["config", "user.email", "pan@example.invalid"]);
 
   return {
     seed,

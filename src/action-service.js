@@ -25,6 +25,7 @@ export class ActionService {
     assertLeadership = async () => ({ asserted: true }),
     attention,
     issueCreationService,
+    workstreamDeliveryService,
   } = {}) {
     if (!snapshotSource?.build || !store?.readCanonicalProject) {
       throw new TypeError("snapshotSource and store.readCanonicalProject are required");
@@ -38,6 +39,7 @@ export class ActionService {
     this.assertLeadership = assertLeadership;
     this.attention = attention;
     this.issueCreationService = issueCreationService;
+    this.workstreamDeliveryService = workstreamDeliveryService;
   }
 
   async validate(input, { identity } = {}) {
@@ -167,6 +169,8 @@ export class ActionService {
         return this.#applyAttention(action, { groupId, identity });
       case "issue-create":
         return this.#applyIssueCreate(action, { groupId, identity });
+      case "workstream-update":
+        return this.#applyWorkstream(action, { groupId, identity });
       case "no-op":
         return effect(action, groupId, "recommendation", action.actionId, {
           recommendation: action.recommendation,
@@ -272,6 +276,33 @@ export class ActionService {
       groupId,
       ...result,
     };
+  }
+
+  async #applyWorkstream(action, { groupId, identity }) {
+    if (!this.workstreamDeliveryService?.publish) {
+      throw new Error("Workstream delivery is not configured");
+    }
+    const result = await this.workstreamDeliveryService.publish({
+      operationId: action.target.preparedOperationId,
+      sessionId: identity.sessionId,
+      workstreamPath: action.target.workstreamPath,
+    });
+    if (result.status !== "confirmed") {
+      throw new Error(
+        result.diagnostics?.join("; ") ??
+          "Workstream delivery was not confirmed",
+      );
+    }
+    return effect(
+      action,
+      groupId,
+      "workstream",
+      action.target.workstreamPath,
+      {
+        commit: result.pushConfirmed?.sha ?? "no-change",
+        branch: result.pushConfirmed?.branch ?? "unchanged",
+      },
+    );
   }
 
   async #readExpectedItem(action, expectedValue = undefined) {

@@ -9,6 +9,7 @@ import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 import { RunnerProfileSource } from "./runner-profile-source.js";
 import { WorkstreamStore } from "./workstream-store.js";
+import { WorkstreamDeliveryService } from "./workstream-delivery.js";
 import { PAN_LEADERSHIP_ENV } from "./leadership-commands.js";
 
 const MAX_ACTION_FILE_BYTES = 1_048_576;
@@ -29,6 +30,8 @@ export function createActionCommandHandlers({
     }),
   stateFileFactory = (options) => new GitHubStateFile(options),
   leaseFactory = (options) => new LeaderLease(options),
+  workstreamDeliveryServiceFactory = (options) =>
+    new WorkstreamDeliveryService(options),
   readAction = readActionFile,
 } = {}) {
   return {
@@ -41,6 +44,7 @@ export function createActionCommandHandlers({
         portfolioBuilderFactory,
         stateFileFactory,
         leaseFactory,
+        workstreamDeliveryServiceFactory,
       });
       const result = await service.validate(input);
       return commandResult(context, "action.validate", result);
@@ -55,6 +59,7 @@ export function createActionCommandHandlers({
         portfolioBuilderFactory,
         stateFileFactory,
         leaseFactory,
+        workstreamDeliveryServiceFactory,
       });
       const result = await service.apply(input, { identity });
       return commandResult(context, "action.apply", result);
@@ -69,6 +74,7 @@ function createService({
   portfolioBuilderFactory,
   stateFileFactory,
   leaseFactory,
+  workstreamDeliveryServiceFactory,
 }) {
   const identity = optionalIdentity(env);
   const assertLeadership = async (currentIdentity) => {
@@ -103,12 +109,18 @@ function createService({
     humanAssignee: context.config.attention?.assignee,
     assertLeadership: () => assertLeadership(identity),
   });
+  const workstreamDeliveryService = workstreamDeliveryServiceFactory({
+    repositoryPath: context.domain.path,
+    repository: context.domain.repository,
+    assertLeadership: () => assertLeadership(identity),
+  });
   return actionServiceFactory({
     snapshotSource: portfolioBuilderFactory(context),
     store: context.store,
     actionPolicy: new ActionPolicy(context.config.policy),
     assertLeadership,
     attention,
+    workstreamDeliveryService,
   });
 }
 

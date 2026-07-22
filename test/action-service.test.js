@@ -152,10 +152,45 @@ test("routes sourced Issue creation through the recovery service", async () => {
   assert.equal(result.effects[0].confirmedState.status, "registered");
 });
 
+test("routes a prepared workstream action through direct publication", async () => {
+  const calls = [];
+  const fixture = actionFixture({
+    workstream: {
+      path: "existing",
+      revision: "blob-1",
+      history: [{ sha: "base-1" }],
+    },
+    policy: new ActionPolicy({ automatic: ["workstream-update"] }),
+    workstreamDeliveryService: {
+      publish: async (input) => {
+        calls.push(input);
+        return {
+          status: "confirmed",
+          pushConfirmed: { sha: "commit-1", branch: "main" },
+        };
+      },
+    },
+  });
+
+  const result = await fixture.service.apply(workstreamAction(), {
+    identity: leadershipIdentity(),
+  });
+
+  assert.deepEqual(calls, [{
+    operationId: "operation-1",
+    sessionId: "session-a",
+    workstreamPath: "existing",
+  }]);
+  assert.equal(result.effects[0].resource, "workstream");
+  assert.equal(result.effects[0].confirmedState.commit, "commit-1");
+});
+
 function actionFixture({
   assertLeadership = () => ({ asserted: true }),
   humanPrecedence,
   issueCreationService,
+  workstream,
+  workstreamDeliveryService,
   policy = new ActionPolicy({ automatic: ["field-update", "canonical-reorder"] }),
 } = {}) {
   const writes = [];
@@ -186,6 +221,7 @@ function actionFixture({
     dossiers: [item, itemB].map((entry) => ({
       item: structuredClone(entry),
       lease: { active: false },
+      ...(workstream && entry.id === "item-a" ? { workstream } : {}),
     })),
     ...(humanPrecedence ? { humanPrecedence } : {}),
     expectedState: {
@@ -227,6 +263,7 @@ function actionFixture({
       store,
       actionPolicy: policy,
       issueCreationService,
+      workstreamDeliveryService,
       assertLeadership: async () => {
         assertions += 1;
         return assertLeadership();
@@ -278,6 +315,31 @@ function fieldAction({ expectedState } = {}) {
       leadership: { generation: "generation-a" },
     },
     target: { itemId: "item-a", field: "priority", value: "high" },
+  };
+}
+
+function workstreamAction() {
+  return {
+    version: 2,
+    actionId: "workstream-1",
+    kind: "workstream-update",
+    domain: domain(),
+    rationale: "Publish the reviewed workstream update directly to the domain default branch.",
+    confidence: 0.9,
+    evidence: [{ kind: "workstream", locator: "existing:blob-1" }],
+    idempotencyKey: "workstream-1",
+    expectedState: {
+      workstream: {
+        path: "existing",
+        blobRevision: "blob-1",
+        baseRevision: "base-1",
+      },
+      leadership: { generation: "generation-a" },
+    },
+    target: {
+      preparedOperationId: "operation-1",
+      workstreamPath: "existing",
+    },
   };
 }
 
