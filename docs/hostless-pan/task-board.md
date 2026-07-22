@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-29 | Execute implementation_plan/06_02_session_contract_integration_tests.md | execute-implementation-plan | |
 | | T-30 | Execute implementation_plan/06_03_workstream_delivery_integration_tests.md | execute-implementation-plan | |
 | | T-31 | Execute implementation_plan/06_04_final_e2e_cleanup.md | execute-implementation-plan | |
 
@@ -40,5 +39,6 @@
 | | T-26 | Execute implementation_plan/05_03_remove_host_mcp_runtime.md | execute-implementation-plan | done 2026-07-22 · dd1e519 · targeted and full tests passed |
 | | T-27 | Execute implementation_plan/05_04_hostless_documentation_and_package.md | execute-implementation-plan | done 2026-07-22 · e34cc3b · targeted and full tests passed |
 | | T-28 | Execute implementation_plan/06_01_stateless_helper_process_tests.md | execute-implementation-plan | done 2026-07-22 · f7e4998 · targeted and full tests passed |
+| | T-29 | Execute implementation_plan/06_02_session_contract_integration_tests.md | execute-implementation-plan | done 2026-07-22 · 3991fb0 · targeted and full tests passed |
 
 ## Untriaged
