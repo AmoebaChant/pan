@@ -133,6 +133,35 @@ test("does not record an answer after leadership is lost", async () => {
   assert.equal(item.fields.status, "blocked");
 });
 
+test("rejects an answer when the expected attention state is stale", async () => {
+  const item = makeItem({ status: "blocked", owner: "human" });
+  const store = new FakeStore([item]);
+  store.commentMap.set(item.id, [
+    {
+      body: formatNeedsHuman({
+        kind: "question",
+        prompt: "Choose an option.",
+        priorState: { priority: "normal" },
+      }),
+    },
+  ]);
+
+  await assert.rejects(
+    new AttentionService({
+      store,
+      humanAssignee: "octocat",
+      assertExpectedState: async () => ({
+        matches: false,
+        reason: "The attention record changed.",
+      }),
+    }).answer(item.number, "Use option A."),
+    /attention record changed/,
+  );
+
+  assert.equal(store.commentMap.get(item.id).length, 1);
+  assert.equal(item.fields.status, "blocked");
+});
+
 test("retries the attention resolution after an answer comment already landed", async () => {
   const item = makeItem({
     status: "blocked",

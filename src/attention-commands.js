@@ -92,10 +92,12 @@ export function createAttentionCommandHandlers({
         owner,
         priority,
         autonomy,
-        requirements: [...new Set([
-          ...(options.requirement ?? []),
-          ...(options.repo ?? []).map((repository) => `repo:${repository}`),
-        ])],
+        requirements: [
+          ...new Set([
+            ...(options.requirement ?? []),
+            ...(options.repo ?? []).map((repository) => `repo:${repository}`),
+          ]),
+        ],
       });
       return result({
         context,
