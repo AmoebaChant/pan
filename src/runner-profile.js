@@ -124,7 +124,7 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
       type: terminal.type,
       executable: terminal.executable ?? "wt",
       window: terminal.window ?? "0",
-      profile: terminal.profile ?? "PowerShell",
+      profile: terminal.profile,
     },
     copilot: {
       executable: profile.copilot?.executable ?? "copilot",

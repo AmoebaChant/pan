@@ -94,7 +94,7 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
     assert.equal(terminalLaunches.length, 2);
     for (const [executable, args, options] of terminalLaunches) {
       assert.equal(executable, "wt");
-      assert.equal(args[args.indexOf("--profile") + 1], "PowerShell");
+      assert.equal(args[args.indexOf("-p") + 1], "PowerShell");
       assert.match(args[args.indexOf("--title") + 1], /^PAN #1 - /);
       const commandIndex = args.indexOf("--suppressApplicationTitle") + 1;
       assert.equal(args[commandIndex], process.execPath);
@@ -151,6 +151,32 @@ test("cleans a reserved worktree and state directory after launch failure", asyn
       ),
       /ENOENT/,
     );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("uses the Windows Terminal default profile when none is configured", async () => {
+  const fixture = await createFixture();
+  const commands = new FakeCommands();
+  const terminalLaunches = [];
+  delete fixture.profile.terminal.profile;
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: (...args) => {
+      terminalLaunches.push(args);
+      return successfulSpawn();
+    },
+    randomId: () => "default-terminal-profile",
+  });
+
+  try {
+    await executor.start(makeStartOptions(3));
+
+    assert.equal(terminalLaunches.length, 1);
+    assert.ok(!terminalLaunches[0][1].includes("-p"));
+    assert.ok(terminalLaunches[0][1].includes("--suppressApplicationTitle"));
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 
 import { AttentionService } from "./attention-service.js";
@@ -57,6 +58,8 @@ export async function runPanCli(
     prepareRuntimeFactory = preparePanRuntime,
     setupFactory = setupPanDomain,
     loggerFactory = createServiceLogger,
+    hostname = os.hostname(),
+    runnerProfileSourceFactory = (options) => new RunnerProfileSource(options),
   } = {},
 ) {
   const parsed = parseArgs(args, env);
@@ -100,6 +103,13 @@ export async function runPanCli(
 
   if (parsed.command === "start" && parsed.background) {
     requireDomainConfiguration(parsed);
+    const terminalProfile = parsed.noTerminal
+      ? undefined
+      : await resolveTerminalProfile({
+          directory: configuration.runtime.runnerProfileDirectory,
+          machine: hostname,
+          runnerProfileSourceFactory,
+        });
     const result = await startFactory({
       configPath: parsed.config,
       toolRoot: TOOL_ROOT,
@@ -107,11 +117,13 @@ export async function runPanCli(
       openTerminal: !parsed.noTerminal,
       agentName: configuration.agent.name,
       model: configuration.agent?.model,
+      terminalProfile,
       env,
     });
     write(stdout, JSON.stringify(result, null, 2));
     return result;
   }
+
   if (parsed.command === "connect") {
     requireDomainConfiguration(parsed);
     const model = parsed.model ?? configuration.agent?.model;
@@ -289,6 +301,23 @@ export async function runPanCli(
     return daemon.run({ signal: controller.signal });
   }
   throw new Error(`Unknown PAN command: ${parsed.command}`);
+}
+
+async function resolveTerminalProfile({
+  directory,
+  machine,
+  runnerProfileSourceFactory,
+}) {
+  const profiles = await runnerProfileSourceFactory({ directory }).load();
+  const matches = profiles.filter(
+    (profile) => profile.machine.toLowerCase() === machine.toLowerCase(),
+  );
+  if (matches.length > 1) {
+    throw new Error(
+      `Multiple runner profiles match this machine (${machine}); keep exactly one profile per machine`,
+    );
+  }
+  return matches[0]?.terminal.profile;
 }
 
 export function parseArgs(args, env = process.env) {

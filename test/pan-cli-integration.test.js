@@ -360,6 +360,15 @@ test("starts and stops the persistent PAN experience", async () => {
       calls.push(["stop", options]);
       return { stopped: true };
     },
+    hostname: "machine-a",
+    runnerProfileSourceFactory: () => ({
+      load: async () => [
+        {
+          machine: "MACHINE-A",
+          terminal: { profile: "PowerShell" },
+        },
+      ],
+    }),
   };
 
   await runPanCli(
@@ -375,8 +384,39 @@ test("starts and stops the persistent PAN experience", async () => {
   assert.equal(calls[0][1].configPath, "domain.json");
   assert.equal(calls[0][1].autonomousApply, false);
   assert.equal(calls[0][1].agentName, "pan");
+  assert.equal(calls[0][1].terminalProfile, "PowerShell");
   assert.equal(calls[1][0], "stop");
   assert.equal(calls[1][1].configPath, "domain.json");
+});
+
+test("does not force a terminal profile when the local runner omits it", async () => {
+  let startOptions;
+
+  await runPanCli(
+    ["start", "--background", "--config", "domain.json"],
+    {
+      stdout: capture(),
+      stderr: capture(),
+      domainConfigLoader: async () => domainConfig,
+      storeFactory: () => ({}),
+      attentionFactory: () => ({}),
+      hostname: "machine-a",
+      runnerProfileSourceFactory: () => ({
+        load: async () => [
+          {
+            machine: "machine-a",
+            terminal: {},
+          },
+        ],
+      }),
+      startFactory: async (options) => {
+        startOptions = options;
+        return { started: false, terminalOpened: true };
+      },
+    },
+  );
+
+  assert.equal(startOptions.terminalProfile, undefined);
 });
 
 test("runs the host in the foreground and exposes its configured model", async () => {

@@ -6,6 +6,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
+import { validatePanAction } from "../src/index.js";
+
 const AGENT_PATH = path.resolve(".github/agents/pan.agent.md");
 const ALLOWED_TOOLS = [
   "pan-tools/read_portfolio",
@@ -70,6 +72,18 @@ test("advertises only named PAN tools and no broad grants", async () => {
   ]) {
     assert.ok(!frontmatter.tools.includes(broadTool));
   }
+});
+
+test("includes a schema-valid propose_actions example", async () => {
+  const source = await readFile(AGENT_PATH, "utf8");
+  const match = source.match(
+    /Call `propose_actions`[\s\S]*?```json\r?\n([\s\S]*?)\r?\n```/,
+  );
+
+  assert.ok(match, "agent definition must include a JSON action example");
+  const request = JSON.parse(match[1]);
+  assert.equal(request.actions.length, 1);
+  assert.deepEqual(validatePanAction(request.actions[0]), request.actions[0]);
 });
 
 test("contains no private identity, repository, fixture, or machine paths", async () => {
