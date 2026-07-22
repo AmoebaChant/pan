@@ -150,7 +150,7 @@ non-empty array. Every mutation requires `version`, `actionId`, `kind`,
       "confidence": 0.95,
       "idempotencyKey": "turn-42:record-decision",
       "expectedState": {
-        "revision": "comment-7"
+        "snapshotId": "snapshot-42"
       },
       "target": {
         "issueUrl": "https://github.com/owner/domain/issues/42",
