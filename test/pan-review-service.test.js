@@ -12,6 +12,59 @@ test("returns a dry-run recommendation without mutating GitHub", async () => {
   assert.deepEqual(fixture.calls, []);
 });
 
+test("retries one side-effect-free malformed reasoning response", async () => {
+  const malformed = Object.assign(new Error("Invalid JSON response"), {
+    state: "malformed-response",
+    confirmedSideEffects: false,
+  });
+  const fixture = reviewFixture({ agentFailures: [malformed] });
+
+  const result = await fixture.service.run({ apply: true });
+
+  assert.equal(fixture.agentCalls, 2);
+  assert.equal(result.response.recommendation, "Do B before A.");
+  assert.deepEqual(fixture.calls, [["reorder", ["item-b", "item-a"]]]);
+});
+
+test("fails closed after repeated malformed reasoning responses", async () => {
+  const failures = [1, 2].map((attempt) =>
+    Object.assign(new Error(`Invalid JSON response ${attempt}`), {
+      state: "malformed-response",
+      confirmedSideEffects: false,
+    }),
+  );
+  const fixture = reviewFixture({ agentFailures: failures });
+
+  await assert.rejects(
+    fixture.service.run({ apply: true }),
+    (error) =>
+      error.state === "malformed-response" &&
+      error.confirmedSideEffects === false &&
+      /after 2 attempts/i.test(error.message) &&
+      /no mutations were attempted/i.test(error.message),
+  );
+  assert.equal(fixture.agentCalls, 2);
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("does not retry malformed responses after confirmed tool side effects", async () => {
+  const malformed = Object.assign(new Error("Invalid JSON response"), {
+    state: "malformed-response",
+    confirmedSideEffects: true,
+  });
+  const fixture = reviewFixture({ agentFailures: [malformed] });
+
+  await assert.rejects(
+    fixture.service.run({ apply: true }),
+    (error) =>
+      error === malformed &&
+      error.state === "malformed-response" &&
+      error.confirmedSideEffects === true,
+  );
+  assert.equal(fixture.agentCalls, 1);
+  assert.deepEqual(fixture.calls, []);
+});
+
 test("validates, applies, and confirms a canonical reorder", async () => {
   const fixture = reviewFixture();
   const result = await fixture.service.run({ apply: true });
@@ -423,6 +476,7 @@ test("reports a possible partial effect when leadership is lost", async () => {
 
 function reviewFixture({
   action,
+  agentFailures = [],
   attention,
   afterReorder,
   existingIssue,
@@ -451,6 +505,7 @@ function reviewFixture({
   };
   mutateSnapshot?.(snapshot);
   let lastTurn;
+  let agentCalls = 0;
   const comments = [];
   let createdIssue;
   const response = {
@@ -489,7 +544,12 @@ function reviewFixture({
     effects: { confirmed: [], incomplete: [] },
   };
   const runAgent = async (turn) => {
+    const failure = agentFailures[agentCalls];
+    agentCalls += 1;
     lastTurn = turn;
+    if (failure) {
+      throw failure;
+    }
     return {
       sessionId: "session-1",
       response: {
@@ -561,6 +621,9 @@ function reviewFixture({
   return {
     calls,
     order,
+    get agentCalls() {
+      return agentCalls;
+    },
     get lastTurn() {
       return lastTurn;
     },
