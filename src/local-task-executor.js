@@ -1021,8 +1021,22 @@ async function readJsonIfReady(filePath) {
 
 async function writeJsonAtomic(filePath, value) {
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
-  await rename(temporary, filePath);
+  try {
+    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await rename(temporary, filePath);
+        return;
+      } catch (error) {
+        if (!["EEXIST", "EPERM"].includes(error.code) || attempt === 2) {
+          throw error;
+        }
+        await rm(filePath, { force: true });
+      }
+    }
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 async function writeTaskContext(statePath, contextPath, context) {

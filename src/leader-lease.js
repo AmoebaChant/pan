@@ -140,6 +140,8 @@ export class LeaderLease {
     tokenFactory = randomUUID,
     machine,
     pid,
+    sessionId,
+    holderKind,
     isProcessAlive = processIsAlive,
   }) {
     if (!stateFile?.read || !stateFile?.write) {
@@ -163,6 +165,12 @@ export class LeaderLease {
     if (typeof isProcessAlive !== "function") {
       throw new TypeError("isProcessAlive must be a function");
     }
+    if (sessionId !== undefined && !sessionId?.trim()) {
+      throw new TypeError("sessionId must be a non-empty string when provided");
+    }
+    if (holderKind !== undefined && !holderKind?.trim()) {
+      throw new TypeError("holderKind must be a non-empty string when provided");
+    }
     this.stateFile = stateFile;
     this.holder = holder;
     this.leaseSeconds = leaseSeconds;
@@ -170,6 +178,8 @@ export class LeaderLease {
     this.tokenFactory = tokenFactory;
     this.machine = machine;
     this.pid = pid;
+    this.sessionId = sessionId;
+    this.holderKind = holderKind;
     this.isProcessAlive = isProcessAlive;
     this.token = undefined;
   }
@@ -202,34 +212,66 @@ export class LeaderLease {
     };
   }
 
+  async status() {
+    const current = await this.stateFile.read();
+    return {
+      status: this.#status(current.value),
+      lease: current.value,
+      version: current.version,
+    };
+  }
+
+  async assert({ token = this.token, sessionId = this.sessionId } = {}) {
+    const current = await this.stateFile.read();
+    if (!current.value) {
+      return { asserted: false, reason: "absent" };
+    }
+    if (!isActive(current.value, this.now())) {
+      return { asserted: false, reason: "expired", lease: current.value };
+    }
+    if (!this.#matches(current.value, token, sessionId)) {
+      return { asserted: false, reason: "lost", lease: current.value };
+    }
+    return { asserted: true, lease: current.value, version: current.version };
+  }
+
   async heartbeat() {
-    if (!this.token) {
+    return this.renew();
+  }
+
+  async renew({ token = this.token, sessionId = this.sessionId } = {}) {
+    const current = await this.stateFile.read();
+    if (!token) {
       return { renewed: false, reason: "not-acquired" };
     }
-    const current = await this.stateFile.read();
-    if (
-      current.value?.holder !== this.holder ||
-      current.value?.token !== this.token ||
-      !isActive(current.value, this.now())
-    ) {
+    if (!current.value) {
+      return { renewed: false, reason: "absent" };
+    }
+    if (!isActive(current.value, this.now())) {
+      return { renewed: false, reason: "expired" };
+    }
+    if (!this.#matches(current.value, token, sessionId)) {
       return { renewed: false, reason: "lost" };
     }
-    const lease = this.#newLease(this.token);
+    const lease = this.#newLease(token);
     const version = await this.stateFile.write(lease, current.version);
     return version
       ? { renewed: true, lease }
       : { renewed: false, reason: "contended" };
   }
 
-  async release() {
-    if (!this.token) {
+  async release({ token = this.token, sessionId = this.sessionId } = {}) {
+    if (!token) {
       return { released: false, reason: "not-acquired" };
     }
     const current = await this.stateFile.read();
-    if (
-      current.value?.holder !== this.holder ||
-      current.value?.token !== this.token
-    ) {
+    if (!current.value) {
+      return { released: false, reason: "absent" };
+    }
+    if (!isActive(current.value, this.now())) {
+      return { released: false, reason: "expired" };
+    }
+    if (!this.#matches(current.value, token, sessionId)) {
       this.token = undefined;
       return { released: false, reason: "lost" };
     }
@@ -240,7 +282,7 @@ export class LeaderLease {
     const version = await this.stateFile.write(released, current.version);
     this.token = undefined;
     return version
-      ? { released: true }
+      ? { released: true, lease: released }
       : { released: false, reason: "contended" };
   }
 
@@ -252,10 +294,44 @@ export class LeaderLease {
         ? {}
         : { machine: this.machine, pid: this.pid }),
       token,
+      ...(this.sessionId === undefined ? {} : { sessionId: this.sessionId }),
+      ...(this.holderKind === undefined ? {} : { holderKind: this.holderKind }),
       expiresAt: new Date(
         this.now().getTime() + this.leaseSeconds * 1_000,
       ).toISOString(),
     };
+  }
+
+  #matches(lease, token, sessionId) {
+    return (
+      lease.holder === this.holder &&
+      lease.token === token &&
+      (this.sessionId === undefined || lease.sessionId === sessionId)
+    );
+  }
+
+  #status(lease) {
+    if (!lease) {
+      return "absent";
+    }
+    if (!isActive(lease, this.now())) {
+      return "expired";
+    }
+    if (this.#isAbandonedLocalLease(lease)) {
+      return "locally-recoverable";
+    }
+    const process = leaseProcess(lease);
+    if (
+      process &&
+      this.machine !== undefined &&
+      process.machine !== this.machine
+    ) {
+      return "remote-or-unverifiable";
+    }
+    if (!process && lease.holder !== this.holder) {
+      return "remote-or-unverifiable";
+    }
+    return "active";
   }
 
   #isAbandonedLocalLease(lease) {

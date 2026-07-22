@@ -22,6 +22,7 @@ export function createPanCommandResult({
   recovery = { safe: true, steps: [] },
   snapshot,
   expectedState,
+  leadership,
 } = {}) {
   return validatePanCommandResult({
     version: COMMAND_RESULT_VERSION,
@@ -35,6 +36,7 @@ export function createPanCommandResult({
     recovery,
     ...(snapshot === undefined ? {} : { snapshot }),
     ...(expectedState === undefined ? {} : { expectedState }),
+    ...(leadership === undefined ? {} : { leadership }),
   });
 }
 
@@ -54,6 +56,7 @@ export function validatePanCommandResult(result) {
       "recovery",
       "snapshot",
       "expectedState",
+      "leadership",
     ]),
     "command result",
   );
@@ -75,6 +78,9 @@ export function validatePanCommandResult(result) {
   }
   if (result.expectedState !== undefined) {
     validateIdentity(result.expectedState, "command result.expectedState");
+  }
+  if (result.leadership !== undefined) {
+    validateIdentity(result.leadership, "command result.leadership");
   }
   if (
     result.status === "confirmed" &&

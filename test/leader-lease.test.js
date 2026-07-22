@@ -169,6 +169,100 @@ test("never reclaims an active lease from another machine", async () => {
   assert.equal(checkedProcess, false);
 });
 
+test("stateless callers revalidate their session generation before renewal or release", async () => {
+  let now = new Date("2026-07-20T16:00:00Z");
+  const stateFile = new MemoryStateFile();
+  const first = new LeaderLease({
+    stateFile,
+    holder: "session-a",
+    sessionId: "session-a",
+    holderKind: "copilot-session",
+    now: () => now,
+    tokenFactory: () => "generation-a",
+  });
+  assert.equal((await first.acquire()).acquired, true);
+
+  const stateless = new LeaderLease({
+    stateFile,
+    holder: "session-a",
+    sessionId: "session-a",
+    now: () => now,
+  });
+  assert.equal(
+    (await stateless.assert({
+      token: "generation-a",
+      sessionId: "session-a",
+    })).asserted,
+    true,
+  );
+  assert.equal(
+    (await stateless.renew({
+      token: "generation-a",
+      sessionId: "session-a",
+    })).renewed,
+    true,
+  );
+
+  assert.equal(
+    (await stateless.release({
+      token: "generation-a",
+      sessionId: "session-a",
+    })).released,
+    true,
+  );
+  const second = new LeaderLease({
+    stateFile,
+    holder: "session-b",
+    sessionId: "session-b",
+    now: () => now,
+    tokenFactory: () => "generation-b",
+  });
+  assert.equal((await second.acquire()).acquired, true);
+
+  assert.deepEqual(
+    await stateless.renew({
+      token: "generation-a",
+      sessionId: "session-a",
+    }),
+    { renewed: false, reason: "lost" },
+  );
+  assert.deepEqual(
+    await stateless.release({
+      token: "generation-a",
+      sessionId: "session-a",
+    }),
+    { released: false, reason: "lost" },
+  );
+});
+
+test("reports absent, expired, locally recoverable, and remote leader states", async () => {
+  let now = new Date("2026-07-20T16:00:00Z");
+  const stateFile = new MemoryStateFile();
+  const lease = new LeaderLease({
+    stateFile,
+    holder: "machine-a/pan-5678",
+    machine: "machine-a",
+    pid: 5678,
+    now: () => now,
+    isProcessAlive: () => false,
+  });
+
+  assert.equal((await lease.status()).status, "absent");
+  stateFile.value = {
+    holder: "machine-a/pan-1234",
+    machine: "machine-a",
+    pid: 1234,
+    token: "generation-a",
+    expiresAt: "2026-07-20T15:59:59.000Z",
+  };
+  stateFile.version = 1;
+  assert.equal((await lease.status()).status, "expired");
+  stateFile.value.expiresAt = "2026-07-20T16:10:00.000Z";
+  assert.equal((await lease.status()).status, "locally-recoverable");
+  stateFile.value.machine = "machine-b";
+  assert.equal((await lease.status()).status, "remote-or-unverifiable");
+});
+
 class MemoryStateFile {
   value = undefined;
   version = 0;

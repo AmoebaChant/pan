@@ -33,7 +33,8 @@
       }
     },
     "snapshot": { "type": "object", "minProperties": 1 },
-    "expectedState": { "type": "object", "minProperties": 1 }
+    "expectedState": { "type": "object", "minProperties": 1 },
+    "leadership": { "type": "object", "minProperties": 1 }
   },
   "allOf": [
     {

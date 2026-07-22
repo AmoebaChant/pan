@@ -15,6 +15,7 @@ import {
 import { loadDomainConfig } from "./domain-config.js";
 import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
+import { createLeadershipCommandHandlers } from "./leadership-commands.js";
 import { PanAgentClient } from "./pan-agent-client.js";
 import { PanDaemon } from "./pan-daemon.js";
 import { PanHost } from "./pan-host.js";
@@ -67,16 +68,20 @@ export async function runPanCli(
     hostname = os.hostname(),
     runnerProfileSourceFactory = (options) => new RunnerProfileSource(options),
     commandContextFactory = createPanCommandContext,
-    commandHandlers = {},
+    commandHandlers,
   } = {},
 ) {
-  const helper = parsePanHelperArgs(args, { env, handlers: commandHandlers });
+  const helpers =
+    commandHandlers ?? {
+      leadership: createLeadershipCommandHandlers({ env }),
+    };
+  const helper = parsePanHelperArgs(args, { env, handlers: helpers });
   if (helper) {
     return runPanHelperCommand(helper, {
       stdout,
       env,
       commandContextFactory,
-      commandHandlers,
+      commandHandlers: helpers,
     });
   }
   const parsed = parseArgs(args, env);
@@ -1006,5 +1011,6 @@ function usage() {
     "  pan inbox [--json] --config <path>",
     "  pan answer <id> <text> [--json] --config <path>",
     "  pan add <title> [options] --config <path>",
+    "  pan leadership <status|acquire|assert|renew|release> --schema-version 1 --config <path>",
   ].join("\n");
 }
