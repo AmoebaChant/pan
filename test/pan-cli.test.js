@@ -74,7 +74,7 @@ test("runs asset commands before loading domain configuration", async () => {
   assert.deepEqual(JSON.parse(stdout.value), expected);
 });
 
-test("parses hostless session and one-shot review commands", () => {
+test("parses the hostless session command", () => {
   assert.deepEqual(
     parsePanArgs(["session", "--json"], { PAN_CONFIG: "domain.json" }),
     {
@@ -82,18 +82,6 @@ test("parses hostless session and one-shot review commands", () => {
       config: "domain.json",
       profile: undefined,
       json: true,
-    },
-  );
-  assert.deepEqual(
-    parsePanArgs(["review", "--apply"], {
-      PAN_CONFIG: "domain.json",
-    }),
-    {
-      command: "review",
-      config: "domain.json",
-      profile: undefined,
-      json: false,
-      apply: true,
     },
   );
 });
@@ -111,7 +99,7 @@ test("prefers explicit configuration and rejects runner profiles for PAN command
     },
   );
   assert.throws(
-    () => parsePanArgs(["review"], { PAN_PROFILE: "runner.json" }),
+    () => parsePanArgs(["session"], { PAN_PROFILE: "runner.json" }),
     /--profile and PAN_PROFILE belong to pan-runner/,
   );
 });
@@ -138,7 +126,7 @@ test("rejects simultaneous domain and runner configuration", () => {
 });
 
 test("retires host-era commands with migration guidance", () => {
-  for (const command of ["start", "stop", "host", "connect", "daemon", "chat"]) {
+  for (const command of ["start", "stop", "host", "connect", "daemon", "chat", "review"]) {
     assert.throws(
       () => parsePanArgs([command, "--json"], {}),
       (error) => {
@@ -158,16 +146,6 @@ test("retires host-era commands with migration guidance", () => {
   assert.throws(
     () => parsePanArgs(["session", "--background", "--config", "domain.json"]),
     /sessions run in the foreground/i,
-  );
-  assert.deepEqual(
-    parsePanArgs(["review", "--apply", "--json"], { PAN_CONFIG: "domain.json" }),
-    {
-      command: "review",
-      config: "domain.json",
-      profile: undefined,
-      json: true,
-      apply: true,
-    },
   );
 });
 

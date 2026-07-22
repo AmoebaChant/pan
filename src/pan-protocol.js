@@ -1,7 +1,5 @@
-const PROTOCOL_VERSION = 1;
 const LEGACY_ACTION_VERSION = 1;
 const ACTION_VERSION = 2;
-const TURN_MODES = new Set(["autonomous-review", "interactive-chat"]);
 const LEGACY_ACTION_KINDS = new Set([
   "field-update",
   "canonical-reorder",
@@ -21,37 +19,6 @@ const CITATION_KINDS = new Set([
   "runner",
   "domain-record",
 ]);
-const TOOL_STATUSES = new Set([
-  "confirmed",
-  "rejected",
-  "incomplete",
-  "failed",
-]);
-
-export function validatePanTurnRequest(record) {
-  requireRecord(record, "turn");
-  requireVersion(record.version, "turn.version");
-  requireEqual(record.type, "request", "turn.type");
-  validateTurnIdentity(record);
-  validateSnapshot(record.snapshot, "turn.snapshot");
-  validateToolChannel(record.toolChannel, "turn.toolChannel");
-
-  if (record.mode === "interactive-chat") {
-    requireString(record.userInput, "turn.userInput");
-  } else if (record.userInput !== undefined) {
-    requireString(record.userInput, "turn.userInput");
-  }
-
-  return {
-    ...record,
-    snapshot: { ...record.snapshot },
-    toolChannel: {
-      ...record.toolChannel,
-      allowedOperations: [...record.toolChannel.allowedOperations],
-    },
-  };
-}
-
 export function validatePanAction(record, path = "action") {
   requireRecord(record, path);
   if (record.version === LEGACY_ACTION_VERSION) {
@@ -194,161 +161,6 @@ function validateVersionTwoPanAction(record, path) {
   validateExpectedState(record.expectedState, record, path);
   validateActionTarget(record, path, { strict: true });
   return clone(record);
-}
-
-export function validatePanFinalResponse(record) {
-  requireRecord(record, "response");
-  requireVersion(record.version, "response.version");
-  requireEqual(record.type, "final-response", "response.type");
-  validateTurnIdentity(record, "response");
-  requireString(record.snapshotId, "response.snapshotId");
-  requireString(record.recommendation, "response.recommendation");
-
-  validateEvidenceStatements(record.facts, "response.facts");
-  requireStringArray(record.interpretations, "response.interpretations");
-  requireStringArray(record.assumptions, "response.assumptions");
-  requireStringArray(record.uncertainties, "response.uncertainties");
-  validateCitations(record.citations, "response.citations");
-
-  const proposedActions = requireArray(
-    record.proposedActions,
-    "response.proposedActions",
-  ).map((action, index) =>
-    validatePanAction(action, `response.proposedActions[${index}]`),
-  );
-  validateActionOutcomes(record.appliedActions, "response.appliedActions", {
-    rejected: false,
-  });
-  validateActionOutcomes(record.rejectedActions, "response.rejectedActions", {
-    rejected: true,
-  });
-  requireRecord(record.effects, "response.effects");
-  validateEffects(record.effects.confirmed, "response.effects.confirmed", {
-    incomplete: false,
-  });
-  validateEffects(record.effects.incomplete, "response.effects.incomplete", {
-    incomplete: true,
-  });
-
-  return {
-    ...record,
-    facts: cloneArray(record.facts),
-    interpretations: [...record.interpretations],
-    assumptions: [...record.assumptions],
-    uncertainties: [...record.uncertainties],
-    citations: cloneArray(record.citations),
-    proposedActions,
-    appliedActions: cloneArray(record.appliedActions),
-    rejectedActions: cloneArray(record.rejectedActions),
-    effects: {
-      confirmed: cloneArray(record.effects.confirmed),
-      incomplete: cloneArray(record.effects.incomplete),
-    },
-  };
-}
-
-export function normalizePanFinalResponse(record) {
-  return validatePanFinalResponse({
-    facts: [],
-    interpretations: [],
-    assumptions: [],
-    uncertainties: [],
-    citations: [],
-    proposedActions: [],
-    appliedActions: [],
-    rejectedActions: [],
-    effects: { confirmed: [], incomplete: [] },
-    ...record,
-    effects: {
-      confirmed: [],
-      incomplete: [],
-      ...record?.effects,
-    },
-  });
-}
-
-export function validatePanToolMessage(record) {
-  requireRecord(record, "toolMessage");
-  requireVersion(record.version, "toolMessage.version");
-  requireString(record.requestId, "toolMessage.requestId");
-  requireString(record.turnId, "toolMessage.turnId");
-  requireString(record.operation, "toolMessage.operation");
-
-  if (record.type === "tool-request") {
-    requireRecord(record.arguments, "toolMessage.arguments");
-    return clone(record);
-  }
-
-  if (record.type !== "tool-result") {
-    fail("toolMessage.type", 'must be "tool-request" or "tool-result"');
-  }
-  if (!TOOL_STATUSES.has(record.status)) {
-    fail(
-      "toolMessage.status",
-      `must be one of ${[...TOOL_STATUSES].join(", ")}`,
-    );
-  }
-  validateEffects(
-    record.confirmedEffects ?? [],
-    "toolMessage.confirmedEffects",
-    { incomplete: false },
-  );
-  validateEffects(
-    record.incompleteEffects ?? [],
-    "toolMessage.incompleteEffects",
-    { incomplete: true },
-  );
-  if (record.status === "failed" || record.status === "rejected") {
-    requireString(record.error, "toolMessage.error");
-  }
-  if (
-    record.status === "incomplete" &&
-    (record.incompleteEffects?.length ?? 0) === 0
-  ) {
-    fail(
-      "toolMessage.incompleteEffects",
-      "must describe remaining work for an incomplete result",
-    );
-  }
-
-  return {
-    ...record,
-    confirmedEffects: cloneArray(record.confirmedEffects ?? []),
-    incompleteEffects: cloneArray(record.incompleteEffects ?? []),
-  };
-}
-
-function validateTurnIdentity(record, path = "turn") {
-  requireString(record.turnId, `${path}.turnId`);
-  if (!TURN_MODES.has(record.mode)) {
-    fail(
-      `${path}.mode`,
-      `must be one of ${[...TURN_MODES].join(", ")}`,
-    );
-  }
-  requireTimestamp(record.timestamp, `${path}.timestamp`);
-}
-
-function validateSnapshot(snapshot, path) {
-  requireRecord(snapshot, path);
-  requireString(snapshot.id, `${path}.id`);
-  requireTimestamp(snapshot.capturedAt, `${path}.capturedAt`);
-  requireEqual(snapshot.complete, true, `${path}.complete`);
-}
-
-function validateToolChannel(channel, path) {
-  requireRecord(channel, path);
-  requireEqual(channel.transport, "mcp-stdio", `${path}.transport`);
-  requireString(channel.server, `${path}.server`);
-  requireStringArray(channel.allowedOperations, `${path}.allowedOperations`, {
-    nonEmpty: true,
-  });
-  if (
-    new Set(channel.allowedOperations).size !==
-    channel.allowedOperations.length
-  ) {
-    fail(`${path}.allowedOperations`, "must not contain duplicates");
-  }
 }
 
 function validateActionTarget(action, path, { strict = false } = {}) {
@@ -694,16 +506,6 @@ function validateExpectedTargetConsistency(expectedState, action, path) {
   }
 }
 
-function validateEvidenceStatements(values, path) {
-  for (const [index, value] of requireArray(values, path).entries()) {
-    requireRecord(value, `${path}[${index}]`);
-    requireString(value.statement, `${path}[${index}].statement`);
-    validateCitations(value.citations, `${path}[${index}].citations`, {
-      nonEmpty: true,
-    });
-  }
-}
-
 function validateCitations(values, path, { nonEmpty = false } = {}) {
   const citations = requireArray(values, path, { nonEmpty });
   for (const [index, citation] of citations.entries()) {
@@ -722,71 +524,6 @@ function validateCitations(values, path, { nonEmpty = false } = {}) {
     if (citation.label !== undefined) {
       requireString(citation.label, `${citationPath}.label`);
     }
-  }
-}
-
-function validateActionOutcomes(values, path, { rejected }) {
-  for (const [index, value] of requireArray(values, path).entries()) {
-    const outcomePath = `${path}[${index}]`;
-    requireRecord(value, outcomePath);
-    requireString(value.actionId, `${outcomePath}.actionId`);
-    requireString(
-      rejected ? value.reason : value.summary,
-      `${outcomePath}.${rejected ? "reason" : "summary"}`,
-    );
-  }
-}
-
-function validateEffects(values, path, { incomplete }) {
-  for (const [index, value] of requireArray(values, path).entries()) {
-    const effectPath = `${path}[${index}]`;
-    requireRecord(value, effectPath);
-    requireString(value.actionId, `${effectPath}.actionId`);
-    requireString(value.summary, `${effectPath}.summary`);
-    validateCitations(value.citations ?? [], `${effectPath}.citations`);
-    validateEffectDetails(value, effectPath);
-    if (incomplete) {
-      requireStringArray(
-        value.remainingSteps,
-        `${effectPath}.remainingSteps`,
-        { nonEmpty: true },
-      );
-    }
-  }
-}
-
-function validateEffectDetails(effect, path) {
-  const detailedFields = [
-    "groupId",
-    "resource",
-    "externalIdentity",
-    "confirmedState",
-    "recovery",
-  ];
-  const present = detailedFields.filter((field) => effect[field] !== undefined);
-  if (present.length === 0) {
-    return;
-  }
-  for (const field of ["resource", "externalIdentity", "confirmedState", "recovery"]) {
-    if (effect[field] === undefined) {
-      fail(path, `must include ${field} for a structured effect record`);
-    }
-  }
-  if (effect.groupId !== undefined) {
-    requireString(effect.groupId, `${path}.groupId`);
-  }
-  requireString(effect.resource, `${path}.resource`);
-  requireString(effect.externalIdentity, `${path}.externalIdentity`);
-  requireRecord(effect.confirmedState, `${path}.confirmedState`);
-  if (Object.keys(effect.confirmedState).length === 0) {
-    fail(`${path}.confirmedState`, "must not be empty");
-  }
-  requireStringArray(effect.recovery, `${path}.recovery`);
-}
-
-function requireVersion(value, path) {
-  if (value !== PROTOCOL_VERSION) {
-    fail(path, `must be supported version ${PROTOCOL_VERSION}`);
   }
 }
 
@@ -823,18 +560,6 @@ function requireStringArray(value, path, options) {
   }
 }
 
-function requireTimestamp(value, path) {
-  requireString(value, path);
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
-      value,
-    ) ||
-    !Number.isFinite(Date.parse(value))
-  ) {
-    fail(path, "must be an RFC 3339 timestamp");
-  }
-}
-
 function requireConfidence(value, path) {
   if (
     typeof value !== "number" ||
@@ -843,12 +568,6 @@ function requireConfidence(value, path) {
     value > 1
   ) {
     fail(path, "must be a number from 0 through 1");
-  }
-}
-
-function requireEqual(value, expected, path) {
-  if (value !== expected) {
-    fail(path, `must be ${JSON.stringify(expected)}`);
   }
 }
 
@@ -876,17 +595,12 @@ function clone(value) {
   return structuredClone(value);
 }
 
-function cloneArray(values) {
-  return values.map(clone);
-}
-
 function fail(path, correction) {
   throw new TypeError(
     `${path} ${correction}; correct the protocol record before retrying`,
   );
 }
 
-export const PAN_PROTOCOL_VERSION = PROTOCOL_VERSION;
 export const PAN_ACTION_VERSION = ACTION_VERSION;
 export const PAN_LEGACY_ACTION_VERSION = LEGACY_ACTION_VERSION;
 export const PAN_ACTION_GROUP_SEMANTICS = Object.freeze([...GROUP_SEMANTICS]);

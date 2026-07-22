@@ -1,38 +1,21 @@
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 
-import { AttentionService } from "./attention-service.js";
-import { ActionPolicy } from "./action-policy.js";
 import { PanAssetService } from "./pan-assets.js";
-import { createPanCommandContext } from "./pan-command-context.js";
 import {
   commandResultFromError,
   PanCommandError,
   validatePanCommandResult,
 } from "./pan-command-result.js";
+import { createPanCommandContext } from "./pan-command-context.js";
 import { loadDomainConfig } from "./domain-config.js";
 import { GhClient } from "./gh-client.js";
-import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { createLeadershipCommandHandlers } from "./leadership-commands.js";
 import { createActionCommandHandlers } from "./action-commands.js";
 import { createEvidenceCommandHandlers } from "./evidence-commands.js";
 import { createAttentionCommandHandlers } from "./attention-commands.js";
 import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 import { createWorkstreamCommandHandlers } from "./workstream-commands.js";
-import { PanAgentClient } from "./pan-agent-client.js";
 import { startPanSession } from "./pan-session.js";
-import { PanReviewService } from "./pan-review-service.js";
-import { PanRuntime } from "./pan-runtime.js";
 import { setupPanDomain } from "./pan-setup.js";
-import { PanStore } from "./pan-store.js";
-import { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
-import { RunnerProfileSource } from "./runner-profile-source.js";
-import { WorkstreamStore } from "./workstream-store.js";
-
-const TOOL_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
 
 export async function runPanCli(
   args,
@@ -41,12 +24,7 @@ export async function runPanCli(
     stdout = process.stdout,
     stderr = process.stderr,
     gh = new GhClient(),
-    pid = process.pid,
     domainConfigLoader = loadDomainConfig,
-    storeFactory = (options) => new PanStore(options),
-    attentionFactory = (options) => new AttentionService(options),
-    reviewServiceFactory,
-    runtimeFactory = (options) => new PanRuntime(options),
     sessionFactory = startPanSession,
     setupFactory = setupPanDomain,
     assetServiceFactory = (options) => new PanAssetService(options),
@@ -105,15 +83,14 @@ export async function runPanCli(
     );
     return result;
   }
-  const configuration = await loadCliConfiguration(parsed, {
-    domainConfigLoader,
-  });
+  const domainConfig = await domainConfigLoader(parsed.config);
   if (parsed.command === "session") {
+    const agent = domainConfig.session?.agent ?? domainConfig.agent;
     const result = await sessionFactory({
-      config: configuration.domainConfig,
+      config: domainConfig,
       configPath: parsed.config,
-      executable: configuration.agent.executable,
-      model: configuration.agent.model,
+      executable: agent?.executable,
+      model: agent?.model,
       env,
       onMode: parsed.json
         ? undefined
@@ -141,69 +118,7 @@ export async function runPanCli(
       : "";
     return `PAN session exited with code ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}${mode}.${loss}`;
   }
-  const store = storeFactory({
-    repository: configuration.store.repository,
-    projectOwner: configuration.store.projectOwner,
-    projectNumber: configuration.store.projectNumber,
-    gh,
-  });
-  const attention = attentionFactory({
-    store,
-    humanAssignee: configuration.attention?.assignee,
-  });
 
-  if (parsed.command === "review") {
-    const reviewService =
-      reviewServiceFactory?.({ store, configuration, env }) ??
-      createReviewService({ store, attention, configuration, env });
-    let result;
-    try {
-      result = parsed.apply
-        ? await runtimeFactory({
-            reviewService,
-            leaderLease: createLeaderLease({
-              configuration,
-              gh,
-              pid,
-            }),
-            heartbeatSeconds: configuration.runtime.leaderHeartbeatSeconds,
-            }).runOnce()
-        : await reviewService.run({
-            apply: false,
-            });
-    } catch (error) {
-      if (error.result) {
-        write(
-          stdout,
-          parsed.json
-            ? JSON.stringify(error.result, null, 2)
-            : formatReasoningResult(error.result),
-        );
-        throw new Error(
-          "PAN could not safely complete the requested mutation",
-          { cause: error },
-        );
-      }
-      throw error;
-    }
-    if (result.leader === false) {
-      write(
-        stdout,
-        parsed.json
-          ? JSON.stringify(result, null, 2)
-          : `PAN is already running elsewhere: ${result.reason}`,
-      );
-      return result;
-    }
-    write(
-      stdout,
-      parsed.json ? JSON.stringify(result, null, 2) : formatReasoningResult(result),
-    );
-    if (result.response.effects?.incomplete?.length > 0) {
-      throw new Error("PAN could not safely complete the requested mutation");
-    }
-    return result;
-  }
   throw new Error(`Unknown PAN command: ${parsed.command}`);
 }
 
@@ -282,16 +197,11 @@ export function parseArgs(args, env = process.env) {
       `pan ${command ?? "<command>"} requires --config <domain-config.json> or PAN_CONFIG. --profile and PAN_PROFILE belong to pan-runner.`,
     );
   }
-  if (!["session", "review"].includes(command)) {
+  if (command !== "session") {
     throw new TypeError(usage());
   }
-  if (command === "session") {
-    requireNoArgs(remaining);
-    return { command, ...configuration, json };
-  }
-  const apply = takeFlag(remaining, "--apply");
   requireNoArgs(remaining);
-  return { command, ...configuration, json, apply };
+  return { command, ...configuration, json };
 }
 
 function normalizeLegacyAttentionAlias(args) {
@@ -323,7 +233,9 @@ function retiredCommand(command, json) {
     daemon:
       "Run pan session --config <path>. After domain, session, or scheduling changes, exit and rerun that session; restart pan-runner only after runner changes.",
     chat:
-      "Run pan session --config <path> and ask in the ordinary interactive session. Use pan review for a one-shot review.",
+      "Run pan session --config <path> and ask in the ordinary interactive session.",
+    review:
+      "Run pan session --config <path> and use the ordinary interactive or native scheduled review in that session.",
   }[command];
   return guidance ? retiredCommandError(command, json, guidance) : undefined;
 }
@@ -515,162 +427,6 @@ async function runPanHelperCommand(
   return result;
 }
 
-async function loadCliConfiguration(
-  parsed,
-  { domainConfigLoader },
-) {
-  const config = await domainConfigLoader(parsed.config);
-  const agent = config.session?.agent ?? config.agent;
-  const scheduling = config.scheduling ?? {};
-  const leadership = config.leadership ?? {};
-  return {
-    domainConfig: config,
-    store: {
-      repository: config.domain.repository,
-      projectOwner: config.domain.projectOwner,
-      projectNumber: config.domain.projectNumber,
-      path: config.domain.path,
-    },
-    runtime: {
-      machine: "pan-runtime",
-      pollIntervalSeconds:
-        scheduling.retrySeconds ?? config.cadences?.activePollSeconds ?? 60,
-      leaderLeaseSeconds:
-        leadership.leaseSeconds ?? config.cadences?.leaderLeaseSeconds ?? 120,
-      leaderHeartbeatSeconds:
-        leadership.heartbeatSeconds ??
-        config.cadences?.leaderHeartbeatSeconds ??
-        30,
-      stateBranch: config.state.branch,
-      leaderPath: config.state.leaderPath,
-      runnerProfileDirectory: path.join(config.domain.path, "runners"),
-    },
-    agent,
-    reviewPolicy: config.reviewPolicy,
-    attention: config.attention,
-  };
-}
-
-function createReviewService({ store, attention, configuration, env }) {
-  return createDomainServices({
-    store,
-    attention,
-    configuration,
-    env,
-  }).reviewService;
-}
-
-function createDomainServices({
-  store,
-  attention,
-  configuration,
-  env,
-  reviewServiceFactory,
-}) {
-  const runnerSource = new RunnerProfileSource({
-    directory: configuration.runtime.runnerProfileDirectory,
-  });
-  const workstreamSource = new WorkstreamStore({
-    repositoryPath: configuration.store.path,
-  });
-  const snapshotSource = new PortfolioSnapshotBuilder({
-    projectSource: store,
-    issueCatalogSource: store,
-    workstreamSource,
-    runnerSource,
-  });
-  const actionPolicy = new ActionPolicy({
-    approvalRequired: configuration.reviewPolicy?.higherRisk.enabled
-      ? configuration.reviewPolicy.higherRisk.actionKinds
-      : [],
-  });
-  const reviewService =
-    reviewServiceFactory?.({
-      store,
-      configuration,
-      env,
-      snapshotSource,
-      actionPolicy,
-      attention,
-    }) ??
-    new PanReviewService({
-      snapshotSource,
-      store,
-      attention,
-      actionPolicy,
-      agentClient: new PanAgentClient({
-        executable: configuration.agent.executable,
-        agent: configuration.agent.name,
-        model: configuration.agent.model,
-        timeout: configuration.agent.turnTimeoutSeconds
-          ? configuration.agent.turnTimeoutSeconds * 1_000
-          : undefined,
-        cwd: TOOL_ROOT,
-        env,
-        inlinePortfolio: true,
-        extraArgs:
-          configuration.agent.maxAiCredits === undefined
-            ? []
-            : [
-                "--max-ai-credits",
-                String(configuration.agent.maxAiCredits),
-              ],
-      }),
-    });
-  return { reviewService };
-}
-
-function createLeaderLease({ configuration, gh, pid }) {
-  return new LeaderLease({
-    stateFile: new GitHubStateFile({
-      gh,
-      repository: configuration.store.repository,
-      branch: configuration.runtime.stateBranch,
-      filePath: configuration.runtime.leaderPath,
-    }),
-    holder: `${configuration.runtime.machine}/pan-${pid}`,
-    machine: configuration.runtime.machine,
-    pid,
-    leaseSeconds: configuration.runtime.leaderLeaseSeconds,
-  });
-}
-
-function formatReasoningResult(result) {
-  const lines = [result.response.recommendation];
-  if (result.response.appliedActions.length > 0) {
-    lines.push(
-      "",
-      ...result.response.appliedActions.map(
-        (action) => `Applied: ${action.summary}`,
-      ),
-    );
-  }
-
-  if (result.response.rejectedActions.length > 0) {
-    lines.push(
-      "",
-      ...result.response.rejectedActions.map(
-        (action) => `Not applied: ${action.reason}`,
-      ),
-    );
-  }
-  if (result.response.effects?.incomplete?.length > 0) {
-    lines.push(
-      "",
-      ...result.response.effects.incomplete.map(
-        (effect) => `INCOMPLETE: ${effect.summary}`,
-      ),
-    );
-  }
-  if (!result.applied && result.response.proposedActions.length > 0) {
-    lines.push(
-      "",
-      `${result.response.proposedActions.length} proposed action(s); rerun with --apply to apply them.`,
-    );
-  }
-  return lines.join("\n");
-}
-
 function formatSetupResult(result) {
   const lines = [
     `PAN domain ready: ${result.repository}`,
@@ -753,7 +509,6 @@ function usage() {
     "  pan setup [--repository <owner/name>] [--path <path>] [--approval-mode <prompt|allow-all>] [--install-assets]",
     "  pan assets <install|status|repair> [--force] [--json]",
     "  pan session --config <path>",
-    "  pan review [--apply] [--json] --config <path>",
     "  pan attention <list|answer|add> --schema-version 1 --config <path>",
     "  Session, domain, or scheduling changes: exit and rerun pan session; runner changes: restart pan-runner.",
     "  pan leadership <status|acquire|assert|renew|release> --schema-version 1 --config <path>",
