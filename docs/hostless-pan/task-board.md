@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-20 | Execute implementation_plan/04_02_asset_install_status_repair.md | execute-implementation-plan | |
 | | T-21 | Execute implementation_plan/04_03_hostless_session_launch.md | execute-implementation-plan | |
 | | T-22 | Execute implementation_plan/04_04_session_leadership_supervision.md | execute-implementation-plan | |
 | | T-23 | Execute implementation_plan/04_05_native_schedule_bootstrap.md | execute-implementation-plan | |
@@ -40,5 +39,6 @@
 | | T-17 | Execute implementation_plan/03_04_workstream_prepare.md | execute-implementation-plan | done 2026-07-22 · f73f7db · targeted and full tests passed |
 | | T-18 | Execute implementation_plan/03_05_workstream_publish.md | execute-implementation-plan | done 2026-07-22 · 4fb0421 · targeted and full tests passed |
 | | T-19 | Execute implementation_plan/04_01_user_scoped_pan_assets.md | execute-implementation-plan | done 2026-07-22 · 72028c2 · targeted and full tests passed |
+| | T-20 | Execute implementation_plan/04_02_asset_install_status_repair.md | execute-implementation-plan | done 2026-07-22 · 9ddb454 · targeted and full tests passed |
 
 ## Untriaged
