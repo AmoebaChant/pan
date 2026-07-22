@@ -116,7 +116,17 @@
             },
             "expectedState": {
               "type": "object",
-              "minProperties": 1
+              "required": [
+                "snapshotId"
+              ],
+              "properties": {
+                "snapshotId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The exact snapshotReference.value returned by read_portfolio."
+                }
+              },
+              "additionalProperties": true
             },
             "target": {
               "type": "object"

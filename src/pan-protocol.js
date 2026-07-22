@@ -78,6 +78,10 @@ export function validatePanAction(record, path = "action") {
 
   requireString(record.idempotencyKey, `${path}.idempotencyKey`);
   requireNonEmptyRecord(record.expectedState, `${path}.expectedState`);
+  requireString(
+    record.expectedState.snapshotId,
+    `${path}.expectedState.snapshotId`,
+  );
   validateActionTarget(record, path);
   return clone(record);
 }

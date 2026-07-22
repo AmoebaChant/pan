@@ -18,7 +18,14 @@ const citation = {
   revision: "comment-7",
 };
 
-function mutation(kind, target, expectedState = { revision: "before-1" }) {
+function mutation(
+  kind,
+  target,
+  expectedState = {
+    snapshotId: "snapshot-sha256",
+    revision: "before-1",
+  },
+) {
   return {
     version: 1,
     actionId: `action-${kind}`,
@@ -146,6 +153,15 @@ test("rejects mutations without concurrency and idempotency records", () => {
   assert.throws(
     () => validatePanAction(withoutExpectedState),
     /action\.expectedState must be an object/,
+  );
+
+  assert.throws(
+    () =>
+      validatePanAction({
+        ...actions[0],
+        expectedState: { priority: "normal" },
+      }),
+    /action\.expectedState\.snapshotId must be a non-empty string/,
   );
 
   const withoutIdempotencyKey = { ...actions[0] };

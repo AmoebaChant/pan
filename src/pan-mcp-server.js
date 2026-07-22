@@ -2,7 +2,11 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 export const PAN_INTERACTIVE_TOOLS = Object.freeze([
-  tool("read_portfolio", "Read the complete current PAN portfolio.", {}),
+  tool(
+    "read_portfolio",
+    "Read the complete current PAN portfolio. The first result block always exposes snapshotReference.value for mutation proposals, even when the portfolio is large.",
+    {},
+  ),
   tool(
     "read_workstream",
     "Read one workstream and its recent history.",
@@ -26,12 +30,92 @@ export const PAN_INTERACTIVE_TOOLS = Object.freeze([
   ),
   tool(
     "propose_actions",
-    "Submit PAN protocol actions for deterministic validation and application by the running PAN host.",
+    "Submit PAN protocol v1 actions for deterministic validation and application. Every mutation, including issue-create, must set expectedState.snapshotId to the exact snapshotReference.value from the latest read_portfolio result.",
     {
       actions: {
         type: "array",
         minItems: 1,
-        items: { type: "object" },
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "version",
+            "actionId",
+            "kind",
+            "rationale",
+            "confidence",
+            "evidence",
+          ],
+          properties: {
+            version: { const: 1 },
+            actionId: { type: "string", minLength: 1 },
+            kind: {
+              enum: [
+                "field-update",
+                "canonical-reorder",
+                "relative-precedence",
+                "issue-create",
+                "issue-comment",
+                "needs-human",
+                "no-op",
+              ],
+            },
+            rationale: { type: "string", minLength: 1 },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            evidence: {
+              type: "array",
+              minItems: 1,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["kind", "locator"],
+                properties: {
+                  kind: {
+                    enum: [
+                      "issue",
+                      "issue-comment",
+                      "project-field",
+                      "workstream",
+                      "runner",
+                      "domain-record",
+                    ],
+                  },
+                  locator: { type: "string", minLength: 1 },
+                  revision: { type: "string", minLength: 1 },
+                  label: { type: "string", minLength: 1 },
+                },
+              },
+            },
+            idempotencyKey: { type: "string", minLength: 1 },
+            expectedState: {
+              type: "object",
+              required: ["snapshotId"],
+              properties: {
+                snapshotId: {
+                  type: "string",
+                  minLength: 1,
+                  description:
+                    "Exact snapshotReference.value returned by read_portfolio.",
+                },
+              },
+              additionalProperties: true,
+            },
+            target: { type: "object" },
+            recommendation: { type: "string", minLength: 1 },
+          },
+          allOf: [
+            {
+              if: {
+                required: ["kind"],
+                properties: { kind: { const: "no-op" } },
+              },
+              then: { required: ["recommendation"] },
+              else: {
+                required: ["idempotencyKey", "expectedState", "target"],
+              },
+            },
+          ],
+        },
       },
     },
     ["actions"],
@@ -117,7 +201,7 @@ export async function handlePanMcpRequest(
         });
       }
       return success(message.id, {
-        content: [{ type: "text", text: JSON.stringify(result) }],
+        content: toolResultContent(name, result),
       });
     } catch (error) {
       return success(message.id, {
@@ -158,6 +242,27 @@ function tool(name, description, properties, required = []) {
       additionalProperties: false,
     },
   });
+}
+
+function toolResultContent(name, result) {
+  const content = [];
+  if (name === "read_portfolio") {
+    const snapshotReference = result.snapshotReference ?? {
+      field: "actions[].expectedState.snapshotId",
+      value: result.data?.id,
+      usableForMutation: result.data?.usableForMutation === true,
+    };
+    content.push({
+      type: "text",
+      text: JSON.stringify({
+        snapshotReference,
+        instruction:
+          "Copy snapshotReference.value into expectedState.snapshotId on every mutation action, including issue-create.",
+      }),
+    });
+  }
+  content.push({ type: "text", text: JSON.stringify(result) });
+  return content;
 }
 
 function success(id, result) {

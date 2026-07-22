@@ -310,8 +310,12 @@ test("hosts authenticated interactive tools while holding leadership", async () 
 
   const action = {
     actionId: "action-1",
-    kind: "field-update",
+    kind: "issue-create",
     expectedState: { snapshotId: "snapshot-1" },
+    target: {
+      repository: "example/domain",
+      title: "New task",
+    },
   };
   const applyResponse = await fetch(`${state.endpoint}/tools/call`, {
     method: "POST",
@@ -329,7 +333,35 @@ test("hosts authenticated interactive tools while holding leadership", async () 
     (await applyResponse.json()).application.appliedActions[0].actionId,
     "action-1",
   );
-  assert.equal(calls.find(([kind]) => kind === "apply")[2].snapshot.id, "snapshot-1");
+  const applyCall = calls.find(([kind]) => kind === "apply");
+  assert.equal(applyCall[1][0].kind, "issue-create");
+  assert.equal(applyCall[2].snapshot.id, "snapshot-1");
+
+  const staleResponse = await fetch(`${state.endpoint}/tools/call`, {
+    method: "POST",
+    headers: {
+      authorization: ["Bearer", "secret"].join(" "),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "propose_actions",
+      arguments: {
+        actions: [
+          {
+            ...action,
+            actionId: "action-stale",
+            expectedState: { snapshotId: "snapshot-not-read" },
+          },
+        ],
+      },
+    }),
+  });
+  assert.equal(staleResponse.status, 500);
+  assert.match(
+    (await staleResponse.json()).error,
+    /copy snapshotReference\.value exactly/i,
+  );
+  assert.equal(calls.filter(([kind]) => kind === "apply").length, 1);
 
   await fetch(`${state.endpoint}/shutdown`, {
     method: "POST",

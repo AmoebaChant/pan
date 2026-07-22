@@ -132,8 +132,8 @@ export class PortfolioSnapshotBuilder {
       diagnostics,
     };
     const snapshot = {
-      ...durable,
       id: stableIdentity(durable),
+      ...durable,
     };
     return deepFreeze(snapshot);
   }

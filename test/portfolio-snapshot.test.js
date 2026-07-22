@@ -156,6 +156,7 @@ test("produces immutable repeatable identities independent of property insertion
   assert.equal(first.id, repeated.id);
   assert.equal(first.id, reordered.id);
   assert.match(first.id, /^sha256:[0-9a-f]{64}$/);
+  assert.match(JSON.stringify(first), /^\{"id":"sha256:/);
   assert.throws(
     () => first.dossiers.push({}),
     /object is not extensible|read only|frozen/i,

@@ -46,6 +46,10 @@ test("states complete-portfolio, evidence, uncertainty, and authority invariants
   assert.match(source, /facts, interpretations, assumptions, and uncertainties/i);
   assert.match(source, /runtime policy validates/i);
   assert.match(source, /PAN protocol version 1/i);
+  assert.match(source, /snapshotReference\.value/);
+  assert.match(source, /expectedState\.snapshotId/);
+  assert.match(source, /This includes `issue-create`/);
+  assert.match(source, /"kind": "issue-create"/);
   assert.match(source, /Do not use shell commands/i);
   assert.match(source, /do\s+not create or maintain a second queue/i);
 });

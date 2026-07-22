@@ -24,7 +24,19 @@ test("lists interactive tools and proxies authenticated calls", async () => {
     request = { url, options };
     return {
       ok: true,
-      json: async () => ({ status: "confirmed", data: { id: "snapshot-1" } }),
+      json: async () => ({
+        status: "confirmed",
+        snapshotReference: {
+          field: "actions[].expectedState.snapshotId",
+          value: "snapshot-1",
+          usableForMutation: true,
+        },
+        data: {
+          id: "snapshot-1",
+          usableForMutation: true,
+          dossiers: [{ content: "x".repeat(100_000) }],
+        },
+      }),
     };
   };
 
@@ -33,6 +45,18 @@ test("lists interactive tools and proxies authenticated calls", async () => {
     { stateFile, fetchImpl },
   );
   assert.deepEqual(listed.result.tools, PAN_INTERACTIVE_TOOLS);
+  const proposeActions = listed.result.tools.find(
+    (tool) => tool.name === "propose_actions",
+  );
+  assert.deepEqual(
+    proposeActions.inputSchema.properties.actions.items.properties.expectedState
+      .required,
+    ["snapshotId"],
+  );
+  assert.deepEqual(
+    proposeActions.inputSchema.properties.actions.items.allOf[0].else.required,
+    ["idempotencyKey", "expectedState", "target"],
+  );
 
   const called = await handlePanMcpRequest(
     {
@@ -45,5 +69,13 @@ test("lists interactive tools and proxies authenticated calls", async () => {
   );
   assert.equal(request.url, "http://127.0.0.1:43127/tools/call");
   assert.equal(request.options.headers.authorization, "Bearer secret");
-  assert.match(called.result.content[0].text, /snapshot-1/);
+  const header = JSON.parse(called.result.content[0].text);
+  assert.deepEqual(header.snapshotReference, {
+    field: "actions[].expectedState.snapshotId",
+    value: "snapshot-1",
+    usableForMutation: true,
+  });
+  assert.match(header.instruction, /including issue-create/);
+  assert.ok(called.result.content[0].text.length < 500);
+  assert.ok(called.result.content[1].text.length > 100_000);
 });

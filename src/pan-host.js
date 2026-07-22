@@ -250,7 +250,7 @@ export class PanHost {
     const snapshot = this.snapshots.get(snapshotId);
     if (!snapshot) {
       throw new Error(
-        "The proposed actions do not reference a portfolio snapshot read by this PAN session; refresh the portfolio and retry",
+        `No portfolio snapshot matching arguments.actions[].expectedState.snapshotId (${JSON.stringify(snapshotId)}) was read by this PAN session; call read_portfolio and copy snapshotReference.value exactly`,
       );
     }
     return {
@@ -391,14 +391,25 @@ function sendJson(response, status, value) {
 }
 
 function actionSnapshotId(actions) {
+  const mutations = actions
+    .map((action, index) => ({ action, index }))
+    .filter(({ action }) => action.kind !== "no-op");
+  for (const { action, index } of mutations) {
+    if (
+      typeof action.expectedState?.snapshotId !== "string" ||
+      !action.expectedState.snapshotId.trim()
+    ) {
+      throw new Error(
+        `arguments.actions[${index}].expectedState.snapshotId must be the exact snapshotReference.value returned by read_portfolio; expected {"expectedState":{"snapshotId":"<snapshotReference.value>"}}`,
+      );
+    }
+  }
   const ids = new Set(
-    actions
-      .filter((action) => action.kind !== "no-op")
-      .map((action) => action.expectedState?.snapshotId),
+    mutations.map(({ action }) => action.expectedState.snapshotId),
   );
-  if (ids.size !== 1 || ids.has(undefined)) {
+  if (ids.size !== 1) {
     throw new Error(
-      "Interactive mutation proposals must reference one exact portfolio snapshot",
+      'All mutation actions must use the same arguments.actions[].expectedState.snapshotId copied from read_portfolio snapshotReference.value',
     );
   }
   return [...ids][0];

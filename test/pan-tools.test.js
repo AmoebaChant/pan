@@ -31,6 +31,14 @@ test("maps every custom-agent operation to a constrained registry read", async (
     (await registry.dispatch("read_portfolio")).data.id,
     "snapshot-1",
   );
+  assert.deepEqual(
+    (await registry.dispatch("read_portfolio")).snapshotReference,
+    {
+      field: "actions[].expectedState.snapshotId",
+      value: "snapshot-1",
+      usableForMutation: true,
+    },
+  );
   assert.equal(
     (
       await registry.dispatch("read_workstream", {
@@ -222,6 +230,34 @@ test("validates strict action records and generates dry-run proposals without mu
     }),
     /requires action kind issue-comment/i,
   );
+  const missingSnapshot = issueAction({ repository: DOMAIN.repository });
+  delete missingSnapshot.expectedState.snapshotId;
+  await assert.rejects(
+    registry.dispatch("propose_actions", {
+      actions: [missingSnapshot],
+    }),
+    /arguments\.actions\[0\]\.expectedState\.snapshotId must be a non-empty string/i,
+  );
+});
+
+test("accepts interactive task creation with the read portfolio snapshot", async () => {
+  const { registry } = fixture();
+  const read = await registry.dispatch("read_portfolio");
+  const proposed = await registry.dispatch("propose_actions", {
+    actions: [
+      issueAction({
+        repository: DOMAIN.repository,
+        snapshotId: read.snapshotReference.value,
+      }),
+    ],
+  });
+
+  assert.equal(proposed.proposals.length, 1);
+  assert.equal(proposed.proposals[0].action.kind, "issue-create");
+  assert.equal(
+    proposed.proposals[0].action.expectedState.snapshotId,
+    "snapshot-1",
+  );
 });
 
 test("returns policy rejections and does not expose local paths in source errors", async () => {
@@ -407,7 +443,11 @@ function canonicalItem(status, repository = DOMAIN.repository) {
 function fieldAction({ status = "ready" } = {}) {
   return baseAction({
     kind: "field-update",
-    expectedState: { status, priority: "normal" },
+    expectedState: {
+      snapshotId: "snapshot-1",
+      status,
+      priority: "normal",
+    },
     target: {
       itemId: "item-1",
       field: "priority",
@@ -416,10 +456,14 @@ function fieldAction({ status = "ready" } = {}) {
   });
 }
 
-function issueAction({ repository, workstream } = {}) {
+function issueAction({
+  repository,
+  workstream,
+  snapshotId = "snapshot-1",
+} = {}) {
   return baseAction({
     kind: "issue-create",
-    expectedState: { absent: true },
+    expectedState: { snapshotId, absent: true },
     target: {
       repository,
       title: "New task",
@@ -431,7 +475,10 @@ function issueAction({ repository, workstream } = {}) {
 function commentAction(issueUrl) {
   return baseAction({
     kind: "issue-comment",
-    expectedState: { updatedAt: "2026-07-20T20:00:00.000Z" },
+    expectedState: {
+      snapshotId: "snapshot-1",
+      updatedAt: "2026-07-20T20:00:00.000Z",
+    },
     target: { issueUrl, body: "A durable comment." },
   });
 }

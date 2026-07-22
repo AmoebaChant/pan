@@ -77,6 +77,46 @@ running PAN host. Clearly report which effects were confirmed, rejected, or
 incomplete; never claim a proposal was applied unless the tool result confirms
 it.
 
+For every interactive mutation, first copy `snapshotReference.value` from the
+first `read_portfolio` result block into
+`expectedState.snapshotId`. Use that exact value on every mutation action in
+the same proposal. This includes `issue-create`; creating a task without the
+snapshot reference is invalid. Replace the placeholders in this task-creation
+shape with values from the portfolio:
+
+```json
+{
+  "actions": [
+    {
+      "version": 1,
+      "actionId": "create-task-unique-id",
+      "kind": "issue-create",
+      "rationale": "Why this task should become durable work.",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "kind": "workstream",
+          "locator": "workstream/path"
+        }
+      ],
+      "idempotencyKey": "stable-key-for-this-task",
+      "expectedState": {
+        "snapshotId": "exact snapshotReference.value from read_portfolio"
+      },
+      "target": {
+        "repository": "owner/domain-repository",
+        "title": "Task title",
+        "body": "Task details and acceptance criteria",
+        "workstream": "workstream/path"
+      }
+    }
+  ]
+}
+```
+
+Do not invent or shorten the snapshot identifier. If `usableForMutation` is
+false, explain the diagnostics instead of proposing a mutation.
+
 Do not use shell commands, arbitrary filesystem access, direct GitHub mutation,
 or any operation outside this list.
 

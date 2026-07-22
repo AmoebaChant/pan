@@ -108,14 +108,21 @@ export class PanToolRegistry {
 
   async #dispatchValidated(operation, args) {
     switch (operation) {
-      case "read_portfolio":
+      case "read_portfolio": {
         exactKeys(args, [], "arguments");
+        const snapshot = validatePortfolioDomain(
+          await this.snapshotSource.build(),
+          this.domain,
+        );
         return {
-          data: validatePortfolioDomain(
-            await this.snapshotSource.build(),
-            this.domain,
-          ),
+          snapshotReference: {
+            field: "actions[].expectedState.snapshotId",
+            value: snapshot.id,
+            usableForMutation: snapshot.usableForMutation === true,
+          },
+          data: snapshot,
         };
+      }
       case "read_canonical_items":
         exactKeys(args, [], "arguments");
         return { data: await this.#readProject() };

@@ -120,3 +120,61 @@ Project exposed by the UI, so there is no separate conversational queue.
 PAN can explain ordering, accept relative-order overrides, add or reschedule
 work, answer worker questions, and promote durable conversational outcomes into
 Issues, Project fields, or workstream markdown.
+
+### Interactive mutation envelope
+
+`read_portfolio` returns a short first result block before the complete
+portfolio. Its `snapshotReference` is always available even if the complete
+portfolio is truncated:
+
+```json
+{
+  "snapshotReference": {
+    "field": "actions[].expectedState.snapshotId",
+    "value": "sha256:<64 lowercase hexadecimal characters>",
+    "usableForMutation": true
+  }
+}
+```
+
+Every mutation action passed to `propose_actions`, including `issue-create`,
+must copy that exact `snapshotReference.value` into
+`expectedState.snapshotId`. All mutation actions in one call must reference the
+same snapshot. A validated task-creation request is:
+
+```json
+{
+  "actions": [
+    {
+      "version": 1,
+      "actionId": "create-task-unique-id",
+      "kind": "issue-create",
+      "rationale": "Why the cited evidence should become durable work.",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "kind": "workstream",
+          "locator": "workstream/path"
+        }
+      ],
+      "idempotencyKey": "stable-key-for-this-task",
+      "expectedState": {
+        "snapshotId": "sha256:<exact value from read_portfolio>"
+      },
+      "target": {
+        "repository": "owner/domain-repository",
+        "title": "Task title",
+        "body": "Task details and acceptance criteria",
+        "workstream": "workstream/path"
+      }
+    }
+  ]
+}
+```
+
+All actions require protocol `version`, an `actionId`, supported `kind`,
+material `rationale`, `confidence` from 0 through 1, and at least one durable
+evidence citation. Mutations additionally require an `idempotencyKey`,
+`expectedState`, and kind-specific `target`; `no-op` uses `recommendation`
+instead. PAN rejects missing, mismatched, unknown, or stale snapshot references
+without applying any mutation.

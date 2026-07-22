@@ -127,7 +127,11 @@ function fieldAction(
   return action({
     kind: "field-update",
     target: { itemId, field, value },
-    expectedState: { status, [field]: "normal" },
+    expectedState: {
+      snapshotId: "snapshot-1",
+      status,
+      [field]: "normal",
+    },
   });
 }
 
@@ -135,7 +139,10 @@ function reorderAction(orderedItemIds, { rationale } = {}) {
   return action({
     kind: "canonical-reorder",
     target: { orderedItemIds },
-    expectedState: { orderedItemIds: [...orderedItemIds].reverse() },
+    expectedState: {
+      snapshotId: "snapshot-1",
+      orderedItemIds: [...orderedItemIds].reverse(),
+    },
     rationale,
   });
 }
