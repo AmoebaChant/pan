@@ -18,7 +18,7 @@ export async function startPanSession({
   env = process.env,
   spawnProcess = spawn,
   assetService = new PanAssetService({ env }),
-  domainIdentity = new DomainIdentity(),
+  domainIdentity = new DomainIdentity({ env }),
   commands = new ProcessClient(),
   verifyCopilot = verifyCopilotContract,
 } = {}) {

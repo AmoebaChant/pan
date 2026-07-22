@@ -11,8 +11,9 @@ import { normalizeGitHubRepositoryUrl } from "./workstream-delivery.js";
  */
 export class DomainIdentity {
   constructor({
+    env = process.env,
     commands = new ProcessClient(),
-    gh = new GhClient(),
+    gh = new GhClient({ env }),
     storeFactory = (options) => new PanStore(options),
     realpathImpl = realpath,
     statImpl = stat,
@@ -27,6 +28,7 @@ export class DomainIdentity {
       throw new TypeError("storeFactory must be a function");
     }
     this.commands = commands;
+    this.env = env;
     this.gh = gh;
     this.storeFactory = storeFactory;
     this.realpath = realpathImpl;
@@ -152,7 +154,11 @@ export class DomainIdentity {
   }
 
   #git(args) {
-    return this.commands.run("git", args, { timeout: 30_000, maxBuffer: 1024 * 1024 });
+    return this.commands.run("git", args, {
+      env: this.env,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
   }
 }
 
