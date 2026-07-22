@@ -311,6 +311,83 @@ test("rejects evidence cited as the wrong source kind", async () => {
   assert.deepEqual(fixture.calls, []);
 });
 
+test("accepts linked pull requests as domain-record evidence", async () => {
+  const pullRequestUrl = "https://github.com/example/tool/pull/19";
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "domain-record",
+      locator: pullRequestUrl,
+    },
+    mutateSnapshot: (snapshot) => {
+      snapshot.dossiers[0].item.linkedPullRequests = [
+        {
+          number: 19,
+          url: pullRequestUrl,
+          state: "open",
+          mergedAt: null,
+          repository: "example/tool",
+        },
+      ];
+    },
+  });
+
+  const result = await fixture.service.run();
+
+  assert.equal(result.response.facts.length, 1);
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("accepts linked pull request repository-number locators", async () => {
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "domain-record",
+      locator: "example/tool#19",
+    },
+    mutateSnapshot: (snapshot) => {
+      snapshot.dossiers[0].item.linkedPullRequests = [
+        {
+          number: 19,
+          url: "https://github.com/example/tool/pull/19",
+          state: "open",
+          mergedAt: null,
+          repository: "example/tool",
+        },
+      ];
+    },
+  });
+
+  const result = await fixture.service.run();
+
+  assert.equal(result.response.facts.length, 1);
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("rejects unlinked pull requests as domain-record evidence", async () => {
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "domain-record",
+      locator: "https://github.com/example/tool/pull/20",
+    },
+    mutateSnapshot: (snapshot) => {
+      snapshot.dossiers[0].item.linkedPullRequests = [
+        {
+          number: 19,
+          url: "https://github.com/example/tool/pull/19",
+          state: "open",
+          mergedAt: null,
+          repository: "example/tool",
+        },
+      ];
+    },
+  });
+
+  await assert.rejects(
+    fixture.service.run(),
+    /unknown locator .* for domain-record evidence/i,
+  );
+  assert.deepEqual(fixture.calls, []);
+});
+
 test("accepts runner evidence with matching value assertions", async () => {
   const fixture = reviewFixture({
     factCitation: {
