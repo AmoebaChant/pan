@@ -188,6 +188,26 @@ test("includes reasoning response requirements in the agent prompt", async () =>
   assert.match(prompt, /Follow responseRequirements exactly/);
 });
 
+test("documents item-qualified project-field citation locators", async () => {
+  const result = await fixtureClient().review(
+    {
+      ...turn("autonomous-review"),
+      portfolio: { project: { items: ["item-1"] } },
+    },
+    { inlinePortfolio: true },
+  );
+
+  assert.match(
+    result.result.data.prompt,
+    /project-field locators must identify a snapshot item/i,
+  );
+  assert.match(
+    result.result.data.prompt,
+    /<item-id>:<field>=<expected-value>/,
+  );
+  assert.match(result.result.data.prompt, /bare field=value locators are invalid/i);
+});
+
 test("rejects unknown tools before invoking the callback", async () => {
   let callbackCount = 0;
   const client = fixtureClient({

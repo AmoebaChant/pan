@@ -311,6 +311,21 @@ test("rejects evidence cited as the wrong source kind", async () => {
   assert.deepEqual(fixture.calls, []);
 });
 
+test("explains that project-field assertions require an item locator", async () => {
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "project-field",
+      locator: "status=done",
+    },
+  });
+
+  await assert.rejects(
+    fixture.service.run(),
+    /project-field locator must identify a snapshot item using <item-id>:<field> or <item-id>:<field>=<expected-value>; bare field=value locators are ambiguous/i,
+  );
+  assert.deepEqual(fixture.calls, []);
+});
+
 test("accepts runner evidence with matching value assertions", async () => {
   const fixture = reviewFixture({
     factCitation: {
