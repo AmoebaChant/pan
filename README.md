@@ -65,6 +65,17 @@ definition remains reusable.
 The runtime decides when PAN should think; PAN decides how the portfolio should
 change. See [the target architecture](docs/architecture.md).
 
+Start with the setup wizard:
+
+```powershell
+pan setup
+```
+
+It creates a private domain repository and GitHub Project, clones and bootstraps
+the repository, writes `pan.json` with the absolute clone path, and creates an
+offline runner profile. Copilot tool approval defaults to `prompt`; selecting
+`allow-all` is an explicit opt-in recorded in that private runner profile.
+
 ```powershell
 # Terminal 1: visible host and activity log
 pan start --config C:\path\to\domain-config.json

@@ -176,6 +176,7 @@ export class LocalTaskExecutor {
         copilot: {
           executable: this.profile.copilot.executable,
           model: this.profile.copilot.model,
+          approvalMode: this.profile.copilot.approvalMode,
           ...this.profile.taskBudget,
           deadline,
           sessionId,
@@ -403,6 +404,7 @@ export class LocalTaskExecutor {
       copilot: {
         executable: this.profile.copilot.executable,
         model: this.profile.copilot.model,
+        approvalMode: this.profile.copilot.approvalMode,
         ...this.profile.taskBudget,
         deadline,
         sessionId: pointer.sessionId,

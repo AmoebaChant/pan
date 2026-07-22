@@ -7,6 +7,7 @@ const DEFAULTS = {
   pollIntervalSeconds: 30,
   leaseSeconds: 600,
   heartbeatSeconds: 120,
+  approvalMode: "prompt",
 };
 
 export async function loadRunnerProfile(profilePath) {
@@ -44,7 +45,9 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
 
   const store = normalizeStore(profile.store, profilePath);
   validateStore(store);
-  validateRepositories(profile.repositories, profile.capabilities);
+  validateRepositories(profile.repositories, profile.capabilities, {
+    online: profile.online,
+  });
   requireAbsolutePath(profile.workspaceRoot, "workspaceRoot");
   requireAbsolutePath(profile.stateDirectory, "stateDirectory");
 
@@ -65,8 +68,23 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
   if (profile.githubAssignee !== undefined) {
     requireString(profile.githubAssignee, "githubAssignee");
   }
+  if (
+    profile.copilot !== undefined &&
+    (!profile.copilot ||
+      typeof profile.copilot !== "object" ||
+      Array.isArray(profile.copilot))
+  ) {
+    throw new TypeError("copilot must be an object");
+  }
   if (profile.copilot?.executable !== undefined) {
     requireString(profile.copilot.executable, "copilot.executable");
+  }
+  const approvalMode =
+    profile.copilot?.approvalMode ?? DEFAULTS.approvalMode;
+  if (!["prompt", "allow-all"].includes(approvalMode)) {
+    throw new TypeError(
+      'copilot.approvalMode must be "prompt" or "allow-all"',
+    );
   }
 
   const normalized = {
@@ -111,6 +129,7 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
     copilot: {
       executable: profile.copilot?.executable ?? "copilot",
       model: profile.copilot?.model,
+      approvalMode,
     },
   };
   normalized.playbooks = normalizePlaybooks(normalized);
@@ -140,14 +159,18 @@ function validateStore(store) {
   requireAbsolutePath(store.path, "store.path");
 }
 
-function validateRepositories(repositories, capabilities) {
+function validateRepositories(repositories, capabilities, { online }) {
   if (
     !repositories ||
     typeof repositories !== "object" ||
-    Array.isArray(repositories) ||
-    Object.keys(repositories).length === 0
+    Array.isArray(repositories)
   ) {
-    throw new TypeError("repositories must contain at least one repository");
+    throw new TypeError("repositories must be an object");
+  }
+  if (online && Object.keys(repositories).length === 0) {
+    throw new TypeError(
+      "repositories must contain at least one repository when the runner is online",
+    );
   }
 
   for (const [repository, config] of Object.entries(repositories)) {

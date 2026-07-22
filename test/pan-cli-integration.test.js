@@ -51,6 +51,63 @@ const inboxEntries = [
   },
 ];
 
+test("runs setup before loading any existing configuration", async () => {
+  const stdout = capture();
+  let received;
+  const expected = {
+    repository: "example/domain",
+    directory: "C:\\domains\\example",
+    configPath: "C:\\domains\\example\\pan.json",
+    projectOwner: "example",
+    projectNumber: 12,
+    projectUrl: "https://github.com/users/example/projects/12",
+    runnerProfilePath: "C:\\domains\\example\\runners\\machine.json",
+    approvalMode: "prompt",
+    runnerOnline: false,
+  };
+
+  const result = await runPanCli(
+    ["setup", "--repository", "example/domain", "--json"],
+    {
+      stdout,
+      stderr: capture(),
+      domainConfigLoader: async () => assert.fail("config loader was called"),
+      runnerProfileLoader: async () => assert.fail("profile loader was called"),
+      setupFactory: async (options) => {
+        received = options;
+        return expected;
+      },
+    },
+  );
+
+  assert.equal(received.repository, "example/domain");
+  assert.deepEqual(result, expected);
+  assert.deepEqual(JSON.parse(stdout.value), expected);
+});
+
+test("reports successful setup in the default human-readable format", async () => {
+  const stdout = capture();
+  await runPanCli(["setup", "--repository", "example/domain"], {
+    stdout,
+    stderr: capture(),
+    setupFactory: async () => ({
+      repository: "example/domain",
+      directory: "C:\\domains\\example",
+      configPath: "C:\\domains\\example\\pan.json",
+      projectOwner: "example",
+      projectNumber: 12,
+      projectUrl: "https://github.com/users/example/projects/12",
+      runnerProfilePath: "C:\\domains\\example\\runners\\machine.json",
+      approvalMode: "prompt",
+      runnerOnline: false,
+    }),
+  });
+
+  assert.match(stdout.value, /PAN domain ready: example\/domain/);
+  assert.match(stdout.value, /Runner profile: .* \(offline\)/);
+  assert.match(stdout.value, /Copilot approvals: prompt/);
+});
+
 test("composes attention commands from domain config without a runner profile", async () => {
   const stdout = capture();
   const calls = [];

@@ -20,6 +20,7 @@ import {
 import { PanReviewService } from "./pan-review-service.js";
 import { PanRepairService } from "./pan-repair-service.js";
 import { PanRuntime } from "./pan-runtime.js";
+import { setupPanDomain } from "./pan-setup.js";
 import { PanStore } from "./pan-store.js";
 import { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 import { PanToolRegistry } from "./pan-tools.js";
@@ -54,10 +55,25 @@ export async function runPanCli(
     stopFactory = stopPan,
     connectFactory = connectPan,
     prepareRuntimeFactory = preparePanRuntime,
+    setupFactory = setupPanDomain,
     loggerFactory = createServiceLogger,
   } = {},
 ) {
   const parsed = parseArgs(args, env);
+  if (parsed.command === "setup") {
+    const result = await setupFactory(parsed, {
+      gh,
+      env,
+      output: stdout,
+    });
+    write(
+      stdout,
+      parsed.json
+        ? JSON.stringify(result, null, 2)
+        : formatSetupResult(result),
+    );
+    return result;
+  }
   if (parsed.command === "stop") {
     requireDomainConfiguration(parsed);
     const result = await stopFactory({ configPath: parsed.config, env });
@@ -284,14 +300,43 @@ export function parseArgs(args, env = process.env) {
       "PAN domain config and runner profile inputs cannot be used together",
     );
   }
+  const configuration = { config, profile };
+  const json = takeFlag(remaining, "--json");
+  const command = remaining.shift();
+  if (command === "setup") {
+    if (config || profile) {
+      throw new TypeError(
+        "pan setup creates configuration and cannot use --config, --profile, PAN_CONFIG, or PAN_PROFILE",
+      );
+    }
+    const repository = takeOption(remaining, "--repository");
+    const setupPath = takeOption(remaining, "--path");
+    const projectOwner = takeOption(remaining, "--project-owner");
+    const projectTitle = takeOption(remaining, "--project-title");
+    const approvalMode = takeOption(remaining, "--approval-mode");
+    if (approvalMode !== undefined) {
+      validateChoice(
+        approvalMode,
+        ["prompt", "allow-all"],
+        "--approval-mode",
+      );
+    }
+    requireNoArgs(remaining);
+    return {
+      command,
+      json,
+      repository,
+      path: setupPath,
+      projectOwner,
+      projectTitle,
+      approvalMode,
+    };
+  }
   if (!config && !profile) {
     throw new TypeError(
       "Set PAN_CONFIG or pass --config <domain-config.json> (legacy: PAN_PROFILE or --profile)",
     );
   }
-  const configuration = { config, profile };
-  const json = takeFlag(remaining, "--json");
-  const command = remaining.shift();
   if (
     ![
       "start",
@@ -600,6 +645,7 @@ function formatReasoningResult(result) {
       ),
     );
   }
+
   if (result.response.rejectedActions.length > 0) {
     lines.push(
       "",
@@ -623,6 +669,17 @@ function formatReasoningResult(result) {
     );
   }
   return lines.join("\n");
+}
+
+function formatSetupResult(result) {
+  return [
+    `PAN domain ready: ${result.repository}`,
+    `Clone: ${result.directory}`,
+    `Project: ${result.projectUrl ?? `${result.projectOwner}#${result.projectNumber}`}`,
+    `Config: ${result.configPath}`,
+    `Runner profile: ${result.runnerProfilePath} (offline)`,
+    `Copilot approvals: ${result.approvalMode}`,
+  ].join("\n");
 }
 
 function inboxTable(entries) {
@@ -710,6 +767,7 @@ function write(stdout, value) {
 function usage() {
   return [
     "Usage:",
+    "  pan setup [--repository <owner/name>] [--path <path>] [--approval-mode <prompt|allow-all>]",
     "  pan start [--apply] --config <path>",
     "  pan start --background [--no-terminal] [--apply] --config <path>",
     "  pan stop --config <path>",

@@ -24,6 +24,7 @@ test("opens an interactive Copilot shell with the initial task", () => {
   assert.ok(!args.includes("--max-ai-credits"));
   assert.ok(!args.includes("-p"));
   assert.ok(!args.includes("--autopilot"));
+  assert.ok(!args.includes("--allow-all-tools"));
   assert.ok(!args.includes("--no-ask-user"));
   assert.ok(!args.includes("--max-autopilot-continues"));
   assert.equal(
@@ -36,6 +37,15 @@ test("opens an interactive Copilot shell with the initial task", () => {
     "-i",
     prompt,
   ]);
+});
+
+test("auto-approves all tools only when the runner opts in", () => {
+  const task = makeTask();
+  task.copilot.approvalMode = "allow-all";
+
+  const args = buildTaskCopilotArgs(task, "Do the task.");
+
+  assert.ok(args.includes("--allow-all-tools"));
 });
 
 test("resumes an interrupted task's Copilot session", () => {

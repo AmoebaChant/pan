@@ -34,6 +34,7 @@ export {
   stopPan,
 } from "./pan-launcher.js";
 export { createServiceLogger } from "./service-logger.js";
+export { setupPanDomain } from "./pan-setup.js";
 export { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 export {
   ActionPolicy,

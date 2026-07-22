@@ -49,7 +49,6 @@
     },
     "repositories": {
       "type": "object",
-      "minProperties": 1,
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
@@ -91,8 +90,28 @@
       "additionalProperties": false,
       "properties": {
         "executable": { "type": "string", "minLength": 1 },
-        "model": { "type": "string", "minLength": 1 }
+        "model": { "type": "string", "minLength": 1 },
+        "approvalMode": {
+          "type": "string",
+          "enum": ["prompt", "allow-all"],
+          "default": "prompt"
+        }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "online": { "const": true }
+        },
+        "required": ["online"]
+      },
+      "then": {
+        "properties": {
+          "repositories": { "minProperties": 1 }
+        }
+      }
+    }
+  ]
 }
