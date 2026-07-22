@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-15 | Execute implementation_plan/03_02_leadership_aware_action_apply.md | execute-implementation-plan | |
 | | T-16 | Execute implementation_plan/03_03_issue_creation_recovery.md | execute-implementation-plan | |
 | | T-17 | Execute implementation_plan/03_04_workstream_prepare.md | execute-implementation-plan | |
 | | T-18 | Execute implementation_plan/03_05_workstream_publish.md | execute-implementation-plan | |
@@ -40,5 +39,6 @@
 | | T-12 | Execute implementation_plan/02_04_merged_pr_reconciliation_receipts.md | execute-implementation-plan | done 2026-07-22 · 8a6c3fc · targeted and full tests passed |
 | | T-13 | Execute implementation_plan/02_05_attention_and_task_cli.md | execute-implementation-plan | done 2026-07-22 · 1e3e164–7a5a79b · targeted and full tests passed |
 | | T-14 | Execute implementation_plan/03_01_action_contract_expected_state.md | execute-implementation-plan | done 2026-07-22 · 1d413c3–e870226 · targeted and full tests passed |
+| | T-15 | Execute implementation_plan/03_02_leadership_aware_action_apply.md | execute-implementation-plan | done 2026-07-22 · 71dba36 · targeted and full tests passed |
 
 ## Untriaged
