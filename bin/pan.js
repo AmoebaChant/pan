@@ -3,7 +3,12 @@
 import { runPanCli } from "../src/pan-cli.js";
 
 try {
-  await runPanCli(process.argv.slice(2));
+  const result = await runPanCli(process.argv.slice(2));
+  if (result?.signal) {
+    process.kill(process.pid, result.signal);
+  } else if (Number.isInteger(result?.exitCode)) {
+    process.exitCode = result.exitCode;
+  }
 } catch (error) {
   if (error.result) {
     process.stdout.write(`${JSON.stringify(error.result)}\n`);

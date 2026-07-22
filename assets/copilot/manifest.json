@@ -9,7 +9,7 @@
     {
       "source": "instructions/pan.instructions.md",
       "destination": "instructions/pan.instructions.md",
-      "sha256": "fc5a7a6796bd77ff28f6cf6ef3e7b03571ec2d1605b777b2a45baa577c3b9eaf"
+      "sha256": "ff171bd0f159f7bd70e5414770acda90bc64b1e47b673d54bc0bd505bdf69e46"
     },
     {
       "source": "skills/pan-attention/SKILL.md",

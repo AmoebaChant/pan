@@ -73,6 +73,13 @@ export {
   startPan,
   stopPan,
 } from "./pan-launcher.js";
+export {
+  buildSessionCopilotArgs,
+  buildSessionEnvironment,
+  startPanSession,
+  verifyCopilotContract,
+} from "./pan-session.js";
+export { DomainIdentity } from "./domain-identity.js";
 export { createServiceLogger } from "./service-logger.js";
 export { setupPanDomain } from "./pan-setup.js";
 export { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";

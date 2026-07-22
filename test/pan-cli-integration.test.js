@@ -85,6 +85,35 @@ test("runs setup before loading any existing configuration", async () => {
   assert.deepEqual(JSON.parse(stdout.value), expected);
 });
 
+test("dispatches a hostless session without constructing legacy host services", async () => {
+  const stdout = capture();
+  let received;
+  const config = {
+    ...domainConfig,
+    version: 2,
+    state: { branch: "pan-state", path: ".pan", leaderPath: ".pan/leader.json" },
+    session: { agent: { name: "pan", executable: "copilot-test" }, productContextRoots: [] },
+  };
+
+  const result = await runPanCli(["session", "--config", "domain.json", "--json"], {
+    stdout,
+    stderr: capture(),
+    domainConfigLoader: async () => config,
+    storeFactory: () => assert.fail("session must not construct a legacy store"),
+    attentionFactory: () => assert.fail("session must not construct legacy attention"),
+    sessionFactory: async (options) => {
+      received = options;
+      return { exitCode: 0, domain: { repository: "example/domain" } };
+    },
+  });
+
+  assert.equal(received.config, config);
+  assert.equal(received.configPath, "domain.json");
+  assert.equal(received.executable, "copilot-test");
+  assert.deepEqual(result, { exitCode: 0, domain: { repository: "example/domain" } });
+  assert.deepEqual(JSON.parse(stdout.value), result);
+});
+
 test("reports successful setup in the default human-readable format", async () => {
   const stdout = capture();
   await runPanCli(["setup", "--repository", "example/domain"], {

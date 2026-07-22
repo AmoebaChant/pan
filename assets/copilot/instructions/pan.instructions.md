@@ -17,7 +17,7 @@ authority to modify PAN or any product-context repository.
 ## Evidence and recommendations
 
 Before a material recommendation or mutation, run `pan evidence portfolio
---schema-version 1 --config <config> --json` and use its fresh snapshot. Treat
+--schema-version 1 --config "$PAN_DOMAIN_CONFIG" --json` and use its fresh snapshot. Treat
 incomplete evidence as incomplete; distinguish facts, interpretations,
 assumptions, and uncertainties. Cite durable Issues, Project fields,
 workstream revisions, runner observations, or other inspectable records for

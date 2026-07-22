@@ -259,6 +259,12 @@ test("parses persistent PAN lifecycle commands", () => {
       model: "gpt-5.6-sol",
     },
   );
+  assert.deepEqual(parsePanArgs(["session"], { PAN_CONFIG: "domain.json" }), {
+    command: "session",
+    config: "domain.json",
+    profile: undefined,
+    json: false,
+  });
   assert.throws(
     () =>
       parsePanArgs(["start", "--no-terminal"], {

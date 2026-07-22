@@ -31,6 +31,7 @@ import {
   startPan,
   stopPan,
 } from "./pan-launcher.js";
+import { startPanSession } from "./pan-session.js";
 import { PanReviewService } from "./pan-review-service.js";
 import { PanRepairService } from "./pan-repair-service.js";
 import { PanRuntime } from "./pan-runtime.js";
@@ -68,6 +69,7 @@ export async function runPanCli(
     startFactory = startPan,
     stopFactory = stopPan,
     connectFactory = connectPan,
+    sessionFactory = startPanSession,
     prepareRuntimeFactory = preparePanRuntime,
     setupFactory = setupPanDomain,
     assetServiceFactory = (options) => new PanAssetService(options),
@@ -140,6 +142,23 @@ export async function runPanCli(
       stderr,
       "Warning: --profile and PAN_PROFILE are deprecated for PAN commands; use --config or PAN_CONFIG.",
     );
+  }
+  if (parsed.command === "session") {
+    requireDomainConfiguration(parsed);
+    const result = await sessionFactory({
+      config: configuration.domainConfig,
+      configPath: parsed.config,
+      executable: configuration.agent.executable,
+      model: configuration.agent.model,
+      env,
+    });
+    write(
+      stdout,
+      parsed.json
+        ? JSON.stringify(result, null, 2)
+        : `PAN session exited with code ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}.`,
+    );
+    return result;
   }
   const store = storeFactory({
     repository: configuration.store.repository,
@@ -462,6 +481,7 @@ export function parseArgs(args, env = process.env) {
       "stop",
       "host",
       "connect",
+      "session",
       "daemon",
       "review",
       "chat",
@@ -502,6 +522,10 @@ export function parseArgs(args, env = process.env) {
     const model = takeOption(remaining, "--model");
     requireNoArgs(remaining);
     return { command, ...configuration, model };
+  }
+  if (command === "session") {
+    requireNoArgs(remaining);
+    return { command, ...configuration, json };
   }
   if (command === "daemon") {
     const once = takeFlag(remaining, "--once");
@@ -763,6 +787,7 @@ async function loadCliConfiguration(
     const leadership = config.leadership ?? {};
     return {
       deprecated: false,
+      domainConfig: config,
       store: {
         repository: config.domain.repository,
         projectOwner: config.domain.projectOwner,
@@ -1096,6 +1121,7 @@ function usage() {
     "  pan start --background [--no-terminal] [--apply] --config <path>",
     "  pan stop --config <path>",
     "  pan connect [--model <id>] --config <path>",
+    "  pan session --config <path>",
     "  pan daemon [--once] --config <path>",
     "  pan review [--apply] [--json] --config <path>",
     "  pan chat <message> [--dry-run] [--json] --config <path>",
