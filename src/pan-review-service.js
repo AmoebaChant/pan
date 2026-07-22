@@ -12,6 +12,7 @@ const MODEL_WRITABLE_FIELDS = new Set([
   "requirements",
   "workstream",
 ]);
+const MAX_REASONING_ATTEMPTS = 2;
 
 export class PanReviewService {
   constructor({
@@ -78,9 +79,13 @@ export class PanReviewService {
       },
       ...(userInput ? { userInput } : {}),
     };
-    const agentResult = userInput
-      ? await this.agentClient.chat(turn, { signal })
-      : await this.agentClient.review(turn, { signal });
+    const agentResult = await runReasoningTurn({
+      invoke: () =>
+        userInput
+          ? this.agentClient.chat(turn, { signal })
+          : this.agentClient.review(turn, { signal }),
+      signal,
+    });
     const response = normalizePanFinalResponse(agentResult.response);
     const evidencedResponse = validateResponseEvidence(response, snapshot);
     if (!apply) {
@@ -529,6 +534,38 @@ function currentPolicySnapshot(current) {
       },
     })),
   };
+}
+
+async function runReasoningTurn({ invoke, signal }) {
+  for (let attempt = 1; attempt <= MAX_REASONING_ATTEMPTS; attempt += 1) {
+    try {
+      return await invoke();
+    } catch (error) {
+      if (!isRetryableMalformedResponse(error)) {
+        throw error;
+      }
+      if (attempt < MAX_REASONING_ATTEMPTS) {
+        signal?.throwIfAborted();
+        continue;
+      }
+      throw Object.assign(
+        new Error(
+          `PAN agent returned a malformed response after ${attempt} attempts; no mutations were attempted. ` +
+            `The portfolio snapshot was complete, so inspect the model response contract and any unusually structured source text before retrying. Last error: ${error.message}`,
+          { cause: error },
+        ),
+        error,
+        { attempts: attempt },
+      );
+    }
+  }
+}
+
+function isRetryableMalformedResponse(error) {
+  return (
+    error?.state === "malformed-response" &&
+    error.confirmedSideEffects === false
+  );
 }
 
 function validateResponseEvidence(response, snapshot) {
