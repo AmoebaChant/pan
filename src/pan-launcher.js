@@ -294,9 +294,14 @@ export function buildInteractiveCopilotArgs({
     `@${mcpConfig}`,
     "--disable-builtin-mcps",
     ...TOOL_NAMES.map((name) => `--available-tools=pan-tools-${name}`),
+    // The full portfolio can exceed the Copilot CLI inline-output limit, which
+    // saves the overflow to a temp file. Grant the built-in read tool and temp
+    // access (by not disallowing it) so PAN can read that file back. Reads are
+    // the only relaxation; mutations still flow through propose_actions.
+    "--available-tools=view",
     "--allow-tool=pan-tools",
+    "--allow-tool=read",
     "--no-auto-update",
-    "--disallow-temp-dir",
     "--session-id",
     sessionId,
     ...(model ? ["--model", model] : []),

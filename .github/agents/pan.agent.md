@@ -9,6 +9,7 @@ tools:
   - pan-tools/read_config
   - pan-tools/update_config
   - pan-tools/propose_actions
+  - view
 disable-model-invocation: true
 user-invocable: true
 ---
@@ -123,6 +124,12 @@ false, explain the diagnostics instead of proposing a mutation.
 
 Do not use shell commands, arbitrary filesystem access, direct GitHub mutation,
 or any operation outside this list.
+
+The one exception is recovering a truncated portfolio. When a `read_portfolio`
+result is too large for the interactive session and the Copilot CLI saves the
+overflow to a temporary file, use the built-in `view` tool to read that file
+back, paging through it in ranges under the output limit until you hold the
+complete snapshot. Use `view` only for this purpose; never read other files.
 
 # Configuration
 

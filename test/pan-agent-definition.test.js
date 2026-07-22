@@ -17,6 +17,7 @@ const ALLOWED_TOOLS = [
   "pan-tools/read_config",
   "pan-tools/update_config",
   "pan-tools/propose_actions",
+  "view",
 ];
 
 test("defines one selectable generic PAN identity for review and chat", async () => {

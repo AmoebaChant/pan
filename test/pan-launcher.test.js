@@ -6,10 +6,26 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  buildInteractiveCopilotArgs,
   connectPan,
   runtimePaths,
   startPan,
 } from "../src/index.js";
+
+test("interactive args grant read-only recovery of a truncated portfolio", () => {
+  const args = buildInteractiveCopilotArgs({
+    toolRoot: path.resolve("."),
+    mcpConfig: "/tmp/mcp.json",
+    agentName: "pan",
+    model: "gpt-5.6-sol",
+  });
+
+  assert.ok(args.includes("--available-tools=view"));
+  assert.ok(args.includes("--allow-tool=read"));
+  assert.ok(args.includes("--allow-tool=pan-tools"));
+  assert.ok(args.includes("--available-tools=pan-tools-read_portfolio"));
+  assert.ok(!args.includes("--disallow-temp-dir"));
+});
 
 test("opens a headed PAN session connected to an existing host", async () => {
   const localAppData = await mkdtemp(path.join(os.tmpdir(), "pan-launcher-"));
