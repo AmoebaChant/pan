@@ -56,7 +56,7 @@ export const PAN_INTERACTIVE_TOOLS = Object.freeze([
   ),
   tool(
     "propose_actions",
-    "Submit PAN protocol v1 actions for deterministic validation and application. Every mutation, including issue-create, must set expectedState.snapshotId to the exact snapshotReference.value from the latest read_portfolio result.",
+    "Submit PAN protocol v1 actions for deterministic validation and application. Every mutation, including issue-create, must set expectedState.snapshotId to the exact snapshotReference.value from the latest read_portfolio result. issue-create must include complete owner, priority, autonomy, workstream, and requirements metadata so the task is immediately actionable.",
     {
       actions: {
         type: "array",

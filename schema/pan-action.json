@@ -256,7 +256,12 @@
               "additionalProperties": false,
               "required": [
                 "repository",
-                "title"
+                "title",
+                "workstream",
+                "owner",
+                "priority",
+                "autonomy",
+                "requirements"
               ],
               "properties": {
                 "repository": {
@@ -274,6 +279,35 @@
                 "workstream": {
                   "type": "string",
                   "minLength": 1
+                },
+                "owner": {
+                  "enum": [
+                    "human",
+                    "agent"
+                  ]
+                },
+                "priority": {
+                  "enum": [
+                    "urgent",
+                    "high",
+                    "normal",
+                    "low"
+                  ]
+                },
+                "autonomy": {
+                  "enum": [
+                    "manual",
+                    "full-auto",
+                    "agent-reviewer"
+                  ]
+                },
+                "requirements": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z][A-Za-z0-9-]*:[A-Za-z0-9_./-]+$"
+                  }
                 }
               }
             }

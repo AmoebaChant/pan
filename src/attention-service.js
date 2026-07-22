@@ -96,6 +96,56 @@ export class AttentionService {
     return attention.request;
   }
 
+  async requestDetail(item, record, { marker, signal } = {}) {
+    const comments = await this.store.listComments(item);
+    const attention = latestAttention(comments);
+    if (
+      attention &&
+      !attention.resolved &&
+      attention.request.source === "pan" &&
+      ["missing-detail", "triage-metadata"].includes(attention.request.reason)
+    ) {
+      if (!attention.answer && attention.request.prompt === record.prompt) {
+        if (item.fields.status !== "needs-detail") {
+          await this.store.setFields(
+            item.id,
+            { status: "needs-detail" },
+            { signal },
+          );
+        }
+        return attention.request;
+      }
+      await this.store.addComment(
+        item,
+        formatNeedsHumanResolved(
+          "The triage question was replaced because the required metadata changed.",
+        ),
+        { signal },
+      );
+    } else if (attention && !attention.resolved) {
+      return attention.request;
+    }
+
+    const request = {
+      ...record,
+      source: "pan",
+      reason: "triage-metadata",
+    };
+    await this.store.addComment(
+      item,
+      [formatNeedsHuman(request), marker].filter(Boolean).join("\n\n"),
+      { signal },
+    );
+    if (item.fields.status !== "needs-detail") {
+      await this.store.setFields(
+        item.id,
+        { status: "needs-detail" },
+        { signal },
+      );
+    }
+    return request;
+  }
+
   async answer(identifier, text) {
     const item = await this.#findItem(identifier);
     const comments = await this.store.listComments(item);
@@ -109,6 +159,26 @@ export class AttentionService {
         return item;
       }
       throw new Error(`PAN item ${identifier} has no unresolved needs-human record`);
+    }
+    if (
+      attention.request.source === "pan" &&
+      ["missing-detail", "triage-metadata"].includes(attention.request.reason)
+    ) {
+      if (!attention.answer && !attention.resolved) {
+        await this.store.addComment(item, formatAnswer(text));
+      }
+      if (["blocked", "needs-detail"].includes(item.fields.status)) {
+        await this.store.setFields(item.id, { status: "untriaged" });
+      }
+      if (!attention.resolved) {
+        await this.store.addComment(
+          item,
+          formatNeedsHumanResolved(
+            "The answer was recorded and PAN will resume triage.",
+          ),
+        );
+      }
+      return item;
     }
     if (!attention.answer && !attention.resolved) {
       await this.store.addComment(item, formatAnswer(text));

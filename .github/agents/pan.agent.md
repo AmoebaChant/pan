@@ -116,7 +116,14 @@ shape with values from the portfolio:
         "repository": "owner/domain-repository",
         "title": "Task title",
         "body": "Task details and acceptance criteria",
-        "workstream": "workstream/path"
+        "workstream": "workstream/path",
+        "owner": "agent",
+        "priority": "normal",
+        "autonomy": "full-auto",
+        "requirements": [
+          "repo:owner/tool",
+          "delivery:pull-request"
+        ]
       }
     }
   ]
@@ -125,6 +132,22 @@ shape with values from the portfolio:
 
 Do not invent or shorten the snapshot identifier. If `usableForMutation` is
 false, explain the diagnostics instead of proposing a mutation.
+
+## Task creation
+
+Before creating a task through PAN Chat, help the user make it complete enough
+to enter the canonical queue immediately. Infer metadata only from durable
+Issue, workstream, domain, and runner evidence. If owner, priority, autonomy,
+workstream, or applicable runner requirements remain ambiguous, ask concise
+questions in the conversation and do not submit `issue-create` yet.
+
+Both human and agent tasks are supported. Human tasks use `owner: human`,
+`autonomy: manual`, and may have no capability requirements. Agent tasks use
+`owner: agent`, `autonomy: full-auto` or `agent-reviewer`, exactly one
+`repo:owner/name` requirement, and requirements that one online runner
+playbook can satisfy. Every created task must name a known workstream and a
+priority. The runtime creates a validated task directly in `ready`; never
+create an intentionally incomplete or `untriaged` task from chat.
 
 Do not use shell commands, arbitrary filesystem access, direct GitHub mutation,
 or any operation outside this list.

@@ -57,6 +57,10 @@ const actions = [
     title: "Follow up on the commitment",
     body: "Acceptance criteria",
     workstream: "planning/example",
+    owner: "human",
+    priority: "normal",
+    autonomy: "manual",
+    requirements: [],
   }),
   mutation("issue-comment", {
     issueUrl: "https://github.com/example/domain/issues/42",

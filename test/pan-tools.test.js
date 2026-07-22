@@ -467,7 +467,11 @@ function issueAction({
     target: {
       repository,
       title: "New task",
-      ...(workstream ? { workstream } : {}),
+      workstream: workstream ?? "example",
+      owner: "human",
+      priority: "normal",
+      autonomy: "manual",
+      requirements: [],
     },
   });
 }

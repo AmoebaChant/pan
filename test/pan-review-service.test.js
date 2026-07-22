@@ -246,19 +246,182 @@ test("reuses an Issue created with the same idempotency key", async () => {
         title: "Send the promised data",
         body: "Due tomorrow.",
         workstream: "example",
+        owner: "human",
+        priority: "normal",
+        autonomy: "manual",
+        requirements: [],
       },
     },
   });
 
   const first = await fixture.service.run({ apply: true });
+  fixture.createdIssue.fields.workstream = "";
+  fixture.createdIssue.fields.status = "untriaged";
   const second = await fixture.service.run({ apply: true });
 
   assert.match(first.response.appliedActions[0].summary, /Created Issue #3/);
-  assert.match(second.response.appliedActions[0].summary, /already created/i);
+  assert.deepEqual(
+    fixture.calls.find(([kind]) => kind === "create")[1].fields,
+    {
+      owner: "human",
+      status: "ready",
+      priority: "normal",
+      autonomy: "manual",
+      requirements: [],
+      workstream: "example",
+    },
+  );
+  assert.match(second.response.appliedActions[0].summary, /Repaired metadata/i);
+  assert.equal(fixture.createdIssue.fields.workstream, "example");
+  assert.equal(fixture.createdIssue.fields.status, "ready");
+  assert.deepEqual(
+    Object.keys(fixture.calls.find(([kind]) => kind === "fields")[2]),
+    ["workstream", "status"],
+  );
   assert.equal(
     fixture.calls.filter(([kind]) => kind === "create").length,
     1,
   );
+});
+
+test("fails closed when replay finds conflicting task metadata", async () => {
+  const fixture = reviewFixture({
+    action: {
+      version: 1,
+      actionId: "create-conflict",
+      kind: "issue-create",
+      rationale: "Capture human work without overwriting later edits.",
+      confidence: 0.9,
+      evidence: [{ kind: "workstream", locator: "example" }],
+      idempotencyKey: "create:example:conflict",
+      expectedState: { snapshotId: "snapshot-1" },
+      target: {
+        repository: "example/domain",
+        title: "Review the proposal",
+        body: "Decide whether to proceed.",
+        workstream: "example",
+        owner: "human",
+        priority: "normal",
+        autonomy: "manual",
+        requirements: [],
+      },
+    },
+  });
+
+  await fixture.service.run({ apply: true });
+  fixture.createdIssue.fields.owner = "agent";
+  const replay = await fixture.service.run({ apply: true });
+
+  assert.equal(replay.response.appliedActions.length, 0);
+  assert.match(
+    replay.response.effects.incomplete[0].summary,
+    /conflicting metadata.*owner/i,
+  );
+  assert.equal(fixture.createdIssue.fields.owner, "agent");
+});
+
+test("creates a complete ready agent task when a runner supports it", async () => {
+  const fixture = reviewFixture({
+    action: {
+      version: 1,
+      actionId: "create-agent",
+      kind: "issue-create",
+      rationale: "Create the fully routed implementation task requested by the user.",
+      confidence: 0.95,
+      evidence: [{ kind: "workstream", locator: "example" }],
+      idempotencyKey: "create:agent",
+      expectedState: { snapshotId: "snapshot-1" },
+      target: {
+        repository: "example/domain",
+        title: "Implement the change",
+        body: "Preserve existing behavior.",
+        workstream: "example",
+        owner: "agent",
+        priority: "high",
+        autonomy: "agent-reviewer",
+        requirements: [
+          "repo:example/tool",
+          "delivery:pull-request",
+        ],
+      },
+    },
+    mutateSnapshot: (snapshot) => {
+      snapshot.runnerAvailability = {
+        complete: true,
+        runners: [
+          {
+            id: "runner-a",
+            online: true,
+            playbooks: [
+              {
+                capabilities: ["repo:example/tool"],
+                repositories: ["example/tool"],
+                delivery: "pull-request",
+              },
+            ],
+          },
+        ],
+      };
+    },
+  });
+
+  const result = await fixture.service.run({ apply: true });
+
+  assert.equal(result.response.appliedActions.length, 1);
+  assert.deepEqual(
+    fixture.calls.find(([kind]) => kind === "create")[1].fields,
+    {
+      owner: "agent",
+      status: "ready",
+      priority: "high",
+      autonomy: "agent-reviewer",
+      requirements: [
+        "repo:example/tool",
+        "delivery:pull-request",
+      ],
+      workstream: "example",
+    },
+  );
+});
+
+test("rejects task creation when runner evidence changes during reasoning", async () => {
+  const action = {
+    version: 1,
+    actionId: "create-stale-runner",
+    kind: "issue-create",
+    rationale: "Create the fully routed implementation task requested by the user.",
+    confidence: 0.95,
+    evidence: [{ kind: "workstream", locator: "example" }],
+    idempotencyKey: "create:stale-runner",
+    expectedState: { snapshotId: "snapshot-1" },
+    target: {
+      repository: "example/domain",
+      title: "Implement the change",
+      workstream: "example",
+      owner: "agent",
+      priority: "normal",
+      autonomy: "full-auto",
+      requirements: ["repo:example/tool"],
+    },
+  };
+  const fixture = reviewFixture({
+    action,
+    mutateSnapshot: addCompatibleRunner,
+    mutateFreshSnapshot: (snapshot, buildCount) => {
+      if (buildCount > 1) {
+        snapshot.runnerAvailability.runners[0].online = false;
+      }
+    },
+  });
+
+  const result = await fixture.service.run({ apply: true });
+
+  assert.equal(result.response.appliedActions.length, 0);
+  assert.match(
+    result.response.rejectedActions[0].reason,
+    /runner evidence changed/i,
+  );
+  assert.deepEqual(fixture.calls, []);
 });
 
 test("rejects fabricated evidence locators", async () => {
@@ -359,6 +522,10 @@ test("rejects cross-domain Issue creation", async () => {
         title: "Foreign work",
         body: "Must not be created here.",
         workstream: "example",
+        owner: "human",
+        priority: "normal",
+        autonomy: "manual",
+        requirements: [],
       },
     },
   });
@@ -386,6 +553,10 @@ test("does not resurrect a closed inferred Issue", async () => {
         title: "Previously rejected work",
         body: "Do not resurrect.",
         workstream: "example",
+        owner: "human",
+        priority: "normal",
+        autonomy: "manual",
+        requirements: [],
       },
     },
     existingIssue: {
@@ -429,6 +600,7 @@ function reviewFixture({
   factCitation,
   failReorder = false,
   mutateCurrent,
+  mutateFreshSnapshot,
   mutateSnapshot,
 } = {}) {
   const calls = [];
@@ -443,6 +615,8 @@ function reviewFixture({
     complete: true,
     usableForMutation: true,
     project: { id: "project-1", items: [...order] },
+    workstreams: { revision: "workstreams-1", paths: ["example"] },
+    runnerAvailability: { complete: true, runners: [] },
     dossiers: items.map((entry) => ({
       item: entry,
       lease: { active: false },
@@ -450,6 +624,7 @@ function reviewFixture({
     diagnostics: [],
   };
   mutateSnapshot?.(snapshot);
+  let snapshotBuilds = 0;
   let lastTurn;
   const comments = [];
   let createdIssue;
@@ -521,7 +696,11 @@ function reviewFixture({
       order.splice(0, order.length, ...next);
       afterReorder?.();
     },
-    setFields: async () => {},
+    setFields: async (itemId, fields) => {
+      calls.push(["fields", itemId, structuredClone(fields)]);
+      const item = items.find((candidate) => candidate.id === itemId);
+      Object.assign(item.fields, structuredClone(fields));
+    },
     createItem: async (input) => {
       calls.push(["create", input]);
       createdIssue = {
@@ -564,21 +743,30 @@ function reviewFixture({
     get lastTurn() {
       return lastTurn;
     },
+    get createdIssue() {
+      return createdIssue;
+    },
     service: new PanReviewService({
       snapshotSource: {
-        build: async () => ({
-          ...snapshot,
-          project: { ...snapshot.project, items: [...order] },
-          dossiers: items.map((entry) => ({
-            item: structuredClone(entry),
-            lease: { active: false },
-            workstream: {
-              path: entry.fields.workstream,
-              available: true,
-              history: [],
-            },
-          })),
-        }),
+        build: async () => {
+          snapshotBuilds += 1;
+          const result = {
+            ...snapshot,
+            project: { ...snapshot.project, items: [...order] },
+            runnerAvailability: structuredClone(snapshot.runnerAvailability),
+            dossiers: items.map((entry) => ({
+              item: structuredClone(entry),
+              lease: { active: false },
+              workstream: {
+                path: entry.fields.workstream,
+                available: true,
+                history: [],
+              },
+            })),
+          };
+          mutateFreshSnapshot?.(result, snapshotBuilds);
+          return result;
+        },
       },
       agentClient: { review: runAgent, chat: runAgent },
       store,
@@ -600,6 +788,26 @@ function addUnknownCapacityRunner(snapshot) {
         activeLeaseCount: null,
         freeCapacity: 0,
         capacityKnown: false,
+      },
+    ],
+  };
+}
+
+function addCompatibleRunner(snapshot) {
+  snapshot.runnerAvailability = {
+    complete: true,
+    runners: [
+      {
+        id: "runner-a",
+        online: true,
+        capabilities: ["repo:example/tool"],
+        playbooks: [
+          {
+            capabilities: ["repo:example/tool"],
+            repositories: ["example/tool"],
+            delivery: "pull-request",
+          },
+        ],
       },
     ],
   };

@@ -246,7 +246,7 @@ function makeItem({
   status = "untriaged",
   priority = "normal",
   requirements = [],
-  autonomy = "manual",
+  autonomy = owner === "agent" ? "full-auto" : "manual",
   workstream = "",
 } = {}) {
   return {

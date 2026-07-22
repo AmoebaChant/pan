@@ -121,6 +121,7 @@ export class PortfolioSnapshotBuilder {
       },
       workstreams: {
         revision: workstreamIndex.revision,
+        paths: [...knownWorkstreams].sort(),
       },
       runnerAvailability: {
         complete: runnerAvailability.complete === true,
@@ -166,6 +167,14 @@ export class PortfolioSnapshotBuilder {
     }
 
     const promise = (async () => {
+      if (!knownWorkstreams.has(workstreamPath) && !required) {
+        return {
+          path: workstreamPath,
+          available: false,
+          required,
+          history: [],
+        };
+      }
       if (!knownWorkstreams.has(workstreamPath)) {
         diagnostics.push({
           source: `item:${item.id}`,

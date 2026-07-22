@@ -23,6 +23,7 @@ import { PanRepairService } from "./pan-repair-service.js";
 import { PanRuntime } from "./pan-runtime.js";
 import { setupPanDomain } from "./pan-setup.js";
 import { PanStore } from "./pan-store.js";
+import { PanTriageService } from "./pan-triage-service.js";
 import { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 import { PanToolRegistry } from "./pan-tools.js";
 import { loadRunnerProfile } from "./runner-profile.js";
@@ -611,6 +612,14 @@ function createDomainServices({
       ? configuration.reviewPolicy.higherRisk.actionKinds
       : [],
   });
+  const triageService = reviewServiceFactory
+    ? undefined
+    : new PanTriageService({
+        store,
+        workstreamSource,
+        runnerSource,
+        attention,
+      });
   const reviewService =
     reviewServiceFactory?.({
       store,
@@ -619,11 +628,13 @@ function createDomainServices({
       snapshotSource,
       actionPolicy,
       attention,
+      triageService,
     }) ??
     new PanReviewService({
       snapshotSource,
       store,
       attention,
+      triageService,
       actionPolicy,
       agentClient: new PanAgentClient({
         executable: configuration.agent.executable,

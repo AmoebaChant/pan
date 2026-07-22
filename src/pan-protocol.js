@@ -280,8 +280,45 @@ function validateActionTarget(action, path) {
       if (action.target.body !== undefined) {
         requireString(action.target.body, `${targetPath}.body`);
       }
-      if (action.target.workstream !== undefined) {
-        requireString(action.target.workstream, `${targetPath}.workstream`);
+      requireString(action.target.workstream, `${targetPath}.workstream`);
+      if (!["human", "agent"].includes(action.target.owner)) {
+        fail(`${targetPath}.owner`, "must be human or agent");
+      }
+      if (!["urgent", "high", "normal", "low"].includes(action.target.priority)) {
+        fail(
+          `${targetPath}.priority`,
+          "must be urgent, high, normal, or low",
+        );
+      }
+      if (
+        !["manual", "full-auto", "agent-reviewer"].includes(
+          action.target.autonomy,
+        )
+      ) {
+        fail(
+          `${targetPath}.autonomy`,
+          "must be manual, full-auto, or agent-reviewer",
+        );
+      }
+      requireStringArray(
+        action.target.requirements,
+        `${targetPath}.requirements`,
+      );
+      if (
+        new Set(action.target.requirements).size !==
+        action.target.requirements.length
+      ) {
+        fail(`${targetPath}.requirements`, "must not contain duplicates");
+      }
+      for (const [index, requirement] of action.target.requirements.entries()) {
+        if (
+          !/^[A-Za-z][A-Za-z0-9-]*:[A-Za-z0-9_.\/-]+$/.test(requirement)
+        ) {
+          fail(
+            `${targetPath}.requirements[${index}]`,
+            "must use kind:value capability syntax",
+          );
+        }
       }
       break;
     case "issue-comment":

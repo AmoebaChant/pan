@@ -19,6 +19,7 @@ export class PanReviewService {
     agentClient,
     store,
     attention,
+    triageService,
     actionPolicy = new ActionPolicy(),
     now = () => new Date(),
   }) {
@@ -43,11 +44,18 @@ export class PanReviewService {
     this.agentClient = agentClient;
     this.store = store;
     this.attention = attention;
+    if (triageService && !triageService.run) {
+      throw new TypeError("triageService must provide run()");
+    }
+    this.triageService = triageService;
     this.actionPolicy = actionPolicy;
     this.now = now;
   }
 
   async run({ apply = false, userInput, signal } = {}) {
+    if (apply && this.triageService) {
+      await this.triageService.run({ signal });
+    }
     const snapshot = await this.snapshotSource.build();
     if (!snapshot.complete || !snapshot.usableForMutation) {
       throw new Error(
@@ -228,13 +236,19 @@ export class PanReviewService {
         });
         continue;
       }
+      const freshSnapshot = await this.snapshotSource.build();
       const current = await this.store.readCanonicalProject();
       signal?.throwIfAborted();
       const assessment = this.actionPolicy.assess(action, {
-        snapshot: currentPolicySnapshot(current),
+        snapshot: currentPolicySnapshot(current, freshSnapshot),
         mode: "live",
       });
       const staleReason = expectedStateViolation(action, snapshot, current);
+      const sourceReason = mutationSourceViolation(
+        action,
+        snapshot,
+        freshSnapshot,
+      );
       const domainReason =
         action.kind === "issue-create" &&
         this.store.repository &&
@@ -245,6 +259,7 @@ export class PanReviewService {
         !assessment.allowed ||
         assessment.requiresApproval ||
         staleReason ||
+        sourceReason ||
         domainReason
       ) {
         const policyReason =
@@ -253,7 +268,11 @@ export class PanReviewService {
             : "Action requires approval";
         rejectedActions.push({
           actionId: action.actionId,
-          reason: staleReason ?? domainReason ?? policyReason,
+          reason:
+            staleReason ??
+            sourceReason ??
+            domainReason ??
+            policyReason,
         });
         continue;
       }
@@ -279,6 +298,7 @@ export class PanReviewService {
           abortError.incompleteEffect = incompleteEffect(action, abortError);
           throw abortError;
         }
+
         incomplete.push({
           actionId: action.actionId,
           summary: `PAN could not confirm the action: ${error.message}`,
@@ -336,14 +356,12 @@ export class PanReviewService {
         const existing = await this.store.findIssueByMarker(marker);
         signal?.throwIfAborted();
         const fields = {
-          owner: "unassigned",
-          status: "untriaged",
-          priority: "normal",
-          autonomy: "manual",
-          requirements: [],
-          ...(action.target.workstream
-            ? { workstream: action.target.workstream }
-            : {}),
+          owner: action.target.owner,
+          priority: action.target.priority,
+          autonomy: action.target.autonomy,
+          requirements: action.target.requirements,
+          workstream: action.target.workstream,
+          status: "ready",
         };
         if (existing) {
           if (String(existing.state).toLowerCase() !== "open") {
@@ -354,8 +372,20 @@ export class PanReviewService {
             signal?.throwIfAborted();
             return `Recovered Issue #${existing.number} into the Project.`;
           }
-          return `Issue #${existing.number} was already created.`;
+          const projectItem = current.items.find(
+            (item) => item.url === existing.url,
+          );
+          const repaired = await reconcileCreatedItem(
+            this.store,
+            projectItem,
+            fields,
+            signal,
+          );
+          return repaired
+            ? `Repaired metadata for Issue #${existing.number}.`
+            : `Issue #${existing.number} was already created.`;
         }
+
         if (
           current.items.some(
             (item) =>
@@ -433,6 +463,82 @@ export class PanReviewService {
         throw new Error(`Unsupported PAN action ${action.kind}`);
     }
   }
+}
+
+async function reconcileCreatedItem(store, item, expected, signal) {
+  const repairs = {};
+  const conflicts = [];
+  for (const [field, value] of Object.entries(expected)) {
+    const actual = serializedField(item.fields[field]);
+    const desired = serializedField(value);
+    if (actual === desired) {
+      continue;
+    }
+    if (
+      field === "status" &&
+      !["", "untriaged", "ready"].includes(actual)
+    ) {
+      continue;
+    }
+    if (actual === "" || (field === "status" && actual === "untriaged")) {
+      repairs[field] = value;
+    } else {
+      conflicts.push(field);
+    }
+  }
+  if (conflicts.length > 0) {
+    throw new Error(
+      `Existing created task has conflicting metadata: ${conflicts.join(", ")}`,
+    );
+  }
+  if (Object.keys(repairs).length === 0) {
+    return false;
+  }
+  const { status, ...metadata } = repairs;
+  await store.setFields(
+    item.id,
+    status === undefined ? metadata : { ...metadata, status },
+    { signal },
+  );
+  signal?.throwIfAborted();
+  const current = await store.readCanonicalProject();
+  const confirmed = current.items.find((candidate) => candidate.id === item.id);
+  if (
+    !confirmed ||
+    Object.entries(repairs).some(
+      ([field, value]) =>
+        serializedField(confirmed.fields[field]) !== serializedField(value),
+    )
+  ) {
+    throw new Error("Repaired task metadata could not be confirmed");
+  }
+  return true;
+}
+
+function serializedField(value) {
+  return Array.isArray(value) ? value.join("\n") : value ?? "";
+}
+
+function mutationSourceViolation(action, reviewed, fresh) {
+  if (action.kind !== "issue-create") {
+    return undefined;
+  }
+  if (!fresh.complete || !fresh.usableForMutation) {
+    return "Current workstream or runner evidence is incomplete";
+  }
+  const routingState = (snapshot) => ({
+    workstreams: snapshot.workstreams,
+    runners: (snapshot.runnerAvailability?.runners ?? []).map((runner) => ({
+      id: runner.id,
+      online: runner.online,
+      capabilities: runner.capabilities,
+      playbooks: runner.playbooks,
+    })),
+  });
+  return stableStringify(routingState(reviewed)) ===
+    stableStringify(routingState(fresh))
+    ? undefined
+    : "Workstream or runner evidence changed during reasoning; refresh before creating the task";
 }
 
 function expectedStateViolation(action, snapshot, current) {
@@ -515,10 +621,12 @@ async function hasMarker(store, item, marker) {
   return comments.some((comment) => comment.body.includes(marker));
 }
 
-function currentPolicySnapshot(current) {
+function currentPolicySnapshot(current, reviewedSnapshot) {
   const capturedAt = current.capturedAt ?? new Date().toISOString();
   return {
     project: { items: current.items.map((item) => item.id) },
+    workstreams: reviewedSnapshot.workstreams,
+    runnerAvailability: reviewedSnapshot.runnerAvailability,
     dossiers: current.items.map((item) => ({
       item,
       lease: {
@@ -569,6 +677,20 @@ function buildEvidenceIndex(snapshot) {
     "domain-record",
     snapshot.workstreams?.revision,
   );
+  for (const workstream of snapshot.workstreams?.paths ?? []) {
+    addEvidence(
+      byKind,
+      "workstream",
+      workstream,
+      [snapshot.workstreams?.revision].filter(Boolean),
+    );
+    addEvidence(
+      byKind,
+      "workstream",
+      `workstreams/${workstream}/README.md`,
+      [snapshot.workstreams?.revision].filter(Boolean),
+    );
+  }
   for (const dossier of snapshot.dossiers ?? []) {
     const { item, workstream } = dossier;
     itemsById.set(item.id, item);
@@ -749,6 +871,22 @@ function addEvidence(index, kind, locator, revisions = []) {
 
 function revisionResolves(revision, knownRevisions) {
   return !revision || knownRevisions.has(revision);
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${stableStringify(value[key])}`,
+      )
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function incompleteEffect(action, error) {

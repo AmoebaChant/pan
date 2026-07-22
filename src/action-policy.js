@@ -1,4 +1,5 @@
 import { validatePanAction } from "./pan-protocol.js";
+import { matchingRunner } from "./triage-policy.js";
 
 const PROTECTED_STATUSES = new Set(["in-progress", "in-review", "done"]);
 const EXPLANATION_ACTIONS = new Set([
@@ -90,6 +91,7 @@ export function lifecycleViolations(action, snapshot) {
   );
   const reasons = [];
   reasons.push(...referenceViolations(action, snapshot, byId));
+  reasons.push(...issueCreationViolations(action, snapshot));
   const affected = affectedDossiers(action, snapshot, byId);
 
   for (const dossier of affected) {
@@ -114,6 +116,53 @@ export function lifecycleViolations(action, snapshot) {
     }
   }
   return [...new Set(reasons)];
+}
+
+function issueCreationViolations(action, snapshot) {
+  if (action.kind !== "issue-create") {
+    return [];
+  }
+  const target = action.target;
+  const reasons = [];
+  if (
+    snapshot.workstreams?.paths &&
+    !snapshot.workstreams.paths.includes(target.workstream)
+  ) {
+    reasons.push(
+      `Workstream ${target.workstream} is absent from the current snapshot`,
+    );
+  }
+  if (target.owner === "human" && target.autonomy !== "manual") {
+    reasons.push("Human-owned tasks must use manual autonomy");
+  }
+  if (
+    target.owner === "agent" &&
+    !["full-auto", "agent-reviewer"].includes(target.autonomy)
+  ) {
+    reasons.push(
+      "Agent-owned tasks must use full-auto or agent-reviewer autonomy",
+    );
+  }
+  const repositories = target.requirements.filter((requirement) =>
+    requirement.startsWith("repo:"),
+  );
+  if (target.owner === "agent" && repositories.length !== 1) {
+    reasons.push(
+      "Agent-owned tasks require exactly one repo:owner/name requirement",
+    );
+  } else if (
+    target.owner === "agent" &&
+    snapshot.runnerAvailability &&
+    !matchingRunner(
+      target.requirements,
+      snapshot.runnerAvailability.runners ?? [],
+    )
+  ) {
+    reasons.push(
+      "No online runner can satisfy the proposed task requirements",
+    );
+  }
+  return reasons;
 }
 
 function referenceViolations(action, snapshot, byId) {

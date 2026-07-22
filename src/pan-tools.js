@@ -483,7 +483,16 @@ function validateStrictAction(action, name) {
     "field-update": ["itemId", "field", "value"],
     "canonical-reorder": ["orderedItemIds"],
     "relative-precedence": ["beforeItemId", "afterItemId"],
-    "issue-create": ["repository", "title", "body", "workstream"],
+    "issue-create": [
+      "repository",
+      "title",
+      "body",
+      "workstream",
+      "owner",
+      "priority",
+      "autonomy",
+      "requirements",
+    ],
     "issue-comment": ["issueUrl", "body"],
     "needs-human": ["issueUrl", "prompt", "kind"],
   }[action.kind];
@@ -491,7 +500,15 @@ function validateStrictAction(action, name) {
     exactKeys(action.target, targetKeys, `${name}.target`, {
       required:
         action.kind === "issue-create"
-          ? ["repository", "title"]
+          ? [
+              "repository",
+              "title",
+              "workstream",
+              "owner",
+              "priority",
+              "autonomy",
+              "requirements",
+            ]
           : targetKeys,
     });
   }

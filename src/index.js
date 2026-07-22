@@ -18,6 +18,7 @@ export {
 export { PanDaemon } from "./pan-daemon.js";
 export { PanAgentClient } from "./pan-agent-client.js";
 export { PanReviewService } from "./pan-review-service.js";
+export { PanTriageService } from "./pan-triage-service.js";
 export { PanRepairService } from "./pan-repair-service.js";
 export { PanRuntime } from "./pan-runtime.js";
 export { PanHost } from "./pan-host.js";
@@ -59,6 +60,16 @@ export {
   deriveTriage,
   matchingRunner,
 } from "./triage-policy.js";
+export {
+  formatTriageApplied,
+  formatTriageDecision,
+  hasTriageApplied,
+  hasTriageDecision,
+  latestAppliedTriageDecision,
+  triageAppliedMarker,
+  triageDecisionMarker,
+  unappliedTriageDecisions,
+} from "./triage-audit.js";
 export {
   loadRunnerProfile,
   validateRunnerProfile,

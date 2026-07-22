@@ -37,12 +37,20 @@ Only the instance holding the renewable lease on the domain repository's
 `pan-state` branch performs a poll. Each poll:
 
 1. adds open repository Issues that are missing from the Project;
-2. derives routing fields from existing Project values, the Issue body, and
-   marked PAN answers;
-3. requests missing details or blocks agent work that no online runner profile
+2. validates lifecycle, owner, priority, autonomy, workstream, and applicable
+   runner requirements;
+3. derives missing values from durable Issue, comment, workstream, domain, and
+   runner evidence without replacing valid explicit Project values;
+4. records each inferred field, its evidence, and rationale in an idempotent
+   `PAN triage decision` Issue comment;
+5. asks concise metadata questions through structured needs-human records and
+   moves incomplete items to `needs-detail`;
+6. resumes triage after marked PAN answers, clears resolved attention, and
+   moves an item to `ready` only when it is actionable;
+7. blocks agent work that no online runner profile
    can service;
-4. returns PAN-created capability blocks to `ready` when a runner appears; and
-5. orders Project items by priority and lifecycle.
+8. returns PAN-created capability blocks to `ready` when a runner appears; and
+9. orders Project items by priority and lifecycle.
 
 PAN preserves `in-progress`, `in-review`, and `done` items. It also preserves
 blocks created by runners or humans.
@@ -75,6 +83,14 @@ Capability requirements use `kind:value` tokens. Agent work requires exactly
 one `repo:<owner/name>` requirement, a workstream, and a task description.
 Repository requirements imply agent ownership when `owner` is unassigned;
 other work defaults to human ownership.
+
+Blank and invalid Project values are never treated as runner-ready. PAN may
+infer a workstream when Issue text uniquely identifies a known path, infer a
+repository route when that workstream and Issue text identify one advertised
+runner route, classify directly answerable questions as human work, and use
+normal priority when the Issue contains no urgency signal. Conflicting evidence
+or a concurrent Project edit stops mutation and produces a diagnostic rather
+than choosing a value.
 
 ## Attention commands
 
@@ -172,7 +188,14 @@ same snapshot. A validated task-creation request is:
         "repository": "owner/domain-repository",
         "title": "Task title",
         "body": "Task details and acceptance criteria",
-        "workstream": "workstream/path"
+        "workstream": "workstream/path",
+        "owner": "agent",
+        "priority": "normal",
+        "autonomy": "full-auto",
+        "requirements": [
+          "repo:owner/tool",
+          "delivery:pull-request"
+        ]
       }
     }
   ]
@@ -185,3 +208,11 @@ evidence citation. Mutations additionally require an `idempotencyKey`,
 `expectedState`, and kind-specific `target`; `no-op` uses `recommendation`
 instead. PAN rejects missing, mismatched, unknown, or stale snapshot references
 without applying any mutation.
+
+PAN Chat creates both human and agent tasks directly as `ready`. Before
+submitting `issue-create`, PAN fills or asks for owner, priority, autonomy,
+workstream, and applicable runner requirements. Human tasks use manual autonomy
+and may have no requirements. Agent tasks require exactly one repository and a
+complete requirement set supported by an online runner playbook. Incomplete
+chat requests stay in the conversation until those choices are answered; they
+are not created as cleanup work for later triage.

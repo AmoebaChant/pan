@@ -141,6 +141,10 @@ synchronizes the domain, invokes PAN, and applies validated changes to the
 canonical Project. Legacy runner-profile mode retains deterministic triage for
 compatibility.
 `pan inbox`, `pan answer`, and `pan add` provide the human attention surface.
+Applied domain reviews first triage manually added Project Issues: PAN preserves
+valid explicit metadata, audits evidence-backed inferences, and routes unresolved
+fields through `needs-detail` attention before portfolio prioritization. PAN Chat
+creates both human and agent tasks with complete metadata directly in `ready`.
 
 PAN commands use an independent domain configuration. Pass
 `--config <path>` or set `PAN_CONFIG`. `pan-runner` continues to use its machine
