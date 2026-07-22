@@ -213,8 +213,23 @@ export class PanStore {
     }
     const schema = await this.getSchema();
     validateFieldValues(fields, schema);
-    signal?.throwIfAborted();
+    const issue = await this.createIssue({ title, body, labels, assignees }, {
+      signal,
+      beforeWrite,
+    });
+    return this.addIssueToProject(issue.url, fields, { signal, beforeWrite });
+  }
 
+  async createIssue({
+    title,
+    body = "",
+    labels = [],
+    assignees = [],
+  }, { signal, beforeWrite } = {}) {
+    if (!title?.trim()) {
+      throw new TypeError("title is required");
+    }
+    signal?.throwIfAborted();
     const issueArgs = [
       "issue",
       "create",
@@ -239,37 +254,14 @@ export class PanStore {
     if (!isIssueUrl(issueUrl)) {
       throw new Error(`gh issue create returned an invalid Issue URL: ${issueUrl}`);
     }
-    try {
-      signal?.throwIfAborted();
-      return await this.addIssueToProject(issueUrl, fields, { signal, beforeWrite });
-    } catch (error) {
-      if (signal?.aborted) {
-        throw signal.reason ?? error;
-      }
-      if (error?.code === "PAN_LEADERSHIP_REQUIRED") {
-        throw error;
-      }
-      const cleanupErrors = [];
-      try {
-        await this.gh.run([
-          "issue",
-          "delete",
-          issueUrl,
-          "--repo",
-          this.repository,
-          "--yes",
-        ]);
-      } catch (cleanupError) {
-        cleanupErrors.push(cleanupError);
-      }
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          "PAN item creation failed and cleanup was incomplete",
-        );
-      }
-      throw error;
-    }
+    return {
+      number: Number(issueUrl.split("/").at(-1)),
+      title,
+      body,
+      url: issueUrl,
+      repository: this.repository,
+      state: "open",
+    };
   }
 
   async addIssueToProject(issueUrl, fields = {}, { signal, beforeWrite } = {}) {
@@ -294,36 +286,10 @@ export class PanStore {
     if (!added.id) {
       throw new Error("gh project item-add returned no Project item ID");
     }
-    try {
-      if (Object.keys(fields).length > 0) {
-        await this.setFields(added.id, fields, { signal, beforeWrite });
-      }
-      return this.#confirmItem(added.id);
-    } catch (error) {
-      if (signal?.aborted) {
-        throw signal.reason ?? error;
-      }
-      if (error?.code === "PAN_LEADERSHIP_REQUIRED") {
-        throw error;
-      }
-      try {
-        await this.gh.run([
-          "project",
-          "item-delete",
-          String(this.projectNumber),
-          "--owner",
-          this.projectOwner,
-          "--id",
-          added.id,
-        ]);
-      } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          "PAN Project insertion failed and cleanup was incomplete",
-        );
-      }
-      throw error;
+    if (Object.keys(fields).length > 0) {
+      await this.setFields(added.id, fields, { signal, beforeWrite });
     }
+    return this.#confirmItem(added.id);
   }
 
   async findProjectIssueMembership(issueUrl, { expectedProjectId } = {}) {
@@ -347,7 +313,7 @@ export class PanStore {
 
   async ensureIssueProjectMembership(
     issueUrl,
-    { expectedProjectId, signal } = {},
+    { expectedProjectId, signal, beforeWrite } = {},
   ) {
     const membership = await this.findProjectIssueMembership(issueUrl, {
       expectedProjectId,
@@ -360,6 +326,7 @@ export class PanStore {
       };
     }
     signal?.throwIfAborted();
+    await beforeWrite?.();
     const added = await this.gh.runJson([
       "project",
       "item-add",
@@ -381,7 +348,7 @@ export class PanStore {
     };
   }
 
-  async ensureItemFields(itemId, values, { signal } = {}) {
+  async ensureItemFields(itemId, values, { signal, beforeWrite } = {}) {
     if (!itemId) {
       throw new TypeError("itemId is required");
     }
@@ -395,7 +362,7 @@ export class PanStore {
         continue;
       }
       try {
-        await this.setFields(itemId, { [key]: value }, { signal });
+        await this.setFields(itemId, { [key]: value }, { signal, beforeWrite });
         const confirmed = await this.#confirmFields(itemId, { [key]: value }, { signal });
         if (!confirmed) {
           return {

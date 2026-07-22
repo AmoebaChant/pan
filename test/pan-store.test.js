@@ -139,7 +139,7 @@ test("scopes marker lookup to open repair Issues", async () => {
   assert.equal(valueAfter(args, "--state"), "open");
 });
 
-test("cleans up a partially created item when field setup fails", async () => {
+test("preserves a partially created Issue when Project field setup fails", async () => {
   const { store, gh } = fixture({ failProjectEdit: true });
 
   await assert.rejects(
@@ -150,8 +150,8 @@ test("cleans up a partially created item when field setup fails", async () => {
     /project edit failed/,
   );
 
-  assert.equal(gh.items.some((item) => item.id === "item-2"), false);
-  assert.deepEqual(gh.deletedIssues, [2]);
+  assert.equal(gh.items.some((item) => item.id === "item-2"), true);
+  assert.deepEqual(gh.deletedIssues, []);
 });
 
 test("rejects unknown fields and invalid select options", async () => {

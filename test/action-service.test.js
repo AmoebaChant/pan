@@ -128,9 +128,34 @@ test("action CLI dispatches stateless validation and requires an action file", a
   );
 });
 
+test("routes sourced Issue creation through the recovery service", async () => {
+  const calls = [];
+  const fixture = actionFixture({
+    issueCreationService: {
+      create: async (input, { identity }) => {
+        calls.push([input.actionId, identity.generation]);
+        return {
+          resource: "issue",
+          externalIdentity: "https://github.com/example/domain/issues/3",
+          confirmedState: { number: 3, status: "registered" },
+          recovery: [],
+        };
+      },
+    },
+  });
+  const result = await fixture.service.apply(issueCreateAction(), {
+    identity: leadershipIdentity(),
+  });
+
+  assert.deepEqual(calls, [["create-1", "generation-a"]]);
+  assert.equal(result.effects[0].externalIdentity, "https://github.com/example/domain/issues/3");
+  assert.equal(result.effects[0].confirmedState.status, "registered");
+});
+
 function actionFixture({
   assertLeadership = () => ({ asserted: true }),
   humanPrecedence,
+  issueCreationService,
   policy = new ActionPolicy({ automatic: ["field-update", "canonical-reorder"] }),
 } = {}) {
   const writes = [];
@@ -201,11 +226,35 @@ function actionFixture({
       snapshotSource: { build: async () => snapshot() },
       store,
       actionPolicy: policy,
+      issueCreationService,
       assertLeadership: async () => {
         assertions += 1;
         return assertLeadership();
       },
     }),
+  };
+}
+
+function issueCreateAction() {
+  return {
+    version: 2,
+    actionId: "create-1",
+    kind: "issue-create",
+    domain: domain(),
+    rationale: "A dated workstream commitment needs a durable delivery Issue.",
+    confidence: 0.9,
+    evidence: [{ kind: "workstream", locator: "example:revision-1" }],
+    idempotencyKey: "create-1",
+    expectedState: {
+      issueCatalog: { revision: "catalog-1" },
+      leadership: { generation: "generation-a" },
+    },
+    target: {
+      repository: "example/domain",
+      title: "Deliver the committed work",
+      body: "Source revision: revision-1.",
+      workstream: "example",
+    },
   };
 }
 

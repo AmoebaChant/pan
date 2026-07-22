@@ -49,6 +49,7 @@ export { PanDaemon } from "./pan-daemon.js";
 export { PanAgentClient } from "./pan-agent-client.js";
 export { PanReviewService } from "./pan-review-service.js";
 export { ActionService } from "./action-service.js";
+export { IssueCreationService } from "./issue-creation-service.js";
 export { PanRepairService } from "./pan-repair-service.js";
 export { PanRuntime } from "./pan-runtime.js";
 export { PanHost } from "./pan-host.js";

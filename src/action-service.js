@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { ActionPolicy } from "./action-policy.js";
+import { IssueCreationService } from "./issue-creation-service.js";
 import {
   isHostlessLiveAction,
   validatePanAction,
@@ -23,6 +24,7 @@ export class ActionService {
     actionPolicy = new ActionPolicy(),
     assertLeadership = async () => ({ asserted: true }),
     attention,
+    issueCreationService,
   } = {}) {
     if (!snapshotSource?.build || !store?.readCanonicalProject) {
       throw new TypeError("snapshotSource and store.readCanonicalProject are required");
@@ -35,6 +37,7 @@ export class ActionService {
     this.actionPolicy = actionPolicy;
     this.assertLeadership = assertLeadership;
     this.attention = attention;
+    this.issueCreationService = issueCreationService;
   }
 
   async validate(input, { identity } = {}) {
@@ -257,33 +260,18 @@ export class ActionService {
   }
 
   async #applyIssueCreate(action, { groupId, identity }) {
-    const marker = idempotencyMarker(action.idempotencyKey);
-    let item = await this.store.findIssueByMarker(marker);
-    if (!item) {
-      await this.#assertLeadership(identity);
-      item = await this.store.createItem(
-        {
-          title: action.target.title,
-          body: appendMarker(action.target.body ?? "", marker),
-          fields: {
-            owner: "unassigned",
-            status: "untriaged",
-            priority: "normal",
-            autonomy: "manual",
-            requirements: [],
-            ...(action.target.workstream ? { workstream: action.target.workstream } : {}),
-          },
-        },
-        { beforeWrite: () => this.#assertLeadership(identity) },
-      );
-    }
-    if (!item?.url) {
-      throw new Error("GitHub did not confirm the idempotent Issue creation");
-    }
-    return effect(action, groupId, "issue", item.url, {
-      number: item.number,
-      marker,
-    });
+    const service =
+      this.issueCreationService ??
+      new IssueCreationService({
+        store: this.store,
+        assertLeadership: this.assertLeadership,
+      });
+    const result = await service.create(action, { identity });
+    return {
+      actionId: action.actionId,
+      groupId,
+      ...result,
+    };
   }
 
   async #readExpectedItem(action, expectedValue = undefined) {
