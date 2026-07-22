@@ -39,6 +39,6 @@
 | | T-10 | Execute implementation_plan/02_02_complete_evidence_snapshot_v2.md | execute-implementation-plan | done 2026-07-22 · 10c55db · targeted and full tests passed |
 | | T-11 | Execute implementation_plan/02_03_missing_issue_reconciliation.md | execute-implementation-plan | done 2026-07-22 · e330114 · targeted and full tests passed |
 | | T-12 | Execute implementation_plan/02_04_merged_pr_reconciliation_receipts.md | execute-implementation-plan | done 2026-07-22 · 8a6c3fc · targeted and full tests passed |
-| | T-13 | Execute implementation_plan/02_05_attention_and_task_cli.md | execute-implementation-plan | done 2026-07-22 · 1e3e164 · targeted and full tests passed |
+| | T-13 | Execute implementation_plan/02_05_attention_and_task_cli.md | execute-implementation-plan | done 2026-07-22 · 1e3e164–7a5a79b · targeted and full tests passed |
 
 ## Untriaged
