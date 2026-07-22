@@ -4,7 +4,6 @@
 
 | M | ID | Task | Skill | Notes |
 |---|----|------|-------|-------|
-| | T-26 | Execute implementation_plan/05_03_remove_host_mcp_runtime.md | execute-implementation-plan | |
 | | T-27 | Execute implementation_plan/05_04_hostless_documentation_and_package.md | execute-implementation-plan | |
 | | T-28 | Execute implementation_plan/06_01_stateless_helper_process_tests.md | execute-implementation-plan | |
 | | T-29 | Execute implementation_plan/06_02_session_contract_integration_tests.md | execute-implementation-plan | |
@@ -40,5 +39,6 @@
 | | T-23 | Execute implementation_plan/04_05_native_schedule_bootstrap.md | execute-implementation-plan | done 2026-07-22 · 0783af0 · targeted and full tests passed |
 | | T-24 | Execute implementation_plan/05_01_runner_delivery_policy.md | execute-implementation-plan | done 2026-07-22 · fa4afaf · targeted and full tests passed |
 | | T-25 | Execute implementation_plan/05_02_host_command_migration.md | execute-implementation-plan | done 2026-07-22 · 342ef3c · targeted and full tests passed |
+| | T-26 | Execute implementation_plan/05_03_remove_host_mcp_runtime.md | execute-implementation-plan | done 2026-07-22 · dd1e519 · targeted and full tests passed |
 
 ## Untriaged
