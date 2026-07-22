@@ -647,7 +647,11 @@ async function runPanHelperCommand(
   const handler = commandHandlers[parsed.family][parsed.operation];
   const details = {
     operation: `${parsed.family}.${parsed.operation}`,
-    domain: context.domain,
+    domain: {
+      repository: context.domain.repository,
+      projectOwner: context.domain.projectOwner,
+      projectNumber: context.domain.projectNumber,
+    },
   };
   let result;
   try {
@@ -780,6 +784,7 @@ function createDomainServices({
   });
   const snapshotSource = new PortfolioSnapshotBuilder({
     projectSource: store,
+    issueCatalogSource: store,
     workstreamSource,
     runnerSource,
   });

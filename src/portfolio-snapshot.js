@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+const SNAPSHOT_VERSION = 2;
 const KNOWN_STATUSES = new Set([
   "untriaged",
   "needs-detail",
@@ -10,18 +11,20 @@ const KNOWN_STATUSES = new Set([
   "blocked",
 ]);
 
+/**
+ * Builds the immutable evidence set used to make portfolio decisions.
+ */
 export class PortfolioSnapshotBuilder {
   constructor({
     projectSource,
+    issueCatalogSource = projectSource,
     workstreamSource,
     runnerSource,
     now = () => new Date(),
     historyLimit = 10,
   }) {
     if (!projectSource?.readCanonicalProject) {
-      throw new TypeError(
-        "projectSource must provide readCanonicalProject()",
-      );
+      throw new TypeError("projectSource must provide readCanonicalProject()");
     }
     if (
       !workstreamSource?.list ||
@@ -33,14 +36,13 @@ export class PortfolioSnapshotBuilder {
       );
     }
     if (!runnerSource?.loadAvailability) {
-      throw new TypeError(
-        "runnerSource must provide loadAvailability()",
-      );
+      throw new TypeError("runnerSource must provide loadAvailability()");
     }
     if (!Number.isInteger(historyLimit) || historyLimit < 1) {
       throw new TypeError("historyLimit must be a positive integer");
     }
     this.projectSource = projectSource;
+    this.issueCatalogSource = issueCatalogSource;
     this.workstreamSource = workstreamSource;
     this.runnerSource = runnerSource;
     this.now = now;
@@ -49,75 +51,109 @@ export class PortfolioSnapshotBuilder {
 
   async build() {
     const capturedAt = this.now().toISOString();
-    const [project, workstreamIndex, runnerAvailability] =
+    const [projectResult, catalogResult, workstreamResult, runnerResult] =
       await Promise.all([
-        this.projectSource.readCanonicalProject(),
-        this.workstreamSource.list(),
-        this.runnerSource.loadAvailability(),
+        readSource("project", () => this.projectSource.readCanonicalProject()),
+        this.issueCatalogSource?.readIssueCatalog
+          ? readSource("issues", () => this.issueCatalogSource.readIssueCatalog())
+          : Promise.resolve({ source: "issues", value: unavailableCatalog() }),
+        readSource("workstreams", () => this.workstreamSource.list()),
+        readSource("runners", () => this.runnerSource.loadAvailability()),
       ]);
-    validateProject(project);
+    const project = projectResult.value ?? unavailableProject();
+    const catalog = catalogResult.value ?? unavailableCatalog();
+    const workstreamIndex = workstreamResult.value ?? unavailableWorkstreams();
+    const runnerAvailability = runnerResult.value ?? unavailableRunners();
 
+    validateProject(project);
     const diagnostics = [
+      ...readDiagnostics(projectResult),
+      ...readDiagnostics(catalogResult),
+      ...readDiagnostics(workstreamResult),
+      ...readDiagnostics(runnerResult),
+      ...sourceDiagnostics("project", project),
+      ...sourceDiagnostics("issues", catalog),
       ...sourceDiagnostics("workstreams", workstreamIndex),
       ...sourceDiagnostics("runners", runnerAvailability),
     ];
-    if (project.complete !== true) {
-      diagnostics.push({
-        source: "project",
-        code: "incomplete-project",
-        message: "The canonical Project read is incomplete",
-      });
-    }
-
+    const issueByNumber = new Map(
+      (catalog.issues ?? []).map((issue) => [issue.number, issue]),
+    );
     const knownWorkstreams = new Set(
       (workstreamIndex.workstreams ?? []).map((entry) => entry.path),
     );
     const workstreamCache = new Map();
     const dossiers = [];
-    for (const [canonicalIndex, item] of project.items.entries()) {
-      const preclassification = classifyItem(item, capturedAt);
+
+    for (const [canonicalIndex, projectItem] of project.items.entries()) {
+      const joined = joinProjectItem(
+        projectItem,
+        catalog,
+        issueByNumber,
+        diagnostics,
+      );
+      const preclassification = classifyItem(joined.item, capturedAt);
       const workstream = await this.#workstreamEvidence(
-        item,
+        joined.item,
         preclassification,
         knownWorkstreams,
         workstreamCache,
         diagnostics,
       );
-      const relations = extractRelations(item, workstream);
+      const relations = extractRelations(joined.item, workstream);
       dossiers.push({
         canonicalIndex,
         preclassification,
-        item: normalizeItem(item),
-        lease: leaseEvidence(item, capturedAt),
+        projectContent: joined.projectContent,
+        item: normalizeItem(joined.item),
+        lease: leaseEvidence(joined.item, capturedAt),
         dependencies: relations.dependencies,
         blockers: relations.blockers,
         workstream,
         compatibility: compatibilityEvidence(
-          item.requirements ?? [],
+          joined.item.requirements ?? [],
           runnerAvailability.runners ?? [],
         ),
         evidenceAvailable: {
-          project: true,
-          issue: true,
+          project: project.complete === true,
+          issue: joined.issueAvailable,
           workstream: workstream.available,
           runnerAvailability: runnerAvailability.complete === true,
         },
       });
     }
 
+    const source = {
+      project: summarizeProjectSource(project),
+      issues: summarizeCatalogSource(catalog),
+      workstreams: summarizeWorkstreamSource(workstreamIndex),
+      runners: summarizeRunnerSource(runnerAvailability),
+    };
     const complete =
       project.complete === true &&
+      catalog.complete === true &&
       workstreamIndex.complete === true &&
       runnerAvailability.complete === true &&
       diagnostics.length === 0;
+    const expectedState = expectedStateReferences(
+      project,
+      catalog,
+      workstreamIndex,
+      dossiers,
+    );
     const durable = {
-      version: 1,
-      capturedAt,
+      version: SNAPSHOT_VERSION,
       complete,
       usableForMutation: complete,
+      source,
+      expectedState,
       project: {
         id: project.id,
         items: project.items.map((item) => item.id),
+      },
+      issueCatalog: {
+        id: catalog.id,
+        excludedPullRequests: catalog.excludedPullRequests ?? 0,
       },
       workstreams: {
         revision: workstreamIndex.revision,
@@ -129,13 +165,13 @@ export class PortfolioSnapshotBuilder {
         ),
       },
       dossiers,
-      diagnostics,
+      diagnostics: deduplicateDiagnostics(diagnostics),
     };
-    const snapshot = {
+    return deepFreeze({
       id: stableIdentity(durable),
+      capturedAt,
       ...durable,
-    };
-    return deepFreeze(snapshot);
+    });
   }
 
   async #workstreamEvidence(
@@ -164,7 +200,6 @@ export class PortfolioSnapshotBuilder {
     if (cache.has(workstreamPath)) {
       return cache.get(workstreamPath);
     }
-
     const promise = (async () => {
       if (!knownWorkstreams.has(workstreamPath)) {
         diagnostics.push({
@@ -196,11 +231,7 @@ export class PortfolioSnapshotBuilder {
           code: "workstream-read-failed",
           message: `Unable to read referenced workstream ${workstreamPath}${error.cause?.code ? ` (${error.cause.code})` : ""}`,
         });
-        return {
-          path: workstreamPath,
-          available: false,
-          history: [],
-        };
+        return { path: workstreamPath, available: false, history: [] };
       }
     })();
     cache.set(workstreamPath, promise);
@@ -208,12 +239,44 @@ export class PortfolioSnapshotBuilder {
   }
 }
 
-function describeProjectItem(item) {
-  const issue = item.number ? `Issue #${item.number}` : "Issue";
-  const title = item.title?.trim() ? ` ${JSON.stringify(item.title.trim())}` : "";
-  const url = item.url?.trim();
-  const locator = [issue + title, url].filter(Boolean).join(", ");
-  return `Project item ${item.id} (${locator})`;
+async function readSource(source, read) {
+  try {
+    return { source, value: await read() };
+  } catch (error) {
+    return { source, error };
+  }
+}
+
+function readDiagnostics(result) {
+  if (!result.error) {
+    return [];
+  }
+  return [{
+    source: result.source,
+    code: "source-read-failed",
+    message: result.error instanceof Error ? result.error.message : String(result.error),
+  }];
+}
+
+function unavailableProject() {
+  return { id: "unavailable", complete: false, items: [] };
+}
+
+function unavailableCatalog() {
+  return { id: "unavailable", complete: false, issues: [], diagnostics: [] };
+}
+
+function unavailableWorkstreams() {
+  return {
+    revision: "unavailable",
+    complete: false,
+    workstreams: [],
+    diagnostics: [],
+  };
+}
+
+function unavailableRunners() {
+  return { complete: false, runners: [], diagnostics: [] };
 }
 
 function validateProject(project) {
@@ -228,7 +291,54 @@ function validateProject(project) {
   }
 }
 
+function joinProjectItem(projectItem, catalog, issueByNumber, diagnostics) {
+  const classification =
+    projectItem.contentClassification ??
+    (projectItem.repository === catalog.repository
+      ? "domain-issue"
+      : "unreadable");
+  const projectContent = {
+    classification,
+    type: projectItem.contentType,
+    repository: projectItem.repository,
+    number: projectItem.number,
+  };
+  if (projectContent.classification !== "domain-issue") {
+    return {
+      item: projectItem,
+      projectContent,
+      issueAvailable: false,
+    };
+  }
+  const issue = issueByNumber.get(projectItem.number);
+  if (!issue) {
+    diagnostics.push({
+      source: `project-item:${projectItem.id}`,
+      code: "project-issue-missing-catalog",
+      message: `Project item ${projectItem.id} references Issue #${projectItem.number}, which is absent from the complete Issue catalog`,
+    });
+    return { item: projectItem, projectContent, issueAvailable: false };
+  }
+  return {
+    item: {
+      ...issue,
+      id: projectItem.id,
+      projectItemId: projectItem.id,
+      fields: { ...(projectItem.fields ?? {}) },
+      requirements: [...(projectItem.requirements ?? [])],
+      linkedPullRequests: [...(projectItem.linkedPullRequests ?? [])],
+      contentClassification: projectContent.classification,
+      contentType: projectContent.type,
+    },
+    projectContent,
+    issueAvailable: true,
+  };
+}
+
 function classifyItem(item, capturedAt) {
+  if (item.contentClassification !== "domain-issue") {
+    return "unsupported";
+  }
   const status = item.fields?.status;
   if (item.state === "closed") {
     return "closed";
@@ -249,6 +359,13 @@ function classifyItem(item, capturedAt) {
     return "needs-detail";
   }
   return "actionable";
+}
+
+function describeProjectItem(item) {
+  const issue = item.number ? `Issue #${item.number}` : "Issue";
+  const title = item.title?.trim() ? ` ${JSON.stringify(item.title.trim())}` : "";
+  const locator = [issue + title, item.url?.trim()].filter(Boolean).join(", ");
+  return `Project item ${item.id} (${locator})`;
 }
 
 function leaseEvidence(item, capturedAt) {
@@ -375,18 +492,106 @@ function extractRelations(item, workstream) {
 }
 
 function sourceDiagnostics(source, result) {
-  return (result.diagnostics ?? result.errors ?? []).map((diagnostic) => ({
-    source,
-    code: diagnostic.code ?? "source-diagnostic",
-    message:
-      source === "workstreams"
-        ? diagnostic.path
-          ? `Workstream ${diagnostic.path} is unavailable or malformed`
-          : "The workstream index is incomplete"
-        : diagnostic.message ?? diagnostic.reason,
-    ...(diagnostic.path ? { path: diagnostic.path } : {}),
-    ...(diagnostic.runnerId ? { runnerId: diagnostic.runnerId } : {}),
-  }));
+  const diagnostics = result.diagnostics ?? result.errors ?? [];
+  const incomplete = result.complete !== true;
+  return [
+    ...(incomplete && diagnostics.length === 0
+      ? [{
+          source,
+          code: `incomplete-${source}`,
+          message: `The ${source} evidence source is incomplete`,
+        }]
+      : []),
+    ...diagnostics.map((diagnostic) => ({
+      source,
+      code: diagnostic.code ?? "source-diagnostic",
+      message:
+        source === "workstreams"
+          ? diagnostic.path
+            ? `Workstream ${diagnostic.path} is unavailable or malformed`
+            : "The workstream index is incomplete"
+          : diagnostic.message ?? diagnostic.reason ?? "Source reported incomplete evidence",
+      ...(diagnostic.path ? { path: diagnostic.path } : {}),
+      ...(diagnostic.runnerId ? { runnerId: diagnostic.runnerId } : {}),
+    })),
+  ];
+}
+
+function summarizeProjectSource(project) {
+  return {
+    complete: project.complete === true,
+    id: project.id,
+    classifications: project.items.map((item) => ({
+      itemId: item.id,
+      classification: item.contentClassification ?? "unreadable",
+    })),
+  };
+}
+
+function summarizeCatalogSource(catalog) {
+  return {
+    complete: catalog.complete === true,
+    id: catalog.id,
+    commentsComplete: catalog.source?.comments?.complete === true,
+    relationshipsComplete: catalog.source?.relationships?.complete === true,
+    excludedPullRequests: catalog.excludedPullRequests ?? 0,
+  };
+}
+
+function summarizeWorkstreamSource(workstreams) {
+  return {
+    complete: workstreams.complete === true,
+    revision: workstreams.revision,
+  };
+}
+
+function summarizeRunnerSource(runners) {
+  return {
+    complete: runners.complete === true,
+    runnerCount: (runners.runners ?? []).length,
+  };
+}
+
+function expectedStateReferences(project, catalog, workstreams, dossiers) {
+  return {
+    projectOrder: stableIdentity(project.items.map((item) => item.id)),
+    projectItems: project.id,
+    projectFields: stableIdentity(
+      project.items.map((item) => ({ id: item.id, fields: item.fields ?? {} })),
+    ),
+    projectMembership: stableIdentity(
+      project.items.map((item) => ({
+        id: item.id,
+        classification: item.contentClassification ?? "unreadable",
+        number: item.number,
+        repository: item.repository,
+      })),
+    ),
+    issueCatalog: catalog.id,
+    workstreamIndex: workstreams.revision,
+    workstreamBlobs: stableIdentity(
+      dossiers.map((dossier) => ({
+        itemId: dossier.item.id,
+        path: dossier.workstream.path,
+        contentHash: dossier.workstream.contentHash,
+        revision: dossier.workstream.revision,
+      })),
+    ),
+    attentionRecords: "not-read",
+    leadershipGeneration: "not-read",
+  };
+}
+
+function deduplicateDiagnostics(diagnostics) {
+  const seen = new Set();
+  return diagnostics.filter((entry) => {
+    const key = stableStringify(entry);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function stableIdentity(value) {
@@ -402,10 +607,7 @@ function stableStringify(value) {
   if (value && typeof value === "object") {
     return `{${Object.keys(value)
       .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${stableStringify(value[key])}`,
-      )
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
       .join(",")}}`;
   }
   return JSON.stringify(value);

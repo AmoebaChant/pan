@@ -139,6 +139,60 @@ test("propagates partial source diagnostics to mutation readiness", async () => 
   );
 });
 
+test("joins Project items to the catalog and diagnoses a missing Issue", async () => {
+  const first = item("1");
+  const second = item("2");
+  const snapshot = await builder({
+    items: [first, second],
+    catalogIssues: [catalogIssue(first)],
+  }).build();
+
+  assert.equal(snapshot.complete, false);
+  assert.deepEqual(
+    snapshot.dossiers.map((dossier) => dossier.evidenceAvailable.issue),
+    [true, false],
+  );
+  assert.ok(
+    snapshot.diagnostics.some(
+      (diagnostic) => diagnostic.code === "project-issue-missing-catalog",
+    ),
+  );
+});
+
+test("retains non-Issue Project content in canonical order", async () => {
+  const pullRequest = {
+    ...item("1"),
+    contentClassification: "pull-request",
+    contentType: "PullRequest",
+  };
+  const snapshot = await builder({ items: [pullRequest] }).build();
+
+  assert.equal(snapshot.complete, true);
+  assert.equal(snapshot.dossiers[0].projectContent.classification, "pull-request");
+  assert.equal(snapshot.dossiers[0].preclassification, "unsupported");
+  assert.equal(snapshot.dossiers[0].evidenceAvailable.issue, false);
+});
+
+test("uses resource-specific expected-state references", async () => {
+  const entry = item("1");
+  const first = await builder({
+    items: [entry],
+    catalogId: "sha256:catalog-first",
+  }).build();
+  const changed = await builder({
+    items: [entry],
+    catalogId: "sha256:catalog-changed",
+  }).build();
+
+  assert.notEqual(first.id, changed.id);
+  assert.notEqual(
+    first.expectedState.issueCatalog,
+    changed.expectedState.issueCatalog,
+  );
+  assert.match(first.expectedState.projectOrder, /^sha256:/);
+  assert.match(first.expectedState.workstreamBlobs, /^sha256:/);
+});
+
 test("produces immutable repeatable identities independent of property insertion order", async () => {
   const firstItem = item("ready");
   const reorderedItem = {
@@ -187,6 +241,10 @@ function builder({
   workstreamDiagnostics = [],
   runnerComplete = true,
   runnerDiagnostics = [],
+  catalogComplete = true,
+  catalogIssues,
+  catalogDiagnostics = [],
+  catalogId = "sha256:issues",
 } = {}) {
   const missing = new Set(missingWorkstreams);
   return new PortfolioSnapshotBuilder({
@@ -197,6 +255,21 @@ function builder({
         capturedAt: NOW.toISOString(),
         complete: true,
         items,
+      }),
+    },
+    issueCatalogSource: {
+      readIssueCatalog: async () => ({
+        id: catalogId,
+        repository: "example/domain",
+        capturedAt: NOW.toISOString(),
+        complete: catalogComplete,
+        issues: catalogIssues ?? items.map(catalogIssue),
+        excludedPullRequests: 0,
+        diagnostics: catalogDiagnostics,
+        source: {
+          comments: { complete: true },
+          relationships: { complete: false, excluded: true },
+        },
       }),
     },
     workstreamSource: {
@@ -271,12 +344,35 @@ function builder({
   });
 }
 
+function catalogIssue(entry) {
+  return {
+    id: `I_${entry.number}`,
+    number: entry.number,
+    title: entry.title,
+    body: entry.body,
+    url: entry.url,
+    state: entry.state,
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+    closedAt: null,
+    repository: entry.repository,
+    labels: entry.labels,
+    assignees: entry.assignees,
+    comments: entry.comments,
+    relationships: [],
+  };
+}
+
 function item(id, options = {}) {
   const status = options.status ?? "ready";
   const requirements = options.requirements ?? [];
+  const numericId = Number.parseInt(id.replace(/\D/g, ""), 10);
   return {
     id,
-    number: Number.parseInt(id.replace(/\D/g, ""), 10) || 1,
+    number:
+      options.number ??
+      (numericId ||
+        [...id].reduce((sum, character) => sum + character.charCodeAt(0), 0)),
     title: `Task ${id}`,
     body: "Depends on: #41",
     url: `https://github.com/example/domain/issues/${id}`,

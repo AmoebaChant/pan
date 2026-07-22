@@ -441,11 +441,14 @@ export class PanStore {
   }
 
   async readCanonicalProject() {
-    const items = await this.#listItems();
+    const { items, diagnostics } = await this.#listItems({
+      preserveIncomplete: true,
+    });
     return {
       id: canonicalSnapshotId(items),
       capturedAt: this.now().toISOString(),
-      complete: true,
+      complete: diagnostics.length === 0,
+      diagnostics,
       items,
     };
   }
@@ -1037,7 +1040,7 @@ export class PanStore {
     };
   }
 
-  async #listItems() {
+  async #listItems({ preserveIncomplete = false } = {}) {
     const schema = await this.getSchema();
     const items = await this.#readProjectConnection({
       query: PROJECT_ITEMS_QUERY,
@@ -1045,19 +1048,31 @@ export class PanStore {
       connectionName: "items",
       limit: this.projectItemSafetyLimit,
     });
-    return items.map((item) => {
-      const normalized = normalizeGraphQlItem(
-        item,
-        schema,
-        this.repository,
-      );
-      if (!normalized) {
-        throw new Error(
-          "Project items connection included a redacted or null item",
-        );
+    const diagnostics = [];
+    const normalized = items.map((item) => {
+      try {
+        const value = normalizeGraphQlItem(item, schema, this.repository);
+        if (!value) {
+          throw new Error("Project items connection included a redacted or null item");
+        }
+        return value;
+      } catch (error) {
+        if (!preserveIncomplete) {
+          throw error;
+        }
+        const itemId = item?.id;
+        if (!itemId) {
+          throw error;
+        }
+        diagnostics.push({
+          source: `project-item:${itemId}`,
+          code: "unreadable-project-item",
+          message: error.message,
+        });
+        return unreadableProjectItem(item);
       }
-      return normalized;
     });
+    return preserveIncomplete ? { items: normalized, diagnostics } : normalized;
   }
 
   async #listProjectFields(projectId) {
@@ -1276,18 +1291,45 @@ function normalizeGraphQlItem(item, schema, defaultRepository) {
     return undefined;
   }
   const content = item.content;
-  if (!content || content.__typename !== "Issue") {
-    throw new Error(
-      `Project item ${item.id} has unsupported content ${content?.__typename ?? "redacted or inaccessible"}`,
-    );
-  }
-  requireIssueEvidence(item.id, content);
   const fieldValues = requireCompleteConnection(
     item.id,
     "field values",
     item.fieldValues,
     20,
   );
+  const fields = Object.fromEntries(
+    Object.values(schema.fields).map((field) => [field.key, ""]),
+  );
+  for (const value of fieldValues) {
+    const field = Object.values(schema.fields).find(
+      (candidate) =>
+        candidate.name.toLowerCase() === value.field?.name?.toLowerCase(),
+    );
+    if (field) {
+      fields[field.key] = value.name ?? value.text ?? "";
+    }
+  }
+  if (!content || content.__typename !== "Issue") {
+    return {
+      id: item.id,
+      number: undefined,
+      title: undefined,
+      body: undefined,
+      url: undefined,
+      state: undefined,
+      createdAt: undefined,
+      updatedAt: undefined,
+      repository: undefined,
+      assignees: [],
+      labels: [],
+      comments: [],
+      linkedPullRequests: [],
+      fields,
+      requirements: parseRequirements(fields.requirements),
+      contentType: content?.__typename,
+      contentClassification: classifyProjectContent(content),
+    };
+  }
   const assignees = requireCompleteConnection(
     item.id,
     "assignees",
@@ -1312,18 +1354,7 @@ function normalizeGraphQlItem(item, schema, defaultRepository) {
     content.closedByPullRequestsReferences,
     10,
   );
-  const fields = Object.fromEntries(
-    Object.values(schema.fields).map((field) => [field.key, ""]),
-  );
-  for (const value of fieldValues) {
-    const field = Object.values(schema.fields).find(
-      (candidate) =>
-        candidate.name.toLowerCase() === value.field?.name?.toLowerCase(),
-    );
-    if (field) {
-      fields[field.key] = value.name ?? value.text ?? "";
-    }
-  }
+  requireIssueEvidence(item.id, content);
   return {
     id: item.id,
     number: content.number,
@@ -1348,7 +1379,47 @@ function normalizeGraphQlItem(item, schema, defaultRepository) {
     ),
     fields,
     requirements: parseRequirements(fields.requirements),
+    contentType: content.__typename,
+    contentClassification:
+      content.repository?.nameWithOwner === defaultRepository
+        ? "domain-issue"
+        : "cross-domain-issue",
   };
+}
+
+function unreadableProjectItem(item) {
+  return {
+    id: item.id,
+    number: undefined,
+    title: undefined,
+    body: undefined,
+    url: undefined,
+    state: undefined,
+    createdAt: undefined,
+    updatedAt: undefined,
+    repository: undefined,
+    assignees: [],
+    labels: [],
+    comments: [],
+    linkedPullRequests: [],
+    fields: {},
+    requirements: [],
+    contentType: item.content?.__typename,
+    contentClassification: "unreadable",
+  };
+}
+
+function classifyProjectContent(content) {
+  if (!content) {
+    return "unreadable";
+  }
+  if (content.__typename === "DraftIssue") {
+    return "draft";
+  }
+  if (content.__typename === "PullRequest") {
+    return "pull-request";
+  }
+  return "unsupported";
 }
 
 function normalizePullRequest(itemId, pullRequest) {

@@ -349,26 +349,35 @@ test("fails closed when an item has unpaged field values", async () => {
   await assert.rejects(store.getItem("item-1"), /cannot be read safely/);
 });
 
-test("rejects truncated nested evidence and unsupported Project content", async () => {
+test("classifies unreadable and unsupported Project content without omitting it", async () => {
   for (const option of [
     "truncatedAssignees",
     "truncatedLabels",
     "truncatedComments",
   ]) {
     const { store } = fixture({ [option]: true });
-    await assert.rejects(
-      store.readCanonicalProject(),
-      /cannot be read safely/,
-      option,
-    );
+    const snapshot = await store.readCanonicalProject();
+    assert.equal(snapshot.complete, false, option);
+    assert.equal(snapshot.items.length, 1, option);
+    assert.equal(snapshot.items[0].contentClassification, "unreadable", option);
   }
 
   const { store } = fixture({
-    items: [makeItem({ id: "draft-1", contentType: "DraftIssue" })],
+    items: [
+      makeItem({ id: "draft-1", contentType: "DraftIssue" }),
+      makeItem({ id: "pr-1", contentType: "PullRequest" }),
+      makeItem({
+        id: "cross-domain-1",
+        number: 3,
+        repository: "other/domain",
+      }),
+    ],
   });
-  await assert.rejects(
-    store.readCanonicalProject(),
-    /Project item draft-1 has unsupported content DraftIssue/,
+  const snapshot = await store.readCanonicalProject();
+  assert.equal(snapshot.complete, true);
+  assert.deepEqual(
+    snapshot.items.map((item) => item.contentClassification),
+    ["draft", "pull-request", "cross-domain-issue"],
   );
 });
 
@@ -1296,6 +1305,7 @@ function makeItem({
   comments = [],
   linkedPullRequests = [],
   contentType = "Issue",
+  repository = "AmoebaChant/pan-work",
   state = "OPEN",
   createdAt = "2026-07-17T18:00:00Z",
   updatedAt = "2026-07-17T19:00:00Z",
@@ -1307,12 +1317,12 @@ function makeItem({
       title,
       body,
       state,
-      url: `https://github.com/AmoebaChant/pan-work/issues/${number}`,
+      url: `https://github.com/${repository}/issues/${number}`,
       createdAt,
       updatedAt,
     },
     contentType,
-    repository: "AmoebaChant/pan-work",
+    repository,
     assignees,
     labels,
     comments,
