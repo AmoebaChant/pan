@@ -79,6 +79,22 @@ export {
   startPanSession,
   verifyCopilotContract,
 } from "./pan-session.js";
+export {
+  buildScheduleBootstrapPrompt,
+  buildScheduledReviewPrompt,
+  COPILOT_SCHEDULING_CONTRACT_VERSION,
+  manualScheduleCommand,
+  MAX_NATIVE_SCHEDULE_INTERVAL_SECONDS,
+  nativeScheduleIntervalSeconds,
+  verifyCopilotInvocationContract,
+} from "./copilot-contract.js";
+export {
+  createInitialSessionDueState,
+  createSessionDueState,
+  isSessionReviewDue,
+  recordSessionReview,
+  SESSION_DUE_STATE_VERSION,
+} from "./session-due-state.js";
 export { DomainIdentity } from "./domain-identity.js";
 export { createServiceLogger } from "./service-logger.js";
 export { setupPanDomain } from "./pan-setup.js";

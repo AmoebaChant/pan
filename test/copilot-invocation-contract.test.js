@@ -10,6 +10,14 @@ import {
   handleMcpRequest,
   TOOL_NAMES,
 } from "./fixtures/copilot-spike/tools/pan-tools.js";
+import {
+  buildScheduleBootstrapPrompt,
+  createInitialSessionDueState,
+  isSessionReviewDue,
+  MAX_NATIVE_SCHEDULE_INTERVAL_SECONDS,
+  recordSessionReview,
+  verifyCopilotInvocationContract,
+} from "../src/index.js";
 
 const FIXTURE_PATH = path.resolve("test/fixtures/copilot-spike");
 const SESSION_ID = "00000000-0000-4000-8000-000000000001";
@@ -18,6 +26,70 @@ test("package tests exclude executable fixture files", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 
   assert.equal(packageJson.scripts.test, "node --test test/*.test.js");
+});
+
+test("defines a bounded native scheduling bootstrap contract", () => {
+  const prompt = buildScheduleBootstrapPrompt({
+    scheduling: {
+      enabled: true,
+      startup: "immediate",
+      reviewIntervalSeconds: 86_400,
+    },
+    dueStatePath: "C:\\runtime\\session-a.due.json",
+  });
+
+  assert.equal(MAX_NATIVE_SCHEDULE_INTERVAL_SECONDS, 3_600);
+  assert.match(prompt, /exactly one native session-scoped recurring schedule/i);
+  assert.match(prompt, /\/every 3600s/);
+  assert.match(prompt, /C:\\runtime\\session-a\.due\.json/);
+  assert.match(prompt, /Run one fresh startup review now/i);
+  assert.match(prompt, /fresh complete portfolio evidence/i);
+});
+
+test("requires the documented Copilot schedule commands or gives manual guidance", async () => {
+  await assert.rejects(
+    verifyCopilotInvocationContract({
+      commands: {
+        run: async () =>
+          "--agent --add-dir --model --no-auto-update --interactive",
+      },
+      requireScheduling: true,
+    }),
+    /Upgrade Copilot CLI.*\/every 3600s/i,
+  );
+
+  await verifyCopilotInvocationContract({
+    commands: {
+      run: async () =>
+        "--agent --add-dir --model --no-auto-update --interactive /every /after",
+    },
+    requireScheduling: true,
+  });
+});
+
+test("uses launch-local due state without replaying another session", () => {
+  const state = createInitialSessionDueState({
+    sessionId: "session-a",
+    reviewIntervalSeconds: 86_400,
+    now: "2026-07-22T00:00:00.000Z",
+  });
+
+  assert.equal(
+    isSessionReviewDue(state, { now: "2026-07-22T23:59:59.000Z" }),
+    false,
+  );
+  assert.equal(
+    isSessionReviewDue(state, { now: "2026-07-23T00:00:00.000Z" }),
+    true,
+  );
+  assert.deepEqual(
+    recordSessionReview(state, { now: "2026-07-23T00:00:00.000Z" }),
+    {
+      ...state,
+      lastReviewAt: "2026-07-23T00:00:00.000Z",
+      nextReviewAt: "2026-07-24T00:00:00.000Z",
+    },
+  );
 });
 
 function buildTurnArguments(options = {}) {

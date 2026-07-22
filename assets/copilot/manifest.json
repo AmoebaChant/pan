@@ -9,7 +9,7 @@
     {
       "source": "instructions/pan.instructions.md",
       "destination": "instructions/pan.instructions.md",
-      "sha256": "ff171bd0f159f7bd70e5414770acda90bc64b1e47b673d54bc0bd505bdf69e46"
+      "sha256": "f6af9b7d4df162312cd55bc858b399999a626ef5d2e77a858c20562ac0802cdd"
     },
     {
       "source": "skills/pan-attention/SKILL.md",
@@ -19,7 +19,7 @@
     {
       "source": "skills/pan-portfolio/SKILL.md",
       "destination": "skills/pan-portfolio/SKILL.md",
-      "sha256": "08a149a026e6d5e7a8a42f6c40cd5828e342007e987a8a54f7a8e731dde1eb9f"
+      "sha256": "91681f020836721efd0b7600ff0ae6a3083c86298a11772150e952196f0c9f9a"
     },
     {
       "source": "skills/pan-workstream/SKILL.md",

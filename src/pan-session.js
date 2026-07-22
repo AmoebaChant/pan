@@ -7,10 +7,14 @@ import { DomainIdentity } from "./domain-identity.js";
 import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { isCurrentPanAssets, PanAssetService } from "./pan-assets.js";
+import {
+  buildScheduleBootstrapPrompt,
+  nativeScheduleIntervalSeconds,
+  verifyCopilotInvocationContract,
+} from "./copilot-contract.js";
 import { ProcessClient } from "./process-client.js";
 import { terminateProcessTree } from "./process-tree.js";
-
-const REQUIRED_COPILOT_OPTIONS = ["--agent", "--add-dir", "--model", "--no-auto-update"];
+import { createSessionDueState } from "./session-due-state.js";
 
 /**
  * Launches a foreground Copilot session after validating its one configured domain.
@@ -26,6 +30,7 @@ export async function startPanSession({
   domainIdentity = new DomainIdentity({ env }),
   commands = new ProcessClient(),
   verifyCopilot = verifyCopilotContract,
+  dueStateFactory = createSessionDueState,
   gh = new GhClient({ env }),
   stateFileFactory = (options) => new GitHubStateFile(options),
   leaseFactory = (options) => new LeaderLease(options),
@@ -58,7 +63,6 @@ export async function startPanSession({
     );
   }
   const identity = await domainIdentity.validate(config);
-  await verifyCopilot({ executable, commands });
 
   const sessionId = sessionIdFactory();
   const leaderLease = leaseFactory({
@@ -84,18 +88,9 @@ export async function startPanSession({
         sessionId,
       }
     : undefined;
-  const sessionEnv = buildSessionEnvironment({
-    env,
-    configPath,
-    config,
-    identity,
-    sessionId,
-    mode,
-    leadership,
-  });
-  const args = buildSessionCopilotArgs({ config, model });
   let child;
   let guard;
+  let dueState;
   let leadershipLoss;
   let termination;
   let exit;
@@ -122,6 +117,40 @@ export async function startPanSession({
   };
 
   try {
+    const schedulingEnabled = mode === "writing" && config.scheduling?.enabled;
+    await verifyCopilot({
+      executable,
+      commands,
+      requireScheduling: schedulingEnabled,
+      scheduling: config.scheduling,
+    });
+    if (schedulingEnabled) {
+      dueState = await dueStateFactory({
+        sessionId,
+        reviewIntervalSeconds: config.scheduling.reviewIntervalSeconds,
+        directory: sessionDueStateDirectory(env),
+      });
+    }
+    const sessionEnv = buildSessionEnvironment({
+      env,
+      configPath,
+      config,
+      identity,
+      sessionId,
+      mode,
+      leadership,
+      dueState,
+    });
+    const args = buildSessionCopilotArgs({
+      config,
+      model,
+      bootstrapPrompt: schedulingEnabled
+        ? buildScheduleBootstrapPrompt({
+            scheduling: config.scheduling,
+            dueStatePath: dueState.path,
+          })
+        : undefined,
+    });
     child = spawnProcess(executable, args, {
       cwd: identity.domain.path,
       env: sessionEnv,
@@ -164,6 +193,7 @@ export async function startPanSession({
         leadershipLoss ??= error;
       }
     }
+    await dueState?.dispose().catch(() => {});
   }
   return sessionResult({
     identity,
@@ -175,7 +205,11 @@ export async function startPanSession({
   });
 }
 
-export function buildSessionCopilotArgs({ config, model = config?.session?.agent?.model } = {}) {
+export function buildSessionCopilotArgs({
+  config,
+  model = config?.session?.agent?.model,
+  bootstrapPrompt,
+} = {}) {
   if (!config?.session?.agent?.name) {
     throw new TypeError("config.session.agent.name is required");
   }
@@ -188,6 +222,7 @@ export function buildSessionCopilotArgs({ config, model = config?.session?.agent
       "--add-dir",
       root.path,
     ]),
+    ...(bootstrapPrompt ? ["--interactive", bootstrapPrompt] : []),
   ];
 }
 
@@ -199,6 +234,7 @@ export function buildSessionEnvironment({
   sessionId,
   mode = "read-only",
   leadership,
+  dueState,
 }) {
   const inherited = Object.fromEntries(
     Object.entries(env).filter(([name]) => !name.startsWith("PAN_")),
@@ -212,6 +248,14 @@ export function buildSessionEnvironment({
     PAN_DOMAIN_PROJECT: `${config.domain.projectOwner}/${config.domain.projectNumber}`,
     PAN_SESSION_MODE: mode,
     ...(sessionId ? { PAN_SESSION_ID: sessionId } : {}),
+    ...(dueState
+      ? {
+          PAN_SCHEDULE_DUE_STATE: dueState.path,
+          PAN_SCHEDULE_INTERVAL_SECONDS: String(
+            nativeScheduleIntervalSeconds(config.scheduling.reviewIntervalSeconds),
+          ),
+        }
+      : {}),
     PAN_PRODUCT_CONTEXT_ROOTS: JSON.stringify(
       config.session.productContextRoots.map(({ label, path }) => ({ label, path })),
     ),
@@ -225,17 +269,26 @@ export function buildSessionEnvironment({
   };
 }
 
-export async function verifyCopilotContract({ executable = "copilot", commands = new ProcessClient() } = {}) {
-  const help = await commands.run(executable, ["--help"], {
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
+export async function verifyCopilotContract({
+  executable = "copilot",
+  commands = new ProcessClient(),
+  requireScheduling = false,
+  scheduling,
+} = {}) {
+  return verifyCopilotInvocationContract({
+    executable,
+    commands,
+    requireScheduling,
+    scheduling,
   });
-  const missing = REQUIRED_COPILOT_OPTIONS.filter((option) => !help.includes(option));
-  if (missing.length > 0) {
-    throw new Error(
-      `Copilot CLI does not support the required PAN session options: ${missing.join(", ")}`,
-    );
-  }
+}
+
+function sessionDueStateDirectory(env) {
+  return path.join(
+    env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"),
+    "PAN",
+    "sessions",
+  );
 }
 
 function waitForExit(child) {

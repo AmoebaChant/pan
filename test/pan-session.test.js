@@ -113,6 +113,74 @@ test("runs a contending session read-only without mutation authority", async () 
   await writer;
 });
 
+test("bootstraps one native schedule only for a writing session", async () => {
+  const stateFile = new MemoryStateFile();
+  let launch;
+  let contract;
+  let disposed = false;
+  const result = await startSession({
+    stateFile,
+    config: scheduledSessionConfig(),
+    verifyCopilot: async (options) => {
+      contract = options;
+    },
+    dueStateFactory: async () => ({
+      path: "C:\\runtime\\writer.due.json",
+      dispose: async () => {
+        disposed = true;
+      },
+    }),
+    spawnProcess: (_executable, args, options) => {
+      launch = { args, options };
+      const child = new EventEmitter();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  assert.equal(result.mode, "writing");
+  assert.equal(contract.requireScheduling, true);
+  assert.equal(
+    launch.options.env.PAN_SCHEDULE_DUE_STATE,
+    "C:\\runtime\\writer.due.json",
+  );
+  assert.equal(launch.options.env.PAN_SCHEDULE_INTERVAL_SECONDS, "3600");
+  assert.match(
+    launch.args[launch.args.indexOf("--interactive") + 1],
+    /\/every 3600s/,
+  );
+  assert.equal(disposed, true);
+});
+
+test("does not bootstrap a schedule for a read-only session", async () => {
+  const stateFile = new MemoryStateFile();
+  stateFile.value = {
+    holder: "another-machine/pan-1",
+    token: "another-session",
+    sessionId: "another-session",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  stateFile.version = 1;
+  let contract;
+  await startSession({
+    stateFile,
+    config: scheduledSessionConfig(),
+    verifyCopilot: async (options) => {
+      contract = options;
+    },
+    dueStateFactory: async () => assert.fail("read-only session must not create due state"),
+    spawnProcess: (_executable, args, options) => {
+      assert.ok(!args.includes("--interactive"));
+      assert.equal(options.env.PAN_SCHEDULE_DUE_STATE, undefined);
+      const child = new EventEmitter();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  assert.equal(contract.requireScheduling, false);
+});
+
 test("stops the writing child when its leadership generation is replaced", async () => {
   const stateFile = new MemoryStateFile();
   let heartbeat;
@@ -278,15 +346,29 @@ function sessionConfig() {
   };
 }
 
+function scheduledSessionConfig() {
+  return {
+    ...sessionConfig(),
+    scheduling: {
+      enabled: true,
+      startup: "immediate",
+      reviewIntervalSeconds: 86_400,
+      retrySeconds: 60,
+      rateLimitRetrySeconds: 900,
+    },
+  };
+}
+
 function startSession({
   stateFile,
   sessionIdFactory = () => "session-a",
   pid = 1234,
   spawnProcess,
+  config = sessionConfig(),
   ...overrides
 }) {
   return startPanSession({
-    config: sessionConfig(),
+    config,
     configPath: "C:\\domains\\example\\pan.json",
     assetService: { status: async () => ({ status: "current" }) },
     domainIdentity: {

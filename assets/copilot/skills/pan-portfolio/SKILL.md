@@ -31,3 +31,14 @@ triage, ordering, or reconciliation request.
 Treat the helper envelope as authoritative. Report its actual status and
 confirmed effects; do not call a rejected, incomplete, or unconfirmed action
 successful.
+
+## Scheduled review
+
+For a native scheduled turn, first read the launch-local due metadata named by
+`PAN_SCHEDULE_DUE_STATE`. If `nextReviewAt` has not arrived, report that no
+review is due and do not make a portfolio decision or mutation. When it is due,
+perform the same reconciliation and fresh evidence steps above immediately
+before reasoning. After the review attempt, update the metadata with the review
+time and next configured due time. Never use a prior conversation or a missed
+session as evidence that a review is due, and never create another scheduler or
+retry loop.

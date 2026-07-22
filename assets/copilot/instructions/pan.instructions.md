@@ -63,6 +63,17 @@ evidence and authority policy, refresh evidence immediately before decisions,
 and never overlap another turn. Do not create a PAN-owned scheduler or attempt
 to restore reviews after the session exits.
 
+When the writing-session startup prompt supplies scheduling instructions,
+establish exactly the one native `/every` schedule it names. Apply its startup
+policy exactly once: `immediate` runs one fresh review now, `after-interval`
+waits for the first due turn, and `manual` has no startup review. A read-only
+session must not create a schedule or run an autonomous review. For a cadence
+larger than the native interval, the scheduled prompt reads the supplied
+launch-local due metadata and does nothing until the configured due time. This
+metadata is not a durable queue: do not catch up reviews from an earlier
+session. Keep failed, rejected, or incomplete reviews visible, and follow the
+configured bounded retry guidance without creating a second schedule.
+
 Use the PAN skills for their bounded workflows:
 
 - `pan-portfolio` for review, evidence, and reconciliation;
