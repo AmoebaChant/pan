@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -369,6 +369,101 @@ test("hosts authenticated interactive tools while holding leadership", async () 
   });
   await running;
   assert.deepEqual(calls.at(-1), ["release"]);
+});
+
+test("reads and updates the domain config while holding leadership", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pan-host-"));
+  const stateFile = path.join(directory, "host.json");
+  const configPath = path.join(directory, "domain.json");
+  const config = {
+    version: 1,
+    domain: {
+      repository: "example/domain",
+      projectOwner: "example",
+      projectNumber: 7,
+      path: directory,
+    },
+    state: { branch: "pan-state", path: ".pan" },
+    agent: { name: "pan", model: "gpt-5.6-sol" },
+  };
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const host = new PanHost({
+    stateFile,
+    token: "secret",
+    pollIntervalSeconds: 60,
+    heartbeatSeconds: 60,
+    configPath,
+    reviewService: {
+      run: async () => assert.fail("scheduled review should not run"),
+      applyActions: async () => assert.fail("not called"),
+    },
+    toolRegistry: { dispatch: async () => assert.fail("not called") },
+    leaderLease: {
+      acquire: async () => ({ acquired: true }),
+      heartbeat: async () => ({ renewed: true }),
+      release: async () => ({ released: true }),
+    },
+    logger: { info() {}, error() {} },
+  });
+
+  const running = host.run();
+  const state = await waitForState(stateFile);
+
+  const readResponse = await fetch(`${state.endpoint}/tools/call`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer secret",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ name: "read_config", arguments: {} }),
+  });
+  assert.equal(readResponse.status, 200);
+  const read = await readResponse.json();
+  assert.equal(read.data.config.agent.model, "gpt-5.6-sol");
+  assert.equal(read.data.schemaReference, "schema/domain-config.json");
+
+  const updated = {
+    ...config,
+    agent: { ...config.agent, model: "gpt-6-mini" },
+  };
+  const updateResponse = await fetch(`${state.endpoint}/tools/call`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer secret",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "update_config",
+      arguments: { config: updated },
+    }),
+  });
+  assert.equal(updateResponse.status, 200);
+  const update = await updateResponse.json();
+  assert.equal(update.data.restartRequired, true);
+  const persisted = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(persisted.agent.model, "gpt-6-mini");
+
+  const invalidResponse = await fetch(`${state.endpoint}/tools/call`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer secret",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "update_config",
+      arguments: { config: { version: 1 } },
+    }),
+  });
+  assert.equal(invalidResponse.status, 500);
+  const unchanged = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(unchanged.agent.model, "gpt-6-mini");
+
+  await fetch(`${state.endpoint}/shutdown`, {
+    method: "POST",
+    headers: { authorization: "Bearer secret" },
+  });
+  await running;
 });
 
 async function waitForState(stateFile) {

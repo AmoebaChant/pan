@@ -19,6 +19,8 @@ const TOOL_NAMES = [
   "read_workstream",
   "read_issue",
   "read_runner_availability",
+  "read_config",
+  "update_config",
   "propose_actions",
 ];
 

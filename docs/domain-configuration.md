@@ -29,6 +29,18 @@ pan setup --repository example/personal-domain `
   --approval-mode prompt
 ```
 
+## Changing configuration later
+
+`pan setup` only bootstraps a new domain; it does not edit an existing one. To
+change configuration afterward, either edit `pan.json` directly or ask PAN in an
+interactive `pan connect` session. PAN reads and writes the domain config
+through its constrained `read_config` and `update_config` tools, following the
+`pan-config` skill. Configuration changes take effect only after the PAN host
+and runner restart.
+
+The Copilot tool approval mode lives in the private runner profile rather than
+this domain config, so it must be changed there.
+
 ## Example
 
 ```json

@@ -14,6 +14,8 @@ const ALLOWED_TOOLS = [
   "pan-tools/read_workstream",
   "pan-tools/read_issue",
   "pan-tools/read_runner_availability",
+  "pan-tools/read_config",
+  "pan-tools/update_config",
   "pan-tools/propose_actions",
 ];
 

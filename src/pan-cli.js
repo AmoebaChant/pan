@@ -188,6 +188,7 @@ export async function runPanCli(
         repairService: services.repairService,
         taskStore: store,
         model: configuration.agent?.model,
+        configPath: parsed.config,
         logger,
       }).run({ signal: controller.signal });
     } finally {

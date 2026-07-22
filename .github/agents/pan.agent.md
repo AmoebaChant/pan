@@ -6,6 +6,8 @@ tools:
   - pan-tools/read_workstream
   - pan-tools/read_issue
   - pan-tools/read_runner_availability
+  - pan-tools/read_config
+  - pan-tools/update_config
   - pan-tools/propose_actions
 disable-model-invocation: true
 user-invocable: true
@@ -66,6 +68,8 @@ Use only these PAN operations:
 - `pan-tools/read_workstream`
 - `pan-tools/read_issue`
 - `pan-tools/read_runner_availability`
+- `pan-tools/read_config`
+- `pan-tools/update_config`
 - `pan-tools/propose_actions`
 
 When the turn request embeds a complete `portfolio` snapshot, reason directly
@@ -119,6 +123,33 @@ false, explain the diagnostics instead of proposing a mutation.
 
 Do not use shell commands, arbitrary filesystem access, direct GitHub mutation,
 or any operation outside this list.
+
+# Configuration
+
+You can read and change this domain's configuration on the user's behalf through
+`read_config` and `update_config`. Follow the `pan-config` skill for the schema,
+the meaning of each setting, and the required restart procedure.
+
+Always call `read_config` first, change only the fields the user asked about in
+the returned object, and submit the entire modified object to `update_config`.
+Never drop fields you did not intend to change. `update_config` rejects any
+change that fails schema validation and never applies partial edits.
+
+Key settings you are commonly asked to change:
+
+- `agent.model` selects the default Copilot model for autonomous reviews and
+  `pan connect`. Omit it to fall back to `auto`.
+- `agent.turnTimeoutSeconds` and `agent.maxAiCredits` are optional safeguards.
+- `reviewPolicy.higherRisk` and `selfRepair` are disabled unless explicitly
+  enabled.
+
+The Copilot tool approval mode (`prompt` or `allow-all`) lives in the private
+runner profile, not this domain config, so it cannot be changed with
+`update_config`; explain that the user must edit the runner profile instead.
+
+After a successful `update_config`, tell the user the change is saved but does
+not take effect until the PAN host and runner are restarted, and give them the
+restart commands from the skill. You cannot restart them yourself.
 
 # Output protocol
 

@@ -29,6 +29,19 @@ export const PAN_INTERACTIVE_TOOLS = Object.freeze([
     {},
   ),
   tool(
+    "read_config",
+    "Read the current PAN domain configuration file, including the default agent model, cadences, and review policy. Contains no secrets. Read this before proposing a configuration change.",
+    {},
+  ),
+  tool(
+    "update_config",
+    "Replace the PAN domain configuration file with a validated, complete config object. Call read_config first, modify the returned config, then submit the whole object. The change is rejected if it fails schema validation and requires restarting the PAN host and runner to take effect.",
+    {
+      config: { type: "object" },
+    },
+    ["config"],
+  ),
+  tool(
     "propose_actions",
     "Submit PAN protocol v1 actions for deterministic validation and application. Every mutation, including issue-create, must set expectedState.snapshotId to the exact snapshotReference.value from the latest read_portfolio result.",
     {

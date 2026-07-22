@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+import { validateDomainConfig } from "./domain-config.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -17,6 +19,7 @@ export class PanHost {
     repairService,
     taskStore,
     model,
+    configPath,
     logger = console,
     host = "127.0.0.1",
     port = 0,
@@ -52,6 +55,7 @@ export class PanHost {
     this.repairService = repairService;
     this.taskStore = taskStore;
     this.model = model;
+    this.configPath = configPath;
     this.logger = logger;
     this.host = host;
     this.port = port;
@@ -222,6 +226,12 @@ export class PanHost {
 
   async #dispatch(operation, args, signal) {
     signal.throwIfAborted();
+    if (operation === "read_config") {
+      return this.#readConfig();
+    }
+    if (operation === "update_config") {
+      return this.#updateConfig(args);
+    }
     const proposal = await this.toolRegistry.dispatch(operation, args);
     if (operation === "read_portfolio") {
       this.#rememberSnapshot(proposal.data);
@@ -299,6 +309,58 @@ export class PanHost {
     while (this.snapshots.size > 10) {
       this.snapshots.delete(this.snapshots.keys().next().value);
     }
+  }
+
+  async #readConfig() {
+    const configPath = this.#requireConfigPath();
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    validateDomainConfig(config, { configPath });
+    return {
+      operation: "read_config",
+      status: "confirmed",
+      data: {
+        configPath,
+        config,
+        schemaReference: "schema/domain-config.json",
+      },
+    };
+  }
+
+  async #updateConfig(args) {
+    const configPath = this.#requireConfigPath();
+    if (
+      !args ||
+      typeof args.config !== "object" ||
+      args.config === null ||
+      Array.isArray(args.config)
+    ) {
+      throw new Error(
+        "update_config requires a complete domain config object in arguments.config; call read_config, modify the returned config, then submit the whole object",
+      );
+    }
+    validateDomainConfig(args.config, { configPath });
+    await writeConfig(configPath, args.config);
+    this.logger.info?.(`Domain configuration updated at ${configPath}.`);
+    return {
+      operation: "update_config",
+      status: "confirmed",
+      data: {
+        configPath,
+        config: args.config,
+        restartRequired: true,
+        restart:
+          "Stop and restart the PAN host (`pan stop` then `pan start`) and restart `pan-runner` so the new configuration takes effect.",
+      },
+    };
+  }
+
+  #requireConfigPath() {
+    if (!this.configPath) {
+      throw new Error(
+        "PAN host was started without a domain config path; configuration tools are unavailable",
+      );
+    }
+    return this.configPath;
   }
 }
 
@@ -422,5 +484,11 @@ async function writeState(filePath, value) {
     encoding: "utf8",
     flag: "wx",
   });
+  await rename(temporary, filePath);
+}
+
+async function writeConfig(filePath, value) {
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await rename(temporary, filePath);
 }
