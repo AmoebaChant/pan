@@ -219,6 +219,55 @@ test("rejects malformed JSONL output with turn and transport state", async () =>
   );
 });
 
+test("recovers a validated final response when the terminal aggregate is unusable", async () => {
+  const result = await fixtureClient({ scenario: "delta-fallback" }).review(
+    turn("autonomous-review"),
+  );
+
+  assert.equal(result.response.type, "final-response");
+  assert.equal(result.response.turnId, "turn-1");
+});
+
+test("sanitizes malformed assistant response diagnostics", async () => {
+  const error = await captureRejection(
+    fixtureClient({ scenario: "malformed-response" }).review(
+      turn("autonomous-review"),
+    ),
+  );
+
+  assert.equal(error.state, "malformed-response");
+  assert.match(error.message, /Assistant response was not valid JSON/);
+  assert.doesNotMatch(error.message, /privateResponse|must-not-leak/);
+});
+
+test("reports content-free event diagnostics when the final response is missing", async () => {
+  const error = await captureRejection(
+    fixtureClient({ scenario: "no-final-response" }).review(
+      turn("autonomous-review"),
+    ),
+  );
+
+  assert.equal(error.state, "missing-final-response");
+  assert.equal(error.confirmedSideEffects, false);
+  assert.deepEqual(error.responseDiagnostics, {
+    eventCounts: {
+      "assistant.message": 1,
+      other: 1,
+      result: 1,
+    },
+    assistantMessageCount: 1,
+    assistantDeltaMessageCount: 0,
+    assistantDeltaCount: 0,
+    deltaFallbackCount: 0,
+  });
+  assert.match(error.message, /assistant\.message: 1/);
+  assert.match(error.message, /result=1/);
+  assert.doesNotMatch(
+    error.message,
+    /private diagnostic fixture output|private-event-type-must-not-leak/,
+  );
+});
+
 test("times out and cancels bounded child processes", async () => {
   const timeoutClient = fixtureClient({ scenario: "timeout", timeout: 50 });
   const timeoutError = await captureRejection(

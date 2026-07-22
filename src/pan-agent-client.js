@@ -15,6 +15,15 @@ const DELIVERY_CREDENTIALS = [
   "SSH_AUTH_SOCK",
   "GIT_ASKPASS",
 ];
+const DIAGNOSTIC_EVENT_TYPES = new Set([
+  "assistant.message",
+  "assistant.message_delta",
+  "assistant.message_start",
+  "result",
+  "session.error",
+  "tool.execution_complete",
+  "tool.execution_start",
+]);
 
 export class PanAgentClient {
   constructor(options = {}) {
@@ -143,12 +152,21 @@ export class PanAgentClient {
       );
     }
     if (!parsed.response) {
+      const responseDiagnostics = formatResponseDiagnostics(
+        parsed.responseDiagnostics,
+      );
       throw turnError(
         turn.turnId,
         "missing-final-response",
         parsed.confirmedSideEffects,
-        new Error("Copilot emitted no valid PAN final response"),
-        { exitCode: execution.exitCode, signal: execution.signal },
+        new Error(
+          `Copilot emitted no valid PAN final response (${responseDiagnostics})`,
+        ),
+        {
+          exitCode: execution.exitCode,
+          signal: execution.signal,
+          responseDiagnostics: parsed.responseDiagnostics,
+        },
       );
     }
 
@@ -207,9 +225,15 @@ export class PanAgentClient {
 
   async #parseEvents(turn, stdout) {
     const events = parseJsonLines(stdout);
+    const eventCounts = countEventTypes(events);
     const toolMessages = [];
     const pendingRequests = new Map();
+    const assistantDeltas = new Map();
     let confirmedSideEffects = false;
+    let assistantMessageCount = 0;
+    let assistantDeltaCount = 0;
+    let deltaFallbackCount = 0;
+    const responseErrors = [];
     let response;
     let result;
 
@@ -234,25 +258,52 @@ export class PanAgentClient {
             await this.onToolMessage(message);
           }
           toolMessages.push(message);
+        } else if (event.type === "assistant.message_delta") {
+          const messageId = readAssistantMessageId(event);
+          const delta = readAssistantDelta(event);
+          if (messageId && typeof delta === "string") {
+            assistantDeltas.set(
+              messageId,
+              `${assistantDeltas.get(messageId) ?? ""}${delta}`,
+            );
+            assistantDeltaCount += 1;
+          }
         } else if (event.type === "assistant.message") {
+          assistantMessageCount += 1;
           const candidate = readAssistantContent(event);
-          if (typeof candidate === "string") {
-            try {
-              const value = parseAssistantJson(candidate);
-              if (value?.type === "final-response") {
-                response = validatePanFinalResponse(
-                  coerceFinalResponse(value, turn),
-                );
-              }
-            } catch (error) {
-              if (candidate.trim().startsWith("{")) {
-                throw stateError("malformed-response", error.message);
-              }
+          try {
+            const candidateResponse = parseFinalResponseCandidate(
+              candidate,
+              turn,
+            );
+            if (candidateResponse) {
+              response = candidateResponse;
             }
+          } catch (error) {
+            responseErrors.push(error);
           }
         } else if (event.type === "result") {
           result = event;
         }
+      }
+      if (!response) {
+        for (const candidate of assistantDeltas.values()) {
+          deltaFallbackCount += 1;
+          try {
+            const candidateResponse = parseFinalResponseCandidate(
+              candidate,
+              turn,
+            );
+            if (candidateResponse) {
+              response = candidateResponse;
+            }
+          } catch (error) {
+            responseErrors.push(error);
+          }
+        }
+      }
+      if (!response && responseErrors.length > 0) {
+        throw responseErrors[0];
       }
       if (pendingRequests.size > 0) {
         throw stateError(
@@ -263,7 +314,19 @@ export class PanAgentClient {
       if (response) {
         validateResponseIdentity(turn, response);
       }
-      return { confirmedSideEffects, response, result, toolMessages };
+      return {
+        confirmedSideEffects,
+        response,
+        responseDiagnostics: {
+          eventCounts,
+          assistantMessageCount,
+          assistantDeltaMessageCount: assistantDeltas.size,
+          assistantDeltaCount,
+          deltaFallbackCount,
+        },
+        result,
+        toolMessages,
+      };
     } catch (error) {
       error.confirmedSideEffects = confirmedSideEffects;
       throw error;
@@ -359,6 +422,29 @@ function parseAssistantJson(content) {
       throw firstError;
     }
     return JSON.parse(unfenced.slice(start, end + 1));
+  }
+}
+
+function parseFinalResponseCandidate(candidate, turn) {
+  if (typeof candidate !== "string") {
+    return undefined;
+  }
+  try {
+    const value = parseAssistantJson(candidate);
+    if (value?.type !== "final-response") {
+      return undefined;
+    }
+    return validatePanFinalResponse(coerceFinalResponse(value, turn));
+  } catch (error) {
+    if (candidate.trim().startsWith("{")) {
+      throw stateError(
+        "malformed-response",
+        error instanceof SyntaxError
+          ? "Assistant response was not valid JSON"
+          : error.message,
+      );
+    }
+    return undefined;
   }
 }
 
@@ -477,6 +563,15 @@ function parseJsonLines(stdout) {
   return events;
 }
 
+function countEventTypes(events) {
+  const counts = {};
+  for (const event of events) {
+    const type = DIAGNOSTIC_EVENT_TYPES.has(event.type) ? event.type : "other";
+    counts[type] = (counts[type] ?? 0) + 1;
+  }
+  return counts;
+}
+
 function hasConfirmedToolSideEffects(turn, stdout = "") {
   const pendingRequests = new Map();
   try {
@@ -518,6 +613,15 @@ function readToolMessage(event) {
 
 function readAssistantContent(event) {
   return event.data?.content ?? event.content;
+}
+
+function readAssistantMessageId(event) {
+  const messageId = event.data?.messageId ?? event.messageId;
+  return typeof messageId === "string" && messageId ? messageId : undefined;
+}
+
+function readAssistantDelta(event) {
+  return event.data?.deltaContent ?? event.deltaContent;
 }
 
 function readResultExitCode(event) {
@@ -623,6 +727,19 @@ function formatLaunchDiagnostics(diagnostics) {
     `arguments: ${diagnostics.argumentCount} entries/${diagnostics.argumentCharacters} characters/${diagnostics.longestArgumentCharacters} longest`,
     `environment: ${diagnostics.environmentEntries} entries/${diagnostics.environmentCharacters} characters/${diagnostics.largestEnvironmentValueCharacters} largest value`,
     `stdin prompt: ${diagnostics.stdinBytes} bytes`,
+  ].join("; ");
+}
+
+function formatResponseDiagnostics(diagnostics) {
+  const eventCounts = Object.entries(diagnostics.eventCounts)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([type, count]) => `${type}=${count}`)
+    .join(", ");
+  return [
+    `assistant.message: ${diagnostics.assistantMessageCount}`,
+    `assistant.message_delta: ${diagnostics.assistantDeltaCount} chunks across ${diagnostics.assistantDeltaMessageCount} messages`,
+    `delta-only candidates: ${diagnostics.deltaFallbackCount}`,
+    `events: ${eventCounts || "none"}`,
   ].join("; ");
 }
 

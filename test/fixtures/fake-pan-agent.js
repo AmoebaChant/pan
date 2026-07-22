@@ -97,7 +97,24 @@ if (prompt) {
           },
         ];
       }
-      emit("assistant.message", response);
+      if (scenario === "delta-fallback") {
+        emitAssistantDeltas(JSON.stringify(response));
+        emitAssistantContent('{"privateAggregate":"must-not-leak"');
+      } else if (scenario === "no-final-response") {
+        console.log(
+          JSON.stringify({
+            type: "private-event-type-must-not-leak",
+            data: {},
+          }),
+        );
+        emitAssistantContent(
+          "private diagnostic fixture output without a PAN envelope",
+        );
+      } else if (scenario === "malformed-response") {
+        emitAssistantContent('{"privateResponse":"must-not-leak"');
+      } else {
+        emit("assistant.message", response);
+      }
       emit("result", {
         sessionId:
           argument("--session-id") ??
@@ -131,6 +148,37 @@ function emit(type, value) {
             : { message: value },
     }),
   );
+}
+
+function emitAssistantContent(content) {
+  console.log(
+    JSON.stringify({
+      type: "assistant.message",
+      data: { messageId: "message-1", content },
+    }),
+  );
+}
+
+function emitAssistantDeltas(content) {
+  const messageId = "message-1";
+  console.log(
+    JSON.stringify({
+      type: "assistant.message_start",
+      data: { messageId },
+    }),
+  );
+  const midpoint = Math.ceil(content.length / 2);
+  for (const deltaContent of [
+    content.slice(0, midpoint),
+    content.slice(midpoint),
+  ]) {
+    console.log(
+      JSON.stringify({
+        type: "assistant.message_delta",
+        data: { messageId, deltaContent },
+      }),
+    );
+  }
 }
 
 function finalResponse(turn) {

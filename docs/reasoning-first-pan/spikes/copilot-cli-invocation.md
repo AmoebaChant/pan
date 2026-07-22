@@ -114,6 +114,8 @@ With `--output-format json --stream off`, stdout contains one complete JSON
 object per line. Relevant observed event types were:
 
 - `assistant.message`, including tool requests and final response text
+- `assistant.message_delta`, which can reconstruct a validated final response
+  when the terminal aggregate is absent or unusable
 - `tool.execution_start`
 - `tool.execution_complete`, including `success` and an error on failure
 - `session.error`
@@ -121,7 +123,9 @@ object per line. Relevant observed event types were:
 
 Consumers must parse each line independently, ignore unknown event types, retain
 the `sessionId`, fail a turn on a nonzero process/result exit code or a terminal
-session error, and separately validate every requested action result.
+session error, and separately validate every requested action result. Delta-only
+assistant output remains subject to the complete final-response schema before
+the turn can succeed.
 
 ## Cancellation and lifecycle
 
