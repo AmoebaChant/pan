@@ -1,8 +1,8 @@
 import {
-  formatNeedsHuman,
   formatNeedsHumanResolved,
   latestNeedsHuman,
 } from "./needs-human.js";
+import { AttentionService } from "./attention-service.js";
 import {
   matchingPlaybook,
   normalizePlaybooks,
@@ -20,6 +20,7 @@ export class RunnerDaemon {
     store,
     profile,
     executor,
+    attention,
     now = () => new Date(),
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -30,6 +31,11 @@ export class RunnerDaemon {
       ? profile
       : { ...profile, playbooks: normalizePlaybooks(profile) };
     this.executor = executor;
+    this.attention =
+      attention ??
+      new AttentionService({
+        store,
+      });
     this.now = now;
     this.sleep = sleep;
     this.logger = logger;
@@ -190,6 +196,7 @@ export class RunnerDaemon {
     });
     let delivery;
     let result;
+    let needsHuman;
     try {
       const comments = await this.store.listComments(item);
       this.logger.info?.(
@@ -219,17 +226,8 @@ export class RunnerDaemon {
         handle,
         heartbeat,
         signal,
-        onNeedsHuman: async (record) => {
-          try {
-            await retry(() =>
-              this.store.addComment(item, formatNeedsHuman(record)),
-            );
-          } catch (error) {
-            this.logger.error(
-              `Unable to record agent question for PAN task #${item.number}`,
-              error,
-            );
-          }
+        onNeedsHuman: (record) => {
+          needsHuman = record;
         },
       });
       this.logger.info?.(
@@ -305,27 +303,58 @@ export class RunnerDaemon {
         return;
       }
 
-      await handle.clearResumeState?.();
-      const record = {
-        kind: result.budgetExceeded ? "approval" : "question",
-        prompt: result.summary,
-        locator: handle.locator(result.localUrl),
-      };
-      await heartbeat.renewNow();
-      await this.store.addComment(item, formatNeedsHuman(record));
-      await heartbeat.renewNow();
-      const release = await this.store.release({
-        itemId: item.id,
-        runner,
-        assignee: this.profile.githubAssignee,
-        status: "blocked",
-      });
-      if (!release.released) {
-        throw new Error(`Unable to release blocked task: ${release.reason}`);
+      if (
+        (result.status === "blocked" && needsHuman) ||
+        result.budgetExceeded
+      ) {
+        const resumeAffinity = runnerResumeAffinity(
+          this.profile.id,
+          playbook.id,
+        );
+        await handle.interrupt?.("Waiting for human attention.");
+        await heartbeat.renewNow();
+        await this.attention.request(
+          item,
+          {
+            ...(needsHuman ?? {
+              kind: "approval",
+              prompt:
+                "Approve another runner attempt after increasing or removing the task budget.",
+            }),
+            locator:
+              needsHuman?.locator ?? handle.locator(result.localUrl),
+            source: needsHuman?.source ?? "runner",
+            reason:
+              needsHuman?.reason ??
+              (result.budgetExceeded
+                ? "budget-exhausted"
+                : "blocking-question"),
+          },
+          {
+            runner,
+            runnerAssignee: this.profile.githubAssignee,
+            resumeAffinity,
+          },
+        );
+        this.logger.info?.(
+          `Task #${item.number} moved to urgent human attention and its lease was released.`,
+        );
+        return;
       }
-      this.logger.info?.(
-        `Task #${item.number} moved to blocked and its lease was released.`,
+
+      await handle.interrupt?.(
+        "Operational failure: The worker reported blocked without a structured needs-human request.",
       );
+      await this.#requeueOperationalStop({
+        item,
+        runner,
+        playbook,
+        handle,
+        heartbeat,
+        summary:
+          "The worker reported blocked without a structured needs-human request.",
+      });
+      return;
     } catch (error) {
       if (error.code === "PAN_LEASE_LOST") {
         await handle?.clearResumeState?.();
@@ -352,124 +381,26 @@ export class RunnerDaemon {
         });
         return;
       }
-      if (result?.status === "blocked") {
-        await handle?.clearResumeState?.();
-      }
-      try {
-        await heartbeat.renewNow();
-      } catch (leaseError) {
-        if (leaseError.code === "PAN_LEASE_LOST") {
-          this.logger.warn?.(
-            `Suppressed failure updates for task #${item.number} after losing its lease.`,
-          );
-          return;
-        }
-        throw new AggregateError(
-          [error, leaseError],
-          `Task #${item.number} failed and its lease could not be confirmed`,
-        );
-      }
-      const locator = handle
-        ? handle.locator()
-        : { machine: this.profile.machine };
       if (delivery) {
-        try {
-          await retry(() =>
-            this.store.addComment(
-              item,
-              formatNeedsHuman({
-                kind: "question",
-                prompt: `Delivery ${delivery.url} completed, but final Project updates failed: ${error.message}`,
-                locator,
-              }),
-            ),
-          );
-        } catch (reportError) {
-          this.logger.error(
-            `Unable to report finalization failure for PAN task #${item.number}`,
-            reportError,
-          );
-        }
-        if (delivery.mode === "direct") {
-          await heartbeat.renewNow();
-          const release = await retry(() =>
-            this.store.release({
-              itemId: item.id,
-              runner,
-              assignee: this.profile.githubAssignee,
-              status: "blocked",
-            }),
-          );
-          if (!release.released) {
-            throw new Error(
-              `Unable to block directly delivered task: ${release.reason}`,
-            );
-          }
-          this.logger.warn?.(
-            `Task #${item.number} was delivered directly but blocked because final Project updates failed.`,
-          );
-          return;
-        }
-        throw error;
-      }
-      if (result?.status !== "blocked") {
-        await handle?.interrupt?.(`Runner failure: ${error.message}`);
         await this.#requeueOperationalStop({
           item,
           runner,
           playbook,
-          handle,
+          handle: undefined,
           heartbeat,
-          summary: `Runner failure: ${error.message}`,
+          summary: `Delivery ${delivery.url} completed, but final Project updates failed: ${error.message}`,
         });
         return;
       }
-      let reportError;
-      try {
-        await this.store.addComment(
-          item,
-          formatNeedsHuman({
-            kind: "question",
-            prompt: `Runner failure: ${error.message}`,
-            locator,
-          }),
-        );
-      } catch (error) {
-        reportError = error;
-        this.logger.error(
-          `Unable to comment on failed PAN task #${item.number}`,
-          error,
-        );
-      }
-      try {
-        await heartbeat.renewNow();
-        const release = await retry(() =>
-          this.store.release({
-            itemId: item.id,
-            runner,
-            assignee: this.profile.githubAssignee,
-            status: "blocked",
-          }),
-        );
-        if (!release.released) {
-          throw new Error(`Unable to release failed task: ${release.reason}`);
-        }
-      } catch (releaseError) {
-        this.logger.error(
-          `Unable to release failed PAN task #${item.number}`,
-          releaseError,
-        );
-        if (!reportError) {
-          reportError = releaseError;
-        }
-      }
-      if (reportError) {
-        this.logger.error(
-          `PAN task #${item.number} failure reporting was incomplete`,
-          reportError,
-        );
-      }
-      throw error;
+      await handle?.interrupt?.(`Runner failure: ${error.message}`);
+      await this.#requeueOperationalStop({
+        item,
+        runner,
+        playbook,
+        handle,
+        heartbeat,
+        summary: `Runner failure: ${error.message}`,
+      });
     } finally {
       heartbeat.stop();
     }

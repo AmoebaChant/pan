@@ -11,6 +11,7 @@ export {
   formatNeedsHuman,
   formatNeedsHumanResolved,
   latestAnswer,
+  latestAttention,
   latestNeedsHuman,
   pullRequestUrl,
 } from "./needs-human.js";

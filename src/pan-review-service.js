@@ -18,6 +18,7 @@ export class PanReviewService {
     snapshotSource,
     agentClient,
     store,
+    attention,
     actionPolicy = new ActionPolicy(),
     now = () => new Date(),
   }) {
@@ -41,6 +42,7 @@ export class PanReviewService {
     this.snapshotSource = snapshotSource;
     this.agentClient = agentClient;
     this.store = store;
+    this.attention = attention;
     this.actionPolicy = actionPolicy;
     this.now = now;
   }
@@ -393,6 +395,21 @@ export class PanReviewService {
           return `Human-input request on Issue #${item.number} was already applied.`;
         }
         signal?.throwIfAborted();
+        if (this.attention) {
+          await this.attention.request(
+            item,
+            {
+              kind: action.target.kind,
+              prompt: action.target.prompt,
+              source: "pan",
+              reason: "portfolio-reasoning",
+              locator: { issue: item.url },
+            },
+            { marker },
+          );
+          signal?.throwIfAborted();
+          return `Requested human input on Issue #${item.number}.`;
+        }
         await this.store.addComment(
           item,
           appendMarker(

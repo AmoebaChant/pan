@@ -109,6 +109,16 @@ test("allows an offline starter profile without service repositories", () => {
   );
 });
 
+test("accepts a private domain configuration path for human attention", () => {
+  const source = makeProfile(path.resolve("runner-root"));
+  source.domainConfigPath = path.resolve("private-domain.json");
+
+  assert.equal(
+    validateRunnerProfile(source).domainConfigPath,
+    source.domainConfigPath,
+  );
+});
+
 test("adapts a legacy profile to one compatibility playbook", () => {
   const profile = validateRunnerProfile(makeProfile(path.resolve("runner-root")));
 

@@ -96,7 +96,10 @@ export async function runPanCli(
     projectNumber: configuration.store.projectNumber,
     gh,
   });
-  const attention = attentionFactory({ store });
+  const attention = attentionFactory({
+    store,
+    humanAssignee: configuration.attention?.assignee,
+  });
 
   if (parsed.command === "start" && parsed.background) {
     requireDomainConfiguration(parsed);
@@ -486,6 +489,7 @@ async function loadCliConfiguration(
       agent: config.agent,
       reviewPolicy: config.reviewPolicy,
       selfRepair: config.selfRepair,
+      attention: config.attention,
     };
   }
 
@@ -518,6 +522,9 @@ async function loadCliConfiguration(
       repository: undefined,
       workstream: undefined,
       requirements: [],
+    },
+    attention: {
+      assignee: undefined,
     },
   };
 }
@@ -562,10 +569,12 @@ function createDomainServices({
       env,
       snapshotSource,
       actionPolicy,
+      attention,
     }) ??
     new PanReviewService({
       snapshotSource,
       store,
+      attention,
       actionPolicy,
       agentClient: new PanAgentClient({
         executable: configuration.agent.executable,

@@ -10,6 +10,7 @@ const ALLOWED_KEYS = new Set([
   "transcripts",
   "reviewPolicy",
   "selfRepair",
+  "attention",
 ]);
 const RUNNER_ONLY_KEYS = new Set([
   "id",
@@ -51,6 +52,9 @@ const DEFAULTS = Object.freeze({
   },
   selfRepair: {
     enabled: false,
+  },
+  attention: {
+    assignee: undefined,
   },
 });
 
@@ -133,6 +137,7 @@ export function validateDomainConfig(config, { configPath } = {}) {
   const transcripts = normalizeTranscripts(config.transcripts, statePath);
   const reviewPolicy = normalizeReviewPolicy(config.reviewPolicy);
   const selfRepair = normalizeSelfRepair(config.selfRepair);
+  const attention = normalizeAttention(config.attention);
 
   return {
     version: 1,
@@ -153,6 +158,18 @@ export function validateDomainConfig(config, { configPath } = {}) {
     transcripts,
     reviewPolicy,
     selfRepair,
+    attention,
+  };
+}
+
+function normalizeAttention(attention = {}) {
+  requireRecord(attention, "attention");
+  rejectObjectKeys(attention, new Set(["assignee"]), "attention");
+  if (attention.assignee !== undefined) {
+    requireOwner(attention.assignee, "attention.assignee");
+  }
+  return {
+    assignee: attention.assignee ?? DEFAULTS.attention.assignee,
   };
 }
 

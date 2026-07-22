@@ -47,6 +47,9 @@ pan setup --repository example/personal-domain `
   "agent": {
     "name": "pan",
     "model": "gpt-5.6-sol"
+  },
+  "attention": {
+    "assignee": "example"
   }
 }
 ```
@@ -75,6 +78,11 @@ session, and `/model` displays the active selection.
 
 `agent.turnTimeoutSeconds` and `agent.maxAiCredits` are optional safeguards.
 When omitted, PAN does not pass a turn timeout or AI-credit cap to Copilot.
+
+`attention.assignee` is the GitHub login that receives genuine blocking
+questions. Keep this identity in the private domain configuration. Coding
+runners that need to escalate questions should reference this file with their
+private `domainConfigPath`; do not copy the login into public PAN code.
 
 State and transcripts are confined to the repository-relative `state.path`
 namespace. With the example above, the normalized leader file is
