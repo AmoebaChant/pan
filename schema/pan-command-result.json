@@ -62,21 +62,7 @@
       }
     },
     "confirmedEffects": {
-      "oneOf": [
-        {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/effect"
-          }
-        }
-      ]
+      "type": "array"
     },
     "remainingSteps": {
       "type": "array",
@@ -237,6 +223,32 @@
         "properties": {
           "incompleteEffects": {
             "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "version": {
+            "const": 2
+          }
+        },
+        "required": [
+          "version"
+        ]
+      },
+      "then": {
+        "properties": {
+          "confirmedEffects": {
+            "items": {
+              "$ref": "#/$defs/effect"
+            }
+          },
+          "incompleteEffects": {
+            "items": {
+              "$ref": "#/$defs/effect"
+            }
           }
         }
       }
