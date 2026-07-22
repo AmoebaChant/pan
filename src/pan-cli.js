@@ -14,6 +14,7 @@ import { createEvidenceCommandHandlers } from "./evidence-commands.js";
 import { createAttentionCommandHandlers } from "./attention-commands.js";
 import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 import { createWorkstreamCommandHandlers } from "./workstream-commands.js";
+import { createConfigCommandHandlers } from "./config-commands.js";
 import { startPanSession } from "./pan-session.js";
 import { setupPanDomain } from "./pan-setup.js";
 
@@ -40,6 +41,7 @@ export async function runPanCli(
       attention: createAttentionCommandHandlers({ env }),
       reconcile: createReconciliationCommandHandlers({ env }),
       workstream: createWorkstreamCommandHandlers({ env }),
+      config: createConfigCommandHandlers(),
     };
   const normalized = normalizeLegacyAttentionAlias(args);
   const helper = parsePanHelperArgs(normalized.args, { env, handlers: helpers });

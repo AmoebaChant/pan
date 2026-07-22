@@ -5,6 +5,7 @@ export { createActionCommandHandlers } from "./action-commands.js";
 export { createAttentionCommandHandlers } from "./attention-commands.js";
 export { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 export { createWorkstreamCommandHandlers } from "./workstream-commands.js";
+export { createConfigCommandHandlers } from "./config-commands.js";
 export {
   MISSING_ISSUE_INITIAL_FIELDS,
   MergedPullRequestReconciliationService,

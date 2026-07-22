@@ -16,20 +16,25 @@ export class GhCommandError extends Error {
 }
 
 export class GhClient {
-  constructor({ executable = "gh", env = process.env } = {}) {
-    this.executable = executable;
+  constructor({ executable, executableArgs, env = process.env } = {}) {
+    this.executable = executable ?? env.PAN_GH_EXECUTABLE ?? "gh";
+    this.executableArgs = executableArgs ?? parseExecutableArgs(env);
     this.env = env;
   }
 
   async run(args, { signal } = {}) {
     try {
-      const { stdout } = await execFileAsync(this.executable, args, {
-        encoding: "utf8",
-        env: this.env,
-        maxBuffer: 10 * 1024 * 1024,
-        signal,
-        windowsHide: true,
-      });
+      const { stdout } = await execFileAsync(
+        this.executable,
+        [...this.executableArgs, ...args],
+        {
+          encoding: "utf8",
+          env: this.env,
+          maxBuffer: 10 * 1024 * 1024,
+          signal,
+          windowsHide: true,
+        },
+      );
       return stdout.trim();
     } catch (error) {
       if (signal?.aborted) {
@@ -149,6 +154,21 @@ export class GhClient {
       );
     }
     return nodes;
+  }
+}
+
+function parseExecutableArgs(env) {
+  if (!env.PAN_GH_EXECUTABLE_ARGS) {
+    return [];
+  }
+  try {
+    const args = JSON.parse(env.PAN_GH_EXECUTABLE_ARGS);
+    if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
+      throw new TypeError();
+    }
+    return args;
+  } catch {
+    throw new TypeError("PAN_GH_EXECUTABLE_ARGS must be a JSON array of strings");
   }
 }
 

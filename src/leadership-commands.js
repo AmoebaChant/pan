@@ -239,7 +239,11 @@ function result({
   return createPanCommandResult({
     status,
     operation,
-    domain: context.domain,
+    domain: {
+      repository: context.domain.repository,
+      projectOwner: context.domain.projectOwner,
+      projectNumber: context.domain.projectNumber,
+    },
     confirmedEffects,
     diagnostics,
     recovery,
