@@ -560,7 +560,7 @@ function validateResponseEvidence(response, snapshot) {
 
 function buildEvidenceIndex(snapshot) {
   const byKind = new Map();
-  const itemsById = new Map();
+  const itemsByLocator = new Map();
   const runnersById = new Map();
   addEvidence(byKind, "domain-record", snapshot.id);
   addEvidence(byKind, "domain-record", snapshot.project.id);
@@ -571,7 +571,10 @@ function buildEvidenceIndex(snapshot) {
   );
   for (const dossier of snapshot.dossiers ?? []) {
     const { item, workstream } = dossier;
-    itemsById.set(item.id, item);
+    itemsByLocator.set(item.id, item);
+    if (item.url) {
+      itemsByLocator.set(item.url, item);
+    }
     const issueRevisions = [item.updatedAt].filter(Boolean);
     for (const locator of [
       item.id,
@@ -585,6 +588,7 @@ function buildEvidenceIndex(snapshot) {
       addEvidence(byKind, "issue", locator, issueRevisions);
     }
     addEvidence(byKind, "project-field", item.id, issueRevisions);
+    addEvidence(byKind, "project-field", item.url, issueRevisions);
     for (const field of Object.keys(item.fields ?? {})) {
       addEvidence(
         byKind,
@@ -637,7 +641,7 @@ function buildEvidenceIndex(snapshot) {
     runnersById.set(runner.id, runner);
     addEvidence(byKind, "runner", runner.id);
   }
-  return { byKind, itemsById, runnersById };
+  return { byKind, itemsByLocator, runnersById };
 }
 
 function assertCitationsResolve(citations, index) {
@@ -671,7 +675,7 @@ function citationResolves(citation, index) {
   if (citation.kind === "project-field") {
     return assertionLocatorResolves(
       citation,
-      index.itemsById,
+      index.itemsByLocator,
       kindIndex,
       (item) => item.fields ?? {},
     );

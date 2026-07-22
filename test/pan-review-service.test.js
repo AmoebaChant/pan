@@ -311,6 +311,35 @@ test("rejects evidence cited as the wrong source kind", async () => {
   assert.deepEqual(fixture.calls, []);
 });
 
+test("accepts URL-based project-field value assertions", async () => {
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "project-field",
+      locator: "https://github.com/example/domain/issues/2:status=ready",
+    },
+  });
+
+  const result = await fixture.service.run();
+
+  assert.equal(result.response.facts.length, 1);
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("rejects URL-based project-field assertions with stale values", async () => {
+  const fixture = reviewFixture({
+    factCitation: {
+      kind: "project-field",
+      locator: "https://github.com/example/domain/issues/2:status=done",
+    },
+  });
+
+  await assert.rejects(
+    fixture.service.run(),
+    /unknown locator .* for project-field evidence; cite a snapshot locator or value assertions that match the snapshot/i,
+  );
+  assert.deepEqual(fixture.calls, []);
+});
+
 test("accepts runner evidence with matching value assertions", async () => {
   const fixture = reviewFixture({
     factCitation: {
