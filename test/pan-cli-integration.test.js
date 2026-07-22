@@ -103,6 +103,7 @@ test("dispatches a hostless session without constructing legacy host services", 
     attentionFactory: () => assert.fail("session must not construct legacy attention"),
     sessionFactory: async (options) => {
       received = options;
+      options.onMode?.({ mode: "writing" });
       return { exitCode: 0, domain: { repository: "example/domain" } };
     },
   });
@@ -110,8 +111,42 @@ test("dispatches a hostless session without constructing legacy host services", 
   assert.equal(received.config, config);
   assert.equal(received.configPath, "domain.json");
   assert.equal(received.executable, "copilot-test");
+  assert.equal(received.onMode, undefined);
   assert.deepEqual(result, { exitCode: 0, domain: { repository: "example/domain" } });
   assert.deepEqual(JSON.parse(stdout.value), result);
+});
+
+test("reports session mode and leadership-loss recovery guidance", async () => {
+  const stdout = capture();
+  const config = {
+    ...domainConfig,
+    version: 2,
+    state: { branch: "pan-state", path: ".pan", leaderPath: ".pan/leader.json" },
+    session: { agent: { name: "pan", executable: "copilot-test" }, productContextRoots: [] },
+  };
+
+  await runPanCli(["session", "--config", "domain.json"], {
+    stdout,
+    stderr: capture(),
+    domainConfigLoader: async () => config,
+    sessionFactory: async ({ onMode }) => {
+      onMode({ mode: "read-only", reason: "held-by-another-session" });
+      return {
+        exitCode: 1,
+        mode: "read-only",
+        leadership: {
+          status: "lost",
+          diagnostic: "PAN leadership lost: contended",
+          guidance: "Restart the session to acquire leadership, or continue in read-only mode.",
+        },
+      };
+    },
+  });
+
+  assert.match(stdout.value, /read-only session started/i);
+  assert.match(stdout.value, /mutations and scheduled reviews are unavailable/i);
+  assert.match(stdout.value, /Leadership lost/i);
+  assert.match(stdout.value, /Restart the session/i);
 });
 
 test("reports successful setup in the default human-readable format", async () => {

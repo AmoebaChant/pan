@@ -151,14 +151,31 @@ export async function runPanCli(
       executable: configuration.agent.executable,
       model: configuration.agent.model,
       env,
+      onMode: parsed.json
+        ? undefined
+        : ({ mode, reason }) =>
+            write(
+              stdout,
+              mode === "writing"
+                ? "PAN writing session started."
+                : `PAN read-only session started${reason ? ` (${reason})` : ""}; mutations and scheduled reviews are unavailable.`,
+            ),
     });
     write(
       stdout,
       parsed.json
         ? JSON.stringify(result, null, 2)
-        : `PAN session exited with code ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}.`,
+        : formatSessionResult(result),
     );
     return result;
+  }
+
+  function formatSessionResult(result) {
+    const mode = result.mode ? ` (${result.mode})` : "";
+    const loss = result.leadership?.status === "lost"
+      ? ` Leadership lost: ${result.leadership.diagnostic}. ${result.leadership.guidance}`
+      : "";
+    return `PAN session exited with code ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}${mode}.${loss}`;
   }
   const store = storeFactory({
     repository: configuration.store.repository,

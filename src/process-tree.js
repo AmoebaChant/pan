@@ -1,14 +1,15 @@
 import { execFile } from "node:child_process";
 
-export async function terminateProcessTree(childProcess) {
+export async function terminateProcessTree(childProcess, options = {}) {
   if (!childProcess?.pid) {
     return;
   }
-  if (process.platform !== "win32") {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
     childProcess.kill("SIGKILL");
     return;
   }
-  await terminateProcessByPid(childProcess.pid);
+  await terminateProcessByPid(childProcess.pid, { ...options, platform });
 }
 
 export async function terminateProcessByPid(

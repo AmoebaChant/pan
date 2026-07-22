@@ -8,9 +8,10 @@ import {
   verifyCopilotContract,
 } from "../src/index.js";
 
-test("launches one ordinary foreground Copilot session in the validated domain", async () => {
+test("launches a writing session with bounded leadership authority", async () => {
   const launches = [];
   const config = sessionConfig();
+  const stateFile = new MemoryStateFile();
   const result = await startPanSession({
     config,
     configPath: "C:\\domains\\example\\pan.json",
@@ -19,6 +20,10 @@ test("launches one ordinary foreground Copilot session in the validated domain",
       PAN_HOST_TOKEN: "must-not-reach-child",
       PAN_RUNTIME_STATE: "must-not-reach-child",
     },
+    stateFileFactory: () => stateFile,
+    sessionIdFactory: () => "session-a",
+    hostname: "machine-a",
+    pid: 1234,
     assetService: { status: async () => ({ status: "current" }) },
     domainIdentity: {
       validate: async () => ({
@@ -41,6 +46,7 @@ test("launches one ordinary foreground Copilot session in the validated domain",
   });
 
   assert.equal(result.exitCode, 17);
+  assert.equal(result.mode, "writing");
   assert.equal(launches[0].executable, "copilot-test");
   assert.equal(launches[0].options.cwd, "C:\\domains\\example");
   assert.equal(launches[0].options.stdio, "inherit");
@@ -56,6 +62,10 @@ test("launches one ordinary foreground Copilot session in the validated domain",
   ]);
   assert.equal(launches[0].options.env.PAN_HOST_TOKEN, undefined);
   assert.equal(launches[0].options.env.PAN_RUNTIME_STATE, undefined);
+  assert.equal(launches[0].options.env.PAN_SESSION_MODE, "writing");
+  assert.equal(launches[0].options.env.PAN_SESSION_ID, "session-a");
+  assert.equal(launches[0].options.env.PAN_LEADERSHIP_HOLDER, "machine-a/pan-1234");
+  assert.ok(launches[0].options.env.PAN_LEADERSHIP_GENERATION);
   assert.equal(
     launches[0].options.env.PAN_DOMAIN_CONFIG,
     "C:\\domains\\example\\pan.json",
@@ -66,6 +76,152 @@ test("launches one ordinary foreground Copilot session in the validated domain",
     [{ label: "product", path: "C:\\product-reference" }],
   );
   assert.ok(!launches[0].args.some((arg) => arg.includes("mcp")));
+  assert.equal(stateFile.value.holder, "machine-a/pan-1234");
+  assert.ok(Date.parse(stateFile.value.expiresAt) <= Date.now());
+});
+
+test("runs a contending session read-only without mutation authority", async () => {
+  const stateFile = new MemoryStateFile();
+  const firstChild = new EventEmitter();
+  const writer = startSession({
+    stateFile,
+    sessionIdFactory: () => "writer",
+    pid: process.pid,
+    spawnProcess: () => firstChild,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  let readOnlyLaunch;
+  const readOnly = await startSession({
+    stateFile,
+    sessionIdFactory: () => "reader",
+    pid: process.pid,
+    spawnProcess: (_executable, _args, options) => {
+      readOnlyLaunch = options;
+      const child = new EventEmitter();
+      process.nextTick(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  assert.equal(readOnly.mode, "read-only");
+  assert.equal(readOnlyLaunch.env.PAN_SESSION_MODE, "read-only");
+  assert.equal(readOnlyLaunch.env.PAN_SESSION_ID, "reader");
+  assert.equal(readOnlyLaunch.env.PAN_LEADERSHIP_HOLDER, undefined);
+  assert.equal(readOnlyLaunch.env.PAN_LEADERSHIP_GENERATION, undefined);
+  firstChild.emit("close", 0, null);
+  await writer;
+});
+
+test("stops the writing child when its leadership generation is replaced", async () => {
+  const stateFile = new MemoryStateFile();
+  let heartbeat;
+  let terminated;
+  const child = new EventEmitter();
+  const session = startSession({
+    stateFile,
+    sessionIdFactory: () => "writer",
+    spawnProcess: () => child,
+    setIntervalImpl(callback) {
+      heartbeat = callback;
+      return "heartbeat";
+    },
+    clearIntervalImpl() {},
+    terminateChild: async (knownChild) => {
+      terminated = knownChild;
+      knownChild.emit("close", 1, null);
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  stateFile.value = {
+    holder: "machine-b/pan-2000",
+    token: "replacement",
+    sessionId: "replacement",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  stateFile.version += 1;
+
+  heartbeat();
+  const result = await session;
+
+  assert.equal(terminated, child);
+  assert.equal(result.mode, "writing");
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.leadership.status, "lost");
+  assert.match(result.leadership.diagnostic, /leadership lost/i);
+  assert.equal(stateFile.value.token, "replacement");
+});
+
+test("stops the writing child when its heartbeat cannot be verified", async () => {
+  const stateFile = new MemoryStateFile();
+  const read = stateFile.read.bind(stateFile);
+  let reads = 0;
+  stateFile.read = async () => {
+    reads += 1;
+    if (reads === 3) {
+      throw new Error("GitHub is unavailable");
+    }
+    return read();
+  };
+  let heartbeat;
+  const child = new EventEmitter();
+  const session = startSession({
+    stateFile,
+    spawnProcess: () => child,
+    setIntervalImpl(callback) {
+      heartbeat = callback;
+      return "heartbeat";
+    },
+    clearIntervalImpl() {},
+    terminateChild: async (knownChild) => knownChild.emit("close", 1, null),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  heartbeat();
+  const result = await session;
+
+  assert.equal(result.leadership.status, "lost");
+  assert.match(result.leadership.diagnostic, /GitHub is unavailable/);
+});
+
+test("releases writing leadership when child launch fails", async () => {
+  const stateFile = new MemoryStateFile();
+
+  await assert.rejects(
+    startSession({
+      stateFile,
+      spawnProcess: () => {
+        throw new Error("launch failed");
+      },
+    }),
+    /launch failed/,
+  );
+
+  assert.ok(Date.parse(stateFile.value.expiresAt) <= Date.now());
+});
+
+test("stops and releases a writing session on termination", async () => {
+  const stateFile = new MemoryStateFile();
+  const signals = new EventEmitter();
+  const child = new EventEmitter();
+  let terminated;
+  const session = startSession({
+    stateFile,
+    signals,
+    spawnProcess: () => child,
+    terminateChild: async (knownChild) => {
+      terminated = knownChild;
+      knownChild.emit("close", null, "SIGINT");
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  signals.emit("SIGINT", "SIGINT");
+  const result = await session;
+
+  assert.equal(terminated, child);
+  assert.equal(result.signal, "SIGINT");
+  assert.ok(Date.parse(stateFile.value.expiresAt) <= Date.now());
 });
 
 test("refuses to launch while user-scoped PAN assets need repair", async () => {
@@ -112,6 +268,7 @@ function sessionConfig() {
       path: "C:\\domains\\example",
     },
     state: { branch: "pan-state", path: ".pan", leaderPath: ".pan/leader.json" },
+    leadership: { leaseSeconds: 120, heartbeatSeconds: 30 },
     session: {
       agent: { name: "pan", executable: "copilot-test", model: "gpt-5.6-sol" },
       productContextRoots: [
@@ -119,4 +276,56 @@ function sessionConfig() {
       ],
     },
   };
+}
+
+function startSession({
+  stateFile,
+  sessionIdFactory = () => "session-a",
+  pid = 1234,
+  spawnProcess,
+  ...overrides
+}) {
+  return startPanSession({
+    config: sessionConfig(),
+    configPath: "C:\\domains\\example\\pan.json",
+    assetService: { status: async () => ({ status: "current" }) },
+    domainIdentity: {
+      validate: async () => ({
+        domain: {
+          repository: "example/domain",
+          path: "C:\\domains\\example",
+          defaultBranch: "main",
+        },
+        project: { owner: "example", number: 12, id: "PVT_test" },
+      }),
+    },
+    verifyCopilot: async () => {},
+    stateFileFactory: () => stateFile,
+    sessionIdFactory,
+    hostname: "machine-a",
+    pid,
+    spawnProcess,
+    ...overrides,
+  });
+}
+
+class MemoryStateFile {
+  value = undefined;
+  version = 0;
+
+  async read() {
+    return {
+      value: this.value ? structuredClone(this.value) : undefined,
+      version: this.version || undefined,
+    };
+  }
+
+  async write(value, expectedVersion) {
+    if ((this.version || undefined) !== expectedVersion) {
+      return undefined;
+    }
+    this.version += 1;
+    this.value = structuredClone(value);
+    return this.version;
+  }
 }
