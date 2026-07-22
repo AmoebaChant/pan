@@ -1,5 +1,8 @@
 export function buildTaskPrompt(taskContextPath, task) {
   const directDelivery = task.playbook.delivery === "direct";
+  const deliveryResult = directDelivery
+    ? '{"status":"completed","summary":"one paragraph","delivery":{"mode":"direct","commit":"40-character commit SHA","url":"https://github.com/OWNER/REPOSITORY/commit/SHA"}}'
+    : '{"status":"completed","summary":"one paragraph","delivery":{"mode":"pull-request","commit":"40-character commit SHA","url":"https://github.com/OWNER/REPOSITORY/pull/NUMBER"}}';
   const playbookInstructions = task.playbook.instructions.length
     ? [
         "",
@@ -21,20 +24,22 @@ export function buildTaskPrompt(taskContextPath, task) {
     "- Implement every acceptance criterion and all directly required integration surfaces.",
     "- Run the smallest relevant existing tests, builds, or checks.",
     directDelivery
-      ? "- Leave the task branch with the complete validated change; the PAN runner will verify it, commit any remaining changes, rebase it, and push it directly to the default branch."
-      : "- Leave the task branch with the complete validated change; the PAN runner will verify it, commit any remaining changes, push the branch, and open the pull request.",
+      ? `- Commit the complete change, fetch origin/${task.target.defaultBranch}, rebase the task branch onto it, resolve any conflicts, rerun affected checks, and push HEAD to ${task.target.defaultBranch}. Retry non-fast-forward pushes by fetching and integrating the new tip.`
+      : `- Commit the complete change, fetch origin/${task.target.defaultBranch}, rebase the task branch onto it, resolve any conflicts, rerun affected checks, push the task branch, and create or reuse an open pull request targeting ${task.target.defaultBranch}. Do not merge the pull request.`,
     "",
     "Guardrails:",
     "- Work only in the provided worktree and remain on the provided task branch.",
-    "- Never push, force-push, merge, delete branches/worktrees, or create/merge/close pull requests or Issues.",
+    "- Use git and GitHub only for the target repository, task branch, source Issue, and playbook-selected delivery.",
+    "- Never force-push, delete branches or worktrees, merge or close pull requests, close Issues, or check out the default branch.",
     directDelivery
-      ? "- Do not modify the default branch. The runner owns the direct commit and push."
-      : "- Do not modify the default branch. The runner owns commit, push, and PR creation.",
-    "- Do not run git, gh, cmd, PowerShell, or other wrapper commands that bypass the denied tools.",
+      ? `- Direct delivery is authorized only by this playbook. Push the validated task commit with git push origin HEAD:refs/heads/${task.target.defaultBranch}.`
+      : `- Pull-request delivery must link the source task with "Closes ${task.issue.repository}#${task.issue.number}" in the pull-request body.`,
+    "- Do not run cmd, PowerShell, or other wrapper commands that bypass denied tools.",
     "- Do not write credentials, tokens, local paths, runner state, or other private data into the target repository.",
     "",
-    `When complete, atomically write ${task.paths.agentResult} as JSON with:`,
-    '{"status":"completed","summary":"one paragraph"}',
+    "Completion means the change has been delivered remotely according to the playbook. Do not report completion while commits, conflict resolution, checks, push, or pull-request creation remain.",
+    `After delivery succeeds, atomically write ${task.paths.agentResult} as JSON with:`,
+    deliveryResult,
     "",
     `If human input is required, atomically write ${task.paths.needsHuman} as JSON with:`,
     '{"kind":"question|approval|local-ui","prompt":"one-line request","localUrl":"optional URL"}',

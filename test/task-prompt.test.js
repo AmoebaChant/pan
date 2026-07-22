@@ -3,8 +3,15 @@ import test from "node:test";
 
 import { buildTaskPrompt } from "../src/index.js";
 
-test("requires complete implementation and runner-owned pull-request handoff", () => {
+test("requires complete implementation and agent-owned pull-request delivery", () => {
   const prompt = buildTaskPrompt("C:\\state\\context.json", {
+    issue: {
+      number: 31,
+      repository: "example/tasks",
+    },
+    target: {
+      defaultBranch: "main",
+    },
     playbook: {
       id: "pan-development",
       instructions: ["Follow the repository contribution guide."],
@@ -20,14 +27,23 @@ test("requires complete implementation and runner-owned pull-request handoff", (
   assert.match(prompt, /acceptance criteria/);
   assert.match(prompt, /Inspect repository guidance/);
   assert.match(prompt, /Run the smallest relevant existing tests/);
-  assert.match(prompt, /commit any remaining changes, push the branch, and open the pull request/);
+  assert.match(prompt, /create or reuse an open pull request/);
+  assert.match(prompt, /Closes example\/tasks#31/);
+  assert.match(prompt, /delivery.*pull-request.*commit.*url/);
   assert.match(prompt, /Follow the repository contribution guide/);
   assert.match(prompt, /ask the user directly and continue after the reply/i);
   assert.doesNotMatch(prompt, /non-interactive session/i);
 });
 
-test("describes runner-owned direct delivery without granting git access", () => {
+test("authorizes agent-owned direct delivery without allowing unrelated git actions", () => {
   const prompt = buildTaskPrompt("C:\\state\\context.json", {
+    issue: {
+      number: 31,
+      repository: "example/tasks",
+    },
+    target: {
+      defaultBranch: "main",
+    },
     playbook: {
       id: "pan-development",
       instructions: [],
@@ -39,8 +55,8 @@ test("describes runner-owned direct delivery without granting git access", () =>
     },
   });
 
-  assert.match(prompt, /push it directly to the default branch/);
-  assert.match(prompt, /runner owns the direct commit and push/);
-  assert.match(prompt, /Never push/);
+  assert.match(prompt, /push HEAD to main/);
+  assert.match(prompt, /git push origin HEAD:refs\/heads\/main/);
+  assert.match(prompt, /Never force-push/);
   assert.doesNotMatch(prompt, /open the pull request/);
 });

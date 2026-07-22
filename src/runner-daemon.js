@@ -189,6 +189,7 @@ export class RunnerDaemon {
       logger: this.logger,
     });
     let delivery;
+    let result;
     try {
       const comments = await this.store.listComments(item);
       this.logger.info?.(
@@ -201,13 +202,35 @@ export class RunnerDaemon {
         playbook,
         deadline,
         resumeAffinity: runnerResumeAffinity(this.profile.id, playbook.id),
+        onResume: async (record) => {
+          try {
+            await retry(() =>
+              this.store.addComment(item, agentStartedComment(record)),
+            );
+          } catch (error) {
+            this.logger.error(
+              `Unable to record agent start for PAN task #${item.number}`,
+              error,
+            );
+          }
+        },
       });
-      const result = await waitForTask({
+      result = await waitForTask({
         handle,
         heartbeat,
         signal,
-        onNeedsHuman: (record) =>
-          this.store.addComment(item, formatNeedsHuman(record)),
+        onNeedsHuman: async (record) => {
+          try {
+            await retry(() =>
+              this.store.addComment(item, formatNeedsHuman(record)),
+            );
+          } catch (error) {
+            this.logger.error(
+              `Unable to record agent question for PAN task #${item.number}`,
+              error,
+            );
+          }
+        },
       });
       this.logger.info?.(
         `Task #${item.number} worker reported ${result.status}: ${result.summary}`,
@@ -259,36 +282,26 @@ export class RunnerDaemon {
       }
 
       if (result.status === "interrupted") {
-        const resumeAffinity = runnerResumeAffinity(
-          this.profile.id,
-          playbook.id,
-        );
-        let release;
-        try {
-          release = await retry(() =>
-            this.store.release({
-              itemId: item.id,
-              runner,
-              assignee: this.profile.githubAssignee,
-              status: "ready",
-              resumeAffinity,
-            }),
-          );
-        } catch (error) {
-          error.code = "PAN_INTERRUPTED_REQUEUE_FAILED";
-          throw error;
-        }
-        if (!release.released) {
-          const error = new Error(
-            `Unable to requeue interrupted task: ${release.reason}`,
-          );
-          error.code = "PAN_INTERRUPTED_REQUEUE_FAILED";
-          throw error;
-        }
-        await handle.markRequeued?.();
-        this.logger.info?.(
-          `Task #${item.number} returned to ready with resumable local state.`,
-        );
+        await this.#requeueOperationalStop({
+          item,
+          runner,
+          playbook,
+          handle,
+          heartbeat,
+          summary: result.summary,
+        });
+        return;
+      }
+
+      if (result.status === "failed" && !result.budgetExceeded) {
+        await this.#requeueOperationalStop({
+          item,
+          runner,
+          playbook,
+          handle,
+          heartbeat,
+          summary: result.summary,
+        });
         return;
       }
 
@@ -328,7 +341,18 @@ export class RunnerDaemon {
         );
         return;
       }
-      if (error.code !== "PAN_INTERRUPTED_REQUEUE_FAILED") {
+      if (error.code === "PAN_DELIVERY_INCOMPLETE") {
+        await this.#requeueOperationalStop({
+          item,
+          runner,
+          playbook,
+          handle,
+          heartbeat,
+          summary: `Delivery incomplete: ${error.message}`,
+        });
+        return;
+      }
+      if (result?.status === "blocked") {
         await handle?.clearResumeState?.();
       }
       try {
@@ -388,6 +412,18 @@ export class RunnerDaemon {
         }
         throw error;
       }
+      if (result?.status !== "blocked") {
+        await handle?.interrupt?.(`Runner failure: ${error.message}`);
+        await this.#requeueOperationalStop({
+          item,
+          runner,
+          playbook,
+          handle,
+          heartbeat,
+          summary: `Runner failure: ${error.message}`,
+        });
+        return;
+      }
       let reportError;
       try {
         await this.store.addComment(
@@ -437,6 +473,72 @@ export class RunnerDaemon {
     } finally {
       heartbeat.stop();
     }
+  }
+
+  async #requeueOperationalStop({
+    item,
+    runner,
+    playbook,
+    handle,
+    heartbeat,
+    summary,
+  }) {
+    const resumeAffinity = handle
+      ? runnerResumeAffinity(this.profile.id, playbook.id)
+      : undefined;
+    await handle?.setResumeAffinity?.(resumeAffinity);
+    await handle?.markPendingRequeue?.();
+    await heartbeat.renewNow();
+    try {
+      await retry(() =>
+        this.store.addComment(
+          item,
+          agentStoppedComment({
+            summary,
+            playbook: playbook.id,
+            locator: handle?.locator() ?? {
+              machine: this.profile.machine,
+              runner,
+            },
+            resumable: Boolean(handle),
+          }),
+        ),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Unable to record agent stop for PAN task #${item.number}`,
+        error,
+      );
+    }
+    await heartbeat.renewNow();
+    let release;
+    try {
+      release = await retry(() =>
+        this.store.release({
+          itemId: item.id,
+          runner,
+          assignee: this.profile.githubAssignee,
+          status: "ready",
+          ...(resumeAffinity ? { resumeAffinity } : {}),
+        }),
+      );
+    } catch (error) {
+      error.code = "PAN_INTERRUPTED_REQUEUE_FAILED";
+      throw error;
+    }
+    if (!release.released) {
+      const error = new Error(
+        `Unable to requeue stopped task: ${release.reason}`,
+      );
+      error.code = "PAN_INTERRUPTED_REQUEUE_FAILED";
+      throw error;
+    }
+    await handle?.markRequeued?.();
+    this.logger.info?.(
+      handle
+        ? `Task #${item.number} returned to ready with resumable local state.`
+        : `Task #${item.number} returned to ready after an operational failure.`,
+    );
   }
 
   #leaseUntil() {
@@ -731,11 +833,58 @@ function completedComment(delivery, result) {
     delivery.mode === "direct" ? "Commit" : "Pull request";
   return [
     "<!-- pan:runner-result -->",
-    "### Runner completed",
+    "### Agent completed",
     "",
     result.summary,
     "",
     `${label}: ${delivery.url}`,
+  ].join("\n");
+}
+
+function agentStartedComment(record) {
+  const heading = record.resumed ? "Agent resumed" : "Agent started";
+  return [
+    "<!-- pan:runner-event -->",
+    `### ${heading}`,
+    "",
+    "```json",
+    JSON.stringify(
+      {
+        event: record.resumed ? "resumed" : "started",
+        machine: record.machine,
+        runner: record.runner,
+        playbook: record.playbook,
+        repository: record.repository,
+        branch: record.branch,
+        worktree: record.worktreePath,
+        terminalTitle: record.terminalTitle,
+      },
+      null,
+      2,
+    ),
+    "```",
+  ].join("\n");
+}
+
+function agentStoppedComment({ summary, playbook, locator, resumable }) {
+  return [
+    "<!-- pan:runner-event -->",
+    "### Agent stopped",
+    "",
+    summary,
+    "",
+    "```json",
+    JSON.stringify(
+      {
+        event: "stopped",
+        resumable,
+        playbook,
+        ...locator,
+      },
+      null,
+      2,
+    ),
+    "```",
   ].join("\n");
 }
 

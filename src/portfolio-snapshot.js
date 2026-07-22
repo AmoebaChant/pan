@@ -297,14 +297,23 @@ function normalizeHistory(entry) {
 }
 
 function compatibilityEvidence(requirements, runners) {
+  const repositories = requirements
+    .filter((requirement) => requirement.startsWith("repo:"))
+    .map((requirement) => requirement.slice("repo:".length));
+  const repository = repositories.length === 1 ? repositories[0] : undefined;
   return {
     requirements: [...requirements],
     runners: runners
       .filter(
         (runner) =>
           runner.online &&
-          requirements.every((requirement) =>
-            runner.capabilities.includes(requirement),
+          runner.playbooks.some((playbook) =>
+            (!repository || playbook.repositories.includes(repository)) &&
+            requirements.every((requirement) =>
+              requirement.startsWith("delivery:")
+                ? requirement === `delivery:${playbook.delivery}`
+                : playbook.capabilities.includes(requirement),
+            ),
           ),
       )
       .map((runner) => ({
@@ -320,6 +329,12 @@ function normalizeAvailabilityRunner(runner) {
     id: runner.id,
     online: runner.online,
     capabilities: [...runner.capabilities],
+    playbooks: runner.playbooks.map((playbook) => ({
+      id: playbook.id,
+      capabilities: [...playbook.capabilities],
+      repositories: [...playbook.repositories],
+      delivery: playbook.delivery,
+    })),
     maximumCapacity: runner.maximumCapacity,
     activeLeaseCount: runner.activeLeaseCount,
     freeCapacity: runner.freeCapacity,

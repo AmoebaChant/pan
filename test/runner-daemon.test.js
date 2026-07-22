@@ -157,6 +157,23 @@ test("passes Issue comments to the task executor", async () => {
   assert.match(executor.started.item.comments[0].body, /Use option A/);
 });
 
+test("records durable resume information when an agent starts", async () => {
+  const store = new FakeStore([makeItem()]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new ResumeAwareExecutor(new FakeHandle()),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.match(store.comments[0], /### Agent started/);
+  assert.match(store.comments[0], /"machine": "machine-a"/);
+  assert.match(store.comments[0], /"branch": "pan\/issue-1"/);
+  assert.match(store.comments[0], /"worktree": "C:\\\\worktrees\\\\issue-1"/);
+});
+
 test("records a needs-human locator and blocks an incomplete task", async () => {
   const item = makeItem();
   const store = new FakeStore([item]);
@@ -301,7 +318,8 @@ test("stops unlimited workers during runner shutdown", async () => {
 
   assert.match(handle.interrupted, /Runner stopped: Ctrl\+C/);
   assert.equal(store.releases[0].status, "ready");
-  assert.equal(store.comments.length, 0);
+  assert.match(store.comments.at(-1), /### Agent stopped/);
+  assert.match(store.comments.at(-1), /Runner stopped: Ctrl\\u002bC|Runner stopped: Ctrl\+C/);
 });
 
 test("stops unlimited workers when a one-shot run is interrupted", async () => {
@@ -327,7 +345,64 @@ test("stops unlimited workers when a one-shot run is interrupted", async () => {
 
   assert.match(handle.interrupted, /Runner stopped: Ctrl\+C/);
   assert.equal(store.releases[0].status, "ready");
-  assert.equal(store.comments.length, 0);
+  assert.match(store.comments.at(-1), /### Agent stopped/);
+});
+
+test("preserves pending resume recovery when requeue release fails", async () => {
+  const store = new FakeStore([makeItem()], {
+    releaseFailures: { ready: 3 },
+  });
+  const handle = new FakeHandle({
+    status: "failed",
+    summary: "Worker process crashed.",
+  });
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(handle.pendingRequeue, true);
+  assert.notEqual(handle.requeued, true);
+});
+
+test("blocks budget exhaustion for approval instead of retrying indefinitely", async () => {
+  const store = new FakeStore([makeItem()]);
+  const handle = new FakeHandle({
+    status: "failed",
+    summary: "Copilot exceeded the task wall-clock budget.",
+    budgetExceeded: true,
+  });
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.releases[0].status, "blocked");
+  assert.match(store.comments.at(-1), /"kind": "approval"/);
+});
+
+test("stops an active worker before requeueing an unexpected runner error", async () => {
+  const store = new FakeStore([makeItem()]);
+  const handle = new ThrowingHandle();
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.match(handle.interrupted, /Runner failure: unexpected wait failure/);
+  assert.equal(store.releases[0].status, "ready");
 });
 
 test("moves completed work to in-review even when its audit comment fails", async () => {
@@ -350,9 +425,9 @@ test("moves completed work to in-review even when its audit comment fails", asyn
   assert.equal(handle.completed, true);
 });
 
-test("releases failed work even when its needs-human comment fails", async () => {
+test("requeues failed launches even when their event comment fails", async () => {
   const item = makeItem();
-  const store = new FakeStore([item], { commentFailures: 1 });
+  const store = new FakeStore([item], { commentFailures: 3 });
   const daemon = new RunnerDaemon({
     store,
     profile: makeProfile(),
@@ -362,7 +437,7 @@ test("releases failed work even when its needs-human comment fails", async () =>
 
   await daemon.runOnce();
 
-  assert.equal(store.releases[0].status, "blocked");
+  assert.equal(store.releases[0].status, "ready");
 });
 
 test("surfaces claim rate limits to the polling loop", async () => {
@@ -440,7 +515,7 @@ test("releases playbook capacity after a failed launch so work can retry", async
 
   await daemon.runOnce();
   assert.equal(daemon.active.size, 0);
-  assert.equal(store.releases[0].status, "blocked");
+  assert.equal(store.releases[0].status, "ready");
 
   daemon.executor = new FakeExecutor(new FakeHandle());
   await daemon.runOnce();
@@ -528,6 +603,22 @@ class FakeExecutor {
   }
 }
 
+class ResumeAwareExecutor extends FakeExecutor {
+  async start(context) {
+    await context.onResume({
+      machine: "machine-a",
+      runner: "machine-a/slot-1",
+      playbook: "pan-development",
+      repository: "example/tool",
+      branch: "pan/issue-1",
+      worktreePath: "C:\\worktrees\\issue-1",
+      terminalTitle: "PAN #1 - Task",
+      resumed: false,
+    });
+    return super.start(context);
+  }
+}
+
 class FailingExecutor {
   async start() {
     throw new Error("worker launch failed");
@@ -569,9 +660,25 @@ class FakeHandle {
     return this.delivery;
   }
 
+  async setResumeAffinity(value) {
+    this.resumeAffinity = value;
+  }
+
+  async markPendingRequeue() {
+    this.pendingRequeue = true;
+  }
+
+  async markRequeued() {
+    this.pendingRequeue = false;
+    this.requeued = true;
+  }
+
   locator() {
     return {
       machine: "machine-a",
+      runner: "machine-a/slot-1",
+      branch: "pan/issue-1",
+      worktree: "C:\\worktrees\\issue-1",
       terminalTitle: "PAN #1 - Task",
     };
   }
@@ -607,6 +714,16 @@ class DeferredHandle extends FakeHandle {
       status: "interrupted",
       summary,
     });
+  }
+}
+
+class ThrowingHandle extends FakeHandle {
+  async wait() {
+    throw new Error("unexpected wait failure");
+  }
+
+  async interrupt(summary) {
+    this.interrupted = summary;
   }
 }
 

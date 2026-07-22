@@ -307,17 +307,20 @@ behavior already provided by the repository.
 - **REQ-EXEC-6 (R1):** The worker context MUST include the Issue, comments and
   answers, target repository and branch, associated workstream narrative,
   execution limits, and reporting expectations.
-- **REQ-EXEC-7 (R1):** A worker MUST NOT push, force-push, merge, modify a
-  default branch, create or close GitHub work items, or bypass runner-owned
-  delivery controls.
+- **REQ-EXEC-7 (R1):** A worker MUST perform only the playbook-selected delivery
+  in the target repository and MUST NOT force-push, check out or edit the default
+  branch, delete branches or worktrees, merge or close pull requests, or close
+  Issues.
 - **REQ-EXEC-8 (R1):** The runner MUST verify the target repository identity,
-  branch, lease ownership, and existence of a task commit before publishing
-  completed work.
-- **REQ-EXEC-9 (R1):** Completed work MUST be pushed only to its task branch,
-  handed off through a pull request, and moved to `in-review`.
-- **REQ-EXEC-10 (R1):** Blocked, failed, timed-out, or budget-exhausted work MUST
-  report a useful summary and locator, release its lease when possible, and move
-  to a state requiring human attention.
+  branch, lease ownership, task commit, and remote delivery evidence before
+  accepting completed work.
+- **REQ-EXEC-9 (R1):** Completed work MUST follow the selected direct or
+  pull-request delivery policy. Pull requests move to `in-review`; confirmed
+  direct commits move to `done`.
+- **REQ-EXEC-10 (R1):** Operational failures, shutdowns, and incomplete delivery
+  MUST report a useful summary and resume locator, release their lease when
+  possible, and return to `ready`. Only genuine blocking questions require human
+  attention.
 - **REQ-EXEC-11 (R1):** Losing the task lease MUST prevent completion,
   publication, or a successful status transition based on the lost claim.
 - **REQ-EXEC-12 (R1):** Failure to post a completion audit comment MUST NOT undo
@@ -337,7 +340,7 @@ behavior already provided by the repository.
 
 - **REQ-PLAY-1 (Later):** Shared domain playbooks MUST replace flat capability
   matching without weakening atomic claims, canonical-order selection, worktree
-  isolation, or runner-owned delivery.
+  isolation, or runner-validated delivery.
 - **REQ-PLAY-2 (Later):** A playbook MUST declare the classes of tasks,
   repositories, environments, and tools it can service.
 - **REQ-PLAY-3 (Later):** A playbook MUST provide the domain-shared pickup,

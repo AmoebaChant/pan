@@ -84,8 +84,8 @@ remain supported as one compatibility playbook using the global capacity.
 `copilot.approvalMode` defaults to `prompt`, which leaves tool approval with the
 interactive Copilot session. Set it to `allow-all` only as an explicit opt-in.
 `delivery` defaults to `pull-request`. Set it to `direct` only for repositories
-where the runner is explicitly authorized to rebase and push completed work to
-the configured default branch without human review.
+where the worker is explicitly authorized to integrate and push completed work
+to the configured default branch without human review.
 
 Self-repair tasks include the `delivery:pull-request` requirement. Reserve a
 dedicated playbook with that capability and `delivery: "pull-request"` so
@@ -115,18 +115,22 @@ For each task it:
 3. opens a visible Windows Terminal tab running Copilot CLI with the Issue, its
    comments and answers, and workstream README as the initial interactive
    prompt;
-4. posts structured needs-human records, including the machine, terminal title,
-   and optional local URL;
-5. commits any remaining changes and follows the playbook delivery policy:
-   `pull-request` pushes the task branch, links the PR to the source Issue,
-   leaves the Issue open, and moves the item to `in-review`; the PAN host moves
-   it to `done` and closes the Issue after the linked PR merges. `direct`
-   serializes delivery for the repository, rebases onto the latest default
-   branch, pushes it, moves the item to `done`, and closes the Issue as
-   completed.
+4. appends an `Agent started` or `Agent resumed` Issue comment containing the
+   machine, runner, playbook, branch, worktree, and terminal title;
+5. lets the worker complete the playbook delivery policy, including committing,
+   integrating the latest default branch, resolving conflicts, rerunning affected
+   checks, and either pushing directly or creating a pull request;
+6. validates the reported remote commit or pull request before updating Project
+   state and cleaning the worktree.
 
-The worker denies Copilot access to `git push`, GitHub CLI commands, and the
-built-in GitHub MCP. The runner alone owns push and delivery.
+`pull-request` delivery leaves the Issue open and moves the item to `in-review`;
+the PAN host moves it to `done` and closes the Issue after the linked PR merges.
+`direct` delivery moves the item to `done` and closes the Issue after the runner
+confirms the reported commit is reachable from the default branch.
+
+The worker may use `git` and `gh` only for the target repository and
+playbook-selected delivery. The runner retains deterministic ownership of leases,
+delivery validation, Project transitions, and cleanup.
 Machine-wide concurrency, per-playbook concurrency, and lease limits come from
 the profile. Tasks using another playbook do not consume the selected
 playbook's slots. `copilot.model` selects the coding model deterministically.
@@ -182,10 +186,9 @@ node .\bin\pan-runner.js --profile C:\path\to\runner.json --once
 ```
 
 The worker receives the canonical Issue body, comments and answers, workstream
-README, target branch/worktree, and playbook instructions. It implements and
-validates the change. The runner independently owns the lease, creates a
-collision-resistant isolated worktree, commits remaining changes, and applies
-the playbook delivery policy. Pull-request delivery records and links the PR, then moves the task to
-`in-review` while its pull request awaits review. The PAN host completes the
-task and closes the Issue after the linked PR merges. Direct delivery records
-the commit, moves the item to `done`, and closes the Issue as completed.
+README, target branch/worktree, and playbook instructions. It implements,
+validates, commits, integrates, and delivers the change. The runner independently
+owns the lease, creates the collision-resistant isolated worktree, records
+append-only lifecycle comments on the Issue, validates the reported delivery,
+and applies Project transitions. Operational stops return the task to `ready`
+with resumable local state; only genuine blocking questions use human attention.

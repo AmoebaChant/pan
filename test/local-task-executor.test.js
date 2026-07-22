@@ -52,6 +52,7 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
   const commands = new FakeCommands();
   const ids = ["allocation-one", "allocation-two"];
   const terminalLaunches = [];
+  const resumeRecords = [];
   const executor = new LocalTaskExecutor({
     profile: fixture.profile,
     commands,
@@ -64,8 +65,14 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
 
   try {
     const handles = await Promise.all([
-      executor.start(makeStartOptions(1)),
-      executor.start(makeStartOptions(1)),
+      executor.start({
+        ...makeStartOptions(1),
+        onResume: async (record) => resumeRecords.push(record),
+      }),
+      executor.start({
+        ...makeStartOptions(1),
+        onResume: async (record) => resumeRecords.push(record),
+      }),
     ]);
     const contexts = await Promise.all(
       handles.map((handle) =>
@@ -79,6 +86,11 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
     assert.equal(contexts[0].playbook.id, "pan-development");
     assert.deepEqual(contexts[0].playbook.instructions, ["Run tests."]);
     assert.equal(contexts[0].playbook.delivery, "pull-request");
+    assert.equal(resumeRecords.length, 2);
+    assert.equal(resumeRecords[0].machine, "machine-a");
+    assert.equal(resumeRecords[0].playbook, "pan-development");
+    assert.match(resumeRecords[0].branch, /^pan\/issue-1-/);
+    assert.match(resumeRecords[0].worktreePath, /issue-1-/);
     assert.equal(terminalLaunches.length, 2);
     for (const [executable, args, options] of terminalLaunches) {
       assert.equal(executable, "wt");
@@ -365,7 +377,7 @@ test("does not finish cancellation until the worker process stops", async () => 
   }
 });
 
-test("rebases and retries concurrent direct delivery to the default branch", async () => {
+test("validates agent-delivered commits on the default branch", async () => {
   const fixture = await createFixture();
   const commands = new DirectDeliveryCommands();
   const executor = new LocalTaskExecutor({
@@ -390,6 +402,11 @@ test("rebases and retries concurrent direct delivery to the default branch", asy
     const delivery = await handle.complete({
       status: "completed",
       summary: "Implemented directly.",
+      delivery: {
+        mode: "direct",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+      },
     });
 
     assert.deepEqual(delivery, {
@@ -397,7 +414,14 @@ test("rebases and retries concurrent direct delivery to the default branch", asy
       commit: "0123456789abcdef0123456789abcdef01234567",
       url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
     });
-    assert.equal(commands.directPushes, 2);
+    assert.equal(
+      commands.calls.some(({ args }) => args.includes("push")),
+      false,
+    );
+    assert.equal(
+      commands.calls.some(({ args }) => args.includes("rebase")),
+      false,
+    );
     assert.equal(
       commands.calls.some(({ executable }) => executable === "gh"),
       false,
@@ -405,13 +429,13 @@ test("rebases and retries concurrent direct delivery to the default branch", asy
     assert.ok(
       commands.calls.some(
         ({ args }) =>
-          args.includes("rev-parse") && args.includes("FETCH_HEAD"),
+          args.includes("fetch") && args.includes("main"),
       ),
     );
     assert.ok(
       commands.calls.some(
         ({ args }) =>
-          args.includes("rev-parse") && args.includes("HEAD"),
+          args.includes("merge-base") && args.includes("FETCH_HEAD"),
       ),
     );
   } finally {
@@ -419,7 +443,46 @@ test("rebases and retries concurrent direct delivery to the default branch", asy
   }
 });
 
-test("links pull-request delivery to its source Issue", async () => {
+test("rejects direct delivery that produced no task commit", async () => {
+  const fixture = await createFixture();
+  const commands = new NoOpDeliveryCommands();
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: successfulSpawn,
+    randomId: () => "no-op-delivery",
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(10),
+      playbook: {
+        id: "pan-development",
+        instructions: [],
+        delivery: "direct",
+      },
+      deadline: undefined,
+    });
+    commands.branch = handle.branch;
+
+    await assert.rejects(
+      handle.complete({
+        status: "completed",
+        summary: "No change.",
+        delivery: {
+          mode: "direct",
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+        },
+      }),
+      /without producing a new commit/,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("validates an agent-created pull request", async () => {
   const fixture = await createFixture();
   const commands = new PullRequestDeliveryCommands();
   const executor = new LocalTaskExecutor({
@@ -436,21 +499,56 @@ test("links pull-request delivery to its source Issue", async () => {
     const delivery = await handle.complete({
       status: "completed",
       summary: "Implemented through review.",
+      delivery: {
+        mode: "pull-request",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        url: "https://github.com/example/tool/pull/42",
+      },
     });
 
     assert.deepEqual(delivery, {
       mode: "pull-request",
+      commit: "0123456789abcdef0123456789abcdef01234567",
       url: "https://github.com/example/tool/pull/42",
     });
-    const create = commands.calls.find(
+    const view = commands.calls.find(
       ({ executable, args }) =>
         executable === "gh" &&
         args[0] === "pr" &&
-        args[1] === "create",
+        args[1] === "view",
     );
-    assert.match(
-      create.args[create.args.indexOf("--body") + 1],
-      /^Closes example\/data#9$/m,
+    assert.equal(view.args[2], "https://github.com/example/tool/pull/42");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("rejects pull requests that do not link the source Issue", async () => {
+  const fixture = await createFixture();
+  const commands = new PullRequestDeliveryCommands();
+  commands.body = "Implements the requested change.";
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: successfulSpawn,
+    randomId: () => "unlinked-pull-request",
+  });
+
+  try {
+    const handle = await executor.start(makeStartOptions(11));
+    commands.branch = handle.branch;
+
+    await assert.rejects(
+      handle.complete({
+        status: "completed",
+        summary: "Implemented through review.",
+        delivery: {
+          mode: "pull-request",
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          url: "https://github.com/example/tool/pull/42",
+        },
+      }),
+      /does not match the task delivery/,
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -472,6 +570,12 @@ class FakeCommands {
 }
 
 class PullRequestDeliveryCommands extends FakeCommands {
+  constructor() {
+    super();
+    this.headReads = 0;
+    this.body = "Closes example/data#9";
+  }
+
   async run(executable, args, options = {}) {
     this.calls.push({ executable, args, options });
     if (args.includes("get-url")) {
@@ -481,16 +585,23 @@ class PullRequestDeliveryCommands extends FakeCommands {
       return this.branch;
     }
     if (args.includes("--porcelain")) {
-      return " M src/file.js";
+      return "";
     }
-    if (args.includes("rev-list")) {
-      return "1";
+    if (args.includes("rev-parse") && args.includes("HEAD")) {
+      this.headReads += 1;
+      return this.headReads === 1
+        ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        : "0123456789abcdef0123456789abcdef01234567";
     }
-    if (args.includes("rev-parse")) {
-      return "0123456789abcdef0123456789abcdef01234567";
-    }
-    if (executable === "gh" && args[0] === "pr" && args[1] === "create") {
-      return "https://github.com/example/tool/pull/42";
+    if (executable === "gh" && args[0] === "pr" && args[1] === "view") {
+      return JSON.stringify({
+        url: "https://github.com/example/tool/pull/42",
+        state: "OPEN",
+        headRefName: this.branch,
+        headRefOid: "0123456789abcdef0123456789abcdef01234567",
+        baseRefName: "main",
+        body: this.body,
+      });
     }
     return "";
   }
@@ -499,7 +610,7 @@ class PullRequestDeliveryCommands extends FakeCommands {
 class DirectDeliveryCommands extends FakeCommands {
   constructor() {
     super();
-    this.directPushes = 0;
+    this.headReads = 0;
   }
 
   async run(executable, args, options = {}) {
@@ -511,24 +622,25 @@ class DirectDeliveryCommands extends FakeCommands {
       return this.branch;
     }
     if (args.includes("--porcelain")) {
-      return " M src/file.js";
+      return "";
     }
-    if (args.includes("rev-list")) {
-      return "1";
-    }
-    if (args.includes("rev-parse")) {
-      return "0123456789abcdef0123456789abcdef01234567";
-    }
-    if (
-      args.includes("push") &&
-      args.includes("HEAD:refs/heads/main")
-    ) {
-      this.directPushes += 1;
-      if (this.directPushes === 1) {
-        throw new Error("rejected non-fast-forward; fetch first");
-      }
+    if (args.includes("rev-parse") && args.includes("HEAD")) {
+      this.headReads += 1;
+      return this.headReads === 1
+        ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        : "0123456789abcdef0123456789abcdef01234567";
     }
     return "";
+  }
+}
+
+class NoOpDeliveryCommands extends DirectDeliveryCommands {
+  async run(executable, args, options = {}) {
+    if (args.includes("rev-parse") && args.includes("HEAD")) {
+      this.calls.push({ executable, args, options });
+      return "0123456789abcdef0123456789abcdef01234567";
+    }
+    return super.run(executable, args, options);
   }
 }
 

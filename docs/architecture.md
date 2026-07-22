@@ -96,7 +96,8 @@ A shared playbook in the private domain repository describes:
 
 Local machine settings enable installed playbooks and provide paths, installed
 tools, credentials, terminal configuration, and capacity. The runner advertises
-only sanitized playbook IDs, capabilities, online state, and free capacity.
+only sanitized playbook IDs, capabilities, repository scopes, delivery modes,
+online state, and free capacity.
 
 ### Worker session
 
@@ -184,9 +185,12 @@ The public repository defines versioned records for:
 - `failed`
 
 The runner owns the lease and heartbeat even when the worker session is
-unresponsive. Workers report through constrained PAN tools. The Project item and
-Issue expose status, claimant, machine and terminal locator, optional local URL,
-questions, results, and pull-request links.
+unresponsive. Workers report through constrained PAN tools and own semantic
+delivery work such as integration and conflict resolution. The runner validates
+remote delivery and records an append-only Issue journal covering starts,
+resumes, operational stops, questions, answers, and completion. Journal locators
+include the machine, runner, playbook, branch, worktree, terminal title, and
+optional local URL needed to resume safely.
 
 ## Current implementation
 

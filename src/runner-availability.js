@@ -123,6 +123,7 @@ export function normalizeRunnerAvailability(
     id: profile.id,
     online: profile.online,
     capabilities: [...profile.capabilities].sort(),
+    playbooks: normalizeAvailabilityPlaybooks(profile),
     maximumCapacity: profile.maxConcurrentDaemons,
     activeLeaseCount: capacityKnown ? observed : null,
     freeCapacity:
@@ -131,6 +132,50 @@ export function normalizeRunnerAvailability(
         : 0,
     capacityKnown,
   };
+}
+
+function normalizeAvailabilityPlaybooks(profile) {
+  const playbooks = profile.playbooks ?? [
+    {
+      id: "legacy",
+      capabilities: profile.capabilities,
+      delivery: "pull-request",
+    },
+  ];
+  if (!Array.isArray(playbooks) || playbooks.length === 0) {
+    throw new TypeError(`Runner ${profile.id} playbooks must be a non-empty array`);
+  }
+  return playbooks.map((playbook) => {
+    requireString(playbook?.id, `Runner ${profile.id} playbook ID`);
+    if (
+      !Array.isArray(playbook.capabilities) ||
+      playbook.capabilities.some(
+        (capability) =>
+          typeof capability !== "string" || !capability.trim(),
+      )
+    ) {
+      throw new TypeError(
+        `Runner ${profile.id} playbook capabilities must be strings`,
+      );
+    }
+    const delivery = playbook.delivery ?? "pull-request";
+    if (!["pull-request", "direct"].includes(delivery)) {
+      throw new TypeError(
+        `Runner ${profile.id} playbook delivery must be pull-request or direct`,
+      );
+    }
+    return {
+      id: playbook.id,
+      capabilities: [...playbook.capabilities].sort(),
+      repositories: [
+        ...(playbook.repositories ??
+          playbook.capabilities
+            .filter((capability) => capability.startsWith("repo:"))
+            .map((capability) => capability.slice("repo:".length))),
+      ].sort(),
+      delivery,
+    };
+  });
 }
 
 function readActiveCount(activeLeaseCounts, runnerId) {

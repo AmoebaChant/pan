@@ -60,6 +60,7 @@ export class LocalTaskExecutor {
     playbook,
     deadline,
     resumeAffinity,
+    onResume,
   }) {
     const repositoryConfig = this.profile.repositories[repository];
     if (!repositoryConfig) {
@@ -85,6 +86,7 @@ export class LocalTaskExecutor {
       deadline,
       resumePath,
       resumeAffinity,
+      onResume,
     });
     if (resumed) {
       return resumed;
@@ -203,6 +205,17 @@ export class LocalTaskExecutor {
       });
 
       const title = terminalTitle(item);
+      await onResume?.({
+        event: "started",
+        runner,
+        machine: this.profile.machine,
+        playbook: selectedPlaybook.id,
+        repository,
+        branch,
+        worktreePath,
+        terminalTitle: title,
+        resumed: false,
+      });
       await launchTerminal({
         executable: this.profile.terminal.executable,
         window: this.profile.terminal.window,
@@ -311,6 +324,7 @@ export class LocalTaskExecutor {
     deadline,
     resumePath,
     resumeAffinity,
+    onResume,
   }) {
     const pointer = await readJsonIfReady(resumePath);
     if (!pointer) {
@@ -432,6 +446,17 @@ export class LocalTaskExecutor {
     });
 
     const title = terminalTitle(item);
+    await onResume?.({
+      event: "started",
+      runner,
+      machine: this.profile.machine,
+      playbook: playbook.id,
+      repository,
+      branch: pointer.target.branch,
+      worktreePath: pointer.target.worktreePath,
+      terminalTitle: title,
+      resumed: true,
+    });
     await launchTerminal({
       executable: this.profile.terminal.executable,
       window: this.profile.terminal.window,
@@ -578,8 +603,6 @@ export class LocalTaskExecutor {
       sessionId,
       contextPath,
       resumeAffinity,
-      coordinateDelivery: (action) =>
-        this.#coordinateDelivery(repository, action),
     });
   }
 
@@ -598,19 +621,6 @@ export class LocalTaskExecutor {
     });
   }
 
-  async #coordinateDelivery(repository, action) {
-    this.deliveries ??= new Map();
-    const previous = this.deliveries.get(repository) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(action);
-    this.deliveries.set(repository, current);
-    try {
-      return await current;
-    } finally {
-      if (this.deliveries.get(repository) === current) {
-        this.deliveries.delete(repository);
-      }
-    }
-  }
 }
 
 class LocalTaskHandle {
@@ -685,6 +695,25 @@ class LocalTaskHandle {
   }
 
   async interrupt(summary = "The runner was stopped.") {
+    await this.markPendingRequeue();
+    return this.#stop({
+      status: "interrupted",
+      summary,
+    });
+  }
+
+  async clearResumeState() {
+    await rm(this.resumePath, { force: true });
+  }
+
+  async markRequeued() {
+    await markResumePointerRequeued(
+      this.resumePath,
+      new Date(this.now()).toISOString(),
+    );
+  }
+
+  async markPendingRequeue() {
     await writeResumePointer(this.resumePath, {
       statePath: this.statePath,
       contextPath: this.contextPath,
@@ -707,21 +736,6 @@ class LocalTaskHandle {
       requeue: true,
       savedAt: new Date(this.now()).toISOString(),
     });
-    return this.#stop({
-      status: "interrupted",
-      summary,
-    });
-  }
-
-  async clearResumeState() {
-    await rm(this.resumePath, { force: true });
-  }
-
-  async markRequeued() {
-    await markResumePointerRequeued(
-      this.resumePath,
-      new Date(this.now()).toISOString(),
-    );
   }
 
   async setResumeAffinity(resumeAffinity) {
@@ -774,93 +788,94 @@ class LocalTaskHandle {
   }
 
   async complete(result, { assertLease } = {}) {
-    await assertLease?.();
-    const currentBranch = await this.#run("git", [
-      "-C",
-      this.worktreePath,
-      "branch",
-      "--show-current",
-    ]);
-    if (currentBranch !== this.branch) {
-      throw new Error(
-        `Task changed branches from ${this.branch} to ${currentBranch}`,
+    try {
+      await assertLease?.();
+      const delivery = normalizeDelivery(
+        result.delivery,
+        this.delivery,
+        this.repository,
       );
-    }
-    if (currentBranch === this.repositoryConfig.defaultBranch) {
-      throw new Error("Task attempted to work on the default branch");
-    }
+      const currentBranch = await this.#run("git", [
+        "-C",
+        this.worktreePath,
+        "branch",
+        "--show-current",
+      ]);
+      if (currentBranch !== this.branch) {
+        throw new Error(
+          `Task changed branches from ${this.branch} to ${currentBranch}`,
+        );
+      }
+      if (currentBranch === this.repositoryConfig.defaultBranch) {
+        throw new Error("Task attempted to work on the default branch");
+      }
 
-    const dirty = await this.#run("git", [
-      "-C",
-      this.worktreePath,
-      "status",
-      "--porcelain",
-    ]);
-    if (dirty) {
+      const dirty = await this.#run("git", [
+        "-C",
+        this.worktreePath,
+        "status",
+        "--porcelain",
+      ]);
+      if (dirty) {
+        throw new Error("Task reported completion with uncommitted changes");
+      }
+
+      const head = await this.#run("git", [
+        "-C",
+        this.worktreePath,
+        "rev-parse",
+        "HEAD",
+      ]);
+      if (head !== delivery.commit) {
+        throw new Error(
+          `Reported delivery commit ${delivery.commit} does not match task HEAD ${head}`,
+        );
+      }
+      if (head === this.baseCommit) {
+        throw new Error("Task completed without producing a new commit");
+      }
       await this.#run("git", [
         "-C",
         this.worktreePath,
-        "add",
-        "--all",
+        "merge-base",
+        "--is-ancestor",
+        this.baseCommit,
+        "HEAD",
       ]);
       await assertLease?.();
-      await this.#run("git", [
-        "-c",
-        "core.hooksPath=NUL",
+      const currentRemote = await this.#run("git", [
         "-C",
-        this.worktreePath,
-        "commit",
-        "-m",
-        `Issue #${this.item.number}: ${truncate(this.item.title, 50)}`,
+        this.repositoryConfig.path,
+        "remote",
+        "get-url",
+        "origin",
       ]);
-    }
+      if (currentRemote !== this.expectedRemote) {
+        throw new Error("The task changed the repository origin URL");
+      }
 
-    const commitCount = Number(
-      await this.#run("git", [
-        "-C",
-        this.worktreePath,
-        "rev-list",
-        "--count",
-        `origin/${this.repositoryConfig.defaultBranch}..HEAD`,
-      ]),
-    );
-    if (!Number.isInteger(commitCount) || commitCount < 1) {
-      throw new Error("Task completed without producing a commit");
+      if (delivery.mode === "direct") {
+        await this.#validateDirectDelivery(delivery, { assertLease });
+      } else {
+        await this.#validatePullRequestDelivery(delivery, { assertLease });
+      }
+      await this.clearResumeState();
+      await this.#cleanupDeliveredWorktree();
+      return delivery;
+    } catch (error) {
+      if (error.code !== "PAN_LEASE_LOST") {
+        error.code = "PAN_DELIVERY_INCOMPLETE";
+      }
+      throw error;
     }
-
-    await this.#run("git", [
-      "-C",
-      this.worktreePath,
-      "merge-base",
-      "--is-ancestor",
-      this.baseCommit,
-      "HEAD",
-    ]);
-    await assertLease?.();
-    const currentRemote = await this.#run("git", [
-      "-C",
-      this.repositoryConfig.path,
-      "remote",
-      "get-url",
-      "origin",
-    ]);
-    if (currentRemote !== this.expectedRemote) {
-      throw new Error("The task changed the repository origin URL");
-    }
-    const delivery =
-      this.delivery === "direct"
-        ? await this.coordinateDelivery(() =>
-            this.#deliverDirect({ assertLease }),
-          )
-        : await this.#deliverPullRequest(result, { assertLease });
-    await this.#cleanupDeliveredWorktree();
-    await this.clearResumeState();
-    return delivery;
   }
 
   locator(localUrl) {
     return {
       machine: this.profile.machine,
+      runner: this.runner,
+      branch: this.branch,
+      worktree: this.worktreePath,
       terminalTitle: this.title,
       ...(localUrl ? { localUrl } : {}),
     };
@@ -872,93 +887,60 @@ class LocalTaskHandle {
     });
   }
 
-  async #deliverPullRequest(result, { assertLease }) {
+  async #validatePullRequestDelivery(delivery, { assertLease }) {
+    await assertLease?.();
+    const pullRequest = JSON.parse(
+      await this.#run("gh", [
+        "pr",
+        "view",
+        delivery.url,
+        "--repo",
+        this.repository,
+        "--json",
+        "url,state,headRefName,headRefOid,baseRefName,body",
+      ]),
+    );
+    const closingDirective = new RegExp(
+      `(?:^|\\n)\\s*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+${escapeRegExp(this.item.repository)}#${this.item.number}(?:\\s|$)`,
+      "i",
+    );
+    if (
+      pullRequest.url !== delivery.url ||
+      !["OPEN", "MERGED"].includes(pullRequest.state) ||
+      pullRequest.headRefName !== this.branch ||
+      pullRequest.headRefOid !== delivery.commit ||
+      pullRequest.baseRefName !== this.repositoryConfig.defaultBranch ||
+      typeof pullRequest.body !== "string" ||
+      !closingDirective.test(pullRequest.body)
+    ) {
+      throw new Error("Reported pull request does not match the task delivery");
+    }
+  }
+
+  async #validateDirectDelivery(delivery, { assertLease }) {
+    await assertLease?.();
     await this.#run("git", [
       "-C",
       this.worktreePath,
-      "push",
-      "--set-upstream",
-      this.expectedRemote,
-      `HEAD:refs/heads/${this.branch}`,
+      "fetch",
+      "origin",
+      this.repositoryConfig.defaultBranch,
     ]);
-    await assertLease?.();
-    const url = lastNonEmptyLine(
-      await this.#run("gh", [
-        "pr",
-        "create",
-        "--repo",
-        this.repository,
-        "--base",
-        this.repositoryConfig.defaultBranch,
-        "--head",
-        this.branch,
-        "--title",
-        this.item.title,
-        "--body",
-        [
-          `Closes ${this.item.repository}#${this.item.number}`,
-          "",
-          `Source task: ${this.item.url}`,
-          "",
-          result.summary || "Completed by a PAN runner.",
-        ].join("\n"),
-      ]),
-    );
-    if (!/^https:\/\/github\.com\/.+\/pull\/\d+$/.test(url)) {
-      throw new Error(`gh pr create returned an invalid PR URL: ${url}`);
-    }
-    return { mode: "pull-request", url };
-  }
-
-  async #deliverDirect({ assertLease }) {
-    for (let attempt = 1; attempt <= 5; attempt += 1) {
-      await assertLease?.();
+    try {
       await this.#run("git", [
         "-C",
         this.worktreePath,
-        "fetch",
-        "origin",
-        this.repositoryConfig.defaultBranch,
-      ]);
-      const upstream = await this.#run("git", [
-        "-C",
-        this.worktreePath,
-        "rev-parse",
+        "merge-base",
+        "--is-ancestor",
+        delivery.commit,
         "FETCH_HEAD",
       ]);
-      await this.#run("git", [
-        "-C",
-        this.worktreePath,
-        "rebase",
-        upstream,
-      ]);
-      await assertLease?.();
-      try {
-        await this.#run("git", [
-          "-C",
-          this.worktreePath,
-          "push",
-          this.expectedRemote,
-          `HEAD:refs/heads/${this.repositoryConfig.defaultBranch}`,
-        ]);
-        const commit = await this.#run("git", [
-          "-C",
-          this.worktreePath,
-          "rev-parse",
-          "HEAD",
-        ]);
-        return {
-          mode: "direct",
-          commit,
-          url: `https://github.com/${this.repository}/commit/${commit}`,
-        };
-      } catch (error) {
-        if (attempt === 5 || !isConcurrentPushFailure(error)) {
-          throw error;
-        }
-      }
+    } catch (error) {
+      throw new Error(
+        `Reported commit ${delivery.commit} is not present on ${this.repositoryConfig.defaultBranch}`,
+        { cause: error },
+      );
     }
-    throw new Error("Unable to deliver task directly");
   }
 
   async #cleanupDeliveredWorktree() {
@@ -1156,6 +1138,43 @@ function normalizeResult(result) {
   };
 }
 
+function normalizeDelivery(delivery, expectedMode, repository) {
+  if (!delivery || typeof delivery !== "object" || Array.isArray(delivery)) {
+    throw new TypeError("completed task result must include delivery evidence");
+  }
+  if (delivery.mode !== expectedMode) {
+    throw new TypeError(
+      `task delivery mode must be ${expectedMode}`,
+    );
+  }
+  if (
+    typeof delivery.commit !== "string" ||
+    !/^[a-f0-9]{40}$/i.test(delivery.commit)
+  ) {
+    throw new TypeError("task delivery commit must be a 40-character SHA");
+  }
+  const expectedUrl =
+    expectedMode === "direct"
+      ? `https://github.com/${repository}/commit/${delivery.commit}`
+      : new RegExp(
+          `^https://github\\.com/${escapeRegExp(repository)}/pull/\\d+$`,
+          "i",
+        );
+  if (
+    typeof delivery.url !== "string" ||
+    (typeof expectedUrl === "string"
+      ? delivery.url !== expectedUrl
+      : !expectedUrl.test(delivery.url))
+  ) {
+    throw new TypeError(`task delivery URL is invalid for ${repository}`);
+  }
+  return {
+    mode: delivery.mode,
+    commit: delivery.commit.toLowerCase(),
+    url: delivery.url,
+  };
+}
+
 function terminalTitle(item) {
   return truncate(`PAN #${item.number} - ${item.title}`, 80);
 }
@@ -1181,25 +1200,8 @@ function truncate(value, length) {
   return value.length > length ? `${value.slice(0, length - 3)}...` : value;
 }
 
-function lastNonEmptyLine(value) {
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .at(-1);
-}
-
-function isConcurrentPushFailure(error) {
-  const messages = [];
-  for (let current = error; current; current = current.cause) {
-    if (current.message) {
-      messages.push(current.message);
-    }
-    if (current.stderr) {
-      messages.push(current.stderr);
-    }
-  }
-  return /non-fast-forward|fetch first|rejected/i.test(messages.join("\n"));
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function remainingMilliseconds(deadline, now = Date.now) {

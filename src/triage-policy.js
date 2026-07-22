@@ -75,13 +75,22 @@ export function deriveTriage(item, comments = []) {
 }
 
 export function matchingRunner(requirements, profiles) {
+  const repositories = requirements
+    .filter((requirement) => requirement.startsWith("repo:"))
+    .map((requirement) => requirement.slice("repo:".length));
+  const repository = repositories.length === 1 ? repositories[0] : undefined;
   return profiles.find(
     (profile) =>
       profile.online &&
       (profile.playbooks
         ? profile.playbooks.some((playbook) =>
+            (!repository ||
+              !playbook.repositories ||
+              playbook.repositories.includes(repository)) &&
             requirements.every((requirement) =>
-              playbook.capabilities.includes(requirement),
+              requirement.startsWith("delivery:")
+                ? requirement === `delivery:${playbook.delivery}`
+                : playbook.capabilities.includes(requirement),
             ),
           )
         : requirements.every((requirement) =>

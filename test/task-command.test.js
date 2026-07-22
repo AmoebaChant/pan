@@ -27,6 +27,8 @@ test("opens an interactive Copilot shell with the initial task", () => {
   assert.ok(!args.includes("--allow-all-tools"));
   assert.ok(!args.includes("--no-ask-user"));
   assert.ok(!args.includes("--max-autopilot-continues"));
+  assert.ok(!args.includes("--deny-tool=shell(git:*)"));
+  assert.ok(!args.includes("--deny-tool=shell(gh:*)"));
   assert.equal(
     args[args.indexOf("--session-id") + 1],
     "00000000-0000-4000-8000-000000000001",

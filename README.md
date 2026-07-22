@@ -126,7 +126,9 @@ worktree launches, results, and delivery handoffs, and tees the same output to
 `<stateDirectory>\runner.log`. Each coding worker opens in a visible Windows
 Terminal tab with interactive Copilot chrome and steering, and keeps lifecycle
 details in its own `copilot.log`. Pressing `Ctrl+C` stops active workers before
-the runner releases their leases.
+the runner releases their leases. The Issue comments form an append-only
+execution journal with start/resume locators, operational stops, questions,
+answers, and validated delivery results.
 
 See the [runner contract and profile format](docs/runner.md).
 

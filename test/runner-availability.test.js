@@ -26,6 +26,14 @@ test("sanitizes legacy profiles and derives known free capacity", () => {
     id: "runner-b",
     online: true,
     capabilities: ["env:local", "repo:example/tool"],
+    playbooks: [
+      {
+        id: "legacy",
+        capabilities: ["env:local", "repo:example/tool"],
+        repositories: ["example/tool"],
+        delivery: "pull-request",
+      },
+    ],
     maximumCapacity: 3,
     activeLeaseCount: 1,
     freeCapacity: 2,
@@ -36,7 +44,6 @@ test("sanitizes legacy profiles and derives known free capacity", () => {
     "workspaceRoot",
     "stateDirectory",
     "terminal",
-    "repositories",
     "githubAssignee",
     "copilot",
     "C:\\",

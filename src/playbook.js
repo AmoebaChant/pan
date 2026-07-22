@@ -107,7 +107,9 @@ export function matchingPlaybook(item, profile, activeCounts = new Map()) {
       playbook.repositories.includes(repository) &&
       (activeCounts.get(playbook.id) ?? 0) < playbook.capacity &&
       item.requirements.every((requirement) =>
-        playbook.capabilities.includes(requirement),
+        requirement.startsWith("delivery:")
+          ? requirement === `delivery:${playbook.delivery}`
+          : playbook.capabilities.includes(requirement),
       ),
   );
 }

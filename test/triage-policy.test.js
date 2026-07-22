@@ -112,6 +112,45 @@ test("requires one playbook to satisfy the complete task", () => {
   );
 });
 
+test("matches delivery requirements against playbook policy", () => {
+  const profile = {
+    online: true,
+    playbooks: [
+      {
+        capabilities: ["repo:example/tool"],
+        delivery: "direct",
+      },
+    ],
+  };
+
+  assert.equal(
+    matchingRunner(["repo:example/tool", "delivery:direct"], [profile]),
+    profile,
+  );
+  assert.equal(
+    matchingRunner(["repo:example/tool", "delivery:pull-request"], [profile]),
+    undefined,
+  );
+});
+
+test("does not match a playbook outside its repository scope", () => {
+  const profile = {
+    online: true,
+    playbooks: [
+      {
+        capabilities: ["repo:example/other", "repo:example/tool"],
+        repositories: ["example/other"],
+        delivery: "pull-request",
+      },
+    ],
+  };
+
+  assert.equal(
+    matchingRunner(["repo:example/tool"], [profile]),
+    undefined,
+  );
+});
+
 function makeItem({
   body = "Do the task.",
   owner = "unassigned",

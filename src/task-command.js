@@ -16,8 +16,6 @@ export function buildTaskCopilotArgs(task, taskPrompt) {
     "--no-auto-update",
     "--add-dir",
     task.paths.statePath,
-    "--deny-tool=shell(git:*)",
-    "--deny-tool=shell(gh:*)",
     "--deny-tool=shell(cmd:*)",
     "--deny-tool=shell(powershell:*)",
     "--deny-tool=shell(pwsh:*)",

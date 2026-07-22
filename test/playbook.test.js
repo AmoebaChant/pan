@@ -69,6 +69,19 @@ test("matches task requirements to a playbook with free capacity", () => {
   );
 });
 
+test("uses structured delivery requirements to select compatible playbooks", () => {
+  const profile = makeProfile();
+  profile.playbooks[0].delivery = "direct";
+  const validated = validateRunnerProfile(profile);
+  const item = {
+    requirements: ["repo:example/tool", "delivery:pull-request"],
+  };
+
+  assert.equal(matchingPlaybook(item, validated).id, "documentation");
+  item.requirements = ["repo:example/tool", "delivery:direct"];
+  assert.equal(matchingPlaybook(item, validated).id, "pan-development");
+});
+
 function makeProfile() {
   const root = path.resolve("runner-root");
   return {

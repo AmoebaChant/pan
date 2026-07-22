@@ -7,7 +7,9 @@ const NOW = new Date("2026-07-20T22:00:00.000Z");
 
 test("builds one evidence dossier for every canonical lifecycle item", async () => {
   const items = [
-    item("ready", { requirements: ["repo:example/tool"] }),
+    item("ready", {
+      requirements: ["repo:example/tool", "delivery:pull-request"],
+    }),
     item("done", { status: "done" }),
     item("closed", { state: "closed" }),
     item("leased", {
@@ -248,6 +250,14 @@ function builder({
             id: "runner-a",
             online: true,
             capabilities: ["repo:example/tool"],
+            playbooks: [
+              {
+                id: "pan-development",
+                capabilities: ["repo:example/tool"],
+                repositories: ["example/tool"],
+                delivery: "pull-request",
+              },
+            ],
             maximumCapacity: 1,
             activeLeaseCount: 0,
             freeCapacity: 1,
