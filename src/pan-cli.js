@@ -20,6 +20,7 @@ import { createActionCommandHandlers } from "./action-commands.js";
 import { createEvidenceCommandHandlers } from "./evidence-commands.js";
 import { createAttentionCommandHandlers } from "./attention-commands.js";
 import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
+import { createWorkstreamCommandHandlers } from "./workstream-commands.js";
 import { PanAgentClient } from "./pan-agent-client.js";
 import { PanDaemon } from "./pan-daemon.js";
 import { PanHost } from "./pan-host.js";
@@ -82,6 +83,7 @@ export async function runPanCli(
       evidence: createEvidenceCommandHandlers(),
       attention: createAttentionCommandHandlers({ env }),
       reconcile: createReconciliationCommandHandlers({ env }),
+      workstream: createWorkstreamCommandHandlers({ env }),
     };
   const helper = parsePanHelperArgs(args, { env, handlers: helpers });
   if (helper) {

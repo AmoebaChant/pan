@@ -13,6 +13,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import {
+  resolveNewConfinedWorkstreamReadme,
   resolveConfinedWorkstreamReadme,
   WorkstreamStore,
 } from "../src/index.js";
@@ -64,6 +65,29 @@ test("rejects missing workstreams and symlink escapes after realpath", async (t)
   await assert.rejects(
     new WorkstreamStore({ repositoryPath }).read("missing"),
     /Unable to read workstream missing/,
+  );
+});
+
+test("validates new workstream targets without allowing existing symlink escapes", async (t) => {
+  const repositoryPath = await createRepository(t);
+  const newReadme = await resolveNewConfinedWorkstreamReadme(
+    repositoryPath,
+    "new/child",
+  );
+
+  assert.equal(
+    newReadme,
+    path.join(repositoryPath, "workstreams", "new", "child", "README.md"),
+  );
+  await mkdir(path.join(repositoryPath, "outside"));
+  await symlink(
+    path.join(repositoryPath, "outside"),
+    path.join(repositoryPath, "workstreams", "new"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  await assert.rejects(
+    resolveNewConfinedWorkstreamReadme(repositoryPath, "new/child"),
+    /escapes the configured repository root/,
   );
 });
 

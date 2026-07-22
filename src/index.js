@@ -4,6 +4,7 @@ export { createEvidenceCommandHandlers } from "./evidence-commands.js";
 export { createActionCommandHandlers } from "./action-commands.js";
 export { createAttentionCommandHandlers } from "./attention-commands.js";
 export { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
+export { createWorkstreamCommandHandlers } from "./workstream-commands.js";
 export {
   MISSING_ISSUE_INITIAL_FIELDS,
   MergedPullRequestReconciliationService,
@@ -111,8 +112,15 @@ export {
   buildTaskCopilotSpawnOptions,
 } from "./task-command.js";
 export {
+  normalizeGitHubRepositoryUrl,
+  readWorkstreamOperationReceipt,
+  WorkstreamDeliveryService,
+} from "./workstream-delivery.js";
+export {
+  resolveNewConfinedWorkstreamReadme,
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,
+  validateWorkstreamPath,
   WorkstreamStore,
 } from "./workstream-store.js";
 export { LocalTaskExecutor } from "./local-task-executor.js";

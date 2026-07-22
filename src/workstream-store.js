@@ -209,6 +209,31 @@ export function resolveWorkstreamReadme(repositoryPath, workstream) {
   return candidate;
 }
 
+export async function resolveNewConfinedWorkstreamReadme(
+  repositoryPath,
+  workstream,
+) {
+  const candidate = resolveWorkstreamReadme(repositoryPath, workstream);
+  const repository = path.resolve(repositoryPath);
+  const root = path.join(repository, "workstreams");
+  const [repositoryRealPath, nearestExistingAncestor] = await Promise.all([
+    realpath(repository),
+    nearestExistingPath(path.dirname(candidate)),
+  ]);
+  assertContainedBy(repositoryRealPath, nearestExistingAncestor);
+
+  try {
+    const rootRealPath = await realpath(root);
+    assertContainedBy(repositoryRealPath, rootRealPath);
+    assertContainedBy(rootRealPath, nearestExistingAncestor);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return candidate;
+}
+
 export async function resolveConfinedWorkstreamReadme(
   repositoryPath,
   workstream,
@@ -295,7 +320,7 @@ async function enumerateDirectories(root, segments, workstreams, errors) {
   }
 }
 
-function validateWorkstreamPath(workstream) {
+export function validateWorkstreamPath(workstream) {
   if (
     typeof workstream !== "string" ||
     !workstream ||
@@ -318,10 +343,39 @@ function validateWorkstreamPath(workstream) {
   }
 }
 
+async function nearestExistingPath(candidate) {
+  let current = candidate;
+  for (;;) {
+    try {
+      return await realpath(current);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        throw error;
+      }
+      current = parent;
+    }
+  }
+}
+
 function assertWithinRoot(root, candidate) {
   const relative = path.relative(root, candidate);
   if (
     !relative ||
+    relative.startsWith(`..${path.sep}`) ||
+    relative === ".." ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error("Workstream path escapes the configured repository root");
+  }
+}
+
+function assertContainedBy(root, candidate) {
+  const relative = path.relative(root, candidate);
+  if (
     relative.startsWith(`..${path.sep}`) ||
     relative === ".." ||
     path.isAbsolute(relative)
