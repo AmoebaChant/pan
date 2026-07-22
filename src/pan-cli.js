@@ -16,6 +16,7 @@ import { loadDomainConfig } from "./domain-config.js";
 import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { createLeadershipCommandHandlers } from "./leadership-commands.js";
+import { createActionCommandHandlers } from "./action-commands.js";
 import { createEvidenceCommandHandlers } from "./evidence-commands.js";
 import { createAttentionCommandHandlers } from "./attention-commands.js";
 import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
@@ -77,6 +78,7 @@ export async function runPanCli(
   const helpers =
     commandHandlers ?? {
       leadership: createLeadershipCommandHandlers({ env }),
+      action: createActionCommandHandlers({ env }),
       evidence: createEvidenceCommandHandlers(),
       attention: createAttentionCommandHandlers({ env }),
       reconcile: createReconciliationCommandHandlers({ env }),
@@ -571,6 +573,7 @@ export function parsePanHelperArgs(
   const allowedOptions = new Set(specification.options ?? []);
   const allowedFlags = new Set(specification.flags ?? []);
   const repeatableOptions = new Set(specification.repeatableOptions ?? []);
+  const requiredOptions = specification.requiredOptions ?? [];
   const positionalNames = specification.positionals ?? [];
   const options = {};
   let positionalIndex = 0;
@@ -656,6 +659,11 @@ export function parsePanHelperArgs(
         .map((name) => `<${name}>`)
         .join(" ")}`,
     );
+  }
+  for (const name of requiredOptions) {
+    if (!Object.hasOwn(options, name)) {
+      throw new TypeError(`pan ${family} ${operation} requires --${name}`);
+    }
   }
   return { family, operation, config, json, options, schemaVersion };
 }

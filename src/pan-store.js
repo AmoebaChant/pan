@@ -207,7 +207,7 @@ export class PanStore {
     labels = [],
     assignees = [],
     fields = {},
-  }, { signal } = {}) {
+  }, { signal, beforeWrite } = {}) {
     if (!title?.trim()) {
       throw new TypeError("title is required");
     }
@@ -232,6 +232,7 @@ export class PanStore {
       issueArgs.push("--assignee", assignee);
     }
 
+    await beforeWrite?.();
     const issueUrl = lastNonEmptyLine(
       await this.gh.run(issueArgs, { signal }),
     );
@@ -240,10 +241,13 @@ export class PanStore {
     }
     try {
       signal?.throwIfAborted();
-      return await this.addIssueToProject(issueUrl, fields, { signal });
+      return await this.addIssueToProject(issueUrl, fields, { signal, beforeWrite });
     } catch (error) {
       if (signal?.aborted) {
         throw signal.reason ?? error;
+      }
+      if (error?.code === "PAN_LEADERSHIP_REQUIRED") {
+        throw error;
       }
       const cleanupErrors = [];
       try {
@@ -268,13 +272,14 @@ export class PanStore {
     }
   }
 
-  async addIssueToProject(issueUrl, fields = {}, { signal } = {}) {
+  async addIssueToProject(issueUrl, fields = {}, { signal, beforeWrite } = {}) {
     if (!isIssueUrl(issueUrl)) {
       throw new TypeError("a GitHub Issue URL is required");
     }
     const schema = await this.getSchema();
     validateFieldValues(fields, schema);
     signal?.throwIfAborted();
+    await beforeWrite?.();
     const added = await this.gh.runJson([
       "project",
       "item-add",
@@ -291,12 +296,15 @@ export class PanStore {
     }
     try {
       if (Object.keys(fields).length > 0) {
-        await this.setFields(added.id, fields, { signal });
+        await this.setFields(added.id, fields, { signal, beforeWrite });
       }
       return this.#confirmItem(added.id);
     } catch (error) {
       if (signal?.aborted) {
         throw signal.reason ?? error;
+      }
+      if (error?.code === "PAN_LEADERSHIP_REQUIRED") {
+        throw error;
       }
       try {
         await this.gh.run([
@@ -422,7 +430,7 @@ export class PanStore {
     };
   }
 
-  async setFields(itemId, values, { signal } = {}) {
+  async setFields(itemId, values, { signal, beforeWrite } = {}) {
     if (!itemId) {
       throw new TypeError("itemId is required");
     }
@@ -431,6 +439,7 @@ export class PanStore {
     validateFieldValues(values, schema);
     for (const [key, value] of Object.entries(values)) {
       signal?.throwIfAborted();
+      await beforeWrite?.();
       const field = schema.fields[key];
 
       const args = [
@@ -680,7 +689,7 @@ export class PanStore {
     return normalizeGraphQlItem(result.data?.node, schema, this.repository);
   }
 
-  async addComment(item, body, { signal } = {}) {
+  async addComment(item, body, { signal, beforeWrite } = {}) {
     if (!item?.number || !item.repository) {
       throw new TypeError("an Issue-backed item is required");
     }
@@ -688,6 +697,7 @@ export class PanStore {
       throw new TypeError("comment body is required");
     }
     signal?.throwIfAborted();
+    await beforeWrite?.();
     return this.gh.run([
       "issue",
       "comment",
@@ -748,7 +758,7 @@ export class PanStore {
     return issues.find((issue) => issue.body?.includes(marker));
   }
 
-  async reorderItems(itemIds, { signal } = {}) {
+  async reorderItems(itemIds, { signal, beforeWrite } = {}) {
     if (!Array.isArray(itemIds) || itemIds.some((id) => !id)) {
       throw new TypeError("itemIds must be an array of Project item IDs");
     }
@@ -758,6 +768,7 @@ export class PanStore {
     let afterId;
     for (const itemId of itemIds) {
       signal?.throwIfAborted();
+      await beforeWrite?.();
       const args = [
         "api",
         "graphql",

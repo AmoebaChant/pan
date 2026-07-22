@@ -1,6 +1,7 @@
 export { GhClient, GhCommandError } from "./gh-client.js";
 export { IssueCatalog } from "./issue-catalog.js";
 export { createEvidenceCommandHandlers } from "./evidence-commands.js";
+export { createActionCommandHandlers } from "./action-commands.js";
 export { createAttentionCommandHandlers } from "./attention-commands.js";
 export { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 export {
@@ -47,6 +48,7 @@ export {
 export { PanDaemon } from "./pan-daemon.js";
 export { PanAgentClient } from "./pan-agent-client.js";
 export { PanReviewService } from "./pan-review-service.js";
+export { ActionService } from "./action-service.js";
 export { PanRepairService } from "./pan-repair-service.js";
 export { PanRuntime } from "./pan-runtime.js";
 export { PanHost } from "./pan-host.js";

@@ -11,23 +11,36 @@ const EXPLANATION_ACTIONS = new Set([
 ]);
 const ACTION_KINDS = new Set([
   ...EXPLANATION_ACTIONS,
+  "workstream-update",
   "no-op",
 ]);
 
 export class ActionPolicy {
-  constructor({ approvalRequired = [] } = {}) {
+  constructor({
+    automatic,
+    approvalRequired = [],
+    prohibited = [],
+  } = {}) {
     if (
+      (automatic !== undefined && !Array.isArray(automatic)) ||
       !Array.isArray(approvalRequired) ||
-      approvalRequired.some(
+      !Array.isArray(prohibited) ||
+      [...(automatic ?? []), ...approvalRequired, ...prohibited].some(
         (kind) =>
           typeof kind !== "string" ||
           !kind.trim() ||
           !ACTION_KINDS.has(kind),
       )
     ) {
-      throw new TypeError("approvalRequired must contain action kind names");
+      throw new TypeError("action policy classifications must contain action kind names");
     }
+    const classified = [...(automatic ?? []), ...approvalRequired, ...prohibited];
+    if (new Set(classified).size !== classified.length) {
+      throw new TypeError("an action kind may only have one policy classification");
+    }
+    this.automatic = automatic === undefined ? undefined : new Set(automatic);
     this.approvalRequired = new Set(approvalRequired);
+    this.prohibited = new Set(prohibited);
     this.authority = Object.freeze({
       reads: "automatic",
       proposals: "automatic",
@@ -38,6 +51,7 @@ export class ActionPolicy {
         "issue-create": this.#liveAuthority("issue-create"),
         "issue-comment": this.#liveAuthority("issue-comment"),
         "needs-human": this.#liveAuthority("needs-human"),
+        "workstream-update": this.#liveAuthority("workstream-update"),
         "no-op": "automatic",
       }),
     });
@@ -64,8 +78,11 @@ export class ActionPolicy {
       );
     }
 
+    if (authority === "prohibited") {
+      reasons.push(`Policy prohibits ${normalized.kind}`);
+    }
     return Object.freeze({
-      allowed: reasons.length === 0,
+      allowed: reasons.length === 0 && authority !== "approval" && authority !== "prohibited",
       authority,
       requiresApproval: authority === "approval",
       reasons: Object.freeze(reasons),
@@ -73,8 +90,14 @@ export class ActionPolicy {
   }
 
   #liveAuthority(kind) {
+    if (this.prohibited.has(kind)) {
+      return "prohibited";
+    }
     if (this.approvalRequired.has(kind)) {
       return "approval";
+    }
+    if (this.automatic?.has(kind)) {
+      return "automatic";
     }
     return EXPLANATION_ACTIONS.has(kind) ? "explanation" : "automatic";
   }
@@ -90,6 +113,7 @@ export function lifecycleViolations(action, snapshot) {
   );
   const reasons = [];
   reasons.push(...referenceViolations(action, snapshot, byId));
+  reasons.push(...humanPrecedenceViolations(action, snapshot));
   const affected = affectedDossiers(action, snapshot, byId);
 
   for (const dossier of affected) {
@@ -114,6 +138,41 @@ export function lifecycleViolations(action, snapshot) {
     }
   }
   return [...new Set(reasons)];
+}
+
+function humanPrecedenceViolations(action, snapshot) {
+  if (!["canonical-reorder", "relative-precedence"].includes(action.kind)) {
+    return [];
+  }
+  const pairs = snapshot.humanPrecedence ?? snapshot.project?.humanPrecedence ?? [];
+  const proposed =
+    action.kind === "canonical-reorder"
+      ? action.target.orderedItemIds
+      : reorderRelative(
+          snapshot.project?.items ?? [],
+          action.target.beforeItemId,
+          action.target.afterItemId,
+        );
+  return pairs.flatMap((pair) => {
+    const [before, after] = Array.isArray(pair)
+      ? pair
+      : [pair?.beforeItemId, pair?.afterItemId];
+    if (!before || !after || proposed.indexOf(before) < proposed.indexOf(after)) {
+      return [];
+    }
+    return [`Human precedence requires ${before} to remain before ${after}`];
+  });
+}
+
+function reorderRelative(order, beforeItemId, afterItemId) {
+  const next = [...order];
+  const index = next.indexOf(beforeItemId);
+  if (index === -1 || next.indexOf(afterItemId) === -1) {
+    return next;
+  }
+  next.splice(index, 1);
+  next.splice(next.indexOf(afterItemId), 0, beforeItemId);
+  return next;
 }
 
 function referenceViolations(action, snapshot, byId) {
