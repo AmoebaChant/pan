@@ -156,7 +156,7 @@ export class PortfolioSnapshotBuilder {
         diagnostics.push({
           source: `item:${item.id}`,
           code: "missing-workstream",
-          message: `Project item ${item.id} has no workstream reference`,
+          message: `${describeProjectItem(item)} has status ${item.fields?.status || "unknown"} but no workstream reference; set its Project workstream field to a valid workstream path, or move it to needs-detail until the reference is known`,
         });
       }
       return { path: undefined, available: false, required };
@@ -206,6 +206,14 @@ export class PortfolioSnapshotBuilder {
     cache.set(workstreamPath, promise);
     return promise;
   }
+}
+
+function describeProjectItem(item) {
+  const issue = item.number ? `Issue #${item.number}` : "Issue";
+  const title = item.title?.trim() ? ` ${JSON.stringify(item.title.trim())}` : "";
+  const url = item.url?.trim();
+  const locator = [issue + title, url].filter(Boolean).join(", ");
+  return `Project item ${item.id} (${locator})`;
 }
 
 function validateProject(project) {
