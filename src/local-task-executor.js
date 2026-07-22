@@ -1020,7 +1020,7 @@ async function readJsonIfReady(filePath) {
 }
 
 async function writeJsonAtomic(filePath, value) {
-  const temporary = `${filePath}.${process.pid}.tmp`;
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
   await rename(temporary, filePath);
 }

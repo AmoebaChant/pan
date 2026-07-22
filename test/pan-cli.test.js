@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parsePanArgs } from "../src/index.js";
+import {
+  parsePanArgs,
+  parsePanHelperArgs,
+  runPanCli,
+} from "../src/index.js";
 
 test("parses setup without pre-existing configuration", () => {
   assert.deepEqual(
@@ -228,4 +232,106 @@ test("parses persistent PAN lifecycle commands", () => {
       }),
     /requires --background/,
   );
+});
+
+test("rejects unknown helper inputs before constructing command context", async () => {
+  const handlers = {
+    evidence: {
+      snapshot: Object.assign(async () => assert.fail("handler must not run"), {
+        specification: { options: ["scope"], flags: ["refresh"] },
+      }),
+    },
+  };
+  assert.throws(
+    () =>
+      parsePanHelperArgs(
+        ["evidence", "unknown", "--schema-version", "1", "--config", "domain.json"],
+        { handlers },
+      ),
+    /Unknown PAN evidence operation/,
+  );
+  assert.throws(
+    () =>
+      parsePanHelperArgs(
+        [
+          "evidence",
+          "snapshot",
+          "--schema-version",
+          "2",
+          "--config",
+          "domain.json",
+        ],
+        { handlers },
+      ),
+    /Unsupported PAN command schema version/,
+  );
+  await assert.rejects(
+    runPanCli(
+      [
+        "evidence",
+        "snapshot",
+        "--schema-version",
+        "1",
+        "--config",
+        "domain.json",
+        "--unknown",
+      ],
+      {
+        commandHandlers: handlers,
+        commandContextFactory: async () =>
+          assert.fail("context must not be constructed"),
+      },
+    ),
+    /Unknown option/,
+  );
+});
+
+test("dispatches a strict helper command with one fresh command context", async () => {
+  const output = [];
+  let contexts = 0;
+  const handler = Object.assign(
+    async ({ context, options }) => ({
+      version: 1,
+      status: "confirmed",
+      operation: "evidence.snapshot",
+      operationId: "snapshot-1",
+      domain: context.domain,
+      confirmedEffects: [`Read ${options.scope}.`],
+      remainingSteps: [],
+      diagnostics: [],
+      recovery: { safe: true, steps: [] },
+    }),
+    { specification: { options: ["scope"] } },
+  );
+  const result = await runPanCli(
+    [
+      "evidence",
+      "snapshot",
+      "--schema-version",
+      "1",
+      "--config",
+      "domain.json",
+      "--scope",
+      "all",
+      "--json",
+    ],
+    {
+      commandHandlers: { evidence: { snapshot: handler } },
+      commandContextFactory: async () => {
+        contexts += 1;
+        return {
+          domain: {
+            repository: "example/domain",
+            projectOwner: "example",
+            projectNumber: 12,
+          },
+        };
+      },
+      stdout: { write: (value) => output.push(value) },
+    },
+  );
+  assert.equal(contexts, 1);
+  assert.equal(result.status, "confirmed");
+  assert.equal(output.length, 1);
+  assert.equal(JSON.parse(output[0]).operation, "evidence.snapshot");
 });

@@ -9,6 +9,16 @@ export {
   replaceDomainConfigFile,
 } from "./domain-config-file.js";
 export { AttentionService } from "./attention-service.js";
+export { createPanCommandContext } from "./pan-command-context.js";
+export {
+  commandResultExitCode,
+  commandResultFromError,
+  createPanCommandResult,
+  PanCommandError,
+  PAN_COMMAND_RESULT_STATUSES,
+  PAN_COMMAND_RESULT_VERSION,
+  validatePanCommandResult,
+} from "./pan-command-result.js";
 export { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 export {
   answerTexts,
@@ -52,7 +62,11 @@ export {
   PanToolError,
   PanToolRegistry,
 } from "./pan-tools.js";
-export { parseArgs as parsePanArgs, runPanCli } from "./pan-cli.js";
+export {
+  parseArgs as parsePanArgs,
+  parsePanHelperArgs,
+  runPanCli,
+} from "./pan-cli.js";
 export { PanStore } from "./pan-store.js";
 export {
   buildRunnerAvailability,

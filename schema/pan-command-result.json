@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AmoebaChant/pan/schema/pan-command-result.json",
+  "title": "PAN helper command result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "status", "operation", "operationId", "domain", "confirmedEffects", "remainingSteps", "diagnostics", "recovery"],
+  "properties": {
+    "version": { "const": 1 },
+    "status": { "enum": ["confirmed", "rejected", "incomplete", "failed"] },
+    "operation": { "type": "string", "minLength": 1 },
+    "operationId": { "type": "string", "minLength": 1 },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "projectOwner", "projectNumber"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "projectOwner": { "type": "string", "minLength": 1 },
+        "projectNumber": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "confirmedEffects": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "remainingSteps": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "diagnostics": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["safe", "steps"],
+      "properties": {
+        "safe": { "type": "boolean" },
+        "steps": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "snapshot": { "type": "object", "minProperties": 1 },
+    "expectedState": { "type": "object", "minProperties": 1 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "confirmed" } }, "required": ["status"] },
+      "then": { "properties": { "remainingSteps": { "maxItems": 0 } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "incomplete" } }, "required": ["status"] },
+      "then": { "properties": { "remainingSteps": { "minItems": 1 } } }
+    }
+  ]
+}

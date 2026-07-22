@@ -6,6 +6,12 @@ import path from "node:path";
 
 import { AttentionService } from "./attention-service.js";
 import { ActionPolicy } from "./action-policy.js";
+import { createPanCommandContext } from "./pan-command-context.js";
+import {
+  commandResultFromError,
+  PanCommandError,
+  validatePanCommandResult,
+} from "./pan-command-result.js";
 import { loadDomainConfig } from "./domain-config.js";
 import { GhClient } from "./gh-client.js";
 import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
@@ -60,8 +66,19 @@ export async function runPanCli(
     loggerFactory = createServiceLogger,
     hostname = os.hostname(),
     runnerProfileSourceFactory = (options) => new RunnerProfileSource(options),
+    commandContextFactory = createPanCommandContext,
+    commandHandlers = {},
   } = {},
 ) {
+  const helper = parsePanHelperArgs(args, { env, handlers: commandHandlers });
+  if (helper) {
+    return runPanHelperCommand(helper, {
+      stdout,
+      env,
+      commandContextFactory,
+      commandHandlers,
+    });
+  }
   const parsed = parseArgs(args, env);
   if (parsed.command === "setup") {
     const result = await setupFactory(parsed, {
@@ -352,6 +369,7 @@ export function parseArgs(args, env = process.env) {
       "PAN domain config and runner profile inputs cannot be used together",
     );
   }
+
   const configuration = { config, profile };
   const json = takeFlag(remaining, "--json");
   const command = remaining.shift();
@@ -384,6 +402,7 @@ export function parseArgs(args, env = process.env) {
       approvalMode,
     };
   }
+
   if (!config && !profile) {
     throw new TypeError(
       "Set PAN_CONFIG or pass --config <domain-config.json> (legacy: PAN_PROFILE or --profile)",
@@ -512,12 +531,158 @@ export function parseArgs(args, env = process.env) {
   };
 }
 
+export function parsePanHelperArgs(
+  args,
+  { env = process.env, handlers = {} } = {},
+) {
+  const [family, operation, ...remaining] = args;
+  const families = [
+    "evidence",
+    "project",
+    "action",
+    "leadership",
+    "attention",
+    "reconcile",
+    "workstream",
+    "config",
+  ];
+  if (!families.includes(family)) {
+    return undefined;
+  }
+  if (!operation || operation.startsWith("--")) {
+    throw new TypeError(`pan ${family} requires an operation`);
+  }
+  const handler = handlers[family]?.[operation];
+  if (typeof handler !== "function") {
+    throw new TypeError(`Unknown PAN ${family} operation: ${operation}`);
+  }
+  const specification = handler.specification ?? {};
+  const allowedOptions = new Set(specification.options ?? []);
+  const allowedFlags = new Set(specification.flags ?? []);
+  const options = {};
+  let json = false;
+  let config = env.PAN_CONFIG;
+  let schemaVersion;
+  for (let index = 0; index < remaining.length; index += 1) {
+    const token = remaining[index];
+    if (!token.startsWith("--")) {
+      throw new TypeError(
+        `Unexpected positional argument for pan ${family} ${operation}: ${token}`,
+      );
+    }
+    if (token === "--json") {
+      if (json) {
+        throw new TypeError("--json may only be specified once");
+      }
+      json = true;
+      continue;
+    }
+    const name = token.slice(2);
+    if (name === "config") {
+      if (config !== env.PAN_CONFIG && config !== undefined) {
+        throw new TypeError("--config may only be specified once");
+      }
+      const value = remaining[++index];
+      if (!value || value.startsWith("--")) {
+        throw new TypeError("--config requires a value");
+      }
+      config = value;
+      continue;
+    }
+    if (name === "schema-version") {
+      if (schemaVersion !== undefined) {
+        throw new TypeError("--schema-version may only be specified once");
+      }
+      const value = remaining[++index];
+      if (value !== "1") {
+        throw new TypeError("Unsupported PAN command schema version");
+      }
+      schemaVersion = 1;
+      continue;
+    }
+    if (allowedFlags.has(name)) {
+      if (Object.hasOwn(options, name)) {
+        throw new TypeError(`--${name} may only be specified once`);
+      }
+      options[name] = true;
+      continue;
+    }
+    if (allowedOptions.has(name)) {
+      if (Object.hasOwn(options, name)) {
+        throw new TypeError(`--${name} may only be specified once`);
+      }
+      const value = remaining[++index];
+      if (!value || value.startsWith("--")) {
+        throw new TypeError(`--${name} requires a value`);
+      }
+      options[name] = value;
+      continue;
+    }
+    throw new TypeError(`Unknown option for pan ${family} ${operation}: --${name}`);
+  }
+  if (schemaVersion === undefined) {
+    throw new TypeError("PAN helper commands require --schema-version 1");
+  }
+  if (!config) {
+    throw new TypeError("PAN helper commands require --config or PAN_CONFIG");
+  }
+  return { family, operation, config, json, options, schemaVersion };
+}
+
+async function runPanHelperCommand(
+  parsed,
+  { stdout, env, commandContextFactory, commandHandlers },
+) {
+  const context = await commandContextFactory({
+    configPath: parsed.config,
+    env,
+  });
+  const handler = commandHandlers[parsed.family][parsed.operation];
+  const details = {
+    operation: `${parsed.family}.${parsed.operation}`,
+    domain: context.domain,
+  };
+  let result;
+  try {
+    result = validatePanCommandResult(
+      await handler({ context, options: parsed.options }),
+    );
+    if (result.operation !== details.operation) {
+      throw new TypeError(
+        `Helper result operation must be ${details.operation}`,
+      );
+    }
+  } catch (error) {
+    throw new PanCommandError(
+      `PAN helper ${details.operation} failed`,
+      commandResultFromError(error, details),
+      { cause: error },
+    );
+  }
+  if (result.status !== "confirmed") {
+    throw new PanCommandError(
+      `PAN helper ${details.operation} did not confirm the requested outcome`,
+      result,
+    );
+  }
+  write(
+    stdout,
+    parsed.json
+      ? JSON.stringify(result)
+      : `${result.operation}: ${result.confirmedEffects.join("; ") || "confirmed"}`,
+  );
+  return result;
+}
+
 async function loadCliConfiguration(
   parsed,
   { domainConfigLoader, runnerProfileLoader },
 ) {
   if (parsed.config) {
     const config = await domainConfigLoader(parsed.config);
+    const agent = config.session?.agent ?? config.agent;
+    const scheduling = config.scheduling ?? {};
+    const leadership = config.leadership ?? {};
     return {
       deprecated: false,
       store: {
@@ -528,14 +693,19 @@ async function loadCliConfiguration(
       },
       runtime: {
         machine: "pan-runtime",
-        pollIntervalSeconds: config.cadences.activePollSeconds,
-        leaderLeaseSeconds: config.cadences.leaderLeaseSeconds,
-        leaderHeartbeatSeconds: config.cadences.leaderHeartbeatSeconds,
+        pollIntervalSeconds:
+          scheduling.retrySeconds ?? config.cadences?.activePollSeconds ?? 60,
+        leaderLeaseSeconds:
+          leadership.leaseSeconds ?? config.cadences?.leaderLeaseSeconds ?? 120,
+        leaderHeartbeatSeconds:
+          leadership.heartbeatSeconds ??
+          config.cadences?.leaderHeartbeatSeconds ??
+          30,
         stateBranch: config.state.branch,
         leaderPath: config.state.leaderPath,
         runnerProfileDirectory: path.join(config.domain.path, "runners"),
       },
-      agent: config.agent,
+      agent,
       reviewPolicy: config.reviewPolicy,
       selfRepair: config.selfRepair,
       attention: config.attention,
