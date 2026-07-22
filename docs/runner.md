@@ -161,12 +161,15 @@ remains attached directly to that terminal so its interactive chrome and
 steering controls are available, including `/model` and session commands. The
 configured model is shown in the worker's visible startup line and lifecycle
 log. PAN does not redirect or consume Copilot's stdin; the terminal remains
-usable for follow-up instructions until Copilot exits. The configured terminal
-`profile` defaults to `PowerShell`. `Ctrl+C` stops active workers before
-releasing their leases. Interrupted tasks retain their worktree and explicit
-Copilot session ID, return directly to `ready` without creating a needs-human
-request, and resume that saved session when a runner claims them again. A lost
-lease also stops its worker immediately to prevent duplicate execution.
+usable for follow-up instructions until the worker writes its final task result.
+PAN then stops Copilot automatically so completed task terminals close without
+manual intervention. Blocked task terminals remain open with their attention
+message. The configured terminal `profile` defaults to `PowerShell`. `Ctrl+C`
+stops active workers before releasing their leases. Interrupted tasks retain
+their worktree and explicit Copilot session ID, return directly to `ready`
+without creating a needs-human request, and resume that saved session when a
+runner claims them again. A lost lease also stops its worker immediately to
+prevent duplicate execution.
 Resumable items remain affiliated with the machine and playbook holding their
 local state. On startup, the runner also returns legacy unclaimed `blocked`
 items to `ready` when their latest unresolved PAN request is specifically a

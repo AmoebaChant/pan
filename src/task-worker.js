@@ -14,6 +14,7 @@ import {
   buildTaskCopilotSpawnOptions,
 } from "./task-command.js";
 import { buildTaskPrompt } from "./task-prompt.js";
+import { waitForTaskWorkerOutcome } from "./task-result-watcher.js";
 
 const contextPath = parseContextPath(process.argv.slice(2));
 const context = JSON.parse(await readFile(contextPath, "utf8"));
@@ -81,18 +82,31 @@ const timeout = context.copilot.deadline
     )
   : undefined;
 let runtimeError;
-const exit = await new Promise((resolve) => {
+const childExit = new Promise((resolve) => {
   child.once("error", (error) => {
     runtimeError = error;
     resolve({ code: undefined, signal: undefined });
   });
   child.once("close", (code, signal) => resolve({ code, signal }));
 });
+const outcome = await waitForTaskWorkerOutcome({
+  childExit,
+  readResult: () => readAgentResult(context.paths.agentResult),
+  stopChild,
+});
+const { exit } = outcome;
+let { result } = outcome;
+if (outcome.resultError) {
+  result = {
+    status: "failed",
+    summary: `Unable to read the task result: ${outcome.resultError.message}`,
+  };
+}
 clearTimeout(timeout);
 clearInterval(cancellationCheck);
 await termination;
 
-let result = runtimeError
+result ??= runtimeError
   ? {
       status: "failed",
       summary: `Unable to start Copilot: ${runtimeError.message}`,

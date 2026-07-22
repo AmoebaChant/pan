@@ -128,7 +128,9 @@ Terminal tab with interactive Copilot chrome and steering, and keeps lifecycle
 details in its own `copilot.log`. Pressing `Ctrl+C` stops active workers before
 the runner releases their leases. The Issue comments form an append-only
 execution journal with start/resume locators, operational stops, questions,
-answers, and validated delivery results.
+answers, and validated delivery results. Completed workers stop Copilot and
+close their terminal tabs automatically; blocked task terminals remain open
+with the attention request.
 
 See the [runner contract and profile format](docs/runner.md).
 
