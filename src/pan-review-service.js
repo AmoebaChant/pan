@@ -643,11 +643,29 @@ function buildEvidenceIndex(snapshot) {
 function assertCitationsResolve(citations, index) {
   for (const citation of citations) {
     if (!citationResolves(citation, index)) {
-      throw new Error(
-        `unknown locator ${citation.locator} for ${citation.kind} evidence; cite a snapshot locator or value assertions that match the snapshot`,
-      );
+      throw new Error(unresolvedCitationMessage(citation, index));
     }
   }
+}
+
+function unresolvedCitationMessage(citation, index) {
+  const prefix = `unknown locator ${citation.locator} for ${citation.kind} evidence`;
+  if (
+    citation.kind === "project-field" &&
+    !hasRecordPrefix(citation.locator, index.itemsById)
+  ) {
+    return `${prefix}; a project-field locator must identify a snapshot item using <item-id>:<field> or <item-id>:<field>=<expected-value>; bare field=value locators are ambiguous`;
+  }
+  return `${prefix}; cite a snapshot locator or value assertions that match the snapshot`;
+}
+
+function hasRecordPrefix(locator, recordsById) {
+  for (const recordId of recordsById.keys()) {
+    if (locator.startsWith(`${recordId}:`) || locator.startsWith(`${recordId} `)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function citationResolves(citation, index) {

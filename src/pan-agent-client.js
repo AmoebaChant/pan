@@ -341,6 +341,7 @@ function buildPrompt(turn) {
     "For a canonical-reorder action, include every current Project item ID exactly once.",
     "Use expectedState.snapshotId equal to the supplied snapshot ID.",
     "Citation kind must be exactly one of: issue, issue-comment, project-field, workstream, runner, domain-record.",
+    "Project-field locators must identify a snapshot item: use <item-id>:<field> or <item-id>:<field>=<expected-value>. Bare field=value locators are invalid.",
     "Only propose an action when it is useful. A no-op recommendation is valid.",
   ].join("\n");
 }
