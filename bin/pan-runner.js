@@ -9,11 +9,24 @@ import {
   PanStore,
   RunnerDaemon,
   acquireRunnerLock,
+  AttentionService,
+  loadDomainConfig,
   loadRunnerProfile,
 } from "../src/index.js";
 
 const options = parseArgs(process.argv.slice(2));
 const profile = await loadRunnerProfile(options.profile);
+const domainConfig = profile.domainConfigPath
+  ? await loadDomainConfig(profile.domainConfigPath)
+  : undefined;
+if (
+  domainConfig &&
+  (domainConfig.domain.repository !== profile.store.repository ||
+    domainConfig.domain.projectOwner !== profile.store.projectOwner ||
+    domainConfig.domain.projectNumber !== profile.store.projectNumber)
+) {
+  throw new Error("Runner and domain configuration must target the same PAN store");
+}
 const logger = await createServiceLogger({
   name: "PAN runner",
   logFile: path.join(profile.stateDirectory, "runner.log"),
@@ -33,7 +46,17 @@ const store = new PanStore({
   gh,
 });
 const executor = new LocalTaskExecutor({ profile, logger });
-const daemon = new RunnerDaemon({ store, profile, executor, logger });
+const attention = new AttentionService({
+  store,
+  humanAssignee: domainConfig?.attention.assignee,
+});
+const daemon = new RunnerDaemon({
+  store,
+  profile,
+  executor,
+  attention,
+  logger,
+});
 const lock = await acquireRunnerLock(profile);
 const controller = new AbortController();
 process.once("SIGINT", () => {

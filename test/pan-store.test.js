@@ -19,13 +19,21 @@ const MANIFEST = {
       key: "status",
       name: "Status",
       type: "single_select",
-      options: ["untriaged", "ready", "in-progress", "in-review", "done"],
+      options: [
+        "untriaged",
+        "needs-detail",
+        "ready",
+        "in-progress",
+        "in-review",
+        "done",
+        "blocked",
+      ],
     },
     {
       key: "priority",
       name: "priority",
       type: "single_select",
-      options: ["normal", "high"],
+      options: ["urgent", "high", "normal", "low"],
     },
     {
       key: "requirements",
@@ -514,6 +522,111 @@ test("releases the owning runner and returns the item to ready", async () => {
   ]);
 });
 
+test("atomically escalates a leased task to urgent human attention", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        owner: "agent",
+        status: "in-progress",
+        priority: "low",
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+        assignees: ["runner-bot"],
+      }),
+    ],
+  });
+
+  const result = await store.requestHumanAttention({
+    itemId: "item-1",
+    runner: "runner-a",
+    runnerAssignee: "runner-bot",
+    humanAssignee: "octocat",
+  });
+
+  assert.equal(result.requested, true);
+  assert.equal(result.item.fields.owner, "human");
+  assert.equal(result.item.fields.status, "blocked");
+  assert.equal(result.item.fields.priority, "urgent");
+  assert.equal(result.item.fields.claimedBy, "");
+  assert.equal(result.item.fields.leaseUntil, "");
+  assert.deepEqual(gh.issueEdits, [
+    { number: 1, flag: "--remove-assignee", assignee: "runner-bot" },
+    { number: 1, flag: "--add-assignee", assignee: "octocat" },
+  ]);
+});
+
+test("restores the lease and runner assignment when human assignment fails", async () => {
+  const { store } = fixture({
+    items: [
+      makeItem({
+        owner: "agent",
+        status: "in-progress",
+        priority: "low",
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+        assignees: ["runner-bot"],
+      }),
+    ],
+    failAssignee: true,
+  });
+
+  await assert.rejects(
+    store.requestHumanAttention({
+      itemId: "item-1",
+      runner: "runner-a",
+      runnerAssignee: "runner-bot",
+      humanAssignee: "octocat",
+    }),
+    /assignment failed/,
+  );
+
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.status, "in-progress");
+  assert.equal(item.fields.owner, "agent");
+  assert.equal(item.fields.priority, "low");
+  assert.equal(item.fields.claimedBy, "runner-a");
+  assert.equal(item.fields.leaseUntil, FUTURE);
+  assert.deepEqual(item.assignees, ["runner-bot"]);
+});
+
+test("resolves human attention idempotently and restores prior priority", async () => {
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        owner: "human",
+        status: "blocked",
+        priority: "urgent",
+        assignees: ["octocat"],
+      }),
+    ],
+  });
+
+  await store.resolveHumanAttention({
+    itemId: "item-1",
+    humanAssignee: "octocat",
+    priority: "low",
+    resumeAffinity: "resume:runner-a/pan-development",
+  });
+  const result = await store.resolveHumanAttention({
+    itemId: "item-1",
+    humanAssignee: "octocat",
+    priority: "low",
+    resumeAffinity: "resume:runner-a/pan-development",
+  });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.item.fields.status, "ready");
+  assert.equal(result.item.fields.owner, "agent");
+  assert.equal(result.item.fields.priority, "low");
+  assert.equal(
+    result.item.fields.claimedBy,
+    "resume:runner-a/pan-development",
+  );
+  assert.deepEqual(gh.issueEdits, [
+    { number: 1, flag: "--remove-assignee", assignee: "octocat" },
+  ]);
+});
+
 test("closes an Issue when its runner releases it as done", async () => {
   const { store, gh } = fixture({
     items: [
@@ -918,8 +1031,26 @@ class FakeGh {
         flag,
         assignee: valueAfter(args, flag),
       });
-      if (this.failAssignee && flag === "--add-assignee") {
+      if (
+        this.failAssignee &&
+        flag === "--add-assignee" &&
+        valueAfter(args, flag) === "octocat"
+      ) {
         throw new Error("assignment failed");
+      }
+      const item = this.items.find(
+        (candidate) => candidate.content?.number === Number(args[2]),
+      );
+      if (item) {
+        const assignee = valueAfter(args, flag);
+        if (flag === "--add-assignee" && !item.assignees.includes(assignee)) {
+          item.assignees.push(assignee);
+        }
+        if (flag === "--remove-assignee") {
+          item.assignees = item.assignees.filter(
+            (candidate) => candidate !== assignee,
+          );
+        }
       }
       return "";
     }

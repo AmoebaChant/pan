@@ -30,7 +30,10 @@ test("lists unresolved attention and in-review work with locators", async () => 
       }),
     },
   ]);
-  const entries = await new AttentionService({ store }).inbox();
+  const entries = await new AttentionService({
+    store,
+    humanAssignee: "octocat",
+  }).inbox();
   const blockedEntry = entries.find((entry) => entry.id === 1);
   const reviewEntry = entries.find((entry) => entry.id === 2);
 
@@ -42,8 +45,12 @@ test("lists unresolved attention and in-review work with locators", async () => 
   );
 });
 
-test("answers pending attention and returns blocked work to triage", async () => {
-  const item = makeItem({ status: "blocked" });
+test("answers pending attention and restores agent work to ready", async () => {
+  const item = makeItem({
+    status: "blocked",
+    owner: "human",
+    priority: "urgent",
+  });
   const store = new FakeStore([item]);
   store.commentMap.set(item.id, [
     {
@@ -51,22 +58,41 @@ test("answers pending attention and returns blocked work to triage", async () =>
         kind: "question",
         prompt: "Choose an option.",
         locator: { machine: "machine-a" },
+        priorState: {
+          status: "in-progress",
+          owner: "agent",
+          priority: "high",
+        },
+        resume: { affinity: "resume:machine-a/pan-development" },
       }),
     },
   ]);
 
-  await new AttentionService({ store }).answer(item.number, "Use option A.");
+  await new AttentionService({
+    store,
+    humanAssignee: "octocat",
+  }).answer(item.number, "Use option A.");
 
-  assert.equal(item.fields.status, "untriaged");
+  assert.equal(item.fields.status, "ready");
+  assert.equal(item.fields.owner, "agent");
+  assert.equal(item.fields.priority, "high");
+  assert.equal(
+    item.fields.claimedBy,
+    "resume:machine-a/pan-development",
+  );
   assert.equal(
     latestNeedsHuman(store.commentMap.get(item.id)),
     undefined,
   );
-  assert.match(store.commentMap.get(item.id).at(-1).body, /Use option A/);
+  assert.match(store.commentMap.get(item.id).at(-2).body, /Use option A/);
 });
 
-test("retries the field transition after an answer comment already landed", async () => {
-  const item = makeItem({ status: "blocked" });
+test("retries the attention resolution after an answer comment already landed", async () => {
+  const item = makeItem({
+    status: "blocked",
+    owner: "human",
+    priority: "urgent",
+  });
   const store = new FakeStore([item]);
   store.commentMap.set(item.id, [
     {
@@ -74,15 +100,59 @@ test("retries the field transition after an answer comment already landed", asyn
         kind: "question",
         prompt: "Choose an option.",
         locator: { machine: "machine-a" },
+        priorState: {
+          status: "in-progress",
+          owner: "agent",
+          priority: "normal",
+        },
       }),
     },
     { body: "<!-- pan:answer -->\n### Answer\n\nUse option A." },
   ]);
 
-  await new AttentionService({ store }).answer(item.number, "Use option A.");
+  await new AttentionService({
+    store,
+    humanAssignee: "octocat",
+  }).answer(item.number, "Use option A.");
 
-  assert.equal(item.fields.status, "untriaged");
-  assert.equal(store.commentMap.get(item.id).length, 2);
+  assert.equal(item.fields.status, "ready");
+  assert.equal(store.commentMap.get(item.id).length, 3);
+});
+
+test("requests urgent human attention once with resumable prior state", async () => {
+  const item = makeItem({
+    status: "in-progress",
+    owner: "agent",
+    priority: "low",
+  });
+  item.fields.claimedBy = "machine-a/pan-development/slot-1";
+  const store = new FakeStore([item]);
+  const service = new AttentionService({
+    store,
+    humanAssignee: "octocat",
+  });
+  const record = {
+    kind: "question",
+    prompt: "Which API should this use?",
+    locator: { machine: "machine-a" },
+  };
+
+  await service.request(item, record, {
+    runner: item.fields.claimedBy,
+    runnerAssignee: "runner-bot",
+    resumeAffinity: "resume:machine-a/pan-development",
+  });
+  await service.request(item, record, {
+    runner: item.fields.claimedBy,
+    runnerAssignee: "runner-bot",
+    resumeAffinity: "resume:machine-a/pan-development",
+  });
+
+  assert.equal(store.commentMap.get(item.id).length, 1);
+  assert.equal(item.fields.status, "blocked");
+  assert.equal(item.fields.owner, "human");
+  assert.equal(item.fields.priority, "urgent");
+  assert.equal(store.humanAssignee, "octocat");
 });
 
 test("creates an untriaged backlog item", async () => {
@@ -124,6 +194,35 @@ class FakeStore {
       this.items.find((item) => item.id === itemId).fields,
       fields,
     );
+  }
+
+  async requestHumanAttention({ itemId, humanAssignee }) {
+    const item = this.items.find((candidate) => candidate.id === itemId);
+    Object.assign(item.fields, {
+      claimedBy: "",
+      leaseUntil: "",
+      status: "blocked",
+      owner: "human",
+      priority: "urgent",
+    });
+    this.humanAssignee = humanAssignee;
+    return { requested: true, item };
+  }
+
+  async resolveHumanAttention({
+    itemId,
+    priority,
+    resumeAffinity,
+  }) {
+    const item = this.items.find((candidate) => candidate.id === itemId);
+    Object.assign(item.fields, {
+      claimedBy: resumeAffinity ?? "",
+      leaseUntil: "",
+      status: "ready",
+      owner: "agent",
+      priority,
+    });
+    return { resolved: true, item };
   }
 
   async createItem({ title, body, fields }) {
@@ -171,6 +270,8 @@ function makeItem({
       requirements: requirements.join("\n"),
       autonomy,
       workstream,
+      claimedBy: "",
+      leaseUntil: "",
     },
   };
 }

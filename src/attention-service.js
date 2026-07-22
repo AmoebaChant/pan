@@ -1,5 +1,8 @@
 import {
   formatAnswer,
+  formatNeedsHuman,
+  formatNeedsHumanResolved,
+  latestAttention,
   latestAnswer,
   latestNeedsHuman,
   pullRequestUrl,
@@ -7,11 +10,12 @@ import {
 import { compareBacklogItems } from "./triage-policy.js";
 
 export class AttentionService {
-  constructor({ store }) {
+  constructor({ store, humanAssignee }) {
     if (!store) {
       throw new TypeError("store is required");
     }
     this.store = store;
+    this.humanAssignee = humanAssignee;
   }
 
   async inbox() {
@@ -45,11 +49,58 @@ export class AttentionService {
     );
   }
 
+  async request(
+    item,
+    record,
+    { runner, runnerAssignee, resumeAffinity, marker } = {},
+  ) {
+    if (!this.humanAssignee?.trim()) {
+      throw new Error(
+        "A human assignee must be configured before requesting attention",
+      );
+    }
+    const comments = await this.store.listComments(item);
+    let attention = latestAttention(comments);
+    if (!attention || attention.resolved) {
+      const request = {
+        ...record,
+        priorState: {
+          status: item.fields.status,
+          owner: item.fields.owner,
+          priority: item.fields.priority,
+        },
+        ...(resumeAffinity
+          ? { resume: { affinity: resumeAffinity } }
+          : {}),
+      };
+      await this.store.addComment(
+        item,
+        [formatNeedsHuman(request), marker].filter(Boolean).join("\n\n"),
+      );
+      attention = { request, answer: undefined, resolved: false };
+    }
+    try {
+      const transition = await this.store.requestHumanAttention({
+        itemId: item.id,
+        runner,
+        runnerAssignee,
+        humanAssignee: this.humanAssignee,
+      });
+      if (!transition.requested) {
+        throw new Error(`Human attention transition failed: ${transition.reason}`);
+      }
+    } catch (error) {
+      error.code = "PAN_ATTENTION_TRANSITION_FAILED";
+      throw error;
+    }
+    return attention.request;
+  }
+
   async answer(identifier, text) {
     const item = await this.#findItem(identifier);
     const comments = await this.store.listComments(item);
-    const pending = latestNeedsHuman(comments);
-    if (!pending) {
+    const attention = latestAttention(comments);
+    if (!attention) {
       if (
         ["blocked", "needs-detail"].includes(item.fields.status) &&
         latestAnswer(comments)
@@ -59,9 +110,23 @@ export class AttentionService {
       }
       throw new Error(`PAN item ${identifier} has no unresolved needs-human record`);
     }
-    await this.store.addComment(item, formatAnswer(text));
-    if (["blocked", "needs-detail"].includes(item.fields.status)) {
-      await this.store.setFields(item.id, { status: "untriaged" });
+    if (!attention.answer && !attention.resolved) {
+      await this.store.addComment(item, formatAnswer(text));
+    }
+    const resolution = await this.store.resolveHumanAttention({
+      itemId: item.id,
+      humanAssignee: this.humanAssignee,
+      priority: attention.request.priorState?.priority ?? "normal",
+      resumeAffinity: attention.request.resume?.affinity,
+    });
+    if (!resolution.resolved) {
+      throw new Error(`Human attention resolution failed: ${resolution.reason}`);
+    }
+    if (!attention.resolved) {
+      await this.store.addComment(
+        item,
+        formatNeedsHumanResolved("The answer was recorded and the task is ready."),
+      );
     }
     return item;
   }

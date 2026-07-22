@@ -34,6 +34,7 @@ test("applies bounded runtime defaults without runner settings", () => {
     workstream: undefined,
     requirements: [],
   });
+  assert.deepEqual(config.attention, { assignee: undefined });
   assert.equal(config.machine, undefined);
   assert.equal(config.repositories, undefined);
 });
@@ -165,6 +166,21 @@ test("validates an opt-in self-repair target and runner requirements", () => {
   );
 });
 
+test("keeps the human attention assignee in private domain configuration", () => {
+  const config = makeConfig();
+  config.attention = { assignee: "octocat" };
+
+  assert.deepEqual(validateDomainConfig(config).attention, {
+    assignee: "octocat",
+  });
+
+  config.attention.assignee = "not a login";
+  assert.throws(
+    () => validateDomainConfig(config),
+    /attention\.assignee must be a GitHub user or organization name/,
+  );
+});
+
 test("loads valid JSON and wraps unreadable or malformed config errors", async () => {
   const directory = path.resolve(`.domain-config-test-${randomUUID()}`);
   const validPath = path.join(directory, "domain.json");
@@ -197,6 +213,7 @@ test("publishes a parseable domain configuration schema", async () => {
 
   assert.equal(schema.title, "PAN domain runtime configuration");
   assert.equal(schema.properties.selfRepair.type, "object");
+  assert.equal(schema.properties.attention.type, "object");
 });
 
 function makeConfig() {

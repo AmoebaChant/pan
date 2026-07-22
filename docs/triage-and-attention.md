@@ -93,8 +93,15 @@ pan answer https://github.com/example/data/issues/42 "Use option A."
 ```
 
 Answers are marked Issue comments. Blocked and `needs-detail` items return to
-`untriaged`, allowing PAN to apply answer directives and make the next runner
-attempt see the response.
+`ready` with `owner=agent`; PAN removes the configured human assignment,
+restores the priority captured by the request, and preserves runner resume
+affinity. Repeating the answer or either lifecycle transition is safe.
+
+Genuine worker questions are urgent attention: the structured request records
+the directly answerable prompt, locator, prior lifecycle values, and resumable
+runner affinity. Operational failures such as terminal closure, `Ctrl+C`,
+crashes, launch failures, and missing worker results are retried as agent work
+and never enter the attention inbox.
 
 ```powershell
 pan add "Implement the feature" `

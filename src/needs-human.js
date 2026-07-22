@@ -32,24 +32,41 @@ export function formatNeedsHumanResolved(reason) {
 }
 
 export function latestNeedsHuman(comments) {
-  let pending;
+  const attention = latestAttention(comments);
+  return attention && !attention.answer && !attention.resolved
+    ? attention.request
+    : undefined;
+}
+
+export function latestAttention(comments) {
+  let attention;
   for (const comment of comments) {
     const body = comment.body ?? "";
     if (body.includes(NEEDS_HUMAN_MARKER)) {
-      pending = {
-        ...parseNeedsHuman(body),
+      attention = {
+        request: {
+          ...parseNeedsHuman(body),
+          commentUrl: comment.url,
+          createdAt: comment.createdAt,
+        },
+        answer: undefined,
+        resolved: false,
+      };
+    } else if (body.includes(ANSWER_MARKER) && attention && !attention.resolved) {
+      attention.answer = {
+        text: answerTexts([comment])[0],
         commentUrl: comment.url,
         createdAt: comment.createdAt,
       };
     } else if (
-      body.includes(ANSWER_MARKER) ||
-      body.includes(RESOLVED_MARKER) ||
-      body.includes(RUNNER_RESULT_MARKER)
+      (body.includes(RESOLVED_MARKER) ||
+        body.includes(RUNNER_RESULT_MARKER)) &&
+      attention
     ) {
-      pending = undefined;
+      attention.resolved = true;
     }
   }
-  return pending;
+  return attention;
 }
 
 export function answerTexts(comments) {
@@ -133,5 +150,25 @@ function validateNeedsHuman(record) {
       Array.isArray(record.locator))
   ) {
     throw new TypeError("needs-human locator must be an object");
+  }
+  if (record.priorState !== undefined) {
+    if (
+      !record.priorState ||
+      typeof record.priorState !== "object" ||
+      Array.isArray(record.priorState) ||
+      typeof record.priorState.priority !== "string"
+    ) {
+      throw new TypeError("needs-human priorState must include priority");
+    }
+  }
+  if (
+    record.resume !== undefined &&
+    (!record.resume ||
+      typeof record.resume !== "object" ||
+      Array.isArray(record.resume) ||
+      (record.resume.affinity !== undefined &&
+        !String(record.resume.affinity).startsWith("resume:")))
+  ) {
+    throw new TypeError("needs-human resume state is invalid");
   }
 }

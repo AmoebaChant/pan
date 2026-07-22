@@ -76,6 +76,9 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
   ) {
     throw new TypeError("copilot must be an object");
   }
+  if (profile.domainConfigPath !== undefined) {
+    requireAbsolutePath(profile.domainConfigPath, "domainConfigPath");
+  }
   if (profile.copilot?.executable !== undefined) {
     requireString(profile.copilot.executable, "copilot.executable");
   }
@@ -90,6 +93,9 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
   const normalized = {
     ...profile,
     profilePath: profilePath ? path.resolve(profilePath) : undefined,
+    domainConfigPath: profile.domainConfigPath
+      ? path.resolve(profile.domainConfigPath)
+      : undefined,
     store,
     pollIntervalSeconds: positiveNumber(
       profile.pollIntervalSeconds,

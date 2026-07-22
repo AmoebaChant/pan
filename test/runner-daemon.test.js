@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RunnerDaemon } from "../src/index.js";
+import { AttentionService, RunnerDaemon } from "../src/index.js";
 
 test("claims matching work and advances a completed task to in-review", async () => {
   const item = makeItem();
@@ -66,7 +66,7 @@ test("marks direct delivery done and records its commit", async () => {
   assert.match(store.comments.at(-1), /\/commit\//);
 });
 
-test("does not mark direct delivery done until its commit is recorded", async () => {
+test("requeues direct finalization when its commit audit cannot be recorded", async () => {
   const store = new FakeStore([makeItem()], { commentFailures: 3 });
   const handle = new FakeHandle(undefined, {
     mode: "direct",
@@ -88,10 +88,10 @@ test("does not mark direct delivery done until its commit is recorded", async ()
 
   await daemon.runOnce();
 
-  assert.equal(store.releases[0].status, "blocked");
+  assert.equal(store.releases[0].status, "ready");
 });
 
-test("blocks direct work when closing its completed Issue fails", async () => {
+test("requeues direct work when closing its completed Issue fails", async () => {
   const store = new FakeStore([makeItem()], {
     releaseFailures: { done: 3 },
   });
@@ -117,7 +117,7 @@ test("blocks direct work when closing its completed Issue fails", async () => {
 
   assert.deepEqual(
     store.releases.map((release) => release.status),
-    ["done", "done", "done", "blocked"],
+    ["done", "done", "done", "ready"],
   );
   assert.match(store.comments.at(-1), /Issue closure failed/);
 });
@@ -180,19 +180,28 @@ test("records a needs-human locator and blocks an incomplete task", async () => 
   const handle = new FakeHandle({
     status: "blocked",
     summary: "A product decision is required.",
+  }, undefined, {
+    kind: "question",
+    prompt: "Should the implementation use option A or option B?",
   });
   const daemon = new RunnerDaemon({
     store,
     profile: makeProfile(),
     executor: new FakeExecutor(handle),
+    attention: new AttentionService({
+      store,
+      humanAssignee: "octocat",
+    }),
     logger: silentLogger,
   });
 
   await daemon.runOnce();
 
-  assert.match(store.comments.at(-1), /A product decision is required/);
+  assert.match(store.comments.at(-1), /option A or option B/);
   assert.match(store.comments.at(-1), /machine-a/);
   assert.equal(store.releases[0].status, "blocked");
+  assert.equal(store.releases[0].owner, "human");
+  assert.equal(store.releases[0].priority, "urgent");
 });
 
 test("does not mutate a task after losing its lease", async () => {
@@ -380,6 +389,10 @@ test("blocks budget exhaustion for approval instead of retrying indefinitely", a
     store,
     profile: makeProfile(),
     executor: new FakeExecutor(handle),
+    attention: new AttentionService({
+      store,
+      humanAssignee: "octocat",
+    }),
     logger: silentLogger,
   });
 
@@ -438,6 +451,7 @@ test("requeues failed launches even when their event comment fails", async () =>
   await daemon.runOnce();
 
   assert.equal(store.releases[0].status, "ready");
+  assert.doesNotMatch(store.comments.join("\n"), /pan:needs-human/);
 });
 
 test("surfaces claim rate limits to the polling loop", async () => {
@@ -524,6 +538,28 @@ test("releases playbook capacity after a failed launch so work can retry", async
   assert.equal(store.releases.at(-1).status, "in-review");
 });
 
+test("treats the pan-work#9 terminal shutdown false positive as operational", async () => {
+  const item = makeItem({ number: 9 });
+  const store = new FakeStore([item]);
+  const handle = new FakeHandle({
+    status: "failed",
+    summary: "Copilot exited without a task result (code 1, signal none).",
+  });
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.releases[0].status, "ready");
+  assert.equal(store.releases[0].resumeAffinity, "resume:machine-a");
+  assert.doesNotMatch(store.comments.join("\n"), /pan:needs-human/);
+  assert.match(store.comments.at(-1), /Agent stopped/i);
+});
+
 class FakeStore {
   constructor(
     items,
@@ -569,6 +605,7 @@ class FakeStore {
       throw new Error("comment failed");
     }
     this.comments.push(body);
+    this.issueComments.push({ body });
   }
 
   async listComments() {
@@ -582,6 +619,28 @@ class FakeStore {
       throw new Error("Issue closure failed");
     }
     return { released: true };
+  }
+
+  async requestHumanAttention({
+    itemId,
+    humanAssignee,
+  }) {
+    const item = this.items.find((candidate) => candidate.id === itemId);
+    Object.assign(item.fields, {
+      claimedBy: "",
+      leaseUntil: "",
+      status: "blocked",
+      owner: "human",
+      priority: "urgent",
+    });
+    this.releases.push({
+      itemId,
+      status: "blocked",
+      owner: "human",
+      priority: "urgent",
+      assignee: humanAssignee,
+    });
+    return { requested: true, item };
   }
 
   async heartbeat() {
@@ -645,13 +704,21 @@ class FakeHandle {
       mode: "pull-request",
       url: "https://github.com/example/tool/pull/42",
     },
+    needsHuman,
   ) {
     this.result = result;
     this.delivery = delivery;
     this.completed = false;
+    this.needsHuman = needsHuman;
   }
 
-  async wait() {
+  async wait({ onNeedsHuman } = {}) {
+    if (this.needsHuman) {
+      await onNeedsHuman?.({
+        ...this.needsHuman,
+        locator: this.locator(),
+      });
+    }
     return this.result;
   }
 
@@ -671,6 +738,10 @@ class FakeHandle {
   async markRequeued() {
     this.pendingRequeue = false;
     this.requeued = true;
+  }
+
+  async interrupt(summary) {
+    this.interrupted = summary;
   }
 
   locator() {
@@ -744,6 +815,10 @@ function makeItem({
       autonomy: "full-auto",
       priority: "normal",
       workstream: "example",
+      owner: "agent",
+      status: "ready",
+      claimedBy: "",
+      leaseUntil: "",
     },
   };
 }

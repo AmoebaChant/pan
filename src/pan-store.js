@@ -785,6 +785,179 @@ export class PanStore {
     }
   }
 
+  async requestHumanAttention({
+    itemId,
+    runner,
+    runnerAssignee,
+    humanAssignee,
+  }) {
+    if (!humanAssignee?.trim()) {
+      throw new TypeError("humanAssignee is required");
+    }
+    const current = await this.#requireItem(itemId);
+    const desired = {
+      claimedBy: "",
+      leaseUntil: "",
+      status: "blocked",
+      owner: "human",
+      priority: "urgent",
+    };
+    const fieldsReady = Object.entries(desired).every(
+      ([key, value]) => (current.fields[key] ?? "") === value,
+    );
+    if (fieldsReady && current.assignees.includes(humanAssignee)) {
+      return { requested: true, item: current };
+    }
+    if (!fieldsReady && runner && current.fields.claimedBy !== runner) {
+      return { requested: false, reason: "not-owner", item: current };
+    }
+
+    const previousFields = {
+      claimedBy: current.fields.claimedBy,
+      leaseUntil: current.fields.leaseUntil,
+      status: current.fields.status,
+      owner: current.fields.owner,
+      priority: current.fields.priority,
+    };
+    const removeRunner =
+      runnerAssignee &&
+      runnerAssignee !== humanAssignee &&
+      current.assignees.includes(runnerAssignee);
+    const addHuman = !current.assignees.includes(humanAssignee);
+    let runnerRemoved = false;
+    let humanAdded = false;
+    try {
+      await this.setFields(itemId, {
+        claimedBy: null,
+        leaseUntil: null,
+        status: "blocked",
+        owner: "human",
+        priority: "urgent",
+      });
+      if (removeRunner) {
+        await this.#editAssignee(current, "--remove-assignee", runnerAssignee);
+        runnerRemoved = true;
+      }
+      if (addHuman) {
+        await this.#editAssignee(current, "--add-assignee", humanAssignee);
+        humanAdded = true;
+      }
+      const confirmed = await this.#confirmFields(itemId, desired);
+      if (!confirmed) {
+        throw new Error(`Unable to confirm human attention for PAN task ${itemId}`);
+      }
+      confirmed.assignees = [
+        ...new Set([
+          ...confirmed.assignees.filter(
+            (assignee) => assignee !== runnerAssignee,
+          ),
+          humanAssignee,
+        ]),
+      ];
+      return { requested: true, item: confirmed };
+    } catch (error) {
+      try {
+        await this.#restoreAttentionTransition({
+          itemId,
+          item: current,
+          fields: previousFields,
+          runnerAssignee,
+          humanAssignee,
+          runnerRemoved,
+          humanAdded,
+        });
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `Human attention transition failed and PAN task ${itemId} could not be restored: ${error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  async resolveHumanAttention({
+    itemId,
+    humanAssignee,
+    priority,
+    resumeAffinity,
+  }) {
+    if (!humanAssignee?.trim()) {
+      throw new TypeError("humanAssignee is required");
+    }
+    if (!["urgent", "high", "normal", "low"].includes(priority)) {
+      throw new TypeError("priority must be a PAN priority");
+    }
+    if (resumeAffinity && !isResumeAffinity(resumeAffinity)) {
+      throw new TypeError("resumeAffinity must be a PAN resume affinity");
+    }
+    const current = await this.#requireItem(itemId);
+    const desired = {
+      claimedBy: resumeAffinity ?? "",
+      leaseUntil: "",
+      status: "ready",
+      owner: "agent",
+      priority,
+    };
+    if (
+      Object.entries(desired).every(
+        ([key, value]) => (current.fields[key] ?? "") === value,
+      ) &&
+      !current.assignees.includes(humanAssignee)
+    ) {
+      return { resolved: true, item: current };
+    }
+
+    const previousFields = {
+      claimedBy: current.fields.claimedBy,
+      leaseUntil: current.fields.leaseUntil,
+      status: current.fields.status,
+      owner: current.fields.owner,
+      priority: current.fields.priority,
+    };
+    const removeHuman = current.assignees.includes(humanAssignee);
+    let humanRemoved = false;
+    try {
+      await this.setFields(itemId, {
+        claimedBy: resumeAffinity ?? null,
+        leaseUntil: null,
+        status: "ready",
+        owner: "agent",
+        priority,
+      });
+      if (removeHuman) {
+        await this.#editAssignee(current, "--remove-assignee", humanAssignee);
+        humanRemoved = true;
+      }
+      const confirmed = await this.#confirmFields(itemId, desired);
+      if (!confirmed) {
+        throw new Error(
+          `Unable to confirm human attention resolution for PAN task ${itemId}`,
+        );
+      }
+      confirmed.assignees = confirmed.assignees.filter(
+        (assignee) => assignee !== humanAssignee,
+      );
+      return { resolved: true, item: confirmed };
+    } catch (error) {
+      try {
+        await this.#restoreAttentionTransition({
+          itemId,
+          item: current,
+          fields: previousFields,
+          humanAssignee,
+          humanRemoved,
+        });
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `Human attention resolution failed and PAN task ${itemId} could not be restored: ${error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
+
   async #loadSchema() {
     const manifest =
       this.manifest ??
@@ -1008,6 +1181,51 @@ export class PanStore {
     if (!restored) {
       throw new Error(
         `Unable to restore PAN task ${itemId} after merged pull request completion failed`,
+      );
+    }
+  }
+
+  async #restoreAttentionTransition({
+    itemId,
+    item,
+    fields,
+    runnerAssignee,
+    humanAssignee,
+    runnerRemoved = false,
+    humanAdded = false,
+    humanRemoved = false,
+  }) {
+    const errors = [];
+    try {
+      await this.setFields(itemId, fields);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (humanAdded) {
+      try {
+        await this.#editAssignee(item, "--remove-assignee", humanAssignee);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (runnerRemoved) {
+      try {
+        await this.#editAssignee(item, "--add-assignee", runnerAssignee);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (humanRemoved) {
+      try {
+        await this.#editAssignee(item, "--add-assignee", humanAssignee);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        `Unable to restore PAN task ${itemId} after an attention transition failed`,
       );
     }
   }

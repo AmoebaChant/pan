@@ -62,6 +62,7 @@ matching `repo:<owner/name>` capability.
   },
   "workspaceRoot": "C:\\path\\to\\pan-worktrees",
   "stateDirectory": "C:\\path\\to\\pan-state",
+  "domainConfigPath": "C:\\path\\to\\domain-config.json",
   "githubAssignee": "example",
   "terminal": {
     "type": "windows-terminal",
@@ -83,6 +84,8 @@ domain repository, never to this public package. Profiles without `playbooks`
 remain supported as one compatibility playbook using the global capacity.
 `copilot.approvalMode` defaults to `prompt`, which leaves tool approval with the
 interactive Copilot session. Set it to `allow-all` only as an explicit opt-in.
+`domainConfigPath` lets the runner read the domain's private
+`attention.assignee` when a worker asks a genuine blocking question.
 `delivery` defaults to `pull-request`. Set it to `direct` only for repositories
 where the worker is explicitly authorized to integrate and push completed work
 to the configured default branch without human review.
@@ -177,6 +180,18 @@ local state. On startup, the runner also returns legacy unclaimed `blocked`
 items to `ready` when their latest unresolved PAN request is specifically a
 `Runner failure: Runner stopped` message; those older tasks restart without
 session history because previous runner versions did not save a session ID.
+
+A worker question is accepted only when the worker writes both a structured
+needs-human record and a blocked result. PAN records the prior priority and
+resume affinity, changes the item to `blocked`, `owner=human`, and
+`priority=urgent`, releases the lease, and assigns the configured human. An
+answer removes that assignment, restores `owner=agent`, `status=ready`, and the
+prior priority, then resumes the saved worker session.
+
+Terminal closure, `Ctrl+C`, crashes, Copilot launch failures, and workers that
+exit without a result are operational failures. They never create human
+questions: PAN releases the lease and returns the task to `ready` for a
+resumable retry.
 
 When `pan answer` resolves blocked work, PAN returns the item to triage. The
 next runner attempt receives the marked answer comment in its task context.

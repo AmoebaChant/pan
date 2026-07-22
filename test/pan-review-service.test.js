@@ -198,6 +198,38 @@ test("applies an idempotent Issue comment once", async () => {
   );
 });
 
+test("routes PAN questions through the human-attention lifecycle", async () => {
+  const requests = [];
+  const fixture = reviewFixture({
+    attention: {
+      request: async (...args) => {
+        requests.push(args);
+      },
+    },
+    action: {
+      version: 1,
+      actionId: "question-1",
+      kind: "needs-human",
+      rationale: "The task has two conflicting durable requirements.",
+      confidence: 0.9,
+      evidence: [{ kind: "issue", locator: "item-a" }],
+      idempotencyKey: "question:item-a:requirements",
+      expectedState: { snapshotId: "snapshot-1" },
+      target: {
+        issueUrl: "https://github.com/example/domain/issues/1",
+        prompt: "Which requirement is authoritative?",
+        kind: "question",
+      },
+    },
+  });
+
+  await fixture.service.run({ apply: true });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][1].prompt, "Which requirement is authoritative?");
+  assert.match(requests[0][2].marker, /pan-action:/);
+});
+
 test("reuses an Issue created with the same idempotency key", async () => {
   const fixture = reviewFixture({
     action: {
@@ -391,6 +423,7 @@ test("reports a possible partial effect when leadership is lost", async () => {
 
 function reviewFixture({
   action,
+  attention,
   afterReorder,
   existingIssue,
   factCitation,
@@ -549,6 +582,7 @@ function reviewFixture({
       },
       agentClient: { review: runAgent, chat: runAgent },
       store,
+      attention,
       now: () => new Date("2026-07-20T20:00:00.000Z"),
     }),
   };
