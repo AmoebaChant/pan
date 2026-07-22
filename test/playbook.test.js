@@ -27,10 +27,11 @@ test("normalizes explicit playbooks with independent capacity", () => {
 test("supports direct delivery and rejects unknown delivery policies", () => {
   const profile = makeProfile();
   profile.playbooks[0].delivery = "direct";
+  profile.playbooks[1].delivery = "pull-request";
 
-  assert.equal(
-    validateRunnerProfile(profile).playbooks[0].delivery,
-    "direct",
+  assert.deepEqual(
+    validateRunnerProfile(profile).playbooks.map(({ delivery }) => delivery),
+    ["direct", "pull-request"],
   );
 
   profile.playbooks[0].delivery = "email";
@@ -69,17 +70,22 @@ test("matches task requirements to a playbook with free capacity", () => {
   );
 });
 
-test("uses structured delivery requirements to select compatible playbooks", () => {
+test("requires explicit playbook configuration for direct delivery", () => {
   const profile = makeProfile();
-  profile.playbooks[0].delivery = "direct";
-  const validated = validateRunnerProfile(profile);
   const item = {
-    requirements: ["repo:example/tool", "delivery:pull-request"],
+    requirements: ["repo:example/tool", "delivery:direct"],
   };
 
-  assert.equal(matchingPlaybook(item, validated).id, "documentation");
-  item.requirements = ["repo:example/tool", "delivery:direct"];
-  assert.equal(matchingPlaybook(item, validated).id, "pan-development");
+  assert.equal(
+    matchingPlaybook(item, validateRunnerProfile(profile)),
+    undefined,
+  );
+
+  profile.playbooks[0].delivery = "direct";
+  assert.equal(
+    matchingPlaybook(item, validateRunnerProfile(profile)).id,
+    "pan-development",
+  );
 });
 
 function makeProfile() {

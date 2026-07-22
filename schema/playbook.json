@@ -32,7 +32,8 @@
     },
     "delivery": {
       "enum": ["pull-request", "direct"],
-      "default": "pull-request"
+      "default": "pull-request",
+      "description": "Omit for pull-request delivery. Set direct only when this playbook is explicitly authorized to integrate and push to the configured default branch."
     }
   }
 }

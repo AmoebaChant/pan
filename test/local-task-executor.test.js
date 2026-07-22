@@ -469,6 +469,38 @@ test("validates agent-delivered commits on the default branch", async () => {
   }
 });
 
+test("does not allow an agent to select direct delivery for a defaulted playbook", async () => {
+  const fixture = await createFixture();
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "default-delivery",
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(9),
+      deadline: undefined,
+    });
+
+    await assert.rejects(
+      handle.complete({
+        status: "completed",
+        summary: "Attempted direct delivery.",
+        delivery: {
+          mode: "direct",
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+        },
+      }),
+      /task delivery mode must be pull-request/,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("rejects direct delivery that produced no task commit", async () => {
   const fixture = await createFixture();
   const commands = new NoOpDeliveryCommands();

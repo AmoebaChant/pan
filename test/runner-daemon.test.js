@@ -52,15 +52,17 @@ test("marks direct delivery done and records its commit", async () => {
   });
   profile.playbooks = [profile.playbooks[0]];
   profile.playbooks[0].delivery = "direct";
+  const executor = new FakeExecutor(handle);
   const daemon = new RunnerDaemon({
     store,
     profile,
-    executor: new FakeExecutor(handle),
+    executor,
     logger: silentLogger,
   });
 
   await daemon.runOnce();
 
+  assert.equal(executor.started.playbook.delivery, "direct");
   assert.equal(store.releases[0].status, "done");
   assert.match(store.comments.at(-1), /Commit:/);
   assert.match(store.comments.at(-1), /\/commit\//);

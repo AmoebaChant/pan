@@ -32,6 +32,7 @@
     "playbooks": {
       "type": "array",
       "minItems": 1,
+      "description": "Reusable runner policies. Each playbook defaults to pull-request delivery unless it explicitly sets delivery to direct.",
       "items": {
         "$ref": "playbook.json"
       }
