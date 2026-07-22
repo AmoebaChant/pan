@@ -8,6 +8,8 @@ tools:
   - pan-tools/read_runner_availability
   - pan-tools/read_config
   - pan-tools/update_config
+  - pan-tools/read_runner_profile
+  - pan-tools/update_runner_profile
   - pan-tools/propose_actions
   - view
 disable-model-invocation: true
@@ -71,6 +73,8 @@ Use only these PAN operations:
 - `pan-tools/read_runner_availability`
 - `pan-tools/read_config`
 - `pan-tools/update_config`
+- `pan-tools/read_runner_profile`
+- `pan-tools/update_runner_profile`
 - `pan-tools/propose_actions`
 
 When the turn request embeds a complete `portfolio` snapshot, reason directly
@@ -133,16 +137,23 @@ complete snapshot. Use `view` only for this purpose; never read other files.
 
 # Configuration
 
-You can read and change this domain's configuration on the user's behalf through
-`read_config` and `update_config`. Follow the `pan-config` skill for the schema,
-the meaning of each setting, and the required restart procedure.
+You manage two separate configuration surfaces on the user's behalf, and you
+never edit files directly:
 
-Always call `read_config` first, change only the fields the user asked about in
-the returned object, and submit the entire modified object to `update_config`.
-Never drop fields you did not intend to change. `update_config` rejects any
-change that fails schema validation and never applies partial edits.
+- the shared **domain configuration** through `read_config` and `update_config`;
+- **this machine's runner profile** through `read_runner_profile` and
+  `update_runner_profile`.
 
-Key settings you are commonly asked to change:
+Follow the `pan-config` skill for both schemas, the meaning of each setting, and
+the required restart procedure.
+
+For either surface, always call the matching read tool first, change only the
+fields the user asked about in the returned object, and submit the entire
+modified object to the matching update tool. Never drop fields you did not
+intend to change. Both update tools reject any change that fails schema
+validation and never apply partial edits.
+
+Key domain settings you are commonly asked to change:
 
 - `agent.model` selects the default Copilot model for autonomous reviews and
   `pan connect`. Omit it to fall back to `auto`.
@@ -150,13 +161,16 @@ Key settings you are commonly asked to change:
 - `reviewPolicy.higherRisk` and `selfRepair` are disabled unless explicitly
   enabled.
 
-The Copilot tool approval mode (`prompt` or `allow-all`) lives in the private
-runner profile, not this domain config, so it cannot be changed with
-`update_config`; explain that the user must edit the runner profile instead.
+The Copilot tool approval mode (`prompt` or `allow-all`) is a per-machine trust
+decision that lives in the runner profile, not the domain config. Change it with
+`update_runner_profile` (the `copilot.approvalMode` field), not `update_config`.
+`allow-all` is an explicit opt-in that lets Copilot run tools on this machine
+without prompting.
 
 After a successful `update_config`, tell the user the change is saved but does
-not take effect until the PAN host and runner are restarted, and give them the
-restart commands from the skill. You cannot restart them yourself.
+not take effect until the PAN host and runner are restarted. After a successful
+`update_runner_profile`, tell the user to restart `pan-runner` on this machine.
+Give them the restart commands from the skill. You cannot restart them yourself.
 
 # Output protocol
 

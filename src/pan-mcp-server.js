@@ -42,6 +42,19 @@ export const PAN_INTERACTIVE_TOOLS = Object.freeze([
     ["config"],
   ),
   tool(
+    "read_runner_profile",
+    "Read this machine's PAN runner profile, including the Copilot tool approval mode (`prompt` or `allow-all`), capabilities, and repositories. Read this before proposing a runner profile change.",
+    {},
+  ),
+  tool(
+    "update_runner_profile",
+    "Replace this machine's PAN runner profile with a validated, complete profile object. Call read_runner_profile first, modify the returned profile, then submit the whole object. The change is rejected if it fails schema validation and requires restarting the runner on this machine to take effect.",
+    {
+      profile: { type: "object" },
+    },
+    ["profile"],
+  ),
+  tool(
     "propose_actions",
     "Submit PAN protocol v1 actions for deterministic validation and application. Every mutation, including issue-create, must set expectedState.snapshotId to the exact snapshotReference.value from the latest read_portfolio result.",
     {

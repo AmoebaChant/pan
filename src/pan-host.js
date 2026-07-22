@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { validateDomainConfig } from "./domain-config.js";
+import { validateRunnerProfile } from "./runner-profile.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -20,6 +21,7 @@ export class PanHost {
     taskStore,
     model,
     configPath,
+    runnerProfilePath,
     logger = console,
     host = "127.0.0.1",
     port = 0,
@@ -56,6 +58,7 @@ export class PanHost {
     this.taskStore = taskStore;
     this.model = model;
     this.configPath = configPath;
+    this.runnerProfilePath = runnerProfilePath;
     this.logger = logger;
     this.host = host;
     this.port = port;
@@ -232,6 +235,12 @@ export class PanHost {
     if (operation === "update_config") {
       return this.#updateConfig(args);
     }
+    if (operation === "read_runner_profile") {
+      return this.#readRunnerProfile();
+    }
+    if (operation === "update_runner_profile") {
+      return this.#updateRunnerProfile(args);
+    }
     const proposal = await this.toolRegistry.dispatch(operation, args);
     if (operation === "read_portfolio") {
       this.#rememberSnapshot(proposal.data);
@@ -339,7 +348,7 @@ export class PanHost {
       );
     }
     validateDomainConfig(args.config, { configPath });
-    await writeConfig(configPath, args.config);
+    await writeJsonFile(configPath, args.config);
     this.logger.info?.(`Domain configuration updated at ${configPath}.`);
     return {
       operation: "update_config",
@@ -354,6 +363,49 @@ export class PanHost {
     };
   }
 
+  async #readRunnerProfile() {
+    const profilePath = this.#requireRunnerProfilePath();
+    const profile = JSON.parse(await readFile(profilePath, "utf8"));
+    validateRunnerProfile(profile, { profilePath });
+    return {
+      operation: "read_runner_profile",
+      status: "confirmed",
+      data: {
+        profilePath,
+        profile,
+        schemaReference: "schema/runner-profile.json",
+      },
+    };
+  }
+
+  async #updateRunnerProfile(args) {
+    const profilePath = this.#requireRunnerProfilePath();
+    if (
+      !args ||
+      typeof args.profile !== "object" ||
+      args.profile === null ||
+      Array.isArray(args.profile)
+    ) {
+      throw new Error(
+        "update_runner_profile requires a complete runner profile object in arguments.profile; call read_runner_profile, modify the returned profile, then submit the whole object",
+      );
+    }
+    validateRunnerProfile(args.profile, { profilePath });
+    await writeJsonFile(profilePath, args.profile);
+    this.logger.info?.(`Runner profile updated at ${profilePath}.`);
+    return {
+      operation: "update_runner_profile",
+      status: "confirmed",
+      data: {
+        profilePath,
+        profile: args.profile,
+        restartRequired: true,
+        restart:
+          "Restart `pan-runner` on this machine so the new runner profile takes effect.",
+      },
+    };
+  }
+
   #requireConfigPath() {
     if (!this.configPath) {
       throw new Error(
@@ -361,6 +413,15 @@ export class PanHost {
       );
     }
     return this.configPath;
+  }
+
+  #requireRunnerProfilePath() {
+    if (!this.runnerProfilePath) {
+      throw new Error(
+        "No runner profile for this machine was found next to the domain config; runner profile tools are unavailable",
+      );
+    }
+    return this.runnerProfilePath;
   }
 }
 
@@ -487,7 +548,7 @@ async function writeState(filePath, value) {
   await rename(temporary, filePath);
 }
 
-async function writeConfig(filePath, value) {
+async function writeJsonFile(filePath, value) {
   const temporary = `${filePath}.${process.pid}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await rename(temporary, filePath);

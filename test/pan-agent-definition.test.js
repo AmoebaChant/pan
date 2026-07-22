@@ -16,6 +16,8 @@ const ALLOWED_TOOLS = [
   "pan-tools/read_runner_availability",
   "pan-tools/read_config",
   "pan-tools/update_config",
+  "pan-tools/read_runner_profile",
+  "pan-tools/update_runner_profile",
   "pan-tools/propose_actions",
   "view",
 ];

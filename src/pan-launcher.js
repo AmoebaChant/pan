@@ -21,6 +21,8 @@ const TOOL_NAMES = [
   "read_runner_availability",
   "read_config",
   "update_config",
+  "read_runner_profile",
+  "update_runner_profile",
   "propose_actions",
 ];
 

@@ -39,7 +39,10 @@ through its constrained `read_config` and `update_config` tools, following the
 and runner restart.
 
 The Copilot tool approval mode lives in the private runner profile rather than
-this domain config, so it must be changed there.
+this domain config, because it is a per-machine trust decision. PAN can still
+manage it in an interactive `pan connect` session through its `read_runner_profile`
+and `update_runner_profile` tools, which edit this machine's
+`runners/<machine>.json` profile.
 
 ## Example
 

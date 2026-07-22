@@ -466,6 +466,114 @@ test("reads and updates the domain config while holding leadership", async () =>
   await running;
 });
 
+test("reads and updates this machine's runner profile while holding leadership", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pan-host-"));
+  const stateFile = path.join(directory, "host.json");
+  const profilePath = path.join(directory, "runner.json");
+  const profile = {
+    version: 1,
+    id: "runner-a",
+    machine: "machine-a",
+    online: true,
+    maxConcurrentDaemons: 1,
+    capabilities: ["env:local", "repo:example/tool"],
+    store: {
+      repository: "example/data",
+      projectOwner: "example",
+      projectNumber: 1,
+      path: path.join(directory, "data"),
+    },
+    repositories: {
+      "example/tool": {
+        path: path.join(directory, "tool"),
+        defaultBranch: "main",
+      },
+    },
+    workspaceRoot: path.join(directory, "worktrees"),
+    stateDirectory: path.join(directory, "state"),
+    terminal: { type: "windows-terminal" },
+    copilot: { approvalMode: "prompt" },
+  };
+  await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, "utf8");
+
+  const host = new PanHost({
+    stateFile,
+    token: "secret",
+    pollIntervalSeconds: 60,
+    heartbeatSeconds: 60,
+    runnerProfilePath: profilePath,
+    reviewService: {
+      run: async () => assert.fail("scheduled review should not run"),
+      applyActions: async () => assert.fail("not called"),
+    },
+    toolRegistry: { dispatch: async () => assert.fail("not called") },
+    leaderLease: {
+      acquire: async () => ({ acquired: true }),
+      heartbeat: async () => ({ renewed: true }),
+      release: async () => ({ released: true }),
+    },
+    logger: { info() {}, error() {} },
+  });
+
+  const running = host.run();
+  const state = await waitForState(stateFile);
+
+  const readResponse = await fetch(`${state.endpoint}/tools/call`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer secret",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ name: "read_runner_profile", arguments: {} }),
+  });
+  assert.equal(readResponse.status, 200);
+  const read = await readResponse.json();
+  assert.equal(read.data.profile.copilot.approvalMode, "prompt");
+  assert.equal(read.data.schemaReference, "schema/runner-profile.json");
+
+  const updated = {
+    ...profile,
+    copilot: { ...profile.copilot, approvalMode: "allow-all" },
+  };
+  const updateResponse = await fetch(`${state.endpoint}/tools/call`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer secret",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "update_runner_profile",
+      arguments: { profile: updated },
+    }),
+  });
+  assert.equal(updateResponse.status, 200);
+  const update = await updateResponse.json();
+  assert.equal(update.data.restartRequired, true);
+  const persisted = JSON.parse(await readFile(profilePath, "utf8"));
+  assert.equal(persisted.copilot.approvalMode, "allow-all");
+
+  const invalidResponse = await fetch(`${state.endpoint}/tools/call`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer secret",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "update_runner_profile",
+      arguments: { profile: { version: 1 } },
+    }),
+  });
+  assert.equal(invalidResponse.status, 500);
+  const unchanged = JSON.parse(await readFile(profilePath, "utf8"));
+  assert.equal(unchanged.copilot.approvalMode, "allow-all");
+
+  await fetch(`${state.endpoint}/shutdown`, {
+    method: "POST",
+    headers: { authorization: "Bearer secret" },
+  });
+  await running;
+});
+
 async function waitForState(stateFile) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {

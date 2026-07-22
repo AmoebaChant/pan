@@ -1,13 +1,19 @@
 ---
 name: pan-config
-description: Read and change this PAN domain's configuration (default agent model, cadences, review policy, self-repair) through the read_config and update_config tools, and restart the host and runner so changes take effect. Use when the user asks to view or change PAN configuration, the default model, timeouts, credit caps, review policy, self-repair, or the tool approval mode.
+description: Read and change this PAN domain's configuration (default agent model, cadences, review policy, self-repair) and this machine's runner profile (Copilot tool approval mode) through the read_config/update_config and read_runner_profile/update_runner_profile tools, and restart the host and runner so changes take effect. Use when the user asks to view or change PAN configuration, the default model, timeouts, credit caps, review policy, self-repair, or the tool approval mode.
 ---
 
 # PAN configuration
 
 Use this skill whenever the user wants to inspect or change how this PAN domain
-is configured. You act only through the `read_config` and `update_config` tools;
-you never edit files directly.
+or this machine's runner is configured. There are two surfaces, each with its
+own read/update tool pair; you never edit files directly:
+
+- **Domain config** (`pan.json`) — shared across every machine running the
+  domain. Use `read_config` and `update_config`.
+- **Runner profile** (`runners/<machine>.json`) — private to this machine. Use
+  `read_runner_profile` and `update_runner_profile`. This is where the Copilot
+  tool approval mode lives.
 
 ## Procedure
 
@@ -56,13 +62,28 @@ Project. It contains no credentials. The full contract lives in
 - `selfRepair` — disabled unless `enabled: true` with a repository, workstream,
   and requirements.
 
-## Tool approval mode is not in this config
+## Tool approval mode lives in the runner profile
 
-The Copilot tool approval mode (`prompt` or `allow-all`) lives in the **private
-runner profile** (`runners/<machine>.json`), not the domain config, so
-`update_config` cannot change it. If the user asks to change it, explain that
-they must edit the runner profile's approval field (or re-run `pan setup` for a
-new domain) and restart the runner. `allow-all` is an explicit opt-in.
+The Copilot tool approval mode (`prompt` or `allow-all`) is a per-machine trust
+decision, so it lives in this machine's **runner profile**
+(`runners/<machine>.json`) at `copilot.approvalMode`, not in the domain config.
+Manage it with the runner profile tools, not `update_config`:
+
+1. Call `read_runner_profile`. It returns this machine's complete profile
+   object, its file path, and a `schemaReference` pointing at
+   `schema/runner-profile.json`.
+2. Copy the returned `profile` object, set `copilot.approvalMode` to `prompt`
+   or `allow-all` (create the `copilot` object if it is absent), and keep every
+   other field exactly as it was.
+3. Call `update_runner_profile` with the complete modified object in `profile`.
+   It validates against the schema and rejects any invalid change without
+   applying a partial edit.
+4. Report what changed, then tell the user to restart `pan-runner` on this
+   machine (see below).
+
+`allow-all` is an explicit opt-in that lets Copilot run tools on this machine
+without prompting. Confirm the user intends that before enabling it. Never
+submit a partial profile; dropping a required field will be rejected.
 
 ## Restart after a change
 

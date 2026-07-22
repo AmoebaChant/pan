@@ -171,6 +171,11 @@ export async function runPanCli(
       `Starting in the foreground with model ${configuration.agent?.model ?? "auto"}; press Ctrl+C to stop.`,
     );
     logger.info(`Activity log: ${paths.logFile}`);
+    const machineProfile = await resolveMachineRunnerProfile({
+      directory: configuration.runtime.runnerProfileDirectory,
+      machine: hostname,
+      runnerProfileSourceFactory,
+    });
     try {
       return await hostFactory({
         reviewService: services.reviewService,
@@ -189,6 +194,7 @@ export async function runPanCli(
         taskStore: store,
         model: configuration.agent?.model,
         configPath: parsed.config,
+        runnerProfilePath: machineProfile?.profilePath,
         logger,
       }).run({ signal: controller.signal });
     } finally {
@@ -307,7 +313,7 @@ export async function runPanCli(
   throw new Error(`Unknown PAN command: ${parsed.command}`);
 }
 
-async function resolveTerminalProfile({
+async function resolveMachineRunnerProfile({
   directory,
   machine,
   runnerProfileSourceFactory,
@@ -321,7 +327,20 @@ async function resolveTerminalProfile({
       `Multiple runner profiles match this machine (${machine}); keep exactly one profile per machine`,
     );
   }
-  return matches[0]?.terminal.profile;
+  return matches[0];
+}
+
+async function resolveTerminalProfile({
+  directory,
+  machine,
+  runnerProfileSourceFactory,
+}) {
+  const profile = await resolveMachineRunnerProfile({
+    directory,
+    machine,
+    runnerProfileSourceFactory,
+  });
+  return profile?.terminal.profile;
 }
 
 export function parseArgs(args, env = process.env) {
