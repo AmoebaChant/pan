@@ -2,7 +2,7 @@
 
 ## Goal
 
-Create a versioned, data-neutral bundle of the hostless PAN custom agent, reusable instructions, and skills for Copilot user-scope discovery.
+Create a versioned, data-neutral bundle of the hostless Pan custom agent, reusable instructions, and skills for Copilot user-scope discovery.
 
 ## Requirements addressed
 
@@ -16,7 +16,7 @@ Tasks 1–3 define every deterministic helper contract the agent will invoke.
 
 ## Files to modify/create
 
-- `assets/copilot/agents/pan.agent.md` — hostless generic PAN identity.
+- `assets/copilot/agents/pan.agent.md` — hostless generic Pan identity.
 - `assets/copilot/instructions/pan.instructions.md` — shared domain, authority, evidence, and scheduling instructions.
 - `assets/copilot/skills/pan-portfolio/SKILL.md` — review/reconciliation workflow.
 - `assets/copilot/skills/pan-workstream/SKILL.md` — direct workstream prepare/edit/publish workflow.

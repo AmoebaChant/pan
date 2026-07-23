@@ -14,9 +14,9 @@ Task 1.1 proved how the installed Copilot CLI selects a repository custom agent.
 
 ## Files to modify/create
 
-- `.github/agents/pan.agent.md` — the generic PAN custom-agent definition using the exact discovery/metadata format proven in Task 1.1.
+- `.github/agents/pan.agent.md` — the generic Pan custom-agent definition using the exact discovery/metadata format proven in Task 1.1.
 - `test/pan-agent-definition.test.js` — structural checks for required sections, genericity, and allowed tool names.
-- `README.md` — identify the shipped PAN agent and its relationship to the runtime.
+- `README.md` — identify the shipped Pan agent and its relationship to the runtime.
 
 ## Implementation details
 

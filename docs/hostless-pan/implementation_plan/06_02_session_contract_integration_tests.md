@@ -21,13 +21,13 @@ Tasks 4.1–4.5 implement the user-scoped PAN assets and `pan session` superviso
 
 ## Implementation details
 
-1. Launch a fake Copilot child and assert `cwd=domain.path`, explicit PAN agent selection, model/defaults, inherited IO, bounded environment, and no MCP arguments.
+1. Launch a fake Copilot child and assert `cwd=domain.path`, explicit Pan agent selection, model/defaults, inherited IO, bounded environment, and no MCP arguments.
 2. Verify current user-scoped assets are discovered and stale/conflicting assets block writing startup with repair guidance.
 3. Run two concurrent sessions against one leader state: exactly one writer receives mutation generation and scheduling instructions; the other starts read-only.
 4. Simulate heartbeats, child exit, Ctrl+C, termination, launcher failure, and leadership replacement. Verify release/expiry behavior and precise exit propagation.
 5. Verify writing startup applies the configured native scheduling instructions once, read-only startup creates none, long cadence uses due checking, and session exit leaves no detached scheduler.
 6. Verify leadership loss terminates the writing child and no later scheduled mutation process begins.
-7. Keep an opt-in authenticated probe for a disposable private domain to select the installed PAN agent, invoke a helper through shell, run one native scheduled review, and confirm activity stops on exit.
+7. Keep an opt-in authenticated probe for a disposable private domain to select the installed Pan agent, invoke a helper through shell, run one native scheduled review, and confirm activity stops on exit.
 
 ## Testing suggestions
 

@@ -47,7 +47,7 @@
 ## Planned module boundaries
 
 - `src/domain-config.js` + `schema/domain-config.json`: one-domain runtime configuration, independent of runner settings.
-- `.github/agents/pan.agent.md`: generic PAN identity, standards, authority framing, and constrained tool names with no private values.
+- `.github/agents/pan.agent.md`: generic Pan identity, standards, authority framing, and constrained tool names with no private values.
 - `src/pan-agent-client.js`: Copilot CLI invocation selected by the first spike, supporting autonomous and interactive turns through one protocol.
 - `src/pan-protocol.js` + schemas: versioned turn request, tool request/result, proposed action, and final response records.
 - `src/workstream-store.js`: confined workstream enumeration/read/search plus relevant git history.

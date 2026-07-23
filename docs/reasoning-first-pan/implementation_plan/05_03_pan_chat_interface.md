@@ -1,8 +1,8 @@
-# Task 5.3: PAN Chat Interface
+# Task 5.3: Pan Chat Interface
 
 ## Goal
 
-Add `pan chat` as an interactive interface to the same PAN custom agent, current domain snapshot, canonical queue, and constrained tools used by autonomous reviews.
+Add `pan chat` as an interactive interface to the same Pan custom agent, current domain snapshot, canonical queue, and constrained tools used by autonomous reviews.
 
 ## Requirements addressed
 
@@ -43,7 +43,7 @@ Task 1.5 supports interactive PAN turns using the invocation mechanism chosen by
 
 ## Verification checklist
 
-- [ ] Chat and autonomous review use the same PAN identity/protocol.
+- [ ] Chat and autonomous review use the same Pan identity/protocol.
 - [ ] Current GitHub-backed state wins over transcript memory.
 - [ ] Default transcript retention writes nothing durable.
 - [ ] Targeted tests and `npm test` pass.

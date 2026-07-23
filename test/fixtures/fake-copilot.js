@@ -5,7 +5,7 @@ if (process.cwd() !== process.env.FAKE_COPILOT_EXPECTED_CWD) {
   failures.push("Copilot did not start in the configured domain root");
 }
 if (!args.includes("--agent") || !args.includes(process.env.FAKE_COPILOT_EXPECTED_AGENT)) {
-  failures.push("Copilot did not select the configured PAN agent");
+  failures.push("Copilot did not select the configured Pan agent");
 }
 if (!args.includes("--no-auto-update")) {
   failures.push("Copilot did not receive ordinary session defaults");

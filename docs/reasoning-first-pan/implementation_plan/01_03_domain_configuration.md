@@ -22,7 +22,7 @@ The current `loadRunnerProfile()` in `src/runner-profile.js` combines store iden
 
 ## Implementation details
 
-1. Define required domain repository, Project owner/number, absolute local clone path, state branch/path, and PAN agent name.
+1. Define required domain repository, Project owner/number, absolute local clone path, state branch/path, and Pan agent name.
 2. Add bounded defaults for active poll, idle poll, full review, leader lease/heartbeat, notification, retry, and transcript retention. Preserve the current 30-second active, five-minute idle, and fifteen-minute rate-limit defaults where applicable.
 3. Validate owner/name repository format, positive cadence relationships, absolute domain path, and state file paths that cannot escape the configured repository/state namespace.
 4. Represent optional higher-risk review policy without enabling it by default.

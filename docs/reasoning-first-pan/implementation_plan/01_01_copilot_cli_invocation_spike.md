@@ -22,7 +22,7 @@ PAN will use one logical custom agent for scheduled and interactive turns. The e
 ## Implementation details
 
 1. Inspect the installed `copilot` version and help for prompt/autopilot, interactive input, custom-agent selection, MCP/custom tools, JSON/event output, non-interactive behavior, and permission flags.
-2. Run isolated fixture probes for: one autonomous prompt; one interactive follow-up preserving PAN identity; explicit selection of the fixture `pan` agent; one read-only structured tool request/result; malformed tool output; process cancellation.
+2. Run isolated fixture probes for: one autonomous prompt; one interactive follow-up preserving Pan identity; explicit selection of the fixture `pan` agent; one read-only structured tool request/result; malformed tool output; process cancellation.
 3. Prefer a native structured tool/event channel if it can restrict PAN to named operations. Otherwise choose newline-delimited JSON over stdio between Node and a local tool adapter. Do not choose result files as the primary conversational channel.
 4. Record exact executable arguments, stdin/stdout framing, exit semantics, custom-agent lookup rules, and whether autonomous and interactive modes require separate processes.
 5. Define a stable local contract that production code can test without invoking Copilot. Keep live probes opt-in through an environment variable.

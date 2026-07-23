@@ -2,11 +2,11 @@
 
 ## Summary
 
-Evolve the current rule-based walking skeleton into a generic PAN agent and runtime that reasons over one complete GitHub-backed portfolio, safely updates the canonical Project order, creates sourced inferred work, and supports conversation. Preserve the existing store, attention, lease, and isolated runner behavior while incrementally migrating runner profiles to playbooks, local settings, sanitized advertisements, parallel execution, and versioned reporting.
+Evolve the current rule-based walking skeleton into a generic Pan agent and runtime that reasons over one complete GitHub-backed portfolio, safely updates the canonical Project order, creates sourced inferred work, and supports conversation. Preserve the existing store, attention, lease, and isolated runner behavior while incrementally migrating runner profiles to playbooks, local settings, sanitized advertisements, parallel execution, and versioned reporting.
 
 ## Phases
 
-- **Phase 1: Copilot invocation and bounded configuration** — resolve the Copilot CLI integration first, define the generic PAN identity/protocol, and separate one-domain runtime configuration from machine runner configuration.
+- **Phase 1: Copilot invocation and bounded configuration** — resolve the Copilot CLI integration first, define the generic Pan identity/protocol, and separate one-domain runtime configuration from machine runner configuration.
 - **Phase 2: Complete evidence and constrained tools** — extend the store and domain readers so every reasoning turn receives a fail-closed complete portfolio snapshot through an explicit operation registry.
 - **Phase 3: Reasoning and canonical ordering** — add dry-run reasoning, durable rationale, concurrency-safe Project ordering, manual relative-precedence preservation, and live validated application.
 - **Phase 4: Inferred commitments** — identify sourced commitments, prevent duplicates and recreation, and recover safely from partial Issue/Project creation.
@@ -25,8 +25,8 @@ The Copilot CLI spike is first because autonomous turns, interactive turns, cust
 | `01_01_copilot_cli_invocation_spike.md` | Spike autonomous, interactive, custom-agent, and tool-channel invocation | 1 | REQ-ADV-1, REQ-CONV-1, REQ-ACT-1, REQ-REL-5 |
 | `01_02_pan_turn_protocol.md` | Define versioned PAN turn and action protocol | 1 | REQ-ADV-3, REQ-REA-9, REQ-ACT-1–3, REQ-REL-1, REQ-REL-4 |
 | `01_03_domain_configuration.md` | Add independent one-domain runtime configuration | 1 | REQ-DOM-1–7, REQ-SEC-2–3, REQ-REL-5 |
-| `01_04_generic_pan_agent.md` | Add the reusable PAN custom-agent definition | 1 | REQ-DOM-2–3, REQ-ADV-1–7, REQ-SEC-1 |
-| `01_05_pan_agent_client.md` | Implement the Copilot CLI PAN agent process client | 1 | REQ-ADV-1, REQ-RUN-11, REQ-ACT-1, REQ-REL-4–5 |
+| `01_04_generic_pan_agent.md` | Add the reusable Pan custom-agent definition | 1 | REQ-DOM-2–3, REQ-ADV-1–7, REQ-SEC-1 |
+| `01_05_pan_agent_client.md` | Implement the Copilot CLI Pan agent process client | 1 | REQ-ADV-1, REQ-RUN-11, REQ-ACT-1, REQ-REL-4–5 |
 | `01_06_cli_configuration_split.md` | Compose PAN commands from domain config without runner config | 1 | REQ-DOM-4–6, REQ-CONV-5–11, REQ-REL-6 |
 | `02_01_complete_project_read_model.md` | Extend Project reads with complete ordered evidence | 2 | REQ-DATA-2–4, REQ-DATA-11, REQ-REA-1–3, REQ-STORE-9 |
 | `02_02_confined_workstream_store.md` | Add confined workstream hierarchy and git-history reads | 2 | REQ-DOM-7, REQ-DATA-5, REQ-REA-3–4, REQ-SEC-6 |
@@ -44,7 +44,7 @@ The Copilot CLI spike is first because autonomous turns, interactive turns, cust
 | `04_03_inferred_issue_creation.md` | Create and recover sourced inferred Project work | 4 | REQ-DATA-1–2, REQ-DATA-12, REQ-INF-3–9, REQ-REL-4 |
 | `05_01_runtime_event_scheduling.md` | Detect/coalesce domain changes and time boundaries | 5 | REQ-RUN-1–3, REQ-RUN-7–9 |
 | `05_02_pan_runtime_leadership.md` | Run scheduled reasoning safely under leadership | 5 | REQ-RUN-3–6, REQ-RUN-9–11, REQ-REL-4–6 |
-| `05_03_pan_chat_interface.md` | Add interactive chat through the same PAN agent | 5 | REQ-ADV-1, REQ-CONV-1–4, REQ-CONV-12 |
+| `05_03_pan_chat_interface.md` | Add interactive chat through the same Pan agent | 5 | REQ-ADV-1, REQ-CONV-1–4, REQ-CONV-12 |
 | `05_04_conversation_actions_and_attention.md` | Validate durable chat changes and preserve attention | 5 | REQ-ACT-9–10, REQ-CONV-2–13, REQ-REL-6 |
 | `06_01_shared_playbook_schema.md` | Define and load shared domain playbooks | 6 | REQ-PLAY-1–3, REQ-SEC-1–2 |
 | `06_02_local_runner_settings.md` | Add private local settings and legacy profile adapter | 6 | REQ-PLAY-4, REQ-PLAY-10, REQ-EXEC-4, REQ-SEC-5 |

@@ -4,12 +4,12 @@
     {
       "source": "agents/pan.agent.md",
       "destination": "agents/pan.agent.md",
-      "sha256": "0f376870050ce79407295f864d53a59af9d20f081e8f5dff4afcc5f53b7e7d20"
+      "sha256": "dfefd7e32fd28c9fd6a5e184a32272df44d809377c8fd90f801e6cbd9ddd147f"
     },
     {
       "source": "agents/pan-setup.agent.md",
       "destination": "agents/pan-setup.agent.md",
-      "sha256": "359bf19422731e71cca89f9170382814982f0bde588ca4b281b974122890d740"
+      "sha256": "9fddab40cc5511934d92064e6cfdc50e7af7320d45b7ace9b72226619c45efee"
     },
     {
       "source": "instructions/pan.instructions.md",

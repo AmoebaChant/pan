@@ -2,7 +2,7 @@
 
 ## Goal
 
-Implement a dependency-free process client that invokes the generic PAN custom agent for one autonomous or interactive turn using the transport selected by the invocation spike.
+Implement a dependency-free process client that invokes the generic Pan custom agent for one autonomous or interactive turn using the transport selected by the invocation spike.
 
 ## Requirements addressed
 

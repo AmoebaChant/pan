@@ -27,7 +27,33 @@ test("verifies assets, domain identity, Copilot, and runner agreement", async ()
 
   assert.equal(result.status, "ready");
   assert.equal(result.runnerOnline, false);
-  assert.deepEqual(commands, [{ executable: "copilot", args: ["--help"] }]);
+  assert.match(result.launchCommands.chat, /pan\.js' 'session' '--config'/);
+  assert.match(result.launchCommands.runner, /pan-runner\.js' '--profile'/);
+  assert.deepEqual(commands, [
+    { executable: "copilot", args: ["--help"] },
+    {
+      executable: process.execPath,
+      args: [
+        path.resolve("bin", "pan.js"),
+        "config",
+        "validate",
+        "--schema-version",
+        "1",
+        "--config",
+        path.resolve("C:\\domains\\example\\pan.json"),
+        "--json",
+      ],
+    },
+    {
+      executable: process.execPath,
+      args: [
+        path.resolve("bin", "pan-runner.js"),
+        "--profile",
+        path.resolve("C:\\domains\\example\\runners\\machine.json"),
+        "--validate-profile",
+      ],
+    },
+  ]);
 });
 
 test("rejects a runner aimed at another domain", () => {

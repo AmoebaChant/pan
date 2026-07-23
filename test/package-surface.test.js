@@ -23,7 +23,8 @@ test("ships only hostless runtime assets and public schemas", async () => {
   });
   assert.deepEqual(packageMetadata.files, ["assets", "bin", "src", "schema"]);
   assert.match(packageMetadata.description, /hostless/i);
-  assert.match(readme, /npx @amoebachant\/pan onboard/);
+  assert.match(readme, /npx --yes --package \. pan onboard/);
+  assert.doesNotMatch(readme, /npx @amoebachant\/pan/);
   assert.ok(readme.split(/\r?\n/).length < 30, "README should remain approachable");
   assert.equal(packageMetadata.files.includes("docs"), false);
   assert.equal(packageMetadata.files.includes(".github/agents"), false);

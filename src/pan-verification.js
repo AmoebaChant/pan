@@ -5,6 +5,10 @@ import { DomainIdentity } from "./domain-identity.js";
 import { PanAssetService, isCurrentPanAssets } from "./pan-assets.js";
 import { ProcessClient } from "./process-client.js";
 import { loadRunnerProfile } from "./runner-profile.js";
+import {
+  buildPanLaunchers,
+  validatePanLaunchers,
+} from "./pan-shortcuts.js";
 
 /** Verifies that the installed assets, domain, session, and runner agree. */
 export async function verifyPanSetup({
@@ -39,6 +43,16 @@ export async function verifyPanSetup({
     requireScheduling: Boolean(config.scheduling?.enabled),
     scheduling: config.scheduling,
   });
+  const launchers = buildPanLaunchers({
+    configPath: path.resolve(configPath),
+    runnerProfilePath: path.resolve(runnerProfilePath),
+  });
+  await validatePanLaunchers({
+    ...launchers,
+    selection: "both",
+    env,
+    commands,
+  });
   return {
     status: "ready",
     repository: config.domain.repository,
@@ -48,6 +62,7 @@ export async function verifyPanSetup({
     domainPath: identity.domain.path,
     assets: assets.status,
     runnerOnline: profile.online,
+    launchCommands: launchers.launchCommands,
   };
 }
 

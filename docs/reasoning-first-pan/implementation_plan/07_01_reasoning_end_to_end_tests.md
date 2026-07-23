@@ -14,7 +14,7 @@ Phases 1–5 introduced domain config, fake-agent transport, complete snapshots,
 
 ## Files to modify/create
 
-- `test/reasoning-e2e.test.js` — system scenarios using a stateful fake GitHub adapter and fake PAN agent process.
+- `test/reasoning-e2e.test.js` — system scenarios using a stateful fake GitHub adapter and fake Pan agent process.
 - `test/fixtures/reasoning-domain/` — generic domain workstreams/config fixtures with no private content.
 - `test/helpers/fake-github-domain.js` — Project/Issue/comment/state-branch behavior shared only by system tests.
 

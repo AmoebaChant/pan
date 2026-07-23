@@ -10,7 +10,7 @@ const SETUP_AGENT_PATH = path.join(ASSET_ROOT, "agents/pan-setup.agent.md");
 const INSTRUCTIONS_PATH = path.join(ASSET_ROOT, "instructions/pan.instructions.md");
 const MANIFEST_PATH = path.join(ASSET_ROOT, "manifest.json");
 
-test("defines one user-scoped hostless PAN identity", async () => {
+test("defines one user-scoped hostless Pan identity", async () => {
   const source = await readFile(AGENT_PATH, "utf8");
   const { frontmatter, body } = parseAgent(source);
 
@@ -30,7 +30,11 @@ test("packages a conversational setup agent that delegates mechanics to PAN comm
 
   assert.equal(frontmatter.name, "pan-setup");
   assert.equal(frontmatter["user-invocable"], "true");
-  assert.match(body, /You are PAN speaking directly/i);
+  assert.match(body, /You are Pan speaking directly/i);
+  assert.match(body, /runnerOnline.*profile.*eligib/i);
+  assert.match(body, /setup session has no\s+domain leadership/i);
+  assert.match(body, /domain-bound Pan session/i);
+  assert.match(body, /exact `configPath`\s+and `runnerProfilePath`/i);
   assert.match(body, /navigate their workloads/i);
   assert.match(body, /manage agents on their behalf/i);
   assert.match(body, /private\s+GitHub repository/i);
@@ -44,7 +48,9 @@ test("packages a conversational setup agent that delegates mechanics to PAN comm
   assert.match(body, /pan setup/);
   assert.match(body, /pan verify/);
   assert.match(body, /pan shortcuts create/);
-  assert.match(body, /npx @amoebachant\/pan session/);
+  assert.match(body, /exact `launchCommands`/i);
+  assert.match(body, /returned `command`.*verified commands/is);
+  assert.doesNotMatch(body, /npx @amoebachant\/pan/);
 });
 
 test("shares hostless evidence, authority, and scheduling instructions", async () => {

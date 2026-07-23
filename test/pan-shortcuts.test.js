@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,10 +15,22 @@ test("creates chat and runner shortcuts with the packaged PAN icon", async () =>
   const localAppData = path.join(root, "Local");
   const terminal = path.join(localAppData, "Microsoft", "WindowsApps", "wt.exe");
   const icon = path.join(root, "pan.ico");
+  const moduleRoot = path.join(root, "package");
+  const panEntry = path.join(moduleRoot, "bin", "pan.js");
+  const runnerEntry = path.join(moduleRoot, "bin", "pan-runner.js");
+  const legacyChatShortcut = path.join(desktop, "Start PAN Chat.lnk");
   const calls = [];
+  let legacyExistsWhenChatWritten;
   await mkdir(desktop, { recursive: true });
   await mkdir(path.dirname(terminal), { recursive: true });
-  await Promise.all([writeFile(terminal, ""), writeFile(icon, "icon")]);
+  await mkdir(path.dirname(panEntry), { recursive: true });
+  await Promise.all([
+    writeFile(terminal, ""),
+    writeFile(icon, "icon"),
+    writeFile(panEntry, ""),
+    writeFile(runnerEntry, ""),
+    writeFile(legacyChatShortcut, "legacy"),
+  ]);
 
   try {
     const result = await createPanDesktopShortcuts({
@@ -33,9 +45,18 @@ test("creates chat and runner shortcuts with the packaged PAN icon", async () =>
         LOCALAPPDATA: localAppData,
       },
       platform: "win32",
+      moduleRoot,
       commands: {
         async run(executable, args, options) {
           calls.push({ executable, args, options });
+          if (
+            executable === "powershell.exe" &&
+            path.basename(options.env.PAN_SHORTCUT_PATH) === "Start Pan Chat.lnk"
+          ) {
+            legacyExistsWhenChatWritten = await access(legacyChatShortcut)
+              .then(() => true)
+              .catch(() => false);
+          }
           return "";
         },
       },
@@ -46,23 +67,56 @@ test("creates chat and runner shortcuts with the packaged PAN icon", async () =>
       result.shortcuts.map(({ kind }) => kind),
       ["chat", "runner"],
     );
-    assert.equal(calls.length, 2);
-    assert.ok(calls.every(({ executable }) => executable === "powershell.exe"));
+    assert.deepEqual(
+      result.shortcuts.map(({ path: shortcutPath }) => path.basename(shortcutPath)),
+      ["Start Pan Chat.lnk", "Start PAN Runner.lnk"],
+    );
+    assert.equal(calls.length, 4);
+    assert.equal(calls[0].executable, process.execPath);
+    assert.deepEqual(calls[0].args, [
+      panEntry,
+      "config",
+      "validate",
+      "--schema-version",
+      "1",
+      "--config",
+      path.join(root, "domain", "pan.json"),
+      "--json",
+    ]);
+    assert.equal(calls[1].executable, process.execPath);
+    assert.deepEqual(calls[1].args, [
+      runnerEntry,
+      "--profile",
+      path.join(root, "domain", "runners", "machine.json"),
+      "--validate-profile",
+    ]);
+    const shortcutCalls = calls.slice(2);
+    assert.ok(shortcutCalls.every(({ executable }) => executable === "powershell.exe"));
     assert.ok(
-      calls.every(
+      shortcutCalls.every(
         ({ options }) => options.env.PAN_SHORTCUT_ICON === `${icon},0`,
       ),
     );
     assert.match(
-      calls[0].options.env.PAN_SHORTCUT_ARGUMENTS,
-      /^new-tab .* cmd\.exe \/d \/c npx\.cmd /,
+      shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS,
+      /^new-tab .*node\.exe" ".*\\pan\.js" session --config/,
     );
     assert.match(
-      calls[1].options.env.PAN_SHORTCUT_ARGUMENTS,
-      /^new-tab .* cmd\.exe \/d \/c npx\.cmd /,
+      shortcutCalls[1].options.env.PAN_SHORTCUT_ARGUMENTS,
+      /^new-tab .*node\.exe" ".*\\pan-runner\.js" --profile/,
     );
-    assert.match(calls[0].options.env.PAN_SHORTCUT_ARGUMENTS, /session --config/);
-    assert.match(calls[1].options.env.PAN_SHORTCUT_ARGUMENTS, /pan-runner --profile/);
+    assert.doesNotMatch(shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS, /npx/);
+    assert.doesNotMatch(shortcutCalls[1].options.env.PAN_SHORTCUT_ARGUMENTS, /npx/);
+    assert.match(
+      shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS,
+      /--title "Pan Chat"/,
+    );
+    assert.match(result.shortcuts[0].command, /pan\.js' 'session' '--config'/);
+    assert.match(result.shortcuts[1].command, /pan-runner\.js' '--profile'/);
+    assert.equal(legacyExistsWhenChatWritten, false);
+    await assert.rejects(access(legacyChatShortcut), {
+      code: "ENOENT",
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

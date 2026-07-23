@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make a long-running GitHub Copilot CLI session using the PAN custom agent the
+Make a long-running GitHub Copilot CLI session using the Pan custom agent the
 primary PAN experience. PAN operates directly in one configured private domain
 repository, reasons about its complete portfolio, maintains durable domain
 state, and schedules periodic reviews while that session remains running.

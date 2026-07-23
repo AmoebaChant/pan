@@ -27,7 +27,7 @@ Task 4.4 identifies writing versus read-only sessions and supervises their lifet
 1. Isolate supported Copilot schedule creation/list/removal semantics behind a versioned contract. Do not depend on keystroke injection or private session files.
 2. For writing sessions, provide explicit startup instructions that establish the configured recurring review and apply `immediate`, `after-interval`, or `manual` startup policy at most once.
 3. For read-only sessions, instruct and verify that no autonomous review schedule is created.
-4. Scheduled prompts must enter the same session queue as interactive turns and invoke the same PAN agent and helper commands.
+4. Scheduled prompts must enter the same session queue as interactive turns and invoke the same Pan agent and helper commands.
 5. Every scheduled review begins with a fresh due check/reconciliation/evidence read. It must not use conversation memory as authorization.
 6. When configured cadence exceeds Copilot's maximum native interval, schedule at the supported maximum and use launch-local due metadata to decide whether the full review interval elapsed.
 7. Missed reviews while no session runs are not replayed. New launches follow startup policy instead.

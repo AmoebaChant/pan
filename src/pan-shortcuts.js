@@ -1,4 +1,4 @@
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { ProcessClient } from "./process-client.js";
 
 const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGE_NAME = "@amoebachant/pan";
 const SELECTIONS = ["chat", "runner", "both"];
 
 /** Creates self-contained Windows launch shortcuts for a configured PAN domain. */
@@ -21,6 +20,8 @@ export async function createPanDesktopShortcuts({
   platform = process.platform,
   homedir = os.homedir,
   commands = new ProcessClient(),
+  moduleRoot = MODULE_ROOT,
+  nodePath = process.execPath,
 } = {}) {
   if (platform !== "win32") {
     throw new Error("PAN desktop shortcuts are currently supported on Windows only");
@@ -32,7 +33,21 @@ export async function createPanDesktopShortcuts({
   requireAbsolutePath(runnerProfilePath, "runnerProfilePath");
   requireAbsolutePath(domainPath, "domainPath");
   requireAbsolutePath(iconPath, "iconPath");
+  requireAbsolutePath(moduleRoot, "moduleRoot");
+  requireAbsolutePath(nodePath, "nodePath");
+  const launchers = buildPanLaunchers({
+    configPath: path.resolve(configPath),
+    runnerProfilePath: path.resolve(runnerProfilePath),
+    nodePath,
+    moduleRoot,
+  });
   await access(iconPath);
+  await validatePanLaunchers({
+    ...launchers,
+    selection,
+    env,
+    commands,
+  });
 
   const desktop = desktopPath
     ? path.resolve(desktopPath)
@@ -49,10 +64,16 @@ export async function createPanDesktopShortcuts({
     runnerProfilePath: path.resolve(runnerProfilePath),
     domainPath: path.resolve(domainPath),
     selection,
+    ...launchers,
   });
   const shortcuts = [];
   for (const definition of definitions) {
     const shortcutPath = path.join(desktop, definition.name);
+    await Promise.all(
+      (definition.legacyNames ?? []).map((name) =>
+        rm(path.join(desktop, name), { force: true }),
+      ),
+    );
     await writeShortcut({
       shortcutPath,
       targetPath: terminal,
@@ -67,6 +88,7 @@ export async function createPanDesktopShortcuts({
       kind: definition.kind,
       path: shortcutPath,
       iconPath: path.resolve(iconPath),
+      command: definition.command,
     });
   }
   return { status: "created", desktopPath: desktop, shortcuts };
@@ -125,30 +147,32 @@ function shortcutDefinitions({
   runnerProfilePath,
   domainPath,
   selection,
+  nodePath,
+  panEntryPath,
+  runnerEntryPath,
+  launchCommands,
 }) {
   const definitions = [];
   if (selection === "chat" || selection === "both") {
     definitions.push({
       kind: "chat",
-      name: "Start PAN Chat.lnk",
-      description: "Start an interactive PAN session",
+      name: "Start Pan Chat.lnk",
+      legacyNames: ["Start PAN Chat.lnk"],
+      description: "Start an interactive Pan session",
       arguments: [
         "new-tab",
         "-d",
         quote(domainPath),
         "--title",
-        quote("PAN Chat"),
+        quote("Pan Chat"),
         "--suppressApplicationTitle",
-        "cmd.exe",
-        "/d",
-        "/c",
-        "npx.cmd",
-        "--yes",
-        PACKAGE_NAME,
+        quote(nodePath),
+        quote(panEntryPath),
         "session",
         "--config",
         quote(configPath),
       ].join(" "),
+      command: launchCommands.chat,
     });
   }
   if (selection === "runner" || selection === "both") {
@@ -163,20 +187,89 @@ function shortcutDefinitions({
         "--title",
         quote("PAN Runner"),
         "--suppressApplicationTitle",
-        "cmd.exe",
-        "/d",
-        "/c",
-        "npx.cmd",
-        "--yes",
-        "--package",
-        PACKAGE_NAME,
-        "pan-runner",
+        quote(nodePath),
+        quote(runnerEntryPath),
         "--profile",
         quote(runnerProfilePath),
       ].join(" "),
+      command: launchCommands.runner,
     });
   }
   return definitions;
+}
+
+export function buildPanLaunchers({
+  configPath,
+  runnerProfilePath,
+  moduleRoot = MODULE_ROOT,
+  nodePath = process.execPath,
+}) {
+  requireAbsolutePath(configPath, "configPath");
+  requireAbsolutePath(runnerProfilePath, "runnerProfilePath");
+  requireAbsolutePath(moduleRoot, "moduleRoot");
+  requireAbsolutePath(nodePath, "nodePath");
+  const panEntryPath = path.join(moduleRoot, "bin", "pan.js");
+  const runnerEntryPath = path.join(moduleRoot, "bin", "pan-runner.js");
+  return {
+    configPath,
+    runnerProfilePath,
+    nodePath,
+    panEntryPath,
+    runnerEntryPath,
+    launchCommands: {
+      chat: powershellCommand(nodePath, [
+        panEntryPath,
+        "session",
+        "--config",
+        configPath,
+      ]),
+      runner: powershellCommand(nodePath, [
+        runnerEntryPath,
+        "--profile",
+        runnerProfilePath,
+      ]),
+    },
+  };
+}
+
+export async function validatePanLaunchers({
+  configPath,
+  runnerProfilePath,
+  selection,
+  nodePath,
+  panEntryPath,
+  runnerEntryPath,
+  env,
+  commands,
+}) {
+  await Promise.all([
+    access(nodePath),
+    access(panEntryPath),
+    ...(selection === "runner" || selection === "both"
+      ? [access(runnerEntryPath)]
+      : []),
+  ]);
+  await commands.run(
+    nodePath,
+    [
+      panEntryPath,
+      "config",
+      "validate",
+      "--schema-version",
+      "1",
+      "--config",
+      configPath,
+      "--json",
+    ],
+    { env, timeout: 30_000, maxBuffer: 1024 * 1024 },
+  );
+  if (selection === "runner" || selection === "both") {
+    await commands.run(
+      nodePath,
+      [runnerEntryPath, "--profile", runnerProfilePath, "--validate-profile"],
+      { env, timeout: 30_000, maxBuffer: 1024 * 1024 },
+    );
+  }
 }
 
 async function windowsTerminalPath(env) {
@@ -244,4 +337,12 @@ function requireAbsolutePath(value, name) {
 
 function quote(value) {
   return `"${value.replaceAll('"', '\\"')}"`;
+}
+
+function powershellCommand(executable, args) {
+  return `& ${[executable, ...args].map(powershellQuote).join(" ")}`;
+}
+
+function powershellQuote(value) {
+  return `'${value.replaceAll("'", "''")}'`;
 }

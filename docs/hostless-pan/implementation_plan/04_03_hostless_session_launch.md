@@ -27,7 +27,7 @@ This task launches the child and performs preflight. Leadership lifetime is adde
 
 1. Load normalized version 2 configuration and require exactly one domain.
 2. Validate `domain.path` exists, is a git repository, has the configured GitHub repository as the relevant remote, and resolves the expected default branch. Validate Project schema/state namespace/authentication before a writing-capable start.
-3. Verify the user-scoped PAN agent/instructions/skills and the supported Copilot CLI contract.
+3. Verify the user-scoped Pan agent/instructions/skills and the supported Copilot CLI contract.
 4. Launch the configured Copilot executable as a foreground child with `cwd` equal to `domain.path`, explicit agent selection, configured/default model, inherited terminal IO, and normal built-in capabilities.
 5. Pass only bounded PAN session metadata through the child environment. Do not pass bearer tokens, endpoint data, or private runner settings.
 6. Add configured product-context roots only through the supported read-only mechanism and label them clearly for the agent.

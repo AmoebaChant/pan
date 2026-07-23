@@ -70,7 +70,9 @@ exists to restart.
 The recommended entrypoint is the conversational setup agent:
 
 ```powershell
-npx @amoebachant/pan onboard
+git clone https://github.com/AmoebaChant/pan.git
+Set-Location .\pan
+npx --yes --package . pan onboard
 ```
 
 It installs PAN's user-scoped Copilot assets, gathers the setup choices, invokes

@@ -80,7 +80,7 @@ test("does not replace local modifications without forced repair and preserves a
     await assert.rejects(service.install(), /refuses to overwrite/);
     await assert.rejects(service.repair(), /refuses to replace/);
     assert.equal((await service.repair({ force: true })).status, "current");
-    assert.match(await readFile(target, "utf8"), /PAN agent/);
+    assert.match(await readFile(target, "utf8"), /Pan agent/);
     const backup = path.join(
       fixture.userScope.root,
       "pan-assets-backups",
@@ -171,7 +171,7 @@ async function createFixture(root, version, changes = {}) {
   const assetRoot = path.join(root, "package", version, "assets", "copilot");
   const packageRoot = path.join(root, "package", version);
   const contents = {
-    "agents/pan.agent.md": "---\nname: pan\n---\n# PAN agent\n",
+    "agents/pan.agent.md": "---\nname: pan\n---\n# Pan agent\n",
     "instructions/pan.instructions.md": "# PAN instructions\n\nBase.\n",
     "skills/pan-attention/SKILL.md": "---\nname: pan-attention\n---\n# Attention\n",
     ...changes,

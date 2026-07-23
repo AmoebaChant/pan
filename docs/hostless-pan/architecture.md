@@ -4,7 +4,7 @@
 
 Hostless PAN is one ordinary GitHub Copilot CLI session rooted in a configured
 private domain repository. `pan session` validates the domain, makes the generic
-PAN agent, instructions, and skills available, acquires single-writer leadership
+Pan agent, instructions, and skills available, acquires single-writer leadership
 when possible, and launches Copilot as its foreground child. Copilot provides the
 conversation, ordinary file/git/shell/GitHub tools, and native session-scoped
 prompt scheduling. Deterministic `pan` CLI commands provide the mechanics that
@@ -159,7 +159,7 @@ objects owned by a resident PAN process.
                               v
   +--------------------------------------------------------+
   | ordinary GitHub Copilot CLI session                    |
-  | - generic PAN agent + instructions + skills            |
+  | - generic Pan agent + instructions + skills            |
   | - conversation and native scheduled prompts            |
   | - built-in file, git, shell, and GitHub capabilities   |
   +---------------------------+----------------------------+
@@ -197,7 +197,7 @@ pan session
    +-- load/migrate config without rewriting it
    +-- validate local clone <-> configured GitHub repository
    +-- validate Project schema and state namespace
-   +-- verify generic PAN agent/instruction/skill versions
+   +-- verify generic Pan agent/instruction/skill versions
    +-- verify Copilot version and native scheduling support
    +-- attempt leadership
    +-- launch Copilot in domain.path with agent "pan"
@@ -229,12 +229,12 @@ session was a writer (REQ-SCH-2, REQ-LEAD-3).
 The launcher returns Copilot's exit code after attempting lease release. It does
 not remain after the session exits (REQ-EXP-8, REQ-SCH-12).
 
-### 2. Generic PAN agent, instructions, and skills are user-scoped
+### 2. Generic Pan agent, instructions, and skills are user-scoped
 
 The reusable package remains data-neutral and is the source of versioned PAN
 behavior. Installation or upgrade synchronizes:
 
-- the generic PAN custom agent to Copilot's user-level agents directory;
+- the generic Pan custom agent to Copilot's user-level agents directory;
 - reusable PAN instructions to a user-level instructions directory;
 - PAN skills to Copilot's user-level skills directory.
 
@@ -349,7 +349,7 @@ high-confidence interpretation. Ambiguous work becomes a question
 
 ### 6. Action validation is stateless and optimistic
 
-The PAN agent writes proposed action JSON to a bounded local operation file or
+The Pan agent writes proposed action JSON to a bounded local operation file or
 pipes it to `pan action validate/apply`. The helper applies these layers:
 
 ```text
@@ -497,7 +497,7 @@ whether the remote moved, whether the push was confirmed, and what remains
 ### 10. Attention and merged-PR behavior remain available
 
 The existing user-facing behavior remains available through direct command
-families and the PAN agent:
+families and the Pan agent:
 
 - list unresolved human attention and all `in-review` work;
 - answer by item ID or Issue URL;
@@ -549,7 +549,7 @@ self-repair policy. It adds or clarifies:
 
 | Section | Setting | Meaning / default |
 | --- | --- | --- |
-| `session` | `agent` | user-level PAN agent name; default `pan` |
+| `session` | `agent` | user-level Pan agent name; default `pan` |
 | `session` | `productContextRoots` | explicit labeled read-only roots; default empty |
 | `scheduling` | `enabled` | native periodic reviews; default true for writing sessions |
 | `scheduling` | `reviewIntervalSeconds` | recurring cadence migrated from full-review cadence |
@@ -642,7 +642,7 @@ Configuration restart guidance becomes:
 
 ### Phase 2: add the ordinary session path
 
-- Install/version the generic PAN agent, instructions, and skills at user scope.
+- Install/version the generic Pan agent, instructions, and skills at user scope.
 - Add `pan session` with domain-rooted launch, foreground lease supervision,
   read-only fallback, and native schedule bootstrap.
 - Validate behavior with one writing session, concurrent read-only sessions, and
@@ -783,7 +783,7 @@ review and implementation delivery policy are separate concerns
 
 Offline contract tests verify:
 
-- domain-rooted launch arguments and explicit PAN agent selection;
+- domain-rooted launch arguments and explicit Pan agent selection;
 - discovery of user-level agent, instructions, and skills;
 - ordinary built-in tool availability without PAN-specific tool integration;
 - supported native schedule creation/listing/removal semantics;
@@ -792,7 +792,7 @@ Offline contract tests verify:
 - launcher response to leadership loss and Copilot child exit.
 
 An opt-in authenticated probe uses a disposable private domain to verify the
-supported Copilot version can start the PAN agent, invoke a deterministic helper
+supported Copilot version can start the Pan agent, invoke a deterministic helper
 through the shell, run one native scheduled review in the same session, and stop
 all review activity on exit.
 

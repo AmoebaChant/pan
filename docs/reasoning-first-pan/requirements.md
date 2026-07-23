@@ -19,7 +19,7 @@ behavior already provided by the repository.
 - **Canonical queue**: the ordering of items in the configured GitHub Project.
 - **Actionable item**: an open Project item that may require planning, human
   attention, execution, review, or a lifecycle decision.
-- **PAN turn**: one autonomous or interactive reasoning pass by the PAN agent.
+- **PAN turn**: one autonomous or interactive reasoning pass by the Pan agent.
 - **Evidence citation**: a reference that identifies the supporting Issue,
   comment, Project field, workstream path and revision, or other durable domain
   record.
@@ -82,7 +82,7 @@ behavior already provided by the repository.
   either be rolled back or reported as incomplete with enough information for a
   human to repair it.
 
-## PAN identity and advisory behavior
+## Pan identity and advisory behavior
 
 - **REQ-ADV-1 (R1):** Autonomous reviews and interactive conversations MUST use
   the same logical PAN personality, goals, authority, and reasoning standards.

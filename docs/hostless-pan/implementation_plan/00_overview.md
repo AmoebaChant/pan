@@ -15,7 +15,7 @@ Replace PAN's resident host and MCP bridge with one foreground, domain-rooted Co
 
 ## Phase Rationale
 
-Configuration, result envelopes, and leadership assertions come first because every short-lived helper must share those contracts without a service container. Complete evidence and deterministic reconciliation precede mutation so action helpers can fail closed against stable expected state. Workstream delivery is implemented before session launch so the ordinary PAN agent has all required mutation mechanics on day one. User-scoped distribution and launcher supervision then compose those helpers into the hostless experience. Host-oriented commands and files are retired only after replacement workflows and runner compatibility exist, and final system tests gate the last cleanup.
+Configuration, result envelopes, and leadership assertions come first because every short-lived helper must share those contracts without a service container. Complete evidence and deterministic reconciliation precede mutation so action helpers can fail closed against stable expected state. Workstream delivery is implemented before session launch so the ordinary Pan agent has all required mutation mechanics on day one. User-scoped distribution and launcher supervision then compose those helpers into the hostless experience. Host-oriented commands and files are retired only after replacement workflows and runner compatibility exist, and final system tests gate the last cleanup.
 
 ## Task Index
 
@@ -34,7 +34,7 @@ Configuration, result envelopes, and leadership assertions come first because ev
 | `03_03_issue_creation_recovery.md` | Preserve and recover sourced Issue creation effects | 3 | REQ-REC-10–15, REQ-EVD-4–6, REQ-REL-3–5 |
 | `03_04_workstream_prepare.md` | Prepare isolated workstream edit operations | 3 | REQ-WS-1–6, REQ-WS-9–10, REQ-DOM-5–7 |
 | `03_05_workstream_publish.md` | Commit and push workstream updates directly | 3 | REQ-WS-7–16, REQ-LEAD-6–7, REQ-REL-1–5 |
-| `04_01_user_scoped_pan_assets.md` | Create the hostless PAN agent, instructions, and skills bundle | 4 | REQ-EXP-3, REQ-EXP-5–7, REQ-TOOL-5–8, REQ-REL-7–9 |
+| `04_01_user_scoped_pan_assets.md` | Create the hostless Pan agent, instructions, and skills bundle | 4 | REQ-EXP-3, REQ-EXP-5–7, REQ-TOOL-5–8, REQ-REL-7–9 |
 | `04_02_asset_install_status_repair.md` | Install and verify PAN assets at user scope | 4 | REQ-EXP-4–7, REQ-DOM-4, REQ-REL-7–9 |
 | `04_03_hostless_session_launch.md` | Launch Copilot in the validated domain root | 4 | REQ-EXP-1–4, REQ-DOM-1–10, REQ-MIG-11 |
 | `04_04_session_leadership_supervision.md` | Supervise writer/read-only session lifetime | 4 | REQ-LEAD-1–12, REQ-EXP-8–9, REQ-REL-2–4 |

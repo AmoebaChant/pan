@@ -1,15 +1,15 @@
 # PAN onboarding requirements
 
-1. PAN should provide a dedicated **PAN Setup** agent that guides a new user
+1. PAN should provide a dedicated **Pan Setup** agent that guides a new user
    through setup conversationally.
-2. Getting started should require one simple command, ideally:
+2. From a local checkout, getting started should require one simple command:
 
    ```powershell
-   npx @amoebachant/pan onboard
+   npx --yes --package . pan onboard
    ```
 
 3. The setup agent should explain PAN, gather the information it needs, install
-   the PAN agent and skills, create or connect the domain repository and GitHub
+   the Pan agent and PAN skills, create or connect the domain repository and GitHub
    Project, configure the local PAN session and runner, and verify that setup
    works. It should offer to create desktop shortcuts for the Pan chat and the runner.
 4. The setup agent should use PAN's deterministic commands for setup mechanics

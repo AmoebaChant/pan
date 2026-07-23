@@ -14,11 +14,13 @@ areas such as work and personal life.
 ## Get started
 
 ```powershell
-npx @amoebachant/pan onboard
+git clone https://github.com/AmoebaChant/pan.git
+Set-Location .\pan
+npx --yes --package . pan onboard
 ```
 
-The PAN Setup agent explains the model, creates or connects your domain,
-installs PAN's agent and skills, configures a local session and runner, verifies
+The Pan Setup agent explains the model, creates or connects your domain,
+installs Pan and the PAN skills, configures a local session and runner, verifies
 the result, and can create desktop shortcuts.
 
 PAN runs in the foreground; nothing continues after its session exits. Learn

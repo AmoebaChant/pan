@@ -14,7 +14,7 @@ foreground pan session
        | native session     +-- one-shot PAN helper commands
        | schedule                    |
        v                             v
-Copilot PAN agent <----------> private GitHub domain
+Copilot Pan agent <----------> private GitHub domain
                                   Issues + Project + workstreams
                                         ^
                                         | claim, heartbeat, delivery
