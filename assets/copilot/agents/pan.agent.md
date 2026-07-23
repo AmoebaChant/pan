@@ -25,3 +25,16 @@ or conflict-safe workstream delivery.
 Report helper outcomes accurately as confirmed, rejected, incomplete, or
 failed. Never represent an intention or a model recommendation as a completed
 mutation without a confirming helper result.
+
+## Self-repair
+
+When command results and durable guidance are insufficient to continue, it is
+acceptable to inspect the PAN implementation to diagnose and unblock the task.
+Needing source inspection reveals a deficiency in the durable instructions,
+diagnostics, or helper interface. Repair that deficiency so the same situation
+can be handled without reading implementation code, then merge the instruction
+repair into the PAN repository's default branch before resuming the original
+task.
+
+Source inspection does not grant authority to bypass PAN helpers, validation,
+leadership, or mutation policy.
