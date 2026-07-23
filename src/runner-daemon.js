@@ -15,6 +15,11 @@ import {
   waitForNextPoll,
 } from "./polling.js";
 
+const OPERATIONAL_FAILURE_LIMIT = 3;
+const RUNNER_EVENT_MARKER = "<!-- pan:runner-event -->";
+const RUNNER_RESULT_MARKER = "<!-- pan:runner-result -->";
+const ATTENTION_RESOLVED_MARKER = "<!-- pan:needs-human-resolved -->";
+
 export class RunnerDaemon {
   constructor({
     store,
@@ -289,6 +294,7 @@ export class RunnerDaemon {
           handle,
           heartbeat,
           summary: result.summary,
+          countFailure: !result.summary.startsWith("Runner stopped"),
         });
         return;
       }
@@ -415,13 +421,16 @@ export class RunnerDaemon {
     handle,
     heartbeat,
     summary,
+    countFailure = true,
   }) {
     const resumeAffinity = handle
       ? runnerResumeAffinity(this.profile.id, playbook.id)
       : undefined;
     await handle?.setResumeAffinity?.(resumeAffinity);
-    await handle?.markPendingRequeue?.();
     await heartbeat.renewNow();
+    const failureCount = countFailure
+      ? consecutiveOperationalFailures(await this.store.listComments(item)) + 1
+      : undefined;
     try {
       await retry(() =>
         this.store.addComment(
@@ -434,6 +443,8 @@ export class RunnerDaemon {
               runner,
             },
             resumable: Boolean(handle),
+            countsTowardFailureLimit: countFailure,
+            consecutiveFailures: failureCount,
           }),
         ),
       );
@@ -444,6 +455,36 @@ export class RunnerDaemon {
       );
     }
     await heartbeat.renewNow();
+    if (failureCount >= OPERATIONAL_FAILURE_LIMIT) {
+      await this.attention.request(
+        item,
+        {
+          kind: "approval",
+          prompt: `This task stopped ${failureCount} consecutive times. Correct the latest failure before approving another runner attempt.`,
+          locator: handle?.locator() ?? {
+            machine: this.profile.machine,
+            runner,
+          },
+          source: "runner",
+          reason: "repeated-operational-failure",
+          failure: {
+            count: failureCount,
+            limit: OPERATIONAL_FAILURE_LIMIT,
+            summary,
+          },
+        },
+        {
+          runner,
+          runnerAssignee: this.profile.githubAssignee,
+          resumeAffinity,
+        },
+      );
+      this.logger.warn?.(
+        `Task #${item.number} moved to human attention after ${failureCount} consecutive operational failures.`,
+      );
+      return;
+    }
+    await handle?.markPendingRequeue?.();
     let release;
     try {
       release = await retry(() =>
@@ -813,9 +854,16 @@ function agentStartedComment(record) {
   ].join("\n");
 }
 
-function agentStoppedComment({ summary, playbook, locator, resumable }) {
+function agentStoppedComment({
+  summary,
+  playbook,
+  locator,
+  resumable,
+  countsTowardFailureLimit,
+  consecutiveFailures,
+}) {
   return [
-    "<!-- pan:runner-event -->",
+    RUNNER_EVENT_MARKER,
     "### Agent stopped",
     "",
     summary,
@@ -826,6 +874,10 @@ function agentStoppedComment({ summary, playbook, locator, resumable }) {
         event: "stopped",
         resumable,
         playbook,
+        countsTowardFailureLimit,
+        ...(consecutiveFailures === undefined
+          ? {}
+          : { consecutiveFailures }),
         ...locator,
       },
       null,
@@ -833,6 +885,48 @@ function agentStoppedComment({ summary, playbook, locator, resumable }) {
     ),
     "```",
   ].join("\n");
+}
+
+function consecutiveOperationalFailures(comments) {
+  let count = 0;
+  for (const comment of [...comments].reverse()) {
+    const body = comment.body ?? "";
+    if (
+      body.includes(RUNNER_RESULT_MARKER) ||
+      body.includes(ATTENTION_RESOLVED_MARKER)
+    ) {
+      break;
+    }
+    if (
+      !body.includes(RUNNER_EVENT_MARKER) ||
+      !body.includes("### Agent stopped")
+    ) {
+      continue;
+    }
+    const event = parseRunnerEvent(body);
+    if (
+      event.event === "stopped" &&
+      (event.countsTowardFailureLimit ??
+        !body.includes("Runner stopped"))
+    ) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function parseRunnerEvent(body) {
+  const fence = body.match(/```json\s*([\s\S]*?)\s*```/i);
+  if (!fence) {
+    throw new Error("PAN runner-event comment has no JSON record");
+  }
+  try {
+    return JSON.parse(fence[1]);
+  } catch (error) {
+    throw new Error("PAN runner-event comment contains invalid JSON", {
+      cause: error,
+    });
+  }
 }
 
 async function retry(action, attempts = 3) {

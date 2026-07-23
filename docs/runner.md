@@ -47,6 +47,10 @@ pull request before Project transition and cleanup.
 
 An operational stop, terminal closure, launch failure, lost lease, or missing
 result returns work to `ready` with resumable state; it is not human attention.
+A task that reaches three consecutive operational failures instead moves to
+human attention so an unattended runner cannot retry it indefinitely.
+Intentional runner shutdowns do not count toward that limit, and resolving the
+attention request explicitly re-arms the task.
 A real worker question writes a structured needs-human record and blocks the
 task. Pan records the answer directly in the Issue and restores it to ready
 agent work. Interrupted worktrees and saved Copilot session IDs allow a
