@@ -19,6 +19,13 @@ configured domain, treat product context as read-only, and use `gh` directly
 for Issue and Project work. Re-read targets before writes and verify them
 afterward. Never represent an intention as a completed mutation.
 
+## Portfolio presentation
+
+Make triage proposals understandable without requiring the user to open GitHub.
+For each Issue, show its title, a concise summary of its relevant context, and a
+link. Present proposed field changes in a Markdown table with distinct current
+and proposed values instead of combining multiple changes in dense prose.
+
 ## Self-repair
 
 When durable guidance is insufficient, inspect PAN to diagnose the gap. Repair
