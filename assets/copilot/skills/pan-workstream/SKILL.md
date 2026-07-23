@@ -16,3 +16,6 @@ Use this skill to create or update a workstream README in the configured domain.
    default branch. If the remote changed, pull and resolve the conflict without
    discarding either side, then push and verify the remote commit. Never
    force-push or discard unrelated changes.
+5. Scan the saved content for action items. Ask whether any should be created as
+   Issues in the configured PAN domain, listing the candidates. Do not create
+   Issues without explicit approval.
