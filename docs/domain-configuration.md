@@ -2,7 +2,7 @@
 
 A version-2 domain configuration connects a foreground PAN session to one
 private GitHub repository and Project. It contains domain identity, session
-settings, scheduling, leadership, and action policy. Runner paths, capability,
+settings, and optional scheduling. Runner paths, capability,
 capacity, terminal, and approval settings belong only in the private runner
 profile.
 
@@ -17,7 +17,6 @@ profile.
     "projectNumber": 12,
     "path": "C:\\domains\\personal-domain"
   },
-  "state": { "branch": "pan-state", "path": ".pan" },
   "session": {
     "agent": { "name": "pan", "model": "gpt-5.6-sol" },
     "productContextRoots": [
@@ -30,18 +29,11 @@ profile.
     "startup": "immediate",
     "retrySeconds": 60,
     "rateLimitRetrySeconds": 900
-  },
-  "leadership": { "leaseSeconds": 120, "heartbeatSeconds": 30 },
-  "policy": {
-    "automatic": ["field-update"],
-    "approvalRequired": ["issue-create"],
-    "prohibited": []
   }
 }
 ```
 
-`domain.path` is an absolute local clone path. `state.path` is confined to the
-repository and cannot escape it. `session.agent.name` is required; its
+`domain.path` is an absolute local clone path. `session.agent.name` is required; its
 `executable` defaults to `copilot`, and `model` defaults to Copilot's `auto`
 selection when omitted. Product-context roots are optional local directories
 added to the Copilot session.
@@ -60,7 +52,7 @@ non-overlap.
 
 `startup: "immediate"` performs a fresh startup review; `after-interval` waits
 for the first due trigger; `manual` performs no startup review. If the Copilot
-CLI lacks required scheduling support, use a read-only session or create the
+CLI lacks required scheduling support, create the
 displayed `/every` command manually. Changes to domain, session, or scheduling
 settings require exiting and rerunning `pan session`; no background PAN process
 exists to restart.
@@ -124,12 +116,10 @@ pan shortcuts create `
 ```
 
 For a version-1 configuration, use the exported migration helper or rewrite
-the document before starting a session. Move `agent` under `session.agent`;
-replace legacy cadences with `scheduling` and `leadership`; retain `domain`,
-`state`, `reviewPolicy`, `selfRepair`, and `attention`; and add an explicit
-`policy` when the domain needs mutation classifications. Version-1 settings
-that describe a host, transcript runtime, poll loop, or daemon do not create a
-hostless background service.
+the document before starting a session. Move `agent` under `session.agent` and
+replace the review cadence with `scheduling`. Version-1 settings that describe
+a host, transcript runtime, poll loop, leadership lease, or daemon are not used
+by the foreground session.
 
 When moving from a runner profile, copy only `store.repository`,
 `store.projectOwner`, `store.projectNumber`, and `store.path` to `domain`.
@@ -138,16 +128,8 @@ capacity, capabilities, approval mode, and `domainConfigPath` in its runner
 profile. Never put authentication tokens or machine-private values in a public
 package schema or asset.
 
-## Policy and recovery
+## Recovery
 
-`policy.automatic`, `approvalRequired`, and `prohibited` classify supported
-action kinds. Mutations also require current leadership and fresh expected
-state; configuration alone never grants authority. `attention.assignee` routes
-genuine blocking questions. Optional self-repair creates a deduplicated
-pull-request-delivery task after an unexpected review failure; it does not
-retry itself or merge a pull request automatically.
-
-If asset verification fails, run `pan assets repair`. If another session holds
-leadership, use the read-only session or wait for lease expiry. If leadership
-is lost, PAN stops the child session; start a new foreground session rather
-than attempting to reuse its authority.
+If asset verification fails, run `pan assets repair`. Issue and Project
+operations use live GitHub reads, so retry only after inspecting the target's
+current state. Runner lease recovery remains local to `pan-runner`.

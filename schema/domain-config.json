@@ -110,11 +110,15 @@
     "version2": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "domain", "state", "session"],
+      "required": ["version", "domain", "session"],
       "properties": {
         "version": { "const": 2 },
         "domain": { "$ref": "#/$defs/domain" },
-        "state": { "$ref": "#/$defs/state" },
+        "state": {
+          "allOf": [{ "$ref": "#/$defs/state" }],
+          "deprecated": true,
+          "description": "Accepted for compatibility but no longer used."
+        },
         "session": {
           "type": "object",
           "additionalProperties": false,
@@ -150,31 +154,17 @@
         },
         "leadership": {
           "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "leaseSeconds": { "type": "number", "minimum": 30, "maximum": 3600, "default": 120 },
-            "heartbeatSeconds": { "type": "number", "minimum": 5, "maximum": 1200, "default": 30 }
-          }
+          "deprecated": true,
+          "description": "Accepted for compatibility but ignored."
         },
         "policy": {
           "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "automatic": { "$ref": "#/$defs/actionKinds" },
-            "approvalRequired": { "$ref": "#/$defs/actionKinds" },
-            "prohibited": { "$ref": "#/$defs/actionKinds" }
-          }
+          "deprecated": true,
+          "description": "Accepted for compatibility but ignored."
         },
-        "reviewPolicy": { "$ref": "#/$defs/reviewPolicy" },
-        "selfRepair": { "$ref": "#/$defs/selfRepair" },
-        "attention": { "$ref": "#/$defs/attention" }
-      }
-    },
-    "actionKinds": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "enum": ["field-update", "canonical-reorder", "relative-precedence", "issue-create", "issue-comment", "needs-human", "no-op"]
+        "reviewPolicy": { "type": "object", "deprecated": true, "description": "Accepted for compatibility but ignored." },
+        "selfRepair": { "type": "object", "deprecated": true, "description": "Accepted for compatibility but ignored." },
+        "attention": { "type": "object", "deprecated": true, "description": "Accepted for compatibility but ignored." }
       }
     },
     "examples": [
@@ -186,7 +176,6 @@
           "projectNumber": 12,
           "path": "C:\\domains\\personal-domain"
         },
-        "state": { "branch": "pan-state", "path": ".pan" },
         "session": { "agent": { "name": "pan" } }
       }
     ]

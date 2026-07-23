@@ -92,10 +92,10 @@ pan shortcuts create --config <configPath> --profile <runnerProfilePath> --selec
 
 Report failures accurately and use the command's diagnostics rather than
 guessing or applying manual repairs. When verification succeeds, explain that
-setup deliberately leaves scheduled reviews disabled. A setup session has no
-domain leadership and must not attempt post-setup mutations such as changing
-scheduling or policy; direct the user to start a domain-bound Pan session and
-ask there. For a newly generated runner, explain that its profile starts
+setup deliberately leaves scheduled reviews disabled. The setup agent is not a
+domain-bound Pan session and must not perform task or Project mutations; direct
+the user to start their Pan session and ask there. For a newly generated runner,
+explain that its profile starts
 offline until repositories and playbooks are configured. For a connected
 runner, report its returned eligibility without claiming process liveness.
 Then celebrate that setup is complete and give the exact `launchCommands`

@@ -99,7 +99,9 @@ export class RunnerDaemon {
       status: "ready",
       claimable: true,
     });
-    const candidates = items.filter((item) => isRunnable(item));
+    const candidates = items
+      .filter((item) => isRunnable(item))
+      .sort(compareRunnerPriority);
     this.logger.info?.(
       `Poll found ${items.length} ready item(s), ${candidates.length} runnable; active=${this.active.size}, free=${freeSlots}.`,
     );
@@ -630,6 +632,20 @@ function runnerResumeAffinity(runnerId, playbookId) {
 
 function resumableAffinity(claimedBy) {
   return claimedBy?.startsWith("resume:") ? claimedBy : undefined;
+}
+
+const PRIORITY_ORDER = new Map([
+  ["urgent", 0],
+  ["high", 1],
+  ["normal", 2],
+  ["low", 3],
+]);
+
+function compareRunnerPriority(left, right) {
+  return (
+    (PRIORITY_ORDER.get(left.fields.priority) ?? Number.MAX_SAFE_INTEGER) -
+    (PRIORITY_ORDER.get(right.fields.priority) ?? Number.MAX_SAFE_INTEGER)
+  );
 }
 
 function startHeartbeat({

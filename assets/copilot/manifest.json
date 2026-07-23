@@ -4,32 +4,32 @@
     {
       "source": "agents/pan.agent.md",
       "destination": "agents/pan.agent.md",
-      "sha256": "b9fe2233a97e22309767897091b4e42ee782c53506619912681a607bf2581b34"
+      "sha256": "182a1a962dd860f4d356180bba0bd849255d7d91ff6b89c6fcc4f156c1cf6375"
     },
     {
       "source": "agents/pan-setup.agent.md",
       "destination": "agents/pan-setup.agent.md",
-      "sha256": "9fddab40cc5511934d92064e6cfdc50e7af7320d45b7ace9b72226619c45efee"
+      "sha256": "7bc205fc972a04d55940068afda3916cc91db9271ceea023463e64762e77745a"
     },
     {
       "source": "instructions/pan.instructions.md",
       "destination": "instructions/pan.instructions.md",
-      "sha256": "f6af9b7d4df162312cd55bc858b399999a626ef5d2e77a858c20562ac0802cdd"
+      "sha256": "1acbb024bb8c4a9928e4671e7d90c1d3dc7c213831a296acf59c8a10e867d8df"
     },
     {
       "source": "skills/pan-attention/SKILL.md",
       "destination": "skills/pan-attention/SKILL.md",
-      "sha256": "d4a6fa05ec8035ed456cae420e8bf49e5ec86e3afdb311d4d4d30a918e16a133"
+      "sha256": "2e39ecf80913a7ae2eb8664923efcb7a9e158b9eef0867a0a8f5b33e0054951f"
     },
     {
       "source": "skills/pan-portfolio/SKILL.md",
       "destination": "skills/pan-portfolio/SKILL.md",
-      "sha256": "91681f020836721efd0b7600ff0ae6a3083c86298a11772150e952196f0c9f9a"
+      "sha256": "478807228d727ead7c8d186d0b5fd687d2727b5f5706787823cd1698c64cab2a"
     },
     {
       "source": "skills/pan-workstream/SKILL.md",
       "destination": "skills/pan-workstream/SKILL.md",
-      "sha256": "1a7f645fcada10916c4713445f7f768bdb21a1576b4481aae831ef2fa3622599"
+      "sha256": "7df57e0d6cc098ac3636e5bf21f5311fbffdf34b708baa2dfeb574a526d6c12e"
     }
   ]
 }

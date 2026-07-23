@@ -88,72 +88,6 @@ test("retries schema loading after a transient failure", async () => {
   );
 });
 
-test("creates an Issue, adds it to the Project, and sets fields", async () => {
-  const { store, gh } = fixture();
-  const item = await store.createItem({
-    title: "Implement a runner",
-    body: "Acceptance criteria",
-    labels: ["enhancement"],
-    assignees: ["octocat"],
-    fields: {
-      owner: "agent",
-      status: "ready",
-      requirements: ["repo:AmoebaChant/pan", "env:local"],
-      workstream: "lab/pan",
-    },
-  });
-
-  assert.equal(item.number, 2);
-  assert.equal(item.fields.owner, "agent");
-  assert.equal(item.fields.status, "ready");
-  assert.deepEqual(item.requirements, [
-    "repo:AmoebaChant/pan",
-    "env:local",
-  ]);
-  assert.deepEqual(gh.issueCreates[0].labels, ["enhancement"]);
-  assert.deepEqual(gh.issueCreates[0].assignees, ["octocat"]);
-});
-
-test("scopes marker lookup to open repair Issues", async () => {
-  const { store, gh } = fixture({
-    openIssues: [
-      {
-        number: 9,
-        title: "Repair PAN",
-        body: "<!-- pan:self-repair:abc -->",
-        url: "https://github.com/AmoebaChant/pan-work/issues/9",
-        state: "OPEN",
-      },
-    ],
-  });
-
-  const issue = await store.findIssueByMarker(
-    "<!-- pan:self-repair:abc -->",
-    { state: "open" },
-  );
-
-  assert.equal(issue.number, 9);
-  const args = gh.jsonCalls.find(
-    (call) => call[0] === "issue" && call[1] === "list",
-  );
-  assert.equal(valueAfter(args, "--state"), "open");
-});
-
-test("preserves a partially created Issue when Project field setup fails", async () => {
-  const { store, gh } = fixture({ failProjectEdit: true });
-
-  await assert.rejects(
-    store.createItem({
-      title: "Broken item",
-      fields: { owner: "agent" },
-    }),
-    /project edit failed/,
-  );
-
-  assert.equal(gh.items.some((item) => item.id === "item-2"), true);
-  assert.deepEqual(gh.deletedIssues, []);
-});
-
 test("rejects unknown fields and invalid select options", async () => {
   const { store, gh } = fixture();
 
@@ -165,14 +99,6 @@ test("rejects unknown fields and invalid select options", async () => {
     store.setFields("item-1", { owner: "agent", status: "invalid" }),
     /Invalid status value/,
   );
-  await assert.rejects(
-    store.createItem({
-      title: "Must not be created",
-      fields: { status: "invalid" },
-    }),
-    /Invalid status value/,
-  );
-  assert.equal(gh.issueCreates.length, 0);
   assert.equal(gh.projectEdits, 0);
 });
 
@@ -266,7 +192,7 @@ test("bounds board reads and fetches individual items directly", async () => {
   );
 });
 
-test("reads every Project page in canonical order with complete Issue evidence", async () => {
+test("reads every Project page in canonical order", async () => {
   const { store, gh } = fixture({
     items: [
       makeItem({
@@ -291,20 +217,17 @@ test("reads every Project page in canonical order with complete Issue evidence",
     projectPageSize: 2,
   });
 
-  const snapshot = await store.readCanonicalProject();
+  const items = await store.listItems();
 
-  assert.equal(snapshot.complete, true);
-  assert.match(snapshot.id, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(snapshot.capturedAt, NOW.toISOString());
   assert.deepEqual(
-    snapshot.items.map((item) => item.id),
+    items.map((item) => item.id),
     ["item-3", "item-1", "item-2"],
   );
-  assert.equal(snapshot.items[0].createdAt, "2026-07-17T18:00:00Z");
-  assert.equal(snapshot.items[0].updatedAt, "2026-07-17T19:00:00Z");
-  assert.deepEqual(snapshot.items[0].assignees, ["octocat"]);
-  assert.deepEqual(snapshot.items[0].labels, ["urgent"]);
-  assert.equal(snapshot.items[0].comments[0].author, "octocat");
+  assert.equal(items[0].createdAt, "2026-07-17T18:00:00Z");
+  assert.equal(items[0].updatedAt, "2026-07-17T19:00:00Z");
+  assert.deepEqual(items[0].assignees, ["octocat"]);
+  assert.deepEqual(items[0].labels, ["urgent"]);
+  assert.equal(items[0].comments[0].author, "octocat");
   assert.equal(
     gh.jsonCalls.filter(
       (args) =>
@@ -313,18 +236,6 @@ test("reads every Project page in canonical order with complete Issue evidence",
     ).length,
     2,
   );
-});
-
-test("derives a stable identity from ordered mutable evidence", async () => {
-  const { store, gh } = fixture();
-
-  const first = await store.readCanonicalProject();
-  const unchanged = await store.readCanonicalProject();
-  gh.items[0].content.updatedAt = "2026-07-17T19:30:00Z";
-  const changed = await store.readCanonicalProject();
-
-  assert.equal(first.id, unchanged.id);
-  assert.notEqual(first.id, changed.id);
 });
 
 test("fails closed at the configurable Project safety ceiling", async () => {
@@ -338,7 +249,7 @@ test("fails closed at the configurable Project safety ceiling", async () => {
   });
 
   await assert.rejects(
-    store.readCanonicalProject(),
+    store.listItems(),
     /exceeding the 2-entry read limit/,
   );
 });
@@ -349,17 +260,14 @@ test("fails closed when an item has unpaged field values", async () => {
   await assert.rejects(store.getItem("item-1"), /cannot be read safely/);
 });
 
-test("classifies unreadable and unsupported Project content without omitting it", async () => {
+test("rejects unreadable Project content and preserves supported non-Issue items", async () => {
   for (const option of [
     "truncatedAssignees",
     "truncatedLabels",
     "truncatedComments",
   ]) {
     const { store } = fixture({ [option]: true });
-    const snapshot = await store.readCanonicalProject();
-    assert.equal(snapshot.complete, false, option);
-    assert.equal(snapshot.items.length, 1, option);
-    assert.equal(snapshot.items[0].contentClassification, "unreadable", option);
+    await assert.rejects(store.listItems(), /cannot be read safely/, option);
   }
 
   const { store } = fixture({
@@ -373,10 +281,9 @@ test("classifies unreadable and unsupported Project content without omitting it"
       }),
     ],
   });
-  const snapshot = await store.readCanonicalProject();
-  assert.equal(snapshot.complete, true);
+  const items = await store.listItems();
   assert.deepEqual(
-    snapshot.items.map((item) => item.contentClassification),
+    items.map((item) => item.contentClassification),
     ["draft", "pull-request", "cross-domain-issue"],
   );
 });
@@ -385,7 +292,7 @@ test("preserves Project read failures without fabricating comments", async () =>
   const { store } = fixture({ failProjectRead: true });
 
   await assert.rejects(
-    store.readCanonicalProject(),
+    store.listItems(),
     /API rate limit exceeded while reading Project items/,
   );
 });
@@ -684,176 +591,6 @@ test("keeps an Issue open when completed work enters review", async () => {
   assert.deepEqual(gh.issueStateEdits, []);
 });
 
-test("completes in-review work after its linked pull request merges", async () => {
-  const { store, gh } = fixture({
-    items: [
-      makeItem({
-        status: "in-review",
-        linkedPullRequests: [
-          {
-            number: 42,
-            url: "https://github.com/AmoebaChant/pan/pull/42",
-            state: "MERGED",
-            mergedAt: "2026-07-17T19:30:00Z",
-            repository: "AmoebaChant/pan",
-          },
-        ],
-      }),
-    ],
-  });
-
-  const result = await store.reconcileMergedPullRequests();
-
-  assert.deepEqual(result, {
-    scanned: 1,
-    completed: [
-      {
-        itemId: "item-1",
-        issueNumber: 1,
-        pullRequestUrl: "https://github.com/AmoebaChant/pan/pull/42",
-      },
-    ],
-  });
-  assert.equal((await store.getItem("item-1")).fields.status, "done");
-  assert.deepEqual(gh.issueStateEdits, [
-    { number: 1, action: "close", reason: "completed" },
-  ]);
-});
-
-test("leaves in-review work unchanged while its linked pull request is open", async () => {
-  const { store, gh } = fixture({
-    items: [
-      makeItem({
-        status: "in-review",
-        linkedPullRequests: [
-          {
-            number: 42,
-            url: "https://github.com/AmoebaChant/pan/pull/42",
-            state: "OPEN",
-            mergedAt: null,
-            repository: "AmoebaChant/pan",
-          },
-        ],
-      }),
-    ],
-  });
-
-  const result = await store.reconcileMergedPullRequests();
-
-  assert.deepEqual(result, { scanned: 1, completed: [] });
-  assert.equal((await store.getItem("item-1")).fields.status, "in-review");
-  assert.deepEqual(gh.issueStateEdits, []);
-});
-
-test("marks an auto-closed linked Issue done without closing it again", async () => {
-  const { store, gh } = fixture({
-    items: [
-      makeItem({
-        status: "in-review",
-        state: "CLOSED",
-        linkedPullRequests: [
-          {
-            number: 42,
-            url: "https://github.com/AmoebaChant/pan/pull/42",
-            state: "MERGED",
-            mergedAt: "2026-07-17T19:30:00Z",
-            repository: "AmoebaChant/pan",
-          },
-        ],
-      }),
-    ],
-  });
-
-  const result = await store.reconcileMergedPullRequests();
-
-  assert.equal(result.completed.length, 1);
-  assert.equal((await store.getItem("item-1")).fields.status, "done");
-  assert.deepEqual(gh.issueStateEdits, []);
-});
-
-test("preserves confirmed done status when merged PR Issue closure fails", async () => {
-  const { store } = fixture({
-    items: [
-      makeItem({
-        status: "in-review",
-        linkedPullRequests: [
-          {
-            number: 42,
-            url: "https://github.com/AmoebaChant/pan/pull/42",
-            state: "MERGED",
-            mergedAt: "2026-07-17T19:30:00Z",
-            repository: "AmoebaChant/pan",
-          },
-        ],
-      }),
-    ],
-    failIssueClose: true,
-  });
-
-  const result = await store.reconcileMergedPullRequests();
-
-  assert.deepEqual(result.completed, []);
-  assert.equal((await store.getItem("item-1")).fields.status, "done");
-});
-
-test("retries closure of a done merged pull request without another status transition", async () => {
-  const { store, gh } = fixture({
-    items: [
-      makeItem({
-        status: "in-review",
-        linkedPullRequests: [
-          {
-            number: 42,
-            url: "https://github.com/AmoebaChant/pan/pull/42",
-            state: "MERGED",
-            mergedAt: "2026-07-17T19:30:00Z",
-            repository: "AmoebaChant/pan",
-          },
-        ],
-      }),
-    ],
-    failIssueClose: true,
-  });
-
-  await store.reconcileMergedPullRequests();
-  gh.failIssueClose = false;
-  const result = await store.reconcileMergedPullRequests();
-
-  assert.equal(result.completed.length, 1);
-  assert.equal((await store.getItem("item-1")).fields.status, "done");
-  assert.deepEqual(gh.issueStateEdits, [
-    { number: 1, action: "close", reason: "completed" },
-    { number: 1, action: "close", reason: "completed" },
-  ]);
-});
-
-test("does not complete merged review work with an active lease", async () => {
-  const { store, gh } = fixture({
-    items: [
-      makeItem({
-        status: "in-review",
-        claimedBy: "runner-a",
-        leaseUntil: FUTURE,
-        linkedPullRequests: [
-          {
-            number: 42,
-            url: "https://github.com/AmoebaChant/pan/pull/42",
-            state: "MERGED",
-            mergedAt: "2026-07-17T19:30:00Z",
-            repository: "AmoebaChant/pan",
-          },
-        ],
-      }),
-    ],
-  });
-
-  const result = await store.reconcileMergedPullRequests();
-
-  assert.deepEqual(result.completed, []);
-  assert.equal((await store.getItem("item-1")).fields.status, "in-review");
-  assert.deepEqual(gh.issueStateEdits, []);
-});
-
 test("restores a claimed task when closing its Issue fails", async () => {
   const { store, gh } = fixture({
     items: [
@@ -945,90 +682,6 @@ test("reads Issue comments", async () => {
       createdAt: "2026-07-20T16:00:00Z",
       author: "octocat",
     },
-  ]);
-});
-
-test("adds open repository Issues missing from the Project", async () => {
-  const { store, gh } = fixture({
-    openIssues: [
-      {
-        number: 1,
-        title: "Task",
-        body: "",
-        url: "https://github.com/AmoebaChant/pan-work/issues/1",
-        state: "OPEN",
-      },
-      {
-        number: 2,
-        title: "New task",
-        body: "Details",
-        url: "https://github.com/AmoebaChant/pan-work/issues/2",
-        state: "OPEN",
-      },
-    ],
-  });
-
-  const items = await store.syncOpenIssues();
-
-  assert.equal(items.length, 2);
-  assert.equal(items[1].number, 2);
-});
-
-test("finds existing Issue membership and adds a missing Issue without cleanup", async () => {
-  const { store, gh } = fixture({
-    items: [makeItem({ number: 1 })],
-    openIssues: [
-      {
-        number: 2,
-        title: "Existing Issue",
-        body: "",
-        url: "https://github.com/AmoebaChant/pan-work/issues/2",
-        state: "OPEN",
-      },
-    ],
-  });
-  const snapshot = await store.readCanonicalProject();
-
-  const existing = await store.findProjectIssueMembership(
-    "https://github.com/AmoebaChant/pan-work/issues/1",
-    { expectedProjectId: snapshot.id },
-  );
-  const added = await store.ensureIssueProjectMembership(
-    "https://github.com/AmoebaChant/pan-work/issues/2",
-    { expectedProjectId: snapshot.id },
-  );
-
-  assert.equal(existing.item.id, "item-1");
-  assert.equal(added.added, true);
-  assert.equal(added.item.id, "item-2");
-  assert.deepEqual(gh.deletedIssues, []);
-});
-
-test("confirms each required Project field and retains partial registration failures", async () => {
-  const { store, gh } = fixture({
-    items: [makeItem({ owner: "", status: "", priority: "", autonomy: "" })],
-    failProjectEdit: true,
-  });
-
-  const failed = await store.ensureItemFields("item-1", {
-    owner: "unassigned",
-    status: "untriaged",
-  });
-
-  assert.equal(failed.complete, false);
-  assert.deepEqual(failed.confirmedFields, []);
-  assert.equal((await store.getItem("item-1")).id, "item-1");
-  assert.deepEqual(gh.deletedIssues, []);
-});
-
-test("updates Project item ordering", async () => {
-  const { store, gh } = fixture();
-
-  await store.reorderItems(["item-2", "item-1"]);
-
-  assert.deepEqual(gh.projectOrders, [
-    { itemId: "item-2", afterId: undefined },
-    { itemId: "item-1", afterId: "item-2" },
   ]);
 });
 

@@ -33,7 +33,7 @@ export async function verifyCopilotInvocationContract({
   const missing = required.filter((option) => !help.includes(option));
   if (missing.length > 0) {
     const manual = requireScheduling
-      ? ` Upgrade Copilot CLI or start a read-only session, then create the schedule manually with ${manualScheduleCommand({
+      ? ` Upgrade Copilot CLI or start without scheduling, then create the schedule manually with ${manualScheduleCommand({
           intervalSeconds: scheduling?.reviewIntervalSeconds
             ? nativeScheduleIntervalSeconds(scheduling.reviewIntervalSeconds)
             : MAX_NATIVE_SCHEDULE_INTERVAL_SECONDS,
@@ -46,7 +46,7 @@ export async function verifyCopilotInvocationContract({
 }
 
 /**
- * Creates the initial writing-session request that delegates scheduling to Copilot.
+ * Creates the initial session request that delegates scheduling to Copilot.
  */
 export function buildScheduleBootstrapPrompt({
   scheduling,
@@ -66,10 +66,10 @@ export function buildScheduleBootstrapPrompt({
     intervalSeconds,
   });
   return [
-    "This is a PAN writing session. Establish exactly one native session-scoped recurring schedule; do not create a Node timer, detached process, or external queue.",
+    "Establish exactly one native session-scoped recurring schedule; do not create a Node timer, detached process, or external queue.",
     `Use ${manualScheduleCommand({ intervalSeconds, prompt: reviewPrompt })}.`,
     startup,
-    "The Copilot session queue is the only non-overlap mechanism. Keep failures, rejected effects, and incomplete evidence visible in this session.",
+    "The Copilot session queue is the only non-overlap mechanism. Keep failed or incomplete reviews visible in this session.",
   ].join("\n\n");
 }
 
@@ -80,9 +80,10 @@ export function buildScheduledReviewPrompt({ dueStatePath } = {}) {
   return [
     "Run the scheduled PAN portfolio review in this session.",
     `Read the launch-local due metadata at ${dueStatePath}. If its nextReviewAt is still in the future, report that no review is due and make no portfolio decision or mutation.`,
-    "When due, establish or verify current leadership, reconcile missing Issues and merged pull requests, then read fresh complete portfolio evidence before any recommendation or mutation. Do not use conversation memory as authorization.",
+    "When due, read the configured Project and current Issue state directly from GitHub. Never import unrelated Issues, resurrect closed Issues, or alter active runner lease fields.",
+    "Discuss recommendations before mutation unless the user has already granted specific approval. Re-read each target immediately before an approved write and verify it afterward.",
     "After a completed review attempt, update the due metadata with the review time and next configured due time. Follow the configured bounded retry and rate-limit guidance; never busy-loop or create another schedule.",
-    "Report failed, rejected, or incomplete helper results accurately in this session.",
+    "Report failed or incomplete reviews accurately in this session.",
   ].join(" ");
 }
 

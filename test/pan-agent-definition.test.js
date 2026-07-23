@@ -19,9 +19,9 @@ test("defines one user-scoped hostless Pan identity", async () => {
   assert.equal(frontmatter["disable-model-invocation"], "true");
   assert.equal(frontmatter["user-invocable"], "true");
   assert.equal(frontmatter.tools, undefined);
-  assert.match(body, /Interactive and scheduled turns/i);
-  assert.match(body, /ordinary built-in file, search, git, shell, and GitHub/i);
-  assert.match(body, /Tool availability is not authority/i);
+  assert.match(body, /ordinary file, search, git, shell, and GitHub/i);
+  assert.match(body, /use `gh` directly/i);
+  assert.match(body, /Re-read targets before writes/i);
 });
 
 test("packages a conversational setup agent that delegates mechanics to PAN commands", async () => {
@@ -32,7 +32,7 @@ test("packages a conversational setup agent that delegates mechanics to PAN comm
   assert.equal(frontmatter["user-invocable"], "true");
   assert.match(body, /You are Pan speaking directly/i);
   assert.match(body, /runnerOnline.*profile.*eligib/i);
-  assert.match(body, /setup session has no\s+domain leadership/i);
+  assert.match(body, /not a\s+domain-bound Pan session/i);
   assert.match(body, /domain-bound Pan session/i);
   assert.match(body, /exact `configPath`\s+and `runnerProfilePath`/i);
   assert.match(body, /navigate their workloads/i);
@@ -53,42 +53,35 @@ test("packages a conversational setup agent that delegates mechanics to PAN comm
   assert.doesNotMatch(body, /npx @amoebachant\/pan/);
 });
 
-test("shares hostless evidence, authority, and scheduling instructions", async () => {
+test("shares direct GitHub triage and scheduling instructions", async () => {
   const source = await readFile(INSTRUCTIONS_PATH, "utf8");
 
   for (const heading of [
     "# PAN domain instructions",
-    "## Evidence and recommendations",
-    "## Authority and mutations",
+    "## Live GitHub workflow",
+    "## Triage and mutations",
     "## Session behavior",
   ]) {
     assert.match(source, new RegExp(`^${escapeRegex(heading)}$`, "m"));
   }
-  assert.match(source, /fresh snapshot/i);
-  assert.match(source, /classify the complete portfolio/i);
-  assert.match(
-    source,
-    /facts, interpretations,\s+assumptions, and uncertainties/i,
-  );
-  assert.match(source, /current PAN leadership/i);
-  assert.match(source, /native Copilot periodic review/i);
-  assert.match(source, /read-only product-context roots/i);
-  assert.match(source, /pan evidence portfolio/i);
-  assert.match(source, /pan action validate/i);
-  assert.match(source, /pan action apply/i);
+  assert.match(source, /GitHub Issues and the configured\s+Project are the only work state/i);
+  assert.match(source, /Use `gh` directly/i);
+  assert.match(source, /PAN_PROJECT_SCHEMA/);
+  assert.match(source, /Never add a\s+closed Issue/i);
+  assert.match(source, /There is no PAN\s+leadership lease or read-only mode/i);
+  assert.doesNotMatch(source, /pan evidence|pan action|pan reconcile/i);
 });
 
-test("packages bounded portfolio, workstream, and attention skills", async () => {
+test("packages direct-GitHub portfolio, workstream, and attention skills", async () => {
   const expected = {
-    "pan-attention": ["pan attention list", "pan attention answer", "pan attention add"],
+    "pan-attention": ["gh project item-list", "gh issue view", "gh issue create"],
     "pan-portfolio": [
-      "pan evidence portfolio",
-      "pan reconcile missing-issues",
-      "pan reconcile merged-prs",
-      "pan action validate",
-      "pan action apply",
+      "gh project item-list",
+      "gh issue list",
+      "gh issue view",
+      "gh project item-edit",
     ],
-    "pan-workstream": ["pan workstream prepare", "pan workstream publish"],
+    "pan-workstream": ["isolated worktree", "merge with `--no-ff`"],
   };
 
   for (const [name, commands] of Object.entries(expected)) {

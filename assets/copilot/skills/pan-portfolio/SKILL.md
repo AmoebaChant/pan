@@ -1,44 +1,38 @@
 ---
 name: pan-portfolio
-description: Review a configured PAN portfolio using complete evidence, deterministic reconciliation, and safe action helpers.
+description: Review and triage a PAN portfolio directly from live GitHub Issues and Project state.
 ---
 
 # PAN portfolio review
 
-Use this skill for a portfolio review, a next-work recommendation, Project
-triage, ordering, or reconciliation request.
+Use this skill for portfolio review, next-work recommendations, Project triage,
+ordering, or completion checks.
 
-1. Read fresh complete evidence:
-   `pan evidence portfolio --schema-version 1 --config <config> --json`.
-   Stop and explain the diagnostics if its result is incomplete or not usable
-   for mutation.
-2. Classify every Project item. Account explicitly for completed, protected,
-   blocked, leased, in-progress, and in-review work; do not replace the
-   canonical Project order with a local queue.
-3. In a writing session, run deterministic maintenance before model-selected
-   changes:
-   - `pan reconcile missing-issues --apply --schema-version 1 --config <config> --json`
-   - `pan reconcile merged-prs --apply --schema-version 1 --config <config> --json`
-   Refresh the portfolio after any confirmed effect.
-4. State the recommendation with durable evidence, rationale, confidence, and
-   uncertainty. Ask a focused question when evidence cannot support a safe
-   decision.
-5. For a model-selected mutation, write the supported action document, then run
-   `pan action validate --action-file <file> --schema-version 1 --config <config> --json`.
-   Apply only a validated action while current leadership is confirmed:
-   `pan action apply --action-file <file> --schema-version 1 --config <config> --json`.
+1. Parse `PAN_DOMAIN_PROJECT` as `<owner>/<number>` and read
+   `PAN_PROJECT_SCHEMA`.
+2. Read canonical Project order with `gh project item-list`. Read repository
+   Issues directly with `gh issue list --state all`; fetch comments and linked
+   pull requests only for relevant items.
+3. Join Issue state to Project items by Issue URL. Exclude closed Issues from
+   new or untriaged work even if the Project result lacks Issue state.
+4. Classify every item, including done, blocked, leased, in-progress, in-review,
+   ready, needs-detail, and untriaged work. Preserve Project order as human
+   precedence within the same priority.
+5. State recommendations with Issue URLs and current fields. Ask one focused
+   question when the live data is insufficient.
+6. For changes not explicitly requested, show proposed updates and get approval.
+7. Immediately before each write, use `gh issue view` to confirm the Issue is
+   still open and re-read the Project item. Preserve active runner fields.
+8. Apply the smallest direct `gh project item-add`, `gh project item-edit`,
+   `gh issue edit`, or `gh issue comment` operation. Re-read the target and
+   report only confirmed effects.
 
-Treat the helper envelope as authoritative. Report its actual status and
-confirmed effects; do not call a rejected, incomplete, or unconfirmed action
-successful.
+Never automatically register all repository Issues. A closed Issue must never
+be added or resurrected without an explicit user request.
 
 ## Scheduled review
 
-For a native scheduled turn, first read the launch-local due metadata named by
-`PAN_SCHEDULE_DUE_STATE`. If `nextReviewAt` has not arrived, report that no
-review is due and do not make a portfolio decision or mutation. When it is due,
-perform the same reconciliation and fresh evidence steps above immediately
-before reasoning. After the review attempt, update the metadata with the review
-time and next configured due time. Never use a prior conversation or a missed
-session as evidence that a review is due, and never create another scheduler or
-retry loop.
+First read the due metadata at `PAN_SCHEDULE_DUE_STATE`. If no review is due,
+stop. When due, perform the same direct GitHub reads. Scheduled reviews are
+read-only unless the user supplied an explicit standing mutation policy.
+Update the due metadata after the attempt and never create another scheduler.

@@ -12,7 +12,7 @@ import {
   validateDomainConfig,
 } from "../src/index.js";
 
-test("normalizes version 2 defaults without host runtime settings", () => {
+test("normalizes the minimal version 2 session configuration", () => {
   const config = validateDomainConfig(makeConfig());
 
   assert.equal(config.version, 2);
@@ -25,10 +25,9 @@ test("normalizes version 2 defaults without host runtime settings", () => {
     retrySeconds: 60,
     rateLimitRetrySeconds: 900,
   });
-  assert.deepEqual(config.leadership, {
-    leaseSeconds: 120,
-    heartbeatSeconds: 30,
-  });
+  assert.equal(config.state, undefined);
+  assert.equal(config.leadership, undefined);
+  assert.equal(config.policy, undefined);
   assert.equal(config.cadences, undefined);
   assert.equal(config.transcripts, undefined);
 });
@@ -48,7 +47,7 @@ test("reads version 1 into the version 2 runtime shape with diagnostics", () => 
   assert.equal(config.version, 2);
   assert.equal(config.session.agent.name, "pan");
   assert.equal(config.scheduling.reviewIntervalSeconds, 3_600);
-  assert.equal(config.leadership.leaseSeconds, 90);
+  assert.equal(config.leadership, undefined);
   assert.match(
     config.migrationDiagnostics.join("\n"),
     /activePollSeconds: obsolete host polling setting removed/,
@@ -56,6 +55,10 @@ test("reads version 1 into the version 2 runtime shape with diagnostics", () => 
   assert.match(
     config.migrationDiagnostics.join("\n"),
     /transcripts: obsolete host transcript setting removed/,
+  );
+  assert.match(
+    config.migrationDiagnostics.join("\n"),
+    /leaderLeaseSeconds: obsolete session leadership setting removed/,
   );
 });
 
@@ -70,18 +73,12 @@ test("proposes an explicit version 2 migration without mutating the input", () =
   assert.match(diagnostics.join("\n"), /cadences.fullReviewSeconds/);
 });
 
-test("validates product-context roots, scheduling, leadership, and policy", () => {
+test("validates product-context roots and scheduling", () => {
   const config = makeConfig();
   config.session.productContextRoots = [
     { label: "product", path: path.resolve("product-context") },
   ];
   config.scheduling = { reviewIntervalSeconds: 600, retrySeconds: 60 };
-  config.leadership = { leaseSeconds: 120, heartbeatSeconds: 30 };
-  config.policy = {
-    automatic: ["no-op"],
-    approvalRequired: ["issue-create"],
-    prohibited: ["issue-comment"],
-  };
   assert.equal(
     validateDomainConfig(config).session.productContextRoots[0].label,
     "product",
@@ -103,13 +100,6 @@ test("validates product-context roots, scheduling, leadership, and policy", () =
     /must not duplicate another product-context root label/,
   );
 
-  const heartbeat = makeConfig();
-  heartbeat.leadership = { leaseSeconds: 60, heartbeatSeconds: 60 };
-  assert.throws(
-    () => validateDomainConfig(heartbeat),
-    /leadership\.heartbeatSeconds must be less than leadership\.leaseSeconds/,
-  );
-
   const retry = makeConfig();
   retry.scheduling = { retrySeconds: 120, rateLimitRetrySeconds: 60 };
   assert.throws(
@@ -117,15 +107,21 @@ test("validates product-context roots, scheduling, leadership, and policy", () =
     /scheduling\.rateLimitRetrySeconds must be greater than or equal/,
   );
 
-  const classifications = makeConfig();
-  classifications.policy = {
-    automatic: ["no-op"],
-    approvalRequired: ["no-op"],
-  };
-  assert.throws(
-    () => validateDomainConfig(classifications),
-    /must not classify an action more than once/,
-  );
+});
+
+test("accepts obsolete version 2 fields only as ignored compatibility input", () => {
+  const config = makeConfig();
+  config.state = { branch: "pan-state", path: ".pan" };
+  config.leadership = { leaseSeconds: 60, heartbeatSeconds: 60 };
+  config.policy = { automatic: ["anything"] };
+
+  const normalized = validateDomainConfig(config);
+
+  assert.deepEqual(normalized.state, { branch: "pan-state", path: ".pan" });
+  assert.equal(normalized.leadership, undefined);
+  assert.equal(normalized.policy, undefined);
+  assert.match(normalized.migrationDiagnostics.join("\n"), /leadership.*ignored/);
+  assert.match(normalized.migrationDiagnostics.join("\n"), /policy.*ignored/);
 });
 
 test("rejects runner-only, credentials, and version 2 host fields", () => {
@@ -197,10 +193,6 @@ function makeConfig() {
       projectNumber: 12,
       path: path.resolve("domain-clone"),
     },
-    state: {
-      branch: "pan-state",
-      path: ".pan",
-    },
     session: {
       agent: {
         name: "pan",
@@ -215,6 +207,10 @@ function makeVersion1Config() {
   return {
     ...legacy,
     version: 1,
+    state: {
+      branch: "pan-state",
+      path: ".pan",
+    },
     agent: session.agent,
   };
 }

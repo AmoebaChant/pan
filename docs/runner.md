@@ -1,10 +1,9 @@
 # PAN runner
 
-`pan-runner` is an independent, pull-based local worker. It has no dependency
-on a PAN session being the domain leader. It reads a private runner profile,
-selects compatible `owner=agent`, `ready` Project items in canonical order,
-claims them with a renewable lease, and launches headed Copilot workers in
-isolated worktrees.
+`pan-runner` is an independent, pull-based local worker. It reads a private runner
+profile, selects compatible `owner=agent`, `ready` Project items by priority
+while preserving Project order among ties, claims them with a renewable lease,
+and launches headed Copilot workers in isolated worktrees.
 
 ## Profile and startup
 
@@ -30,14 +29,13 @@ repositories; an online profile must have at least one.
 ## Delivery policy
 
 Playbooks default to `"delivery": "pull-request"`. That policy creates or
-updates a pull request and leaves the Project item in `in-review`; a later
-`pan reconcile merged-prs --apply` confirms the merge and completion.
+updates a pull request and leaves the Project item in `in-review`; Pan confirms
+the merge directly from GitHub before completing the Issue and Project item.
 
 `"delivery": "direct"` is exceptional and must be explicitly authorized for
 that playbook. The worker integrates with the configured default branch and
 reports a commit. The runner validates that the commit is reachable from the
-default branch before moving the item to `done` and closing its Issue. PAN
-session leadership does not change either policy.
+default branch before moving the item to `done` and closing its Issue.
 
 ## Worker lifecycle
 
@@ -50,9 +48,9 @@ pull request before Project transition and cleanup.
 An operational stop, terminal closure, launch failure, lost lease, or missing
 result returns work to `ready` with resumable state; it is not human attention.
 A real worker question writes a structured needs-human record and blocks the
-task. `pan attention answer` restores it to ready agent work after a durable
-answer. Interrupted worktrees and saved Copilot session IDs allow a compatible
-runner to resume safely.
+task. Pan records the answer directly in the Issue and restores it to ready
+agent work. Interrupted worktrees and saved Copilot session IDs allow a
+compatible runner to resume safely.
 
 Runner profile changes require restarting `pan-runner`. PAN domain, session, or
 scheduling changes do not.

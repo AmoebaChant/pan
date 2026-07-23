@@ -1,109 +1,42 @@
-# PAN helpers, triage, and attention
+# PAN triage and attention
 
-PAN helpers are stateless commands for a configured private domain. They create
-fresh evidence and return versioned JSON-friendly results rather than relying
-on a host process. Every helper requires:
+Pan works directly with the configured GitHub repository and Project through
+`gh`. The environment provides:
 
-```text
---schema-version 1 --config <domain-config.json>
-```
+- `PAN_DOMAIN_REPOSITORY`: Issue repository
+- `PAN_DOMAIN_PROJECT`: `<owner>/<number>`
+- `PAN_PROJECT_SCHEMA`: shared Project field contract
 
-`PAN_CONFIG` may provide the configuration path. `--json` prints the complete
-result. A result has a status of `confirmed`, `rejected`, `incomplete`, or
-`failed`, confirmed effects, diagnostics, recovery steps, and operation
-receipts where applicable. A non-confirmed result is not permission to assume a
-side effect occurred.
+## Triage
 
-## Evidence
+Read the Project in canonical order with `gh project item-list`, read current
+Issue state with `gh issue list` or `gh issue view`, and join by Issue URL.
+Closed Issues are not triage candidates and are never automatically added back
+to the Project.
 
-```powershell
-pan evidence issues --schema-version 1 --config C:\domains\domain\pan.json --json
-pan evidence portfolio --schema-version 1 --config C:\domains\domain\pan.json --json
-```
+Pan discusses priority, ownership, autonomy, requirements, and workstream with
+the user, then writes approved values with `gh project item-edit`. It re-reads
+each Issue and Project item immediately before mutation and verifies the result
+afterward. Active runner status and lease fields are left untouched.
 
-`issues` reads the complete configured-repository Issue catalog and reports
-whether comments and relationships are complete. `portfolio` reads Project,
-Issue, workstream, and runner evidence and returns a snapshot ID plus expected
-state. Read again after incomplete evidence; only a complete,
-mutation-usable snapshot authorizes an action proposal.
-
-## Leadership
-
-```powershell
-pan leadership status --schema-version 1 --config C:\domains\domain\pan.json --json
-pan leadership assert --schema-version 1 --config C:\domains\domain\pan.json --json
-```
-
-`status` is read-only. `acquire`, `assert`, `renew`, and `release` require the
-active session's `PAN_SESSION_ID`, `PAN_LEADERSHIP_HOLDER`, and
-`PAN_LEADERSHIP_GENERATION` environment values. They return rejected results
-when authority cannot be confirmed. Continue read-only or start a new session
-after lease expiry; never invent or reuse a lost generation.
-
-## Reconciliation
-
-```powershell
-pan reconcile missing-issues --schema-version 1 --config C:\domains\domain\pan.json --json
-pan reconcile missing-issues --apply --schema-version 1 --config C:\domains\domain\pan.json --json
-pan reconcile merged-prs --apply --schema-version 1 --config C:\domains\domain\pan.json --json
-```
-
-Both operations are dry-run without `--apply`. Apply requires confirmed
-leadership. Missing-Issue reconciliation adds absent open Issues to the Project.
-Merged-PR reconciliation verifies eligible merged pull-request delivery and
-returns per-item receipts. Refresh evidence and retry only the unconfirmed
-effects when a result is incomplete.
-
-## Actions
-
-```powershell
-pan action validate --action-file C:\work\actions.json --schema-version 1 --config C:\domains\domain\pan.json --json
-pan action apply --action-file C:\work\actions.json --schema-version 1 --config C:\domains\domain\pan.json --json
-```
-
-The action file is JSON and is limited to 1 MiB. Validation checks schema,
-policy, citations, and fresh expected state without applying a mutation.
-Apply additionally requires current leadership. Every mutation needs an
-idempotency key and the matching expected-state snapshot; stale, unknown, or
-policy-prohibited actions are rejected. Use the receipt and recovery guidance,
-refresh evidence, and submit only the affected action again.
+PAN has no automatic missing-Issue reconciliation. Creating or triaging one
+open Issue may add that Issue to the Project; unrelated Issues are unchanged.
 
 ## Attention
 
-```powershell
-pan attention list --schema-version 1 --config C:\domains\domain\pan.json --json
-pan attention answer 42 "Use the existing API." --schema-version 1 --config C:\domains\domain\pan.json
-pan attention add "Implement feature" --workstream product/api --repo example/tool --owner agent --schema-version 1 --config C:\domains\domain\pan.json
-```
+Runner questions are stored in Issue comments using
+`<!-- pan:needs-human -->`. Pan reads blocked, needs-detail, and in-review items
+directly from GitHub. A user answer is recorded with
+`<!-- pan:answer -->`, then the task's prior fields are restored and the
+question is marked `<!-- pan:needs-human-resolved -->`.
 
-`list` reads unresolved human attention and in-review items. `answer` requires
-leadership and records a durable answer for an actionable item, restoring
-blocked agent work when appropriate. `add` requires leadership and creates an
-untriaged Issue. It accepts `--body` or `--body-file`, `--workstream`,
-`--owner`, `--priority`, `--autonomy`, and repeatable `--repo` and
-`--requirement`; do not combine `--body` and `--body-file`.
+New tasks are ordinary GitHub Issues. Pan adds a new open Issue to the Project
+and initializes fields from the shared schema. If details are incomplete it
+remains `untriaged` or `needs-detail`; complete agent work becomes `ready`.
 
-Use the `attention` family directly; `inbox`, `answer`, and `add` are not PAN
-commands.
+## Session
 
-## Workstream delivery
-
-```powershell
-pan workstream prepare product/api --rationale "Record agreed API decision" --source-turn turn-12 --schema-version 1 --config C:\domains\domain\pan.json --json
-pan workstream publish operation-id --schema-version 1 --config C:\domains\domain\pan.json --json
-```
-
-Both commands require the active session ID and confirmed leadership.
-`prepare` creates an isolated workspace and receipt for one workstream
-README. Make the intended change there, then `publish` uses the operation ID to
-commit, push, and verify it directly on the domain default branch. It returns
-commit, push, cleanup, or recovery information. This is direct PAN workstream
-delivery, not runner direct-delivery policy and not a pull request.
-
-## Session and migration
-
-Use `pan session --config <path>` for interactive PAN work. `pan start`,
-`stop`, `host`, `connect`, `daemon`, `chat`, and `review` are retired because
-PAN has no host, endpoint, token, MCP bridge, or detached scheduler. Exit and
-restart the foreground session after domain/session/scheduling changes. See
-[domain configuration](domain-configuration.md) and [runner](runner.md).
+Use `pan session --config <path>` for interactive work. PAN sessions run in the
+foreground and have no leadership/read-only modes. The old evidence, action,
+leadership, reconciliation, attention, and workstream helper command families
+have been removed.

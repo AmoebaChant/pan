@@ -7,7 +7,7 @@ import { validateDomainConfig } from "./domain-config.js";
 import { PanAssetService } from "./pan-assets.js";
 import { ProcessClient } from "./process-client.js";
 import { validateRunnerProfile } from "./runner-profile.js";
-import { normalizeGitHubRepositoryUrl } from "./workstream-delivery.js";
+import { normalizeGitHubRepositoryUrl } from "./github-repository.js";
 
 const APPROVAL_MODES = ["prompt", "allow-all"];
 const SETUP_MODES = ["create", "connect"];
@@ -505,10 +505,6 @@ function domainConfig({
       projectOwner,
       projectNumber,
       path: directory,
-    },
-    state: {
-      branch: "pan-state",
-      path: ".pan",
     },
     session: {
       agent: {
