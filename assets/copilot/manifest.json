@@ -4,7 +4,7 @@
     {
       "source": "agents/pan.agent.md",
       "destination": "agents/pan.agent.md",
-      "sha256": "dfefd7e32fd28c9fd6a5e184a32272df44d809377c8fd90f801e6cbd9ddd147f"
+      "sha256": "b9fe2233a97e22309767897091b4e42ee782c53506619912681a607bf2581b34"
     },
     {
       "source": "agents/pan-setup.agent.md",
