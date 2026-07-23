@@ -6,6 +6,7 @@ import test from "node:test";
 
 const ASSET_ROOT = path.resolve("assets/copilot");
 const AGENT_PATH = path.join(ASSET_ROOT, "agents/pan.agent.md");
+const SETUP_AGENT_PATH = path.join(ASSET_ROOT, "agents/pan-setup.agent.md");
 const INSTRUCTIONS_PATH = path.join(ASSET_ROOT, "instructions/pan.instructions.md");
 const MANIFEST_PATH = path.join(ASSET_ROOT, "manifest.json");
 
@@ -21,6 +22,29 @@ test("defines one user-scoped hostless PAN identity", async () => {
   assert.match(body, /Interactive and scheduled turns/i);
   assert.match(body, /ordinary built-in file, search, git, shell, and GitHub/i);
   assert.match(body, /Tool availability is not authority/i);
+});
+
+test("packages a conversational setup agent that delegates mechanics to PAN commands", async () => {
+  const source = await readFile(SETUP_AGENT_PATH, "utf8");
+  const { frontmatter, body } = parseAgent(source);
+
+  assert.equal(frontmatter.name, "pan-setup");
+  assert.equal(frontmatter["user-invocable"], "true");
+  assert.match(body, /You are PAN speaking directly/i);
+  assert.match(body, /navigate their workloads/i);
+  assert.match(body, /manage agents on their behalf/i);
+  assert.match(body, /private\s+GitHub repository/i);
+  assert.match(body, /call.*domain/i);
+  assert.match(body, /work and\s+personal life/i);
+  assert.match(body, /one focused question at a time/i);
+  assert.match(body, /Focus on what I do for the user/i);
+  assert.match(body, /existing local checkout/i);
+  assert.match(body, /resumable/i);
+  assert.match(body, /Do not restart the welcome or\s+questionnaire/i);
+  assert.match(body, /pan setup/);
+  assert.match(body, /pan verify/);
+  assert.match(body, /pan shortcuts create/);
+  assert.match(body, /npx @amoebachant\/pan session/);
 });
 
 test("shares hostless evidence, authority, and scheduling instructions", async () => {

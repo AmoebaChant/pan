@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import path from "node:path";
 import test from "node:test";
 
 import { runPanCli } from "../src/index.js";
@@ -63,6 +64,65 @@ test("runs setup before loading any existing configuration", async () => {
   assert.equal(received.repository, "example/domain");
   assert.deepEqual(result, expected);
   assert.deepEqual(JSON.parse(stdout.value), expected);
+});
+
+test("dispatches verification and shortcut creation with both configurations", async () => {
+  const stdout = capture();
+  const config = {
+    version: 2,
+    domain: {
+      repository: "example/domain",
+      projectOwner: "example",
+      projectNumber: 12,
+      path: "C:\\domains\\example",
+    },
+  };
+  const profile = {
+    domainConfigPath: path.resolve("domain.json"),
+    store: {
+      repository: "example/domain",
+      projectOwner: "example",
+      projectNumber: 12,
+      path: "C:\\domains\\example",
+    },
+  };
+  const verified = await runPanCli(
+    ["verify", "--config", "domain.json", "--profile", "runner.json", "--json"],
+    {
+      stdout,
+      domainConfigLoader: async () => config,
+      verificationFactory: async (options) => ({
+        status: "ready",
+        repository: options.config.domain.repository,
+      }),
+    },
+  );
+  assert.equal(verified.status, "ready");
+
+  stdout.value = "";
+  const shortcuts = await runPanCli(
+    [
+      "shortcuts",
+      "create",
+      "--config",
+      "domain.json",
+      "--profile",
+      "runner.json",
+      "--selection",
+      "both",
+      "--json",
+    ],
+    {
+      stdout,
+      domainConfigLoader: async () => config,
+      runnerProfileLoader: async () => profile,
+      shortcutFactory: async (options) => ({
+        status: "created",
+        shortcuts: [{ kind: options.selection, path: "desktop" }],
+      }),
+    },
+  );
+  assert.equal(shortcuts.status, "created");
 });
 
 test("dispatches a hostless session without constructing legacy host services", async () => {

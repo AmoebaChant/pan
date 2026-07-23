@@ -15,8 +15,12 @@ import { createAttentionCommandHandlers } from "./attention-commands.js";
 import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
 import { createWorkstreamCommandHandlers } from "./workstream-commands.js";
 import { createConfigCommandHandlers } from "./config-commands.js";
+import { startPanOnboarding } from "./pan-onboarding.js";
+import { createPanDesktopShortcuts } from "./pan-shortcuts.js";
 import { startPanSession } from "./pan-session.js";
 import { setupPanDomain } from "./pan-setup.js";
+import { assertMatchingDomain, verifyPanSetup } from "./pan-verification.js";
+import { loadRunnerProfile } from "./runner-profile.js";
 
 export async function runPanCli(
   args,
@@ -26,8 +30,12 @@ export async function runPanCli(
     stderr = process.stderr,
     gh = new GhClient(),
     domainConfigLoader = loadDomainConfig,
+    runnerProfileLoader = loadRunnerProfile,
+    onboardingFactory = startPanOnboarding,
     sessionFactory = startPanSession,
     setupFactory = setupPanDomain,
+    shortcutFactory = createPanDesktopShortcuts,
+    verificationFactory = verifyPanSetup,
     assetServiceFactory = (options) => new PanAssetService(options),
     commandContextFactory = createPanCommandContext,
     commandHandlers,
@@ -53,6 +61,13 @@ export async function runPanCli(
     });
   }
   const parsed = parseArgs(args, env);
+  if (parsed.command === "onboard") {
+    const result = await onboardingFactory({ env });
+    if (parsed.json) {
+      write(stdout, JSON.stringify(result, null, 2));
+    }
+    return result;
+  }
   if (parsed.command === "assets") {
     const service = assetServiceFactory({ env });
     const result =
@@ -78,6 +93,43 @@ export async function runPanCli(
       parsed.json
         ? JSON.stringify(result, null, 2)
         : formatSetupResult(result),
+    );
+    return result;
+  }
+  if (parsed.command === "verify") {
+    const domainConfig = await domainConfigLoader(parsed.config);
+    const result = await verificationFactory({
+      config: domainConfig,
+      configPath: parsed.config,
+      runnerProfilePath: parsed.profile,
+      env,
+    });
+    write(
+      stdout,
+      parsed.json ? JSON.stringify(result, null, 2) : formatVerificationResult(result),
+    );
+    return result;
+  }
+  if (parsed.command === "shortcuts") {
+    const [domainConfig, runnerProfile] = await Promise.all([
+      domainConfigLoader(parsed.config),
+      runnerProfileLoader(parsed.profile),
+    ]);
+    assertMatchingDomain(domainConfig, runnerProfile, {
+      configPath: parsed.config,
+      requireConfigPath: true,
+    });
+    const result = await shortcutFactory({
+      configPath: parsed.config,
+      runnerProfilePath: parsed.profile,
+      domainPath: domainConfig.domain.path,
+      selection: parsed.selection,
+      desktopPath: parsed.desktopPath,
+      env,
+    });
+    write(
+      stdout,
+      parsed.json ? JSON.stringify(result, null, 2) : formatShortcutResult(result),
     );
     return result;
   }
@@ -127,6 +179,15 @@ export function parseArgs(args, env = process.env) {
   const configuration = { config, profile };
   const json = takeFlag(remaining, "--json");
   const command = remaining.shift();
+  if (command === "onboard") {
+    if (config || profile) {
+      throw new TypeError(
+        "pan onboard creates configuration and cannot use --config, --profile, PAN_CONFIG, or PAN_PROFILE",
+      );
+    }
+    requireNoArgs(remaining);
+    return { command, json };
+  }
   if (command === "setup") {
     if (config || profile) {
       throw new TypeError(
@@ -137,14 +198,39 @@ export function parseArgs(args, env = process.env) {
     const setupPath = takeOption(remaining, "--path");
     const projectOwner = takeOption(remaining, "--project-owner");
     const projectTitle = takeOption(remaining, "--project-title");
+    const projectNumber = optionalPositiveInteger(
+      takeOption(remaining, "--project-number"),
+      "--project-number",
+    );
+    const repositoryMode = takeOption(remaining, "--repository-mode");
+    const projectMode = takeOption(remaining, "--project-mode");
     const approvalMode = takeOption(remaining, "--approval-mode");
     const installAssets = takeFlag(remaining, "--install-assets");
+    if (repositoryMode !== undefined) {
+      validateChoice(
+        repositoryMode,
+        ["create", "connect"],
+        "--repository-mode",
+      );
+    }
+    if (projectMode !== undefined) {
+      validateChoice(projectMode, ["create", "connect"], "--project-mode");
+    }
     if (approvalMode !== undefined) {
       validateChoice(
         approvalMode,
         ["prompt", "allow-all"],
         "--approval-mode",
       );
+    }
+    if (projectMode === "connect" && projectNumber === undefined) {
+      throw new TypeError("--project-mode connect requires --project-number");
+    }
+    if (projectMode === "create" && projectNumber !== undefined) {
+      throw new TypeError("--project-number cannot be used with --project-mode create");
+    }
+    if (projectNumber !== undefined && projectTitle !== undefined) {
+      throw new TypeError("--project-number and --project-title cannot be used together");
     }
     requireNoArgs(remaining);
     return {
@@ -154,6 +240,9 @@ export function parseArgs(args, env = process.env) {
       path: setupPath,
       projectOwner,
       projectTitle,
+      projectNumber,
+      repositoryMode,
+      projectMode,
       approvalMode,
       ...(installAssets ? { installAssets: true } : {}),
     };
@@ -172,6 +261,41 @@ export function parseArgs(args, env = process.env) {
     }
     requireNoArgs(remaining);
     return { command, operation, force, json };
+  }
+  if (command === "verify") {
+    if (!config || !profile) {
+      throw new TypeError(
+        "pan verify requires --config <domain-config.json> and --profile <runner-profile.json>",
+      );
+    }
+    requireNoArgs(remaining);
+    return { command, config, profile, json };
+  }
+  if (command === "shortcuts") {
+    const operation = remaining.shift();
+    if (operation !== "create") {
+      throw new TypeError(
+        "Usage: pan shortcuts create --config <path> --profile <path> --selection <chat|runner|both>",
+      );
+    }
+    if (!config || !profile) {
+      throw new TypeError(
+        "pan shortcuts create requires --config <path> and --profile <path>",
+      );
+    }
+    const selection = takeOption(remaining, "--selection") ?? "both";
+    validateChoice(selection, ["chat", "runner", "both"], "--selection");
+    const desktopPath = takeOption(remaining, "--desktop");
+    requireNoArgs(remaining);
+    return {
+      command,
+      operation,
+      config,
+      profile,
+      selection,
+      desktopPath,
+      json,
+    };
   }
 
   const retirement = retiredCommand(command, json);
@@ -412,10 +536,10 @@ async function runPanHelperCommand(
 function formatSetupResult(result) {
   const lines = [
     `PAN domain ready: ${result.repository}`,
-    `Clone: ${result.directory}`,
+    `Domain path: ${result.directory}`,
     `Project: ${result.projectUrl ?? `${result.projectOwner}#${result.projectNumber}`}`,
     `Config: ${result.configPath}`,
-    `Runner profile: ${result.runnerProfilePath} (offline)`,
+    `Runner profile: ${result.runnerProfilePath} (${result.runnerOnline ? "online" : "offline"})`,
     `Copilot approvals: ${result.approvalMode}`,
   ];
   if (result.assets) {
@@ -434,6 +558,24 @@ function formatAssetResult(result) {
     lines.push(`shadowed: ${shadow.path}`);
   }
   return lines.join("\n");
+}
+
+function formatVerificationResult(result) {
+  return [
+    `PAN setup: ${result.status}`,
+    `Repository: ${result.repository}`,
+    `Project: ${result.project}`,
+    `Config: ${result.configPath}`,
+    `Runner profile: ${result.runnerProfilePath}`,
+    `Runner: ${result.runnerOnline ? "online" : "offline"}`,
+  ].join("\n");
+}
+
+function formatShortcutResult(result) {
+  return [
+    `PAN desktop shortcuts: ${result.status}`,
+    ...result.shortcuts.map((shortcut) => `${shortcut.kind}: ${shortcut.path}`),
+  ].join("\n");
 }
 
 function takeFlag(args, name) {
@@ -475,6 +617,17 @@ function validateChoice(value, choices, option) {
   }
 }
 
+function optionalPositiveInteger(value, option) {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new TypeError(`${option} must be a positive integer`);
+  }
+  return parsed;
+}
+
 function requireNoArgs(args) {
   if (args.length > 0) {
     throw new TypeError(`Unexpected arguments: ${args.join(" ")}`);
@@ -488,7 +641,10 @@ function write(stdout, value) {
 function usage() {
   return [
     "Usage:",
-    "  pan setup [--repository <owner/name>] [--path <path>] [--approval-mode <prompt|allow-all>] [--install-assets]",
+    "  pan onboard",
+    "  pan setup [--repository <owner/name>] [--repository-mode <create|connect>] [--path <path>] [--project-mode <create|connect>] [--project-number <number>] [--approval-mode <prompt|allow-all>] [--install-assets]",
+    "  pan verify --config <path> --profile <path>",
+    "  pan shortcuts create --config <path> --profile <path> [--selection <chat|runner|both>]",
     "  pan assets <install|status|repair> [--force] [--json]",
     "  pan session --config <path>",
     "  pan attention <list|answer|add> --schema-version 1 --config <path>",

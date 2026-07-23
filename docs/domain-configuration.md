@@ -67,15 +67,58 @@ exists to restart.
 
 ## Setup and migration
 
-`pan setup` writes a version-2 configuration and an offline runner profile.
-It may be used non-interactively:
+The recommended entrypoint is the conversational setup agent:
+
+```powershell
+npx @amoebachant/pan onboard
+```
+
+It installs PAN's user-scoped Copilot assets, gathers the setup choices, invokes
+the deterministic commands below, verifies the result, and can create Windows
+desktop shortcuts.
+
+`pan setup` writes a version-2 configuration and an offline runner profile. To
+create a new private repository and Project non-interactively:
 
 ```powershell
 pan setup --repository example/personal-domain `
+  --repository-mode create `
   --path C:\domains\personal-domain `
   --project-owner example `
+  --project-mode create `
   --project-title "Personal PAN" `
-  --approval-mode prompt
+  --approval-mode prompt `
+  --install-assets
+```
+
+Fresh setup keeps scheduled reviews disabled so it works with Copilot CLI
+versions that do not yet expose native recurring schedules. Enable scheduling
+later only after `pan verify` succeeds with a scheduling-capable CLI.
+
+To connect an existing private repository and compatible Project, use
+`--repository-mode connect`, `--project-mode connect`, and
+`--project-number <number>`. `--path` may identify an existing local domain
+checkout or a missing path where PAN should clone the repository. PAN preserves
+compatible configuration, runner settings, workstreams, and README content,
+creates missing setup data and Project fields, and rejects incompatible or
+locally modified setup files rather than replacing them. The same command may
+be rerun to resume or confirm a partially completed setup.
+
+Verify the installed assets, domain identity, Project schema, Copilot contract,
+and runner profile together:
+
+```powershell
+pan verify --config C:\domains\personal-domain\pan.json `
+  --profile C:\domains\personal-domain\runners\machine.json
+```
+
+On Windows, create self-contained shortcuts that use PAN's packaged icon:
+
+```powershell
+pan shortcuts create `
+  --config C:\domains\personal-domain\pan.json `
+  --profile C:\domains\personal-domain\runners\machine.json `
+  --selection both
 ```
 
 For a version-1 configuration, use the exported migration helper or rewrite

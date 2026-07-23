@@ -11,7 +11,7 @@
 3. The setup agent should explain PAN, gather the information it needs, install
    the PAN agent and skills, create or connect the domain repository and GitHub
    Project, configure the local PAN session and runner, and verify that setup
-   works.
+   works. It should offer to create desktop shortcuts for the Pan chat and the runner.
 4. The setup agent should use PAN's deterministic commands for setup mechanics
    rather than asking the user to manually write configuration files.
 5. When setup finishes, the agent should tell the user how to start PAN and the
@@ -20,3 +20,6 @@
    - explain what PAN is;
    - show the single get-started command; and
    - link to the architecture and deeper documentation.
+7. Connecting an existing domain should accept its existing local checkout,
+   preserve compatible domain data and runner configuration, and support
+   resuming setup without restarting the conversational questionnaire.

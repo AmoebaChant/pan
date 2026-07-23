@@ -30,6 +30,9 @@ test("parses setup without pre-existing configuration", () => {
       path: "C:\\domains\\example",
       projectOwner: "example",
       projectTitle: "My PAN",
+      projectNumber: undefined,
+      repositoryMode: undefined,
+      projectMode: undefined,
       approvalMode: "prompt",
     },
   );
@@ -38,6 +41,85 @@ test("parses setup without pre-existing configuration", () => {
     () => parsePanArgs(["setup"], { PAN_CONFIG: "domain.json" }),
     /creates configuration/,
   );
+});
+
+test("parses onboarding, verification, connected setup, and shortcut commands", () => {
+  assert.deepEqual(parsePanArgs(["onboard"], {}), {
+    command: "onboard",
+    json: false,
+  });
+  assert.deepEqual(
+    parsePanArgs([
+      "setup",
+      "--repository",
+      "example/domain",
+      "--repository-mode",
+      "connect",
+      "--project-owner",
+      "example",
+      "--project-mode",
+      "connect",
+      "--project-number",
+      "9",
+    ], {}),
+    {
+      command: "setup",
+      json: false,
+      repository: "example/domain",
+      path: undefined,
+      projectOwner: "example",
+      projectTitle: undefined,
+      projectNumber: 9,
+      repositoryMode: "connect",
+      projectMode: "connect",
+      approvalMode: undefined,
+    },
+  );
+  assert.deepEqual(
+    parsePanArgs([
+      "verify",
+      "--config",
+      "domain.json",
+      "--profile",
+      "runner.json",
+    ], {}),
+    {
+      command: "verify",
+      config: "domain.json",
+      profile: "runner.json",
+      json: false,
+    },
+  );
+  assert.deepEqual(
+    parsePanArgs([
+      "shortcuts",
+      "create",
+      "--config",
+      "domain.json",
+      "--profile",
+      "runner.json",
+      "--selection",
+      "chat",
+    ], {}),
+    {
+      command: "shortcuts",
+      operation: "create",
+      config: "domain.json",
+      profile: "runner.json",
+      selection: "chat",
+      desktopPath: undefined,
+      json: false,
+    },
+  );
+});
+
+test("runs onboarding before loading domain configuration", async () => {
+  const result = await runPanCli(["onboard"], {
+    domainConfigLoader: async () => assert.fail("config loader was called"),
+    onboardingFactory: async () => ({ status: "completed", exitCode: 0 }),
+  });
+
+  assert.deepEqual(result, { status: "completed", exitCode: 0 });
 });
 
 test("parses asset installation commands without domain configuration", () => {

@@ -80,6 +80,18 @@ export {
 export { DomainIdentity } from "./domain-identity.js";
 export { createServiceLogger } from "./service-logger.js";
 export { setupPanDomain } from "./pan-setup.js";
+export {
+  buildOnboardingCopilotArgs,
+  startPanOnboarding,
+} from "./pan-onboarding.js";
+export {
+  createPanDesktopShortcuts,
+  discoverDesktopPath,
+} from "./pan-shortcuts.js";
+export {
+  assertMatchingDomain,
+  verifyPanSetup,
+} from "./pan-verification.js";
 export { PortfolioSnapshotBuilder } from "./portfolio-snapshot.js";
 export {
   ActionPolicy,

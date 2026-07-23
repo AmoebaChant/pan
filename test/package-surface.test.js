@@ -14,17 +14,24 @@ test("ships only hostless runtime assets and public schemas", async () => {
   const manifest = JSON.parse(
     await readFile(path.resolve("assets/copilot/manifest.json"), "utf8"),
   );
+  const readme = await readFile(path.resolve("README.md"), "utf8");
   const packageExports = await import("../src/index.js");
 
-  assert.deepEqual(packageMetadata.bin, { pan: "./bin/pan.js" });
+  assert.deepEqual(packageMetadata.bin, {
+    pan: "./bin/pan.js",
+    "pan-runner": "./bin/pan-runner.js",
+  });
   assert.deepEqual(packageMetadata.files, ["assets", "bin", "src", "schema"]);
   assert.match(packageMetadata.description, /hostless/i);
+  assert.match(readme, /npx @amoebachant\/pan onboard/);
+  assert.ok(readme.split(/\r?\n/).length < 30, "README should remain approachable");
   assert.equal(packageMetadata.files.includes("docs"), false);
   assert.equal(packageMetadata.files.includes(".github/agents"), false);
 
   for (const asset of manifest.assets) {
     await access(path.resolve("assets/copilot", asset.source));
   }
+  await access(path.resolve("assets/pan.ico"));
   for (const schema of [
     "domain-config.json",
     "pan-action.json",
@@ -44,6 +51,9 @@ test("ships only hostless runtime assets and public schemas", async () => {
     "createActionCommandHandlers",
     "createWorkstreamCommandHandlers",
     "RunnerDaemon",
+    "startPanOnboarding",
+    "verifyPanSetup",
+    "createPanDesktopShortcuts",
   ]) {
     assert.equal(Object.hasOwn(packageExports, name), true, `${name} must be exported`);
   }

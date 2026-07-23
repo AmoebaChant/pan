@@ -11,7 +11,10 @@ test("removes host and MCP runtime from the package surface", async () => {
   );
   const packageExports = await import("../src/index.js");
 
-  assert.deepEqual(packageMetadata.bin, { pan: "./bin/pan.js" });
+  assert.deepEqual(packageMetadata.bin, {
+    pan: "./bin/pan.js",
+    "pan-runner": "./bin/pan-runner.js",
+  });
   for (const name of [
     "PanHost",
     "PanAgentClient",
