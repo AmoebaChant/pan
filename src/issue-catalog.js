@@ -196,7 +196,6 @@ function normalizeIssue(value, repository) {
   for (const field of [
     "html_url",
     "title",
-    "body",
     "state",
     "created_at",
     "updated_at",
@@ -224,7 +223,7 @@ function normalizeIssue(value, repository) {
     url: value.html_url,
     state: value.state.toLowerCase(),
     title: value.title,
-    body: value.body,
+    body: value.body ?? "",
     createdAt: value.created_at,
     updatedAt: value.updated_at,
     closedAt: value.closed_at ?? null,
