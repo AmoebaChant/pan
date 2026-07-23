@@ -32,6 +32,9 @@ Make triage proposals understandable without requiring the user to open GitHub.
 For each Issue, show its title, a concise summary of its relevant context, and a
 link. Present proposed field changes in a Markdown table with distinct current
 and proposed values instead of combining multiple changes in dense prose.
+When approval or clarification is needed, present the supporting context and
+Markdown tables before invoking the structured question UI. Keep the question
+prompt brief so the proposal remains readable in the terminal.
 
 ## Self-repair
 
