@@ -48,7 +48,7 @@ const store = new PanStore({
 const executor = new LocalTaskExecutor({ profile, logger });
 const attention = new AttentionService({
   store,
-  humanAssignee: domainConfig?.attention.assignee,
+  humanAssignee: profile.githubAssignee,
 });
 const daemon = new RunnerDaemon({
   store,
