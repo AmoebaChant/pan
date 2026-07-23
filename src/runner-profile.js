@@ -194,6 +194,18 @@ function validateRepositories(repositories, capabilities, { online }) {
       config.defaultBranch,
       `repositories.${repository}.defaultBranch`,
     );
+    if (config.baseRemote !== undefined) {
+      requireString(
+        config.baseRemote,
+        `repositories.${repository}.baseRemote`,
+      );
+    }
+    if (config.pushRemote !== undefined) {
+      requireString(
+        config.pushRemote,
+        `repositories.${repository}.pushRemote`,
+      );
+    }
   }
 }
 

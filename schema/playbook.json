@@ -32,9 +32,9 @@
       "items": { "type": "string", "minLength": 1 }
     },
     "delivery": {
-      "enum": ["pull-request", "direct"],
+      "enum": ["pull-request", "direct", "report"],
       "default": "pull-request",
-      "description": "Omit for pull-request delivery. Set direct only when this playbook is explicitly authorized to integrate and push to the configured default branch."
+      "description": "Omit for pull-request delivery. Set direct only when this playbook is explicitly authorized to integrate and push to the configured default branch. Set report for read-only investigation delivered as an Issue comment for human review."
     }
   },
   "examples": [

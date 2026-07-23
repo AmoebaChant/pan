@@ -26,6 +26,12 @@ Each enabled playbook matches repository and capability requirements and has
 its own capacity in addition to global capacity. An offline profile may have no
 repositories; an online profile must have at least one.
 
+Repository entries use `origin` for both the default-branch base and pushes
+unless configured otherwise. For a fork checkout, set `baseRemote` to the
+remote for the configured upstream repository and `pushRemote` to the fork
+remote. PAN validates both remotes before launch and again before accepting
+delivery.
+
 ## Delivery policy
 
 Playbooks default to `"delivery": "pull-request"`. That policy creates or
@@ -36,6 +42,10 @@ the merge directly from GitHub before completing the Issue and Project item.
 that playbook. The worker integrates with the configured default branch and
 reports a commit. The runner validates that the commit is reachable from the
 default branch before moving the item to `done` and closing its Issue.
+
+`"delivery": "report"` is read-only investigation. The worker may inspect and
+reproduce behavior but cannot change tracked files or create commits. PAN
+records the complete report on the Issue and moves the item to `in-review`.
 
 ## Worker lifecycle
 

@@ -102,24 +102,16 @@ export class LocalTaskExecutor {
 
     let worktreeCreated = false;
     try {
-      const expectedRemote = await this.#run(deadline, "git", [
-        "-C",
-        repositoryConfig.path,
-        "remote",
-        "get-url",
-        "origin",
-      ]);
-      const remoteRepository = normalizeGitHubRepositoryUrl(expectedRemote);
-      if (remoteRepository?.toLowerCase() !== repository.toLowerCase()) {
-        throw new Error(
-          `Configured path origin is ${remoteRepository ?? "not a GitHub repository"}, expected ${repository}`,
-        );
-      }
+      const remotes = await this.#readRepositoryRemotes(
+        deadline,
+        repository,
+        repositoryConfig,
+      );
       await this.#run(deadline, "git", [
         "-C",
         repositoryConfig.path,
         "fetch",
-        "origin",
+        remotes.base.name,
         repositoryConfig.defaultBranch,
       ]);
       await this.#run(deadline, "git", [
@@ -130,7 +122,7 @@ export class LocalTaskExecutor {
         worktreePath,
         "-b",
         branch,
-        `origin/${repositoryConfig.defaultBranch}`,
+        `${remotes.base.name}/${repositoryConfig.defaultBranch}`,
       ]);
       worktreeCreated = true;
       const baseCommit = await this.#run(deadline, "git", [
@@ -162,6 +154,13 @@ export class LocalTaskExecutor {
         target: {
           repository,
           defaultBranch: repositoryConfig.defaultBranch,
+          baseRemote: remotes.base.name,
+          baseRemoteUrl: remotes.base.url,
+          baseRemotePushUrl: remotes.base.pushUrl,
+          pushRemote: remotes.push.name,
+          pushRemoteUrl: remotes.push.url,
+          pushRemotePushUrl: remotes.push.pushUrl,
+          pushRepository: remotes.push.pushRepository,
           baseCommit,
           branch,
           worktreePath,
@@ -233,7 +232,7 @@ export class LocalTaskExecutor {
         repository,
         repositoryConfig,
         runner,
-        expectedRemote,
+        expectedRemotes: remotes,
         baseCommit,
         profile: this.profile,
         commands: this.commands,
@@ -363,28 +362,51 @@ export class LocalTaskExecutor {
       throw new Error(`Saved task context does not match issue ${item.number}`);
     }
 
-    const expectedRemote = await this.#run(deadline, "git", [
-      "-C",
-      repositoryConfig.path,
-      "remote",
-      "get-url",
-      "origin",
-    ]);
-    const remoteRepository = normalizeGitHubRepositoryUrl(expectedRemote);
-    if (remoteRepository?.toLowerCase() !== repository.toLowerCase()) {
+    const remotes = await this.#readRepositoryRemotes(
+      deadline,
+      repository,
+      repositoryConfig,
+    );
+    if (
+      (pointer.target.baseRemote ?? "origin") !== remotes.base.name ||
+      (pointer.target.pushRemote ?? "origin") !== remotes.push.name ||
+      pointer.target.baseRemoteUrl !== remotes.base.url ||
+      pointer.target.baseRemotePushUrl !== remotes.base.pushUrl ||
+      pointer.target.pushRemoteUrl !== remotes.push.url ||
+      pointer.target.pushRemotePushUrl !== remotes.push.pushUrl ||
+      pointer.target.pushRepository?.toLowerCase() !==
+        remotes.push.pushRepository.toLowerCase()
+    ) {
       throw new Error(
-        `Configured path origin is ${remoteRepository ?? "not a GitHub repository"}, expected ${repository}`,
+        `Runner remote configuration changed while issue ${item.number} was resumable`,
       );
     }
-    const savedWorktreeRemote = await this.#run(deadline, "git", [
-      "-C",
-      pointer.target.worktreePath,
-      "remote",
-      "get-url",
-      "origin",
-    ]);
-    if (savedWorktreeRemote !== expectedRemote) {
-      throw new Error("Saved task worktree has an unexpected origin URL");
+    for (const remote of [remotes.base, remotes.push]) {
+      const savedWorktreeRemote = await this.#run(deadline, "git", [
+        "-C",
+        pointer.target.worktreePath,
+        "remote",
+        "get-url",
+        remote.name,
+      ]);
+      if (savedWorktreeRemote !== remote.url) {
+        throw new Error(
+          `Saved task worktree has an unexpected ${remote.name} URL`,
+        );
+      }
+      const savedWorktreePushRemote = await this.#run(deadline, "git", [
+        "-C",
+        pointer.target.worktreePath,
+        "remote",
+        "get-url",
+        "--push",
+        remote.name,
+      ]);
+      if (savedWorktreePushRemote !== remote.pushUrl) {
+        throw new Error(
+          `Saved task worktree has an unexpected ${remote.name} push URL`,
+        );
+      }
     }
     await this.#stopPreviousLaunch(statePath, pointer.launchPaths);
 
@@ -405,7 +427,16 @@ export class LocalTaskExecutor {
         repository: item.repository,
         comments: item.comments ?? [],
       },
-      target: pointer.target,
+      target: {
+        ...pointer.target,
+        baseRemote: remotes.base.name,
+        baseRemoteUrl: remotes.base.url,
+        baseRemotePushUrl: remotes.base.pushUrl,
+        pushRemote: remotes.push.name,
+        pushRemoteUrl: remotes.push.url,
+        pushRemotePushUrl: remotes.push.pushUrl,
+        pushRepository: remotes.push.pushRepository,
+      },
       playbook: {
         id: playbook.id,
         instructions: playbook.instructions,
@@ -437,7 +468,7 @@ export class LocalTaskExecutor {
       itemId: item.id,
       issueNumber: item.number,
       runner,
-      target: pointer.target,
+      target: context.target,
       launchPaths: {
         worker: paths.worker,
         cancel: paths.cancel,
@@ -474,7 +505,7 @@ export class LocalTaskExecutor {
       repository,
       repositoryConfig,
       runner,
-      expectedRemote,
+      expectedRemotes: remotes,
       baseCommit: pointer.target.baseCommit,
       title,
       branch: pointer.target.branch,
@@ -561,7 +592,7 @@ export class LocalTaskExecutor {
     repository,
     repositoryConfig,
     runner,
-    expectedRemote,
+    expectedRemotes,
     baseCommit,
     title,
     branch,
@@ -580,7 +611,7 @@ export class LocalTaskExecutor {
       repository,
       repositoryConfig,
       runner,
-      expectedRemote,
+      expectedRemotes,
       baseCommit,
       profile: this.profile,
       commands: this.commands,
@@ -615,6 +646,49 @@ export class LocalTaskExecutor {
         () => this.now().getTime(),
       ),
     });
+  }
+
+  async #readRepositoryRemotes(deadline, repository, repositoryConfig) {
+    const baseName = repositoryConfig.baseRemote ?? "origin";
+    const pushName = repositoryConfig.pushRemote ?? "origin";
+    const readRemote = async (name) => {
+      const readSingleUrl = async (kind, args) => {
+        const output = await this.#run(deadline, "git", [
+          "-C",
+          repositoryConfig.path,
+          "remote",
+          "get-url",
+          ...args,
+          "--all",
+          name,
+        ]);
+        const urls = output.split(/\r?\n/).filter(Boolean);
+        if (urls.length !== 1) {
+          throw new Error(
+            `Configured path remote ${name} must have exactly one ${kind} URL`,
+          );
+        }
+        return urls[0];
+      };
+      const url = await readSingleUrl("fetch", []);
+      const pushUrl = await readSingleUrl("push", ["--push"]);
+      const fetchRepository = normalizeGitHubRepositoryUrl(url);
+      const pushRepository = normalizeGitHubRepositoryUrl(pushUrl);
+      if (!fetchRepository || !pushRepository) {
+        throw new Error(
+          `Configured path remote ${name} is not a GitHub repository`,
+        );
+      }
+      return { name, url, pushUrl, fetchRepository, pushRepository };
+    };
+    const base = await readRemote(baseName);
+    if (base.fetchRepository.toLowerCase() !== repository.toLowerCase()) {
+      throw new Error(
+        `Configured path base remote ${baseName} is ${base.fetchRepository}, expected ${repository}`,
+      );
+    }
+    const push = pushName === baseName ? base : await readRemote(pushName);
+    return { base, push };
   }
 
   async #runCleanup(executable, args) {
@@ -726,6 +800,13 @@ class LocalTaskHandle {
       target: {
         repository: this.repository,
         defaultBranch: this.repositoryConfig.defaultBranch,
+        baseRemote: this.expectedRemotes.base.name,
+        baseRemoteUrl: this.expectedRemotes.base.url,
+        baseRemotePushUrl: this.expectedRemotes.base.pushUrl,
+        pushRemote: this.expectedRemotes.push.name,
+        pushRemoteUrl: this.expectedRemotes.push.url,
+        pushRemotePushUrl: this.expectedRemotes.push.pushUrl,
+        pushRepository: this.expectedRemotes.push.pushRepository,
         baseCommit: this.baseCommit,
         branch: this.branch,
         worktreePath: this.worktreePath,
@@ -828,12 +909,15 @@ class LocalTaskHandle {
         "rev-parse",
         "HEAD",
       ]);
-      if (head !== delivery.commit) {
+      if (delivery.mode === "report" && head !== this.baseCommit) {
+        throw new Error("Report-only task created a commit");
+      }
+      if (delivery.mode !== "report" && head !== delivery.commit) {
         throw new Error(
           `Reported delivery commit ${delivery.commit} does not match task HEAD ${head}`,
         );
       }
-      if (head === this.baseCommit) {
+      if (delivery.mode !== "report" && head === this.baseCommit) {
         throw new Error("Task completed without producing a new commit");
       }
       await this.#run("git", [
@@ -845,20 +929,42 @@ class LocalTaskHandle {
         "HEAD",
       ]);
       await assertLease?.();
-      const currentRemote = await this.#run("git", [
-        "-C",
-        this.repositoryConfig.path,
-        "remote",
-        "get-url",
-        "origin",
-      ]);
-      if (currentRemote !== this.expectedRemote) {
-        throw new Error("The task changed the repository origin URL");
+      for (const remote of [
+        this.expectedRemotes.base,
+        this.expectedRemotes.push,
+      ]) {
+        const currentRemote = await this.#run("git", [
+          "-C",
+          this.repositoryConfig.path,
+          "remote",
+          "get-url",
+          "--all",
+          remote.name,
+        ]);
+        if (currentRemote !== remote.url) {
+          throw new Error(
+            `The task changed the repository ${remote.name} URL`,
+          );
+        }
+        const currentPushRemote = await this.#run("git", [
+          "-C",
+          this.repositoryConfig.path,
+          "remote",
+          "get-url",
+          "--push",
+          "--all",
+          remote.name,
+        ]);
+        if (currentPushRemote !== remote.pushUrl) {
+          throw new Error(
+            `The task changed the repository ${remote.name} push URL`,
+          );
+        }
       }
 
       if (delivery.mode === "direct") {
         await this.#validateDirectDelivery(delivery, { assertLease });
-      } else {
+      } else if (delivery.mode === "pull-request") {
         await this.#validatePullRequestDelivery(delivery, { assertLease });
       }
       await this.clearResumeState();
@@ -899,7 +1005,7 @@ class LocalTaskHandle {
         "--repo",
         this.repository,
         "--json",
-        "url,state,headRefName,headRefOid,baseRefName,body",
+        "url,state,headRefName,headRefOid,headRepository,headRepositoryOwner,baseRefName,body",
       ]),
     );
     const closingDirective = new RegExp(
@@ -911,6 +1017,8 @@ class LocalTaskHandle {
       !["OPEN", "MERGED"].includes(pullRequest.state) ||
       pullRequest.headRefName !== this.branch ||
       pullRequest.headRefOid !== delivery.commit ||
+      `${pullRequest.headRepositoryOwner?.login}/${pullRequest.headRepository?.name}`.toLowerCase() !==
+        this.expectedRemotes.push.pushRepository.toLowerCase() ||
       pullRequest.baseRefName !== this.repositoryConfig.defaultBranch ||
       typeof pullRequest.body !== "string" ||
       !closingDirective.test(pullRequest.body)
@@ -925,7 +1033,7 @@ class LocalTaskHandle {
       "-C",
       this.worktreePath,
       "fetch",
-      "origin",
+      this.expectedRemotes.base.name,
       this.repositoryConfig.defaultBranch,
     ]);
     try {
@@ -954,7 +1062,7 @@ class LocalTaskHandle {
         "remove",
         this.worktreePath,
       ]);
-      if (this.delivery === "direct") {
+      if (this.delivery !== "pull-request") {
         await this.#run("git", [
           "-C",
           this.repositoryConfig.path,
@@ -1161,6 +1269,15 @@ function normalizeDelivery(delivery, expectedMode, repository) {
     throw new TypeError(
       `task delivery mode must be ${expectedMode}`,
     );
+  }
+  if (expectedMode === "report") {
+    if (typeof delivery.report !== "string" || !delivery.report.trim()) {
+      throw new TypeError("task report delivery must include a non-empty report");
+    }
+    return {
+      mode: delivery.mode,
+      report: delivery.report.trim(),
+    };
   }
   if (
     typeof delivery.commit !== "string" ||
