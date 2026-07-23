@@ -4,11 +4,7 @@ import { PanAssetService } from "./pan-assets.js";
 import { verifyCopilotInvocationContract } from "./copilot-contract.js";
 import { ProcessClient } from "./process-client.js";
 
-const ONBOARDING_PROMPT = [
-  "Welcome me in Pan's voice and help me get you set up.",
-  "Explain conversationally how you'll help me navigate my workloads and manage agents, and how my private GitHub-backed domain stores my work and tasks.",
-  "Gather one choice at a time, complete setup using PAN's deterministic commands, verify it, and leave me with simple ways to start chatting with you and run my agents.",
-].join(" ");
+const ONBOARDING_PROMPT = "Hi Pan";
 
 /** Starts the conversational setup experience after installing its Copilot assets. */
 export async function startPanOnboarding({

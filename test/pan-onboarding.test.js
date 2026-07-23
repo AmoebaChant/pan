@@ -39,6 +39,5 @@ test("installs assets and starts the dedicated conversational setup agent", asyn
   assert.equal(calls[1].executable, "copilot-test");
   assert.deepEqual(calls[1].args, buildOnboardingCopilotArgs());
   assert.equal(calls[1].options.cwd, "C:\\work");
-  assert.match(calls[1].args.at(-1), /Welcome me in Pan's voice/i);
-  assert.match(calls[1].args.at(-1), /navigate my workloads and manage agents/i);
+  assert.equal(calls[1].args.at(-1), "Hi Pan");
 });
