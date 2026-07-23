@@ -13,20 +13,17 @@ if (!args.includes("--no-auto-update")) {
 if (args.some((arg) => /mcp/i.test(arg))) {
   failures.push("Copilot received a retired MCP argument");
 }
-if (process.env.PAN_SESSION_MODE === "writing" && !process.env.PAN_LEADERSHIP_GENERATION) {
-  failures.push("Writing Copilot session lacks leadership generation");
-}
 if (
   process.env.FAKE_COPILOT_EXPECT_SCHEDULE === "1" &&
   (!args.includes("--interactive") || !process.env.PAN_SCHEDULE_DUE_STATE)
 ) {
-  failures.push("Writing Copilot session lacks its native schedule bootstrap");
+  failures.push("Copilot session lacks its native schedule bootstrap");
 }
 if (
   process.env.FAKE_COPILOT_EXPECT_SCHEDULE !== "1" &&
   (args.includes("--interactive") || process.env.PAN_SCHEDULE_DUE_STATE)
 ) {
-  failures.push("Read-only Copilot session received scheduling authority");
+  failures.push("Unscheduled Copilot session received scheduling state");
 }
 
 if (failures.length > 0) {

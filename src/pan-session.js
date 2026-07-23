@@ -2,10 +2,9 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { DomainIdentity } from "./domain-identity.js";
-import { GhClient } from "./gh-client.js";
-import { GitHubStateFile, LeaderLease } from "./leader-lease.js";
 import { isCurrentPanAssets, PanAssetService } from "./pan-assets.js";
 import {
   buildScheduleBootstrapPrompt,
@@ -31,17 +30,9 @@ export async function startPanSession({
   commands = new ProcessClient(),
   verifyCopilot = verifyCopilotContract,
   dueStateFactory = createSessionDueState,
-  gh = new GhClient({ env }),
-  stateFileFactory = (options) => new GitHubStateFile(options),
-  leaseFactory = (options) => new LeaderLease(options),
   sessionIdFactory = randomUUID,
-  hostname = os.hostname(),
-  pid = process.pid,
-  setIntervalImpl = setInterval,
-  clearIntervalImpl = clearInterval,
   terminateChild = terminateProcessTree,
   signals = process,
-  onMode,
 } = {}) {
   if (!config?.domain || !config?.session?.agent || !configPath) {
     throw new TypeError("config and configPath are required");
@@ -52,10 +43,6 @@ export async function startPanSession({
   if (typeof sessionIdFactory !== "function") {
     throw new TypeError("sessionIdFactory must be a function");
   }
-  if (!hostname?.trim() || !Number.isInteger(pid) || pid <= 0) {
-    throw new TypeError("hostname and a positive integer pid are required");
-  }
-
   const assets = await assetService.status();
   if (!isCurrentPanAssets(assets)) {
     throw new Error(
@@ -65,59 +52,26 @@ export async function startPanSession({
   const identity = await domainIdentity.validate(config);
 
   const sessionId = sessionIdFactory();
-  const leaderLease = leaseFactory({
-    stateFile: stateFileFactory({
-      gh,
-      repository: config.domain.repository,
-      branch: config.state.branch,
-      filePath: config.state.leaderPath,
-    }),
-    holder: `${hostname}/pan-${pid}`,
-    machine: hostname,
-    pid,
-    sessionId,
-    holderKind: "copilot-session",
-    leaseSeconds: config.leadership.leaseSeconds,
-  });
-  const acquisition = await acquireSessionLeadership(leaderLease);
-  const mode = acquisition.acquired ? "writing" : "read-only";
-  const leadership = acquisition.acquired
-    ? {
-        holder: acquisition.lease.holder,
-        generation: acquisition.lease.token,
-        sessionId,
-      }
-    : undefined;
   let child;
-  let guard;
   let dueState;
-  let leadershipLoss;
   let termination;
   let exit;
-  const stopChild = async (reason) => {
-    leadershipLoss ??= reason;
+  const stopChild = async () => {
     if (!child || termination) {
       return termination;
     }
-    termination = Promise.resolve(terminateChild(child)).catch((error) => {
-      leadershipLoss ??= error;
-    });
+    termination = Promise.resolve(terminateChild(child));
     return termination;
   };
   const onSignal = (signal) => {
     void stopForSignal(signal);
   };
   const stopForSignal = async (signal) => {
-    try {
-      await guard?.stop();
-    } catch (error) {
-      leadershipLoss ??= error;
-    }
-    await stopChild(new Error(`PAN session received ${signal}`));
+    await stopChild();
   };
 
   try {
-    const schedulingEnabled = mode === "writing" && config.scheduling?.enabled;
+    const schedulingEnabled = config.scheduling?.enabled;
     await verifyCopilot({
       executable,
       commands,
@@ -137,8 +91,6 @@ export async function startPanSession({
       config,
       identity,
       sessionId,
-      mode,
-      leadership,
       dueState,
     });
     const args = buildSessionCopilotArgs({
@@ -157,22 +109,6 @@ export async function startPanSession({
       stdio: "inherit",
       windowsHide: false,
     });
-    onMode?.({
-      mode,
-      sessionId,
-      ...(acquisition.acquired
-        ? { leaseExpiresAt: acquisition.lease.expiresAt }
-        : { reason: acquisition.reason ?? "held-by-another-session" }),
-    });
-    if (acquisition.acquired) {
-      guard = startSessionLeaseGuard({
-        leaderLease,
-        heartbeatSeconds: config.leadership.heartbeatSeconds,
-        setIntervalImpl,
-        clearIntervalImpl,
-        onLost: stopChild,
-      });
-    }
     signals?.once?.("SIGINT", onSignal);
     signals?.once?.("SIGTERM", onSignal);
     exit = await waitForExit(child);
@@ -180,28 +116,13 @@ export async function startPanSession({
   } finally {
     signals?.removeListener?.("SIGINT", onSignal);
     signals?.removeListener?.("SIGTERM", onSignal);
-    try {
-      await guard?.stop();
-    } catch (error) {
-      leadershipLoss ??= error;
-      await stopChild(error);
-    }
-    if (acquisition.acquired) {
-      try {
-        await leaderLease.release();
-      } catch (error) {
-        leadershipLoss ??= error;
-      }
-    }
     await dueState?.dispose().catch(() => {});
   }
   return sessionResult({
     identity,
     model,
-    mode,
     code: exit?.code,
     signal: exit?.signal,
-    leadershipLoss,
   });
 }
 
@@ -232,8 +153,6 @@ export function buildSessionEnvironment({
   config,
   identity,
   sessionId,
-  mode = "read-only",
-  leadership,
   dueState,
 }) {
   const inherited = Object.fromEntries(
@@ -246,7 +165,9 @@ export function buildSessionEnvironment({
     PAN_DOMAIN_REPOSITORY: config.domain.repository,
     PAN_DOMAIN_ROOT: identity.domain.path,
     PAN_DOMAIN_PROJECT: `${config.domain.projectOwner}/${config.domain.projectNumber}`,
-    PAN_SESSION_MODE: mode,
+    PAN_PROJECT_SCHEMA: fileURLToPath(
+      new URL("../schema/project-fields.json", import.meta.url),
+    ),
     ...(sessionId ? { PAN_SESSION_ID: sessionId } : {}),
     ...(dueState
       ? {
@@ -259,13 +180,6 @@ export function buildSessionEnvironment({
     PAN_PRODUCT_CONTEXT_ROOTS: JSON.stringify(
       config.session.productContextRoots.map(({ label, path }) => ({ label, path })),
     ),
-    ...(mode === "writing" && leadership
-      ? {
-          PAN_LEADERSHIP_HOLDER: leadership.holder,
-          PAN_LEADERSHIP_GENERATION: leadership.generation,
-          PAN_LEADERSHIP_HOLDER_KIND: "copilot-session",
-        }
-      : {}),
   };
 }
 
@@ -298,84 +212,12 @@ function waitForExit(child) {
   });
 }
 
-async function acquireSessionLeadership(leaderLease) {
-  try {
-    return await leaderLease.acquire();
-  } catch (error) {
-    return { acquired: false, reason: "unverifiable", error };
-  }
-}
-
-function startSessionLeaseGuard({
-  leaderLease,
-  heartbeatSeconds,
-  setIntervalImpl,
-  clearIntervalImpl,
-  onLost,
-}) {
-  let timer;
-  let inFlight;
-  let failure;
-  const fail = (error) => {
-    if (failure) {
-      return;
-    }
-    failure = error;
-    clearIntervalImpl(timer);
-    void onLost(error);
-  };
-  const heartbeat = () => {
-    if (inFlight || failure) {
-      return;
-    }
-    inFlight = leaderLease
-      .heartbeat()
-      .then((result) => {
-        if (!result.renewed) {
-          fail(new Error(`PAN leadership lost: ${result.reason}`));
-        }
-      })
-      .catch((error) => fail(error))
-      .finally(() => {
-        inFlight = undefined;
-      });
-  };
-  timer = setIntervalImpl(heartbeat, heartbeatSeconds * 1_000);
-  return {
-    async stop() {
-      clearIntervalImpl(timer);
-      await inFlight;
-      if (failure) {
-        throw failure;
-      }
-    },
-  };
-}
-
-function sessionResult({
-  identity,
-  model,
-  mode,
-  code,
-  signal,
-  leadershipLoss,
-}) {
+function sessionResult({ identity, model, code, signal }) {
   return {
     domain: identity.domain,
     project: identity.project,
     model: model ?? "auto",
-    mode,
-    exitCode: leadershipLoss ? (code && code !== 0 ? code : 1) : (code ?? 1),
+    exitCode: code ?? 1,
     signal: signal ?? undefined,
-    ...(leadershipLoss
-      ? {
-          leadership: {
-            status: "lost",
-            diagnostic: leadershipLoss.message,
-            guidance:
-              "Restart the session to acquire leadership, or continue in read-only mode.",
-          },
-        }
-      : {}),
   };
 }

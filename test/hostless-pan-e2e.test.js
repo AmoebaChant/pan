@@ -4,35 +4,19 @@ import test from "node:test";
 
 const node = process.execPath;
 
-test("accepts hostless session lifecycle, scheduling, and leadership recovery", async () => {
+test("accepts foreground session lifecycle and scheduling", async () => {
   await runAcceptance([
-    "test/pan-session-integration.test.js",
-    "test/leader-lease.test.js",
+    "test/pan-session.test.js",
     "test/copilot-invocation-contract.test.js",
   ]);
 });
 
-test("accepts complete evidence, safe reconciliation, and expected-state actions", async () => {
+test("accepts the independent schema-driven runner", async () => {
   await runAcceptance([
-    "test/stateless-helper-integration.test.js",
-    "test/issue-catalog.test.js",
-    "test/portfolio-snapshot.test.js",
-    "test/action-service.test.js",
-    "test/issue-creation-service.test.js",
-    "test/reconciliation-service.test.js",
-  ]);
-});
-
-test("accepts direct workstream delivery without modifying the domain checkout", async () => {
-  await runAcceptance(["test/workstream-delivery-integration.test.js"]);
-});
-
-test("accepts independent runner and attention operations without a PAN session", async () => {
-  await runAcceptance([
-    "test/attention-commands.test.js",
     "test/runner-daemon.test.js",
     "test/runner-profile.test.js",
     "test/local-task-executor.test.js",
+    "test/pan-store.test.js",
   ]);
 });
 

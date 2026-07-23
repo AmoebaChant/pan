@@ -9,23 +9,15 @@ import {
   PanStore,
   loadDomainConfig,
   startPanSession,
-  createEvidenceCommandHandlers,
-  createActionCommandHandlers,
 } from "@amoebachant/pan";
 ```
 
 ## Public surface
 
-The package exports `GhClient`/`GhCommandError`, `PanStore`, domain
-configuration load/validate/migrate helpers, setup and asset services, session
-launch and Copilot-contract helpers, command result and command-handler
-factories, leadership primitives, action and reconciliation services,
-portfolio/workstream services, and runner/playbook/task utilities. Import the
-named API you need from the package root.
-
-Host, daemon, endpoint, MCP, launcher, and persistent review-runtime APIs are
-not exported. The sole package executable is `pan`; `pan-runner` remains
-available as `bin/pan-runner.js` for its profile-based worker process.
+The package exports domain configuration, setup, asset, session, Project store,
+runner, playbook, and task-execution utilities. The sole package executable is
+`pan`; `pan-runner` remains available as `bin/pan-runner.js` for its
+profile-based worker process.
 
 ## Store use
 
@@ -37,29 +29,20 @@ const store = new PanStore({
   gh: new GhClient(),
 });
 
-const snapshot = await store.readCanonicalProject();
-if (!snapshot.complete) throw new Error("Complete Project evidence is required");
+const items = await store.listItems();
 ```
 
-`readCanonicalProject()` preserves canonical Project order and fails rather
-than silently returning partial Issue, field, assignee, label, or comment
-evidence. `createItem`, `setFields`, `listByFilter`, `claimWithLease`,
-`heartbeat`, and `release` validate Project fields against
-`schema/project-fields.json`.
+`listItems()` preserves canonical Project order and fails rather than silently
+returning partial field, assignee, label, or comment data. Runner methods such
+as `listByFilter`, `claimWithLease`, `heartbeat`, and `release` validate Project
+fields against `schema/project-fields.json`.
 
 ## Contracts
 
-- `schema/domain-config.json` — version-2 domain/session/scheduling policy.
-- `schema/pan-action.json` — evidence-backed proposed actions and groups.
-- `schema/pan-command-result.json` — helper status, receipts, diagnostics, and
-  recovery.
-- `schema/portfolio-snapshot.json` — complete evidence and expected-state
-  identities.
-- `schema/playbook.json` and `schema/runner-profile.json` — private runner
+- `schema/domain-config.json` - domain and foreground-session configuration.
+- `schema/playbook.json` and `schema/runner-profile.json` - private runner
   capability and delivery configuration.
-- `schema/project-fields.json` — required GitHub Project fields.
+- `schema/project-fields.json` - shared GitHub Project fields.
 
-Schemas are reusable contracts, not locations for a user's domain data,
-credentials, machine paths, or live lease values. See
-[helper command behavior](triage-and-attention.md) for preconditions and
-recovery.
+Schemas are reusable contracts, not locations for domain data, credentials,
+machine paths, or live lease values.

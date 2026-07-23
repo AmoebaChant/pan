@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { DomainIdentity } from "../src/index.js";
 
-test("validates the configured domain, GitHub identity, Project schema, and state namespace", async () => {
+test("validates the configured domain, GitHub identity, and Project schema", async () => {
   const commands = {
     async run(executable, args) {
       assert.equal(executable, "git");
@@ -103,11 +103,6 @@ function config() {
       projectOwner: "example",
       projectNumber: 12,
       path: "C:\\domains\\example",
-    },
-    state: {
-      branch: "pan-state",
-      path: ".pan",
-      leaderPath: ".pan/leader.json",
     },
     session: {
       agent: { name: "pan", executable: "copilot" },

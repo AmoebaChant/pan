@@ -62,8 +62,8 @@ The first reasoning-focused release is successful when:
 1. PAN considers every actionable item in one real domain repository.
 2. It maintains the Project ordering for both human and agent work.
 3. It explains a ranking using cited task and workstream evidence.
-4. It identifies a high-confidence commitment in narrative and creates a
-   sourced Issue without duplicating existing work.
+4. It identifies a high-confidence commitment in narrative and, with user
+   approval, creates a sourced Issue without duplicating existing work.
 5. The user can discuss and change the same queue through the PAN personality.
 6. A compatible runner can claim ordered agent work, launch an isolated worker
    session, and report progress or a need for human input through GitHub.

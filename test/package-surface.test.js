@@ -7,7 +7,7 @@ import test from "node:test";
 
 const execFile = promisify(execFileCallback);
 
-test("ships only hostless runtime assets and public schemas", async () => {
+test("ships the session, runner, Copilot assets, and shared schemas", async () => {
   const packageMetadata = JSON.parse(
     await readFile(path.resolve("package.json"), "utf8"),
   );
@@ -22,7 +22,7 @@ test("ships only hostless runtime assets and public schemas", async () => {
     "pan-runner": "./bin/pan-runner.js",
   });
   assert.deepEqual(packageMetadata.files, ["assets", "bin", "src", "schema"]);
-  assert.match(packageMetadata.description, /hostless/i);
+  assert.match(packageMetadata.description, /direct GitHub-backed/i);
   assert.match(readme, /npx --yes --package \. pan onboard/);
   assert.doesNotMatch(readme, /npx @amoebachant\/pan/);
   assert.ok(readme.split(/\r?\n/).length < 30, "README should remain approachable");
@@ -35,10 +35,7 @@ test("ships only hostless runtime assets and public schemas", async () => {
   await access(path.resolve("assets/pan.ico"));
   for (const schema of [
     "domain-config.json",
-    "pan-action.json",
-    "pan-command-result.json",
     "playbook.json",
-    "portfolio-snapshot.json",
     "project-fields.json",
     "runner-profile.json",
   ]) {
@@ -48,9 +45,6 @@ test("ships only hostless runtime assets and public schemas", async () => {
   for (const name of [
     "startPanSession",
     "PanAssetService",
-    "createEvidenceCommandHandlers",
-    "createActionCommandHandlers",
-    "createWorkstreamCommandHandlers",
     "RunnerDaemon",
     "startPanOnboarding",
     "verifyPanSetup",
@@ -68,6 +62,12 @@ test("ships only hostless runtime assets and public schemas", async () => {
     "PanToolRegistry",
     "startPanMcpServer",
     "connectPan",
+    "createEvidenceCommandHandlers",
+    "createActionCommandHandlers",
+    "createWorkstreamCommandHandlers",
+    "createLeadershipCommandHandlers",
+    "PortfolioSnapshotBuilder",
+    "ActionService",
   ]) {
     assert.equal(Object.hasOwn(packageExports, name), false, `${name} must not be exported`);
   }

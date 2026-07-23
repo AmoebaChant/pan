@@ -1,37 +1,27 @@
 ---
 name: pan-attention
-description: List PAN attention, record durable answers, and create Issue-backed tasks through bounded helpers.
+description: List PAN attention, record durable answers, and create Issue-backed tasks directly in GitHub.
 ---
 
 # PAN attention
 
-Use this skill when the user asks what needs attention, answers a PAN question,
-or requests a new task.
+Read Project items with `gh project item-list` and inspect comments on blocked,
+needs-detail, and in-review Issues with `gh issue view`. Unresolved runner
+questions use `<!-- pan:needs-human -->`. In-review work is attention even
+without that marker. Runner shutdowns are not human attention.
 
-List attention in either writing or read-only mode:
+To answer a runner question:
 
-```text
-pan attention list --schema-version 1 --config <config> --json
-```
+1. Re-read comments and Project fields. Stop if the request is answered,
+   resolved, or no longer blocked/needs-detail.
+2. Add a comment containing `<!-- pan:answer -->`, `### Answer`, and the user's
+   exact answer.
+3. Restore prior owner and priority from the needs-human JSON, set status to
+   `ready`, and preserve `resume.affinity` in `claimed-by` when present.
+4. Add `<!-- pan:needs-human-resolved -->` with a short resolution.
+5. Re-read the Issue and Project item.
 
-Attention includes unresolved human questions and in-review work. Use its
-durable Issue identity, priority, prompt, and available resume details; do not
-turn operational launch or worker failures into false urgent human attention.
-
-To record an answer, first confirm the target has unresolved attention and that
-the session holds leadership:
-
-```text
-pan attention answer <issue-id-or-url> <answer> --schema-version 1 --config <config> --json
-```
-
-To add an Issue-backed untriaged task, use the bounded options needed for the
-request:
-
-```text
-pan attention add <title> --body <body> --workstream <path> --owner <owner> --priority <priority> --autonomy <mode> --requirement <requirement> --schema-version 1 --config <config> --json
-```
-
-Use repeated `--requirement` or `--repo` options when needed. Read the result
-envelope and report confirmed, rejected, incomplete, or failed status exactly
-as returned. Answers and tasks are durable only after the helper confirms them.
+To create a task, use `gh issue create`, add that open Issue to the configured
+Project, and initialize fields from `PAN_PROJECT_SCHEMA`. New tasks start
+`untriaged` unless the user supplied enough information to triage immediately.
+Confirm the Issue is open before registration and verify all fields afterward.

@@ -12,24 +12,8 @@ const domainConfig = {
     projectNumber: 12,
     path: "C:\\domains\\example",
   },
-  state: {
-    branch: "pan-state",
-    leaderPath: ".pan/leader.json",
-  },
-  cadences: {
-    activePollSeconds: 30,
-    leaderLeaseSeconds: 120,
-    leaderHeartbeatSeconds: 30,
-  },
-  reviewPolicy: {
-    higherRisk: {
-      enabled: true,
-      actionKinds: ["canonical-reorder"],
-    },
-  },
-  agent: {
-    name: "pan",
-  },
+  session: { agent: { name: "pan" }, productContextRoots: [] },
+  scheduling: { enabled: false },
 };
 
 test("runs setup before loading any existing configuration", async () => {
@@ -125,7 +109,7 @@ test("dispatches verification and shortcut creation with both configurations", a
   assert.equal(shortcuts.status, "created");
 });
 
-test("dispatches a hostless session without constructing legacy host services", async () => {
+test("dispatches an ordinary foreground session", async () => {
   const stdout = capture();
   let received;
   const config = {
@@ -139,11 +123,8 @@ test("dispatches a hostless session without constructing legacy host services", 
     stdout,
     stderr: capture(),
     domainConfigLoader: async () => config,
-    storeFactory: () => assert.fail("session must not construct a legacy store"),
-    attentionFactory: () => assert.fail("session must not construct legacy attention"),
     sessionFactory: async (options) => {
       received = options;
-      options.onMode?.({ mode: "writing" });
       return { exitCode: 0, domain: { repository: "example/domain" } };
     },
   });
@@ -151,12 +132,11 @@ test("dispatches a hostless session without constructing legacy host services", 
   assert.equal(received.config, config);
   assert.equal(received.configPath, "domain.json");
   assert.equal(received.executable, "copilot-test");
-  assert.equal(received.onMode, undefined);
   assert.deepEqual(result, { exitCode: 0, domain: { repository: "example/domain" } });
   assert.deepEqual(JSON.parse(stdout.value), result);
 });
 
-test("reports session mode and leadership-loss recovery guidance", async () => {
+test("reports the foreground session exit", async () => {
   const stdout = capture();
   const config = {
     ...domainConfig,
@@ -169,24 +149,10 @@ test("reports session mode and leadership-loss recovery guidance", async () => {
     stdout,
     stderr: capture(),
     domainConfigLoader: async () => config,
-    sessionFactory: async ({ onMode }) => {
-      onMode({ mode: "read-only", reason: "held-by-another-session" });
-      return {
-        exitCode: 1,
-        mode: "read-only",
-        leadership: {
-          status: "lost",
-          diagnostic: "PAN leadership lost: contended",
-          guidance: "Restart the session to acquire leadership, or continue in read-only mode.",
-        },
-      };
-    },
+    sessionFactory: async () => ({ exitCode: 0 }),
   });
 
-  assert.match(stdout.value, /read-only session started/i);
-  assert.match(stdout.value, /mutations and scheduled reviews are unavailable/i);
-  assert.match(stdout.value, /Leadership lost/i);
-  assert.match(stdout.value, /Restart the session/i);
+  assert.equal(stdout.value, "PAN session exited with code 0.\n");
 });
 
 test("reports successful setup in the default human-readable format", async () => {
@@ -212,7 +178,7 @@ test("reports successful setup in the default human-readable format", async () =
   assert.match(stdout.value, /Copilot approvals: prompt/);
 });
 
-test("requires canonical attention helper commands", async () => {
+test("does not expose task helper commands", async () => {
   for (const args of [
     ["inbox", "--config", "domain.json"],
     ["answer", "42", "Use option A.", "--config", "domain.json"],

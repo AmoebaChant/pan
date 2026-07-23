@@ -4,7 +4,7 @@ import path from "node:path";
 import { GhClient } from "./gh-client.js";
 import { PanStore } from "./pan-store.js";
 import { ProcessClient } from "./process-client.js";
-import { normalizeGitHubRepositoryUrl } from "./workstream-delivery.js";
+import { normalizeGitHubRepositoryUrl } from "./github-repository.js";
 
 /**
  * Verifies that a session can safely use the configured domain as its sole source of truth.
@@ -37,8 +37,7 @@ export class DomainIdentity {
 
   async validate(config) {
     const domain = config?.domain;
-    const state = config?.state;
-    if (!domain?.path || !domain.repository || !state?.branch || !state?.leaderPath) {
+    if (!domain?.path || !domain.repository) {
       throw new TypeError("A normalized PAN domain configuration is required");
     }
 
@@ -68,7 +67,6 @@ export class DomainIdentity {
         `Configured domain origin default branch is ${localDefaultBranch}, expected ${defaultBranch}`,
       );
     }
-    this.#validateStateNamespace(state);
     await this.#validateProductContextRoots(config.session?.productContextRoots ?? []);
 
     return Object.freeze({
@@ -81,11 +79,6 @@ export class DomainIdentity {
         owner: domain.projectOwner,
         number: domain.projectNumber,
         id: schema.projectId,
-      }),
-      state: Object.freeze({
-        branch: state.branch,
-        path: state.path,
-        leaderPath: state.leaderPath,
       }),
     });
   }
@@ -135,16 +128,6 @@ export class DomainIdentity {
       throw new TypeError("storeFactory must return a store with getSchema()");
     }
     return store.getSchema({ refresh: true });
-  }
-
-  #validateStateNamespace(state) {
-    if (
-      state.leaderPath !== `${state.path}/leader.json` ||
-      path.isAbsolute(state.path) ||
-      state.path.split(/[\\/]/).includes("..")
-    ) {
-      throw new Error("Configured PAN state namespace is invalid");
-    }
   }
 
   async #validateProductContextRoots(roots) {

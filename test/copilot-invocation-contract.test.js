@@ -32,7 +32,8 @@ test("defines a bounded native scheduling bootstrap contract", () => {
   assert.match(prompt, /\/every 3600s/);
   assert.match(prompt, /C:\\runtime\\session-a\.due\.json/);
   assert.match(prompt, /Run one fresh startup review now/i);
-  assert.match(prompt, /fresh complete portfolio evidence/i);
+  assert.match(prompt, /read the configured Project and current Issue state directly/i);
+  assert.match(prompt, /Never import unrelated Issues, resurrect closed Issues/i);
 });
 
 test("requires the documented Copilot schedule commands or gives manual guidance", async () => {
@@ -82,7 +83,7 @@ test("uses launch-local due state without replaying another session", () => {
 });
 
 test(
-  "opt-in live contract retains the hostless ordinary-Copilot requirements",
+  "opt-in live contract retains the ordinary Copilot requirements",
   { skip: process.env.PAN_LIVE_COPILOT_SESSION !== "1", timeout: 120_000 },
   async () => {
     await verifyCopilotInvocationContract({

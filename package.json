@@ -1,7 +1,7 @@
 {
   "name": "@amoebachant/pan",
   "version": "0.1.0",
-  "description": "Hostless GitHub-backed personal-agent toolkit for PAN sessions and runners.",
+  "description": "Direct GitHub-backed personal-agent toolkit for PAN sessions and runners.",
   "type": "module",
   "exports": {
     ".": "./src/index.js"
@@ -17,7 +17,7 @@
     "schema"
   ],
   "scripts": {
-    "test": "node -e \"console.log('Automated tests are temporarily disabled; verify changes manually.')\""
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=22"

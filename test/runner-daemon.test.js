@@ -141,6 +141,26 @@ test("does not claim work with unsupported requirements", async () => {
   assert.equal(store.claims.length, 0);
 });
 
+test("claims higher-priority work first and preserves Project order for ties", async () => {
+  const store = new FakeStore([
+    makeItem({ id: "item-low", number: 1, priority: "low" }),
+    makeItem({ id: "item-high-first", number: 2, priority: "high" }),
+    makeItem({ id: "item-high-second", number: 3, priority: "high" }),
+    makeItem({ id: "item-normal", number: 4, priority: "normal" }),
+  ]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(new FakeHandle()),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.claims.length, 1);
+  assert.equal(store.claims[0].itemId, "item-high-first");
+});
+
 test("passes Issue comments to the task executor", async () => {
   const item = makeItem();
   const store = new FakeStore([item], {
@@ -804,6 +824,7 @@ function makeItem({
   id = "item-1",
   number = 1,
   requirements = ["repo:example/tool", "env:local"],
+  priority = "normal",
 } = {}) {
   return {
     id,
@@ -815,7 +836,7 @@ function makeItem({
     requirements,
     fields: {
       autonomy: "full-auto",
-      priority: "normal",
+      priority,
       workstream: "example",
       owner: "agent",
       status: "ready",

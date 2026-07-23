@@ -1,20 +1,7 @@
 
 import { PanAssetService } from "./pan-assets.js";
-import {
-  commandResultFromError,
-  PanCommandError,
-  validatePanCommandResult,
-} from "./pan-command-result.js";
-import { createPanCommandContext } from "./pan-command-context.js";
 import { loadDomainConfig } from "./domain-config.js";
 import { GhClient } from "./gh-client.js";
-import { createLeadershipCommandHandlers } from "./leadership-commands.js";
-import { createActionCommandHandlers } from "./action-commands.js";
-import { createEvidenceCommandHandlers } from "./evidence-commands.js";
-import { createAttentionCommandHandlers } from "./attention-commands.js";
-import { createReconciliationCommandHandlers } from "./reconciliation-commands.js";
-import { createWorkstreamCommandHandlers } from "./workstream-commands.js";
-import { createConfigCommandHandlers } from "./config-commands.js";
 import { startPanOnboarding } from "./pan-onboarding.js";
 import { createPanDesktopShortcuts } from "./pan-shortcuts.js";
 import { startPanSession } from "./pan-session.js";
@@ -37,29 +24,8 @@ export async function runPanCli(
     shortcutFactory = createPanDesktopShortcuts,
     verificationFactory = verifyPanSetup,
     assetServiceFactory = (options) => new PanAssetService(options),
-    commandContextFactory = createPanCommandContext,
-    commandHandlers,
   } = {},
 ) {
-  const helpers =
-    commandHandlers ?? {
-      leadership: createLeadershipCommandHandlers({ env }),
-      action: createActionCommandHandlers({ env }),
-      evidence: createEvidenceCommandHandlers(),
-      attention: createAttentionCommandHandlers({ env }),
-      reconcile: createReconciliationCommandHandlers({ env }),
-      workstream: createWorkstreamCommandHandlers({ env }),
-      config: createConfigCommandHandlers(),
-    };
-  const helper = parsePanHelperArgs(args, { env, handlers: helpers });
-  if (helper) {
-    return runPanHelperCommand(helper, {
-      stdout,
-      env,
-      commandContextFactory,
-      commandHandlers: helpers,
-    });
-  }
   const parsed = parseArgs(args, env);
   if (parsed.command === "onboard") {
     const result = await onboardingFactory({ env });
@@ -142,15 +108,6 @@ export async function runPanCli(
       executable: agent?.executable,
       model: agent?.model,
       env,
-      onMode: parsed.json
-        ? undefined
-        : ({ mode, reason }) =>
-            write(
-              stdout,
-              mode === "writing"
-                ? "PAN writing session started."
-                : `PAN read-only session started${reason ? ` (${reason})` : ""}; mutations and scheduled reviews are unavailable.`,
-            ),
     });
     write(
       stdout,
@@ -162,11 +119,7 @@ export async function runPanCli(
   }
 
   function formatSessionResult(result) {
-    const mode = result.mode ? ` (${result.mode})` : "";
-    const loss = result.leadership?.status === "lost"
-      ? ` Leadership lost: ${result.leadership.diagnostic}. ${result.leadership.guidance}`
-      : "";
-    return `PAN session exited with code ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}${mode}.${loss}`;
+    return `PAN session exited with code ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}.`;
   }
 
   throw new Error(`Unknown PAN command: ${parsed.command}`);
@@ -360,179 +313,6 @@ function retiredCommandError(command, json, guidance) {
   return error;
 }
 
-export function parsePanHelperArgs(
-  args,
-  { env = process.env, handlers = {} } = {},
-) {
-  const [family, operation, ...remaining] = args;
-  const families = [
-    "evidence",
-    "project",
-    "action",
-    "leadership",
-    "attention",
-    "reconcile",
-    "workstream",
-    "config",
-  ];
-  if (!families.includes(family)) {
-    return undefined;
-  }
-  if (!operation || operation.startsWith("--")) {
-    throw new TypeError(`pan ${family} requires an operation`);
-  }
-  const handler = handlers[family]?.[operation];
-  if (typeof handler !== "function") {
-    throw new TypeError(`Unknown PAN ${family} operation: ${operation}`);
-  }
-  const specification = handler.specification ?? {};
-  const allowedOptions = new Set(specification.options ?? []);
-  const allowedFlags = new Set(specification.flags ?? []);
-  const repeatableOptions = new Set(specification.repeatableOptions ?? []);
-  const requiredOptions = specification.requiredOptions ?? [];
-  const positionalNames = specification.positionals ?? [];
-  const options = {};
-  let positionalIndex = 0;
-  let json = false;
-  let config = env.PAN_CONFIG;
-  let schemaVersion;
-  for (let index = 0; index < remaining.length; index += 1) {
-    const token = remaining[index];
-    if (!token.startsWith("--")) {
-      const name = positionalNames[positionalIndex++];
-      if (!name) {
-        throw new TypeError(
-          `Unexpected positional argument for pan ${family} ${operation}: ${token}`,
-        );
-      }
-      options[name] = token;
-      continue;
-    }
-    if (token === "--json") {
-      if (json) {
-        throw new TypeError("--json may only be specified once");
-      }
-      json = true;
-      continue;
-    }
-    const name = token.slice(2);
-    if (name === "config") {
-      if (config !== env.PAN_CONFIG && config !== undefined) {
-        throw new TypeError("--config may only be specified once");
-      }
-      const value = remaining[++index];
-      if (!value || value.startsWith("--")) {
-        throw new TypeError("--config requires a value");
-      }
-      config = value;
-      continue;
-    }
-    if (name === "schema-version") {
-      if (schemaVersion !== undefined) {
-        throw new TypeError("--schema-version may only be specified once");
-      }
-      const value = remaining[++index];
-      if (value !== "1") {
-        throw new TypeError("Unsupported PAN command schema version");
-      }
-      schemaVersion = 1;
-      continue;
-    }
-    if (allowedFlags.has(name)) {
-      if (Object.hasOwn(options, name)) {
-        throw new TypeError(`--${name} may only be specified once`);
-      }
-      options[name] = true;
-      continue;
-    }
-    if (allowedOptions.has(name) || repeatableOptions.has(name)) {
-      if (Object.hasOwn(options, name) && !repeatableOptions.has(name)) {
-        throw new TypeError(`--${name} may only be specified once`);
-      }
-      const value = remaining[++index];
-      if (!value || value.startsWith("--")) {
-        throw new TypeError(`--${name} requires a value`);
-      }
-      if (repeatableOptions.has(name)) {
-        (options[name] ??= []).push(value);
-      } else {
-        options[name] = value;
-      }
-      continue;
-    }
-    throw new TypeError(`Unknown option for pan ${family} ${operation}: --${name}`);
-  }
-  if (schemaVersion === undefined) {
-    throw new TypeError("PAN helper commands require --schema-version 1");
-  }
-  if (!config) {
-    throw new TypeError("PAN helper commands require --config or PAN_CONFIG");
-  }
-  if (positionalIndex !== positionalNames.length) {
-    throw new TypeError(
-      `pan ${family} ${operation} requires ${positionalNames
-        .slice(positionalIndex)
-        .map((name) => `<${name}>`)
-        .join(" ")}`,
-    );
-  }
-  for (const name of requiredOptions) {
-    if (!Object.hasOwn(options, name)) {
-      throw new TypeError(`pan ${family} ${operation} requires --${name}`);
-    }
-  }
-  return { family, operation, config, json, options, schemaVersion };
-}
-
-async function runPanHelperCommand(
-  parsed,
-  { stdout, env, commandContextFactory, commandHandlers },
-) {
-  const context = await commandContextFactory({
-    configPath: parsed.config,
-    env,
-  });
-  const handler = commandHandlers[parsed.family][parsed.operation];
-  const details = {
-    operation: `${parsed.family}.${parsed.operation}`,
-    domain: {
-      repository: context.domain.repository,
-      projectOwner: context.domain.projectOwner,
-      projectNumber: context.domain.projectNumber,
-    },
-  };
-  let result;
-  try {
-    result = validatePanCommandResult(
-      await handler({ context, options: parsed.options }),
-    );
-    if (result.operation !== details.operation) {
-      throw new TypeError(
-        `Helper result operation must be ${details.operation}`,
-      );
-    }
-  } catch (error) {
-    throw new PanCommandError(
-      `PAN helper ${details.operation} failed`,
-      commandResultFromError(error, details),
-      { cause: error },
-    );
-  }
-  if (result.status !== "confirmed") {
-    throw new PanCommandError(
-      `PAN helper ${details.operation} did not confirm the requested outcome`,
-      result,
-    );
-  }
-  write(
-    stdout,
-    parsed.json
-      ? JSON.stringify(result)
-      : `${result.operation}: ${result.confirmedEffects.join("; ") || "confirmed"}`,
-  );
-  return result;
-}
-
 function formatSetupResult(result) {
   const lines = [
     `PAN domain ready: ${result.repository}`,
@@ -647,9 +427,6 @@ function usage() {
     "  pan shortcuts create --config <path> --profile <path> [--selection <chat|runner|both>]",
     "  pan assets <install|status|repair> [--force] [--json]",
     "  pan session --config <path>",
-    "  pan attention <list|answer|add> --schema-version 1 --config <path>",
     "  Session, domain, or scheduling changes: exit and rerun pan session; runner changes: restart pan-runner.",
-    "  pan leadership <status|acquire|assert|renew|release> --schema-version 1 --config <path>",
-    "  pan reconcile <missing-issues|merged-prs> [--apply] --schema-version 1 --config <path>",
   ].join("\n");
 }
