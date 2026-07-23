@@ -137,7 +137,7 @@ test("connects an existing private repository and compatible Project without rep
 test("adopts an existing local PAN domain and resumes without replacing its data", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pan-setup-existing-domain-"));
   const directory = path.join(root, "domain");
-  const runnerPath = path.join(directory, "runners", "machine.json");
+  const runnerPath = path.join(directory, "runners", "MACHINE.json");
   const gh = new ConnectGh();
   const commands = new ExistingDomainCommands(directory);
   try {
@@ -151,8 +151,8 @@ test("adopts an existing local PAN domain and resumes without replacing its data
       maxConcurrentDaemons: 2,
       capabilities: ["env:local"],
       store: {
-        repository: "example/domain",
-        projectOwner: "example",
+        repository: "Example/Domain",
+        projectOwner: "Example",
         projectNumber: 9,
       },
       repositories: {},
@@ -203,11 +203,13 @@ test("adopts an existing local PAN domain and resumes without replacing its data
     );
     const runnerSource = await readFile(runnerPath, "utf8");
     const runner = JSON.parse(runnerSource);
-    assert.equal(runnerSource, existingRunnerSource);
+    assert.notEqual(runnerSource, existingRunnerSource);
     assert.equal(runner.preservedSetting, "keep-me");
     assert.equal(runner.maxConcurrentDaemons, 2);
-    assert.equal(runner.store.path, undefined);
-    assert.equal(runner.domainConfigPath, undefined);
+    assert.equal(runner.store.repository, options.repository);
+    assert.equal(runner.store.projectOwner, options.projectOwner);
+    assert.equal(runner.store.path, path.resolve(directory));
+    assert.equal(runner.domainConfigPath, first.configPath);
     assert.equal(runner.copilot.approvalMode, "allow-all");
     assert.equal(resumed.runnerOnline, false);
     assert.equal(

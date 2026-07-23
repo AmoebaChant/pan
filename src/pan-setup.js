@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -192,11 +192,7 @@ export async function setupPanDomain(
     if (!machine) {
       throw new TypeError("machine name must be a non-empty string");
     }
-    const runnerPath = path.join(
-      directory,
-      "runners",
-      `${fileSlug(machine)}.json`,
-    );
+    const runnerPath = await resolveRunnerProfilePath(directory, machine);
     const configPath = path.join(directory, "pan.json");
     const configSetup = await existingOrStarterConfig({
       configPath,
@@ -563,6 +559,28 @@ function starterRunnerProfile({
   };
 }
 
+async function resolveRunnerProfilePath(directory, machine) {
+  const runnersPath = path.join(directory, "runners");
+  const filename = `${fileSlug(machine)}.json`;
+  let entries;
+  try {
+    entries = await readdir(runnersPath, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return path.join(runnersPath, filename);
+    }
+    throw error;
+  }
+  const matches = entries.filter(
+    (entry) =>
+      entry.isFile() && entry.name.toLowerCase() === filename.toLowerCase(),
+  );
+  if (matches.length > 1) {
+    throw new Error(`Multiple runner profiles match machine ${machine}`);
+  }
+  return path.join(runnersPath, matches[0]?.name ?? filename);
+}
+
 async function verifyPrivateRepository({ gh, repository }) {
   const result = await gh.runJson([
     "repo",
@@ -769,11 +787,28 @@ async function existingOrStarterRunner({
     directory,
     label: "Existing PAN runner profile",
   });
-  if (normalized.copilot.approvalMode === approvalMode) {
+  if (
+    normalized.store.repository === repository &&
+    normalized.store.projectOwner === projectOwner &&
+    normalized.store.projectNumber === projectNumber &&
+    normalized.store.path !== undefined &&
+    samePath(normalized.store.path, directory) &&
+    normalized.domainConfigPath !== undefined &&
+    samePath(normalized.domainConfigPath, configPath) &&
+    normalized.copilot.approvalMode === approvalMode
+  ) {
     return { ...existing, write: false };
   }
   const document = {
     ...existing.document,
+    store: {
+      ...existing.document.store,
+      repository,
+      projectOwner,
+      projectNumber,
+      path: directory,
+    },
+    domainConfigPath: configPath,
     copilot: {
       ...existing.document.copilot,
       approvalMode,
