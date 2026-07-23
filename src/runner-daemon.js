@@ -247,9 +247,9 @@ export class RunnerDaemon {
           assertLease: heartbeat.renewNow,
         });
         this.logger.info?.(
-          `Task #${item.number} delivered via ${delivery.mode}: ${delivery.url}.`,
+          `Task #${item.number} delivered via ${delivery.mode}${delivery.url ? `: ${delivery.url}` : ""}.`,
         );
-        if (delivery.mode === "direct") {
+        if (delivery.mode !== "pull-request") {
           await retry(() =>
             this.store.addComment(item, completedComment(delivery, result)),
           );
@@ -396,7 +396,7 @@ export class RunnerDaemon {
           playbook,
           handle: undefined,
           heartbeat,
-          summary: `Delivery ${delivery.url} completed, but final Project updates failed: ${error.message}`,
+          summary: `Delivery${delivery.url ? ` ${delivery.url}` : ""} completed, but final Project updates failed: ${error.message}`,
         });
         return;
       }
@@ -817,15 +817,19 @@ function runnerStoppedError(reason) {
 }
 
 function completedComment(delivery, result) {
-  const label =
-    delivery.mode === "direct" ? "Commit" : "Pull request";
+  const evidence =
+    delivery.mode === "report"
+      ? ["", delivery.report]
+      : [
+          "",
+          `${delivery.mode === "direct" ? "Commit" : "Pull request"}: ${delivery.url}`,
+        ];
   return [
     "<!-- pan:runner-result -->",
     "### Agent completed",
     "",
     result.summary,
-    "",
-    `${label}: ${delivery.url}`,
+    ...evidence,
   ].join("\n");
 }
 

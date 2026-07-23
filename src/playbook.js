@@ -52,9 +52,9 @@ export function validatePlaybook(
     playbook.delivery === undefined
       ? "pull-request"
       : playbook.delivery;
-  if (!["pull-request", "direct"].includes(delivery)) {
+  if (!["pull-request", "direct", "report"].includes(delivery)) {
     throw new TypeError(
-      `${name}.delivery must be "pull-request" or "direct"`,
+      `${name}.delivery must be "pull-request", "direct", or "report"`,
     );
   }
 

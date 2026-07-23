@@ -159,9 +159,9 @@ function normalizeAvailabilityPlaybooks(profile) {
       );
     }
     const delivery = playbook.delivery ?? "pull-request";
-    if (!["pull-request", "direct"].includes(delivery)) {
+    if (!["pull-request", "direct", "report"].includes(delivery)) {
       throw new TypeError(
-        `Runner ${profile.id} playbook delivery must be pull-request or direct`,
+        `Runner ${profile.id} playbook delivery must be pull-request, direct, or report`,
       );
     }
     return {
