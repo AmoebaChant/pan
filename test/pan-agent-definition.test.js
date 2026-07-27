@@ -81,7 +81,7 @@ test("packages direct-GitHub portfolio, workstream, and attention skills", async
       "gh issue view",
       "gh project item-edit",
     ],
-    "pan-workstream": ["isolated worktree", "merge with `--no-ff`"],
+    "pan-workstream": ["default branch", "Do not create a feature branch or worktree"],
   };
 
   for (const [name, commands] of Object.entries(expected)) {
