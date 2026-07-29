@@ -30,7 +30,9 @@ Repository entries use `origin` for both the default-branch base and pushes
 unless configured otherwise. For a fork checkout, set `baseRemote` to the
 remote for the configured upstream repository and `pushRemote` to the fork
 remote. Pan validates both remotes before launch and again before accepting
-delivery.
+delivery, and requires them to be GitHub remotes. Repositories reached only
+through `"delivery": "playbook"` are exempt from all of that, so they may live
+on any host.
 
 ## Delivery policy
 
@@ -47,13 +49,28 @@ default branch before moving the item to `done` and closing its Issue.
 reproduce behavior but cannot change tracked files or create commits. Pan
 records the complete report on the Issue and moves the item to `in-review`.
 
+`"delivery": "playbook"` hands the whole workflow to the playbook's
+instructions. It requires an absolute `workingDirectory`, which is the only
+directory the runner gives the worker. The runner prepares nothing: it reads no
+remotes, creates no branch or worktree, records no base commit, and performs no
+git verification of the reported delivery. Use it when a repository's tooling
+owns workspace setup and delivery itself, or when the repository is not hosted
+on GitHub. The worker reports free-form `details` and an optional `url`, and Pan
+records them on the Issue and moves the item to `in-review`.
+
+Because the runner verifies nothing in this mode, the playbook instructions are
+the only thing standing between the worker and an unsafe change. Say explicitly
+how to isolate work, how to build and test, and how to deliver.
+
 ## Worker lifecycle
 
 For a claimed task the runner creates a non-default branch and dedicated
 worktree, supplies Issue, answer, workstream, and playbook context to Copilot,
 and writes append-only Issue journal records. It owns task leases and
 deterministic delivery validation. It validates the reported remote commit or
-pull request before Project transition and cleanup.
+pull request before Project transition and cleanup. Playbook delivery is the
+exception: the runner only launches the worker in `workingDirectory`, holds the
+lease, and monitors progress and human-attention requests.
 
 An operational stop, terminal closure, launch failure, lost lease, or missing
 result returns work to `ready` with resumable state; it is not human attention.

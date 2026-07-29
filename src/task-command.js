@@ -1,6 +1,6 @@
 export function buildTaskCopilotSpawnOptions(task, env) {
   return {
-    cwd: task.target.worktreePath,
+    cwd: task.target.workingDirectory ?? task.target.worktreePath,
     env,
     stdio: "inherit",
     windowsHide: false,

@@ -32,9 +32,14 @@
       "items": { "type": "string", "minLength": 1 }
     },
     "delivery": {
-      "enum": ["pull-request", "direct", "report"],
+      "enum": ["pull-request", "direct", "report", "playbook"],
       "default": "pull-request",
-      "description": "Omit for pull-request delivery. Set direct only when this playbook is explicitly authorized to integrate and push to the configured default branch. Set report for read-only investigation delivered as an Issue comment for human review."
+      "description": "Omit for pull-request delivery. Set direct only when this playbook is explicitly authorized to integrate and push to the configured default branch. Set report for read-only investigation delivered as an Issue comment for human review. Set playbook when this playbook's instructions define the entire workflow: the runner prepares no workspace and verifies no delivery, it only launches the agent in workingDirectory and monitors it."
+    },
+    "workingDirectory": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute directory the agent is launched in. Required for playbook delivery and rejected for every other delivery mode, because the runner otherwise creates and owns the task worktree."
     }
   },
   "examples": [
@@ -44,6 +49,17 @@
       "capabilities": ["env:local", "tool:copilot-cli"],
       "repositories": ["example/tool"],
       "delivery": "pull-request"
+    },
+    {
+      "id": "metarepo-development",
+      "capacity": 1,
+      "capabilities": ["env:local", "tool:copilot-cli"],
+      "repositories": ["ExampleComponent"],
+      "delivery": "playbook",
+      "workingDirectory": "C:\\Metarepo",
+      "instructions": [
+        "Create an isolated workspace before editing, and deliver using the metarepo tooling."
+      ]
     }
   ]
 }

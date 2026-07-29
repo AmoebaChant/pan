@@ -52,9 +52,19 @@ export function validatePlaybook(
     playbook.delivery === undefined
       ? "pull-request"
       : playbook.delivery;
-  if (!["pull-request", "direct", "report"].includes(delivery)) {
+  if (!["pull-request", "direct", "report", "playbook"].includes(delivery)) {
     throw new TypeError(
-      `${name}.delivery must be "pull-request", "direct", or "report"`,
+      `${name}.delivery must be "pull-request", "direct", "report", or "playbook"`,
+    );
+  }
+  if (delivery === "playbook") {
+    requireString(playbook.workingDirectory, `${name}.workingDirectory`);
+    if (!isAbsolutePath(playbook.workingDirectory)) {
+      throw new TypeError(`${name}.workingDirectory must be an absolute path`);
+    }
+  } else if (playbook.workingDirectory !== undefined) {
+    throw new TypeError(
+      `${name}.workingDirectory is only valid for playbook delivery`,
     );
   }
 
@@ -93,6 +103,9 @@ export function validatePlaybook(
     repositories: [...playbook.repositories],
     instructions: [...(playbook.instructions ?? [])],
     delivery,
+    ...(delivery === "playbook"
+      ? { workingDirectory: playbook.workingDirectory.trim() }
+      : {}),
     legacy: false,
   };
 }
@@ -141,4 +154,8 @@ function requireInteger(value, name) {
   if (!Number.isInteger(value) || value < 1) {
     throw new TypeError(`${name} must be an integer >= 1`);
   }
+}
+
+function isAbsolutePath(value) {
+  return /^([a-zA-Z]:[\\/]|[\\/])/.test(value.trim());
 }

@@ -10,6 +10,7 @@ import {
   normalizeGitHubRepositoryUrl,
   resolveWorkstreamReadme,
 } from "../src/local-task-executor.js";
+import { buildTaskCopilotSpawnOptions } from "../src/task-command.js";
 
 test("confines workstream README paths to the data repository", () => {
   const store = path.resolve("private-data");
@@ -675,6 +676,122 @@ test("rejects pull requests that do not link the source Issue", async () => {
         },
       }),
       /does not match the task delivery/,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("runs no git and launches the agent in the playbook working directory", async () => {
+  const fixture = await createFixture();
+  const commands = new FakeCommands();
+  const terminalLaunches = [];
+  const resumeRecords = [];
+  const workingDirectory = path.join(fixture.root, "metarepo");
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: (...args) => {
+      terminalLaunches.push(args);
+      return successfulSpawn();
+    },
+    randomId: () => "agent-managed",
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(7),
+      playbook: {
+        id: "metarepo-development",
+        instructions: ["Create your own isolated workspace."],
+        delivery: "playbook",
+        workingDirectory,
+      },
+      onResume: async (record) => resumeRecords.push(record),
+    });
+    const context = JSON.parse(
+      await readFile(path.join(handle.statePath, "context.json"), "utf8"),
+    );
+
+    assert.deepEqual(
+      commands.calls,
+      [],
+      "playbook delivery must not run any git command in the runner",
+    );
+    assert.deepEqual(context.target, {
+      repository: "example/tool",
+      workingDirectory,
+    });
+    assert.equal(context.playbook.delivery, "playbook");
+    assert.equal(
+      buildTaskCopilotSpawnOptions(context, {}).cwd,
+      workingDirectory,
+    );
+    assert.equal(resumeRecords[0].worktreePath, workingDirectory);
+    assert.equal(resumeRecords[0].branch, undefined);
+    assert.equal(terminalLaunches.length, 1);
+
+    const delivery = await handle.complete({
+      status: "completed",
+      summary: "Delivered through the metarepo tooling.",
+      delivery: {
+        mode: "playbook",
+        details: "Pushed vbranch and opened review 4213.",
+        url: "https://example.visualstudio.com/Repo/pullrequest/4213",
+      },
+    });
+    assert.deepEqual(delivery, {
+      mode: "playbook",
+      details: "Pushed vbranch and opened review 4213.",
+      url: "https://example.visualstudio.com/Repo/pullrequest/4213",
+    });
+    assert.deepEqual(
+      commands.calls,
+      [],
+      "playbook delivery must not verify delivery with git",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("requires playbook delivery to describe what it delivered", async () => {
+  const fixture = await createFixture();
+  const commands = new FakeCommands();
+  const workingDirectory = path.join(fixture.root, "metarepo");
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: () => successfulSpawn(),
+    randomId: () => "agent-managed-invalid",
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(8),
+      playbook: {
+        id: "metarepo-development",
+        instructions: [],
+        delivery: "playbook",
+        workingDirectory,
+      },
+    });
+
+    await assert.rejects(
+      handle.complete({
+        status: "completed",
+        summary: "Done.",
+        delivery: { mode: "playbook" },
+      }),
+      /must describe what was delivered/,
+    );
+    await assert.rejects(
+      handle.complete({
+        status: "completed",
+        summary: "Done.",
+        delivery: { mode: "pull-request", details: "x" },
+      }),
+      /delivery mode must be playbook/,
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });

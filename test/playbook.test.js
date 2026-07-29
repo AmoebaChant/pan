@@ -37,13 +37,71 @@ test("supports direct and report delivery and rejects unknown delivery policies"
   profile.playbooks[0].delivery = "email";
   assert.throws(
     () => validateRunnerProfile(profile),
-    /delivery must be "pull-request", "direct", or "report"/,
+    /delivery must be "pull-request", "direct", "report", or "playbook"/,
   );
 
   profile.playbooks[0].delivery = null;
   assert.throws(
     () => validateRunnerProfile(profile),
-    /delivery must be "pull-request", "direct", or "report"/,
+    /delivery must be "pull-request", "direct", "report", or "playbook"/,
+  );
+});
+
+test("playbook delivery requires an absolute working directory", () => {
+  const withWorkingDirectory = (delivery, workingDirectory) => {
+    const profile = makeProfile();
+    profile.playbooks[0].delivery = delivery;
+    if (workingDirectory !== undefined) {
+      profile.playbooks[0].workingDirectory = workingDirectory;
+    }
+    return profile;
+  };
+
+  assert.equal(
+    validateRunnerProfile(withWorkingDirectory("playbook", "C:\\Metarepo"))
+      .playbooks[0].workingDirectory,
+    "C:\\Metarepo",
+  );
+  assert.equal(
+    validateRunnerProfile(withWorkingDirectory("playbook", "/srv/metarepo"))
+      .playbooks[0].workingDirectory,
+    "/srv/metarepo",
+  );
+
+  assert.throws(
+    () => validateRunnerProfile(withWorkingDirectory("playbook", undefined)),
+    /workingDirectory must be a non-empty string/,
+  );
+  assert.throws(
+    () => validateRunnerProfile(withWorkingDirectory("playbook", "relative")),
+    /workingDirectory must be an absolute path/,
+  );
+  assert.throws(
+    () => validateRunnerProfile(withWorkingDirectory("direct", "C:\\Metarepo")),
+    /workingDirectory is only valid for playbook delivery/,
+  );
+});
+
+test("routes delivery:playbook requirements to a playbook-delivery playbook", () => {
+  const profile = makeProfile();
+  profile.playbooks[0].delivery = "playbook";
+  profile.playbooks[0].workingDirectory = "C:\\Metarepo";
+  const validated = validateRunnerProfile(profile);
+  const repository = validated.playbooks[0].repositories[0];
+
+  assert.equal(
+    matchingPlaybook(
+      { requirements: [`repo:${repository}`, "delivery:playbook"] },
+      validated,
+    )?.id,
+    validated.playbooks[0].id,
+  );
+  assert.equal(
+    matchingPlaybook(
+      { requirements: [`repo:${repository}`, "delivery:pull-request"] },
+      validated,
+    )?.id,
+    "documentation",
   );
 });
 
