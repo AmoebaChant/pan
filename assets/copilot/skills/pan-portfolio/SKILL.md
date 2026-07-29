@@ -1,9 +1,9 @@
 ---
 name: pan-portfolio
-description: Review and triage a PAN portfolio directly from live GitHub Issues and Project state.
+description: Review and triage a Pan portfolio directly from live GitHub Issues and Project state.
 ---
 
-# PAN portfolio review
+# Pan portfolio review
 
 Use this skill for portfolio review, next-work recommendations, Project triage,
 ordering, or completion checks.

@@ -62,7 +62,7 @@ test("rejects a runner aimed at another domain", () => {
 
   assert.throws(
     () => assertMatchingDomain(makeConfig(), profile),
-    /same PAN domain/,
+    /same Pan domain/,
   );
 });
 
@@ -76,7 +76,7 @@ test("rejects a runner that references another domain configuration file", () =>
         configPath: "C:\\domains\\example\\pan.json",
         requireConfigPath: true,
       }),
-    /reference the verified PAN domain configuration/,
+    /reference the verified Pan domain configuration/,
   );
 });
 

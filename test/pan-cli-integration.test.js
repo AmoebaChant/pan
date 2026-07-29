@@ -152,7 +152,7 @@ test("reports the foreground session exit", async () => {
     sessionFactory: async () => ({ exitCode: 0 }),
   });
 
-  assert.equal(stdout.value, "PAN session exited with code 0.\n");
+  assert.equal(stdout.value, "Pan session exited with code 0.\n");
 });
 
 test("reports successful setup in the default human-readable format", async () => {
@@ -173,7 +173,7 @@ test("reports successful setup in the default human-readable format", async () =
     }),
   });
 
-  assert.match(stdout.value, /PAN domain ready: example\/domain/);
+  assert.match(stdout.value, /Pan domain ready: example\/domain/);
   assert.match(stdout.value, /Runner profile: .* \(offline\)/);
   assert.match(stdout.value, /Copilot approvals: prompt/);
 });
@@ -229,7 +229,7 @@ test("prints a structured retirement result from the executable", () => {
     command: "host",
     replacement: "pan session --config <path>",
     guidance: [
-      "Run pan session --config <path> in the foreground; PAN no longer runs a host or bridge.",
+      "Run pan session --config <path> in the foreground; Pan no longer runs a host or bridge.",
     ],
   });
 });

@@ -25,10 +25,10 @@ if (
     domainConfig.domain.projectOwner !== profile.store.projectOwner ||
     domainConfig.domain.projectNumber !== profile.store.projectNumber)
 ) {
-  throw new Error("Runner and domain configuration must target the same PAN store");
+  throw new Error("Runner and domain configuration must target the same Pan store");
 }
 const logger = await createServiceLogger({
-  name: "PAN runner",
+  name: "Pan runner",
   logFile: path.join(profile.stateDirectory, "runner.log"),
 });
 
@@ -46,10 +46,7 @@ const store = new PanStore({
   gh,
 });
 const executor = new LocalTaskExecutor({ profile, logger });
-const attention = new AttentionService({
-  store,
-  humanAssignee: profile.githubAssignee,
-});
+const attention = new AttentionService({ store });
 const daemon = new RunnerDaemon({
   store,
   profile,

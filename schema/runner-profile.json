@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/runner-profile.json",
-  "title": "PAN runner capability profile",
-  "description": "Private machine configuration for an independent PAN runner; do not publish profile values.",
+  "title": "Pan runner capability profile",
+  "description": "Private machine configuration for an independent Pan runner; do not publish profile values.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -1,34 +1,23 @@
-import { formatNeedsHuman, latestAttention } from "./needs-human.js";
+import {
+  formatNeedsHuman,
+  formatNeedsHumanResolved,
+  latestAttention,
+} from "./needs-human.js";
 
 export class AttentionService {
-  constructor({ store, humanAssignee }) {
+  constructor({ store }) {
     if (!store) {
       throw new TypeError("store is required");
     }
     this.store = store;
-    this.humanAssignee = humanAssignee;
   }
 
-  async request(
-    item,
-    record,
-    { runner, runnerAssignee, resumeAffinity, marker } = {},
-  ) {
-    if (!this.humanAssignee?.trim()) {
-      throw new Error(
-        "A human assignee must be configured before requesting attention",
-      );
-    }
+  async request(item, record, { runner, resumeAffinity, marker } = {}) {
     const comments = await this.store.listComments(item);
     let attention = latestAttention(comments);
     if (!attention || attention.resolved) {
       const request = {
         ...record,
-        priorState: {
-          status: item.fields.status,
-          owner: item.fields.owner,
-          priority: item.fields.priority,
-        },
         ...(resumeAffinity
           ? { resume: { affinity: resumeAffinity } }
           : {}),
@@ -43,8 +32,6 @@ export class AttentionService {
       const transition = await this.store.requestHumanAttention({
         itemId: item.id,
         runner,
-        runnerAssignee,
-        humanAssignee: this.humanAssignee,
       });
       if (!transition.requested) {
         throw new Error(`Human attention transition failed: ${transition.reason}`);
@@ -54,5 +41,34 @@ export class AttentionService {
       throw error;
     }
     return attention.request;
+  }
+
+  async resolve(item, { runner, reason } = {}) {
+    let transition;
+    try {
+      transition = await this.store.resolveHumanAttention({
+        itemId: item.id,
+        runner,
+      });
+      if (!transition.resolved) {
+        throw new Error(
+          `Human attention resolution failed: ${transition.reason}`,
+        );
+      }
+    } catch (error) {
+      error.code = "PAN_ATTENTION_TRANSITION_FAILED";
+      throw error;
+    }
+    const comments = await this.store.listComments(item);
+    const attention = latestAttention(comments);
+    if (attention && !attention.resolved) {
+      await this.store.addComment(
+        item,
+        formatNeedsHumanResolved(
+          reason ?? "Answered in the worker's terminal; the worker continued.",
+        ),
+      );
+    }
+    return transition.item;
   }
 }

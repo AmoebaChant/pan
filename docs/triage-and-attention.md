@@ -1,4 +1,4 @@
-# PAN triage and attention
+# Pan triage and attention
 
 Pan works directly with the configured GitHub repository and Project through
 `gh`. The environment provides:
@@ -14,21 +14,31 @@ Issue state with `gh issue list` or `gh issue view`, and join by Issue URL.
 Closed Issues are not triage candidates and are never automatically added back
 to the Project.
 
-Pan discusses priority, ownership, autonomy, requirements, and workstream with
+Pan discusses priority, ownership, requirements, and workstream with
 the user, then writes approved values with `gh project item-edit`. It re-reads
 each Issue and Project item immediately before mutation and verifies the result
 afterward. Active runner status and lease fields are left untouched.
 
-PAN has no automatic missing-Issue reconciliation. Creating or triaging one
+Pan has no automatic missing-Issue reconciliation. Creating or triaging one
 open Issue may add that Issue to the Project; unrelated Issues are unchanged.
 
 ## Attention
 
-Runner questions are stored in Issue comments using
-`<!-- pan:needs-human -->`. Pan reads blocked, needs-detail, and in-review items
-directly from GitHub. A user answer is recorded with
-`<!-- pan:answer -->`, then the task's prior fields are restored and the
-question is marked `<!-- pan:needs-human-resolved -->`.
+A worker that needs an answer sets `needs-human-since` to the current UTC time
+and posts an Issue comment marked `<!-- pan:needs-human -->` naming the machine,
+worktree, and terminal it is waiting in. It then keeps running: it holds its
+lease and its concurrency slot and spends no budget while it waits, and its
+`Status` stays `in-progress`.
+
+Answer it in that terminal. The worker clears its request, the runner clears
+`needs-human-since`, and the question is closed with
+`<!-- pan:needs-human-resolved -->`. Answers recorded on the Issue itself use
+`<!-- pan:answer -->` and reach the worker as task context on its next launch.
+
+So a non-empty `needs-human-since` is the single signal that a human is needed;
+`owner` and `priority` are not touched. Sort those items by that timestamp to
+answer the stalest first. `blocked` is reserved for work waiting on something
+outside your control.
 
 New tasks are ordinary GitHub Issues. Pan adds a new open Issue to the Project
 and initializes fields from the shared schema. If details are incomplete it
@@ -36,7 +46,5 @@ remains `untriaged` or `needs-detail`; complete agent work becomes `ready`.
 
 ## Session
 
-Use `pan session --config <path>` for interactive work. PAN sessions run in the
-foreground and have no leadership/read-only modes. The old evidence, action,
-leadership, reconciliation, attention, and workstream helper command families
-have been removed.
+Use `pan session --config <path>` for interactive work. Pan sessions run in the
+foreground; there are no leadership or read-only modes.

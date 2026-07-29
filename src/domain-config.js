@@ -58,7 +58,7 @@ export async function loadDomainConfig(configPath) {
     parsed = JSON.parse(await readFile(configPath, "utf8"));
   } catch (error) {
     throw new Error(
-      `Unable to read PAN domain config ${configPath}: ${error.message}`,
+      `Unable to read Pan domain config ${configPath}: ${error.message}`,
       { cause: error },
     );
   }
@@ -453,7 +453,7 @@ function rejectUnexpectedKeys(config, allowed) {
       );
     }
     if (!allowed.has(key)) {
-      fail(key, "is not a supported PAN domain configuration field");
+      fail(key, "is not a supported Pan domain configuration field");
     }
   }
 }
@@ -580,6 +580,6 @@ function requireAbsolutePath(value, field) {
 
 function fail(field, correction) {
   throw new TypeError(
-    `${field} ${correction}; correct the PAN domain config before retrying`,
+    `${field} ${correction}; correct the Pan domain config before retrying`,
   );
 }

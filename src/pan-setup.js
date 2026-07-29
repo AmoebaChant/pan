@@ -102,7 +102,7 @@ export async function setupPanDomain(
             options.projectTitle,
             prompt,
             "GitHub Project title",
-            "PAN",
+            "Pan",
           )
         : undefined;
     const projectNumber =
@@ -155,7 +155,7 @@ export async function setupPanDomain(
         repository,
         "--private",
         "--description",
-        "Private PAN domain data.",
+        "Private Pan domain data.",
       ]);
       created.push(`repository ${repository}`);
     } else {
@@ -312,7 +312,7 @@ export async function setupPanDomain(
           directory,
           "commit",
           "-m",
-          "Bootstrap PAN domain",
+          "Bootstrap Pan domain",
         ]);
         committed = true;
       }
@@ -362,9 +362,9 @@ export async function setupPanDomain(
   } catch (error) {
     const suffix =
       created.length > 0
-        ? ` Created ${created.join(" and ")}; PAN does not delete remote resources automatically.`
+        ? ` Created ${created.join(" and ")}; Pan does not delete remote resources automatically.`
         : "";
-    throw new Error(`PAN setup failed: ${error.message}.${suffix}`, {
+    throw new Error(`Pan setup failed: ${error.message}.${suffix}`, {
       cause: error,
     });
   } finally {
@@ -592,7 +592,7 @@ async function verifyPrivateRepository({ gh, repository }) {
     throw new Error(`GitHub did not return the expected repository ${repository}`);
   }
   if (result.isPrivate !== true) {
-    throw new Error("PAN domain repositories must be private");
+    throw new Error("Pan domain repositories must be private");
   }
 }
 
@@ -727,7 +727,7 @@ async function existingOrStarterConfig({
   projectNumber,
   directory,
 }) {
-  const existing = await readJsonIfExists(configPath, "PAN domain configuration");
+  const existing = await readJsonIfExists(configPath, "Pan domain configuration");
   if (existing === undefined) {
     const document = domainConfig({
       repository,
@@ -743,7 +743,7 @@ async function existingOrStarterConfig({
     projectOwner,
     projectNumber,
     directory,
-    label: "Existing PAN domain configuration",
+    label: "Existing Pan domain configuration",
   });
   return { ...existing, write: false };
 }
@@ -759,7 +759,7 @@ async function existingOrStarterRunner({
   directory,
   env,
 }) {
-  const existing = await readJsonIfExists(runnerPath, "PAN runner profile");
+  const existing = await readJsonIfExists(runnerPath, "Pan runner profile");
   if (existing === undefined) {
     const document = starterRunnerProfile({
       repository,
@@ -781,7 +781,7 @@ async function existingOrStarterRunner({
     projectOwner,
     projectNumber,
     directory,
-    label: "Existing PAN runner profile",
+    label: "Existing Pan runner profile",
   });
   if (
     normalized.store.repository === repository &&
@@ -824,7 +824,7 @@ function assertDomainIdentity(
     actual?.projectNumber !== projectNumber ||
     (actual.path !== undefined && !samePath(actual.path, directory))
   ) {
-    throw new Error(`${label} targets a different PAN domain`);
+    throw new Error(`${label} targets a different Pan domain`);
   }
 }
 
@@ -896,7 +896,7 @@ async function requireCleanManagedPaths({ commands, directory, paths }) {
   ]);
   if (dirty.trim()) {
     throw new Error(
-      `PAN setup-managed files have uncommitted changes: ${relativePaths.join(", ")}`,
+      `Pan setup-managed files have uncommitted changes: ${relativePaths.join(", ")}`,
     );
   }
 }
@@ -929,7 +929,7 @@ async function setupCommitNeedsPush({ commands, directory }) {
     "-1",
     "--format=%s",
   ]);
-  return subject.trim() === "Bootstrap PAN domain";
+  return subject.trim() === "Bootstrap Pan domain";
 }
 
 function validateRepository(repository) {
@@ -978,7 +978,7 @@ function json(value) {
 }
 
 function domainReadme({ repository, projectUrl }) {
-  return `# PAN domain
+  return `# Pan domain
 
 Private domain data for \`${repository}\`.
 
@@ -1005,7 +1005,7 @@ updated: ${date}
 
 ## Current State
 
-The private PAN domain and backlog Project are initialized.
+The private Pan domain and backlog Project are initialized.
 
 ## Next Steps
 

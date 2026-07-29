@@ -41,10 +41,9 @@ const MANIFEST = {
       type: "text",
     },
     {
-      key: "autonomy",
-      name: "autonomy",
-      type: "single_select",
-      options: ["manual", "full-auto"],
+      key: "needsHumanSince",
+      name: "needs-human-since",
+      type: "text",
     },
     {
       key: "leaseUntil",
@@ -93,7 +92,7 @@ test("rejects unknown fields and invalid select options", async () => {
 
   await assert.rejects(
     store.setFields("item-1", { unknown: "value" }),
-    /Unknown PAN field/,
+    /Unknown Pan field/,
   );
   await assert.rejects(
     store.setFields("item-1", { owner: "agent", status: "invalid" }),
@@ -438,7 +437,7 @@ test("releases the owning runner and returns the item to ready", async () => {
   ]);
 });
 
-test("atomically escalates a leased task to urgent human attention", async () => {
+test("flags human attention without disturbing triage, lease, or assignees", async () => {
   const { store, gh } = fixture({
     items: [
       makeItem({
@@ -455,24 +454,43 @@ test("atomically escalates a leased task to urgent human attention", async () =>
   const result = await store.requestHumanAttention({
     itemId: "item-1",
     runner: "runner-a",
-    runnerAssignee: "runner-bot",
-    humanAssignee: "octocat",
   });
 
   assert.equal(result.requested, true);
-  assert.equal(result.item.fields.owner, "human");
-  assert.equal(result.item.fields.status, "blocked");
-  assert.equal(result.item.fields.priority, "urgent");
-  assert.equal(result.item.fields.claimedBy, "");
-  assert.equal(result.item.fields.leaseUntil, "");
-  assert.deepEqual(gh.issueEdits, [
-    { number: 1, flag: "--remove-assignee", assignee: "runner-bot" },
-    { number: 1, flag: "--add-assignee", assignee: "octocat" },
-  ]);
+  assert.match(result.item.fields.needsHumanSince, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(result.item.fields.owner, "agent");
+  assert.equal(result.item.fields.status, "in-progress");
+  assert.equal(result.item.fields.priority, "low");
+  assert.equal(result.item.fields.claimedBy, "runner-a");
+  assert.equal(result.item.fields.leaseUntil, FUTURE);
+  assert.deepEqual(gh.issueEdits, []);
 });
 
-test("restores the lease and runner assignment when human assignment fails", async () => {
+test("refuses to flag attention for a task another runner holds", async () => {
   const { store } = fixture({
+    items: [
+      makeItem({
+        owner: "agent",
+        status: "in-progress",
+        claimedBy: "runner-b",
+        leaseUntil: FUTURE,
+      }),
+    ],
+  });
+
+  const result = await store.requestHumanAttention({
+    itemId: "item-1",
+    runner: "runner-a",
+  });
+
+  assert.equal(result.requested, false);
+  assert.equal(result.reason, "not-owner");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.needsHumanSince, "");
+});
+
+test("resolves human attention idempotently and leaves the lease intact", async () => {
+  const { store, gh } = fixture({
     items: [
       makeItem({
         owner: "agent",
@@ -480,67 +498,24 @@ test("restores the lease and runner assignment when human assignment fails", asy
         priority: "low",
         claimedBy: "runner-a",
         leaseUntil: FUTURE,
-        assignees: ["runner-bot"],
-      }),
-    ],
-    failAssignee: true,
-  });
-
-  await assert.rejects(
-    store.requestHumanAttention({
-      itemId: "item-1",
-      runner: "runner-a",
-      runnerAssignee: "runner-bot",
-      humanAssignee: "octocat",
-    }),
-    /assignment failed/,
-  );
-
-  const item = await store.getItem("item-1");
-  assert.equal(item.fields.status, "in-progress");
-  assert.equal(item.fields.owner, "agent");
-  assert.equal(item.fields.priority, "low");
-  assert.equal(item.fields.claimedBy, "runner-a");
-  assert.equal(item.fields.leaseUntil, FUTURE);
-  assert.deepEqual(item.assignees, ["runner-bot"]);
-});
-
-test("resolves human attention idempotently and restores prior priority", async () => {
-  const { store, gh } = fixture({
-    items: [
-      makeItem({
-        owner: "human",
-        status: "blocked",
-        priority: "urgent",
-        assignees: ["octocat"],
+        needsHumanSince: "2026-07-20T16:00:00Z",
       }),
     ],
   });
 
-  await store.resolveHumanAttention({
-    itemId: "item-1",
-    humanAssignee: "octocat",
-    priority: "low",
-    resumeAffinity: "resume:runner-a/pan-development",
-  });
+  await store.resolveHumanAttention({ itemId: "item-1", runner: "runner-a" });
   const result = await store.resolveHumanAttention({
     itemId: "item-1",
-    humanAssignee: "octocat",
-    priority: "low",
-    resumeAffinity: "resume:runner-a/pan-development",
+    runner: "runner-a",
   });
 
   assert.equal(result.resolved, true);
-  assert.equal(result.item.fields.status, "ready");
-  assert.equal(result.item.fields.owner, "agent");
+  assert.equal(result.item.fields.needsHumanSince, "");
+  assert.equal(result.item.fields.status, "in-progress");
   assert.equal(result.item.fields.priority, "low");
-  assert.equal(
-    result.item.fields.claimedBy,
-    "resume:runner-a/pan-development",
-  );
-  assert.deepEqual(gh.issueEdits, [
-    { number: 1, flag: "--remove-assignee", assignee: "octocat" },
-  ]);
+  assert.equal(result.item.fields.claimedBy, "runner-a");
+  assert.equal(result.item.fields.leaseUntil, FUTURE);
+  assert.deepEqual(gh.issueEdits, []);
 });
 
 test("closes an Issue when its runner releases it as done", async () => {
@@ -1053,7 +1028,7 @@ function makeItem({
   status = "untriaged",
   priority = "normal",
   requirements = "",
-  autonomy = "manual",
+  needsHumanSince = "",
   leaseUntil = "",
   claimedBy = "",
   workstream = "lab/pan",
@@ -1088,7 +1063,7 @@ function makeItem({
     Status: status,
     priority,
     requirements,
-    autonomy,
+    "needs-human-since": needsHumanSince,
     "lease-until": leaseUntil,
     "claimed-by": claimedBy,
     workstream,

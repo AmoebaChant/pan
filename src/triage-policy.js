@@ -3,7 +3,7 @@ import { answerTexts, latestNeedsHuman } from "./needs-human.js";
 const REQUIREMENT_PATTERN =
   /\b(?:repo|env|os|tool|needs):[A-Za-z0-9_.\/-]+/gi;
 const DIRECTIVE_PATTERN =
-  /^(?:[-*]\s*)?(owner|priority|autonomy|workstream)\s*:\s*(.+)$/gim;
+  /^(?:[-*]\s*)?(owner|priority|workstream)\s*:\s*(.+)$/gim;
 
 export function deriveTriage(item, comments = []) {
   const answers = answerTexts(comments);
@@ -27,16 +27,10 @@ export function deriveTriage(item, comments = []) {
         ? "agent"
         : "human"
       : current.owner);
-  const autonomy =
-    directives.autonomy ??
-    (current.owner === "unassigned" && owner === "agent"
-      ? "full-auto"
-      : current.autonomy || (owner === "agent" ? "full-auto" : "manual"));
   const fields = {
     owner,
     priority: directives.priority ?? current.priority ?? "normal",
     requirements,
-    autonomy,
     workstream: directives.workstream ?? current.workstream,
   };
   const missing = [];
@@ -50,7 +44,7 @@ export function deriveTriage(item, comments = []) {
     missing.push("a task description or acceptance criteria");
   }
 
-  const currentStatus = current.status;
+  const currentStatus = current.status || "untriaged";
   let status = currentStatus;
   if (["untriaged", "needs-detail"].includes(currentStatus)) {
     status = missing.length > 0 ? "needs-detail" : "ready";
@@ -131,11 +125,6 @@ function parseDirectives(text) {
       ["urgent", "high", "normal", "low"].includes(value)
     ) {
       directives.priority = value;
-    } else if (
-      key === "autonomy" &&
-      ["manual", "full-auto", "agent-reviewer"].includes(value)
-    ) {
-      directives.autonomy = value;
     } else if (key === "workstream" && validWorkstream(value)) {
       directives.workstream = value.replaceAll("\\", "/");
     }
@@ -166,7 +155,7 @@ function stripTriageMetadata(text = "") {
       return (
         trimmed &&
         !trimmed.match(
-          /^(?:[-*]\s*)?(?:owner|priority|autonomy|workstream)\s*:/i,
+          /^(?:[-*]\s*)?(?:owner|priority|workstream)\s*:/i,
         ) &&
         !trimmed.match(
           /^(?:[-*]\s*)?(?:(?:repo|env|os|tool|needs):[A-Za-z0-9_.\/-]+\s*)+$/i,

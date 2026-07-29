@@ -11,7 +11,7 @@ test("tees timestamped service activity to the console and a file", async () => 
   const logFile = path.join(directory, "service.log");
   const lines = [];
   const logger = await createServiceLogger({
-    name: "PAN test",
+    name: "Pan test",
     logFile,
     consoleTarget: {
       log: (line) => lines.push(line),
@@ -27,7 +27,7 @@ test("tees timestamped service activity to the console and a file", async () => 
     await logger.close();
 
     const file = await readFile(logFile, "utf8");
-    assert.match(lines[0], /2026-07-21T12:00:00.000Z \[PAN test\] INFO/);
+    assert.match(lines[0], /2026-07-21T12:00:00.000Z \[Pan test\] INFO/);
     assert.match(file, /model=gpt-5.6-sol/);
     assert.match(file, /ERROR failed Error: example/);
   } finally {
@@ -43,7 +43,7 @@ test("reports log-file open failures before starting the service", async () => {
   try {
     await assert.rejects(
       createServiceLogger({
-        name: "PAN test",
+        name: "Pan test",
         logFile: path.join(blockedDirectory, "service.log"),
       }),
       /EEXIST|ENOTDIR|not a directory/i,

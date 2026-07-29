@@ -17,8 +17,15 @@ export function buildTaskPrompt(taskContextPath, task) {
         ),
       ]
     : [];
+  const outstandingQuestion = task.needsHumanSince
+    ? [
+        "",
+        `This task was already waiting for a human answer as of ${task.needsHumanSince}, and this session restarted since then.`,
+        `The request file path is new, so re-state your outstanding question: write ${task.paths.needsHuman} again, ask it in this terminal, and wait.`,
+      ]
+    : [];
   return [
-    "You are a PAN worker daemon executing one GitHub Issue.",
+    "You are a Pan worker daemon executing one GitHub Issue.",
     "",
     `Read the complete canonical task context from ${taskContextPath}.`,
     "It contains the Issue body, acceptance criteria, comments and answers, target worktree and branch, workstream README, and playbook guidance.",
@@ -58,11 +65,11 @@ export function buildTaskPrompt(taskContextPath, task) {
     `After delivery succeeds, atomically write ${task.paths.agentResult} as JSON with:`,
     deliveryResult,
     "",
-    `If human input is required, atomically write ${task.paths.needsHuman} as JSON with:`,
+    `If you need an answer from the human, atomically write ${task.paths.needsHuman} as JSON with:`,
     '{"kind":"question|approval|local-ui","prompt":"one-line request","localUrl":"optional URL"}',
-    `Then atomically write ${task.paths.agentResult} as JSON with:`,
-    '{"status":"blocked","summary":"why work cannot continue"}',
-    "If immediate clarification can unblock work in this attached terminal, ask the user directly and continue after the reply.",
-    "Use the needs-human files only when work cannot continue in this session.",
+    "Then ask the same question in this terminal and wait for the reply. Keep running: the task holds its slot and spends no budget while the question is outstanding.",
+    `When you receive the answer, delete ${task.paths.needsHuman} and continue working.`,
+    ...outstandingQuestion,
+    `Only report blocked by writing ${task.paths.agentResult} as JSON with '{"status":"blocked","summary":"why work cannot continue"}' when an external dependency outside the human's control prevents all further progress.`,
   ].join("\n");
 }

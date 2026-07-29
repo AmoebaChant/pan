@@ -9,7 +9,7 @@ import {
   discoverDesktopPath,
 } from "../src/index.js";
 
-test("creates chat and runner shortcuts with the packaged PAN icon", async () => {
+test("creates chat and runner shortcuts with the packaged Pan icon", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pan-shortcuts-"));
   const desktop = path.join(root, "OneDrive", "Desktop");
   const localAppData = path.join(root, "Local");
@@ -69,7 +69,7 @@ test("creates chat and runner shortcuts with the packaged PAN icon", async () =>
     );
     assert.deepEqual(
       result.shortcuts.map(({ path: shortcutPath }) => path.basename(shortcutPath)),
-      ["Start Pan Chat.lnk", "Start PAN Runner.lnk"],
+      ["Start Pan Chat.lnk", "Start Pan Runner.lnk"],
     );
     assert.equal(calls.length, 4);
     assert.equal(calls[0].executable, process.execPath);

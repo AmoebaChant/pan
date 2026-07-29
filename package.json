@@ -1,7 +1,7 @@
 {
   "name": "@amoebachant/pan",
   "version": "0.1.0",
-  "description": "Direct GitHub-backed personal-agent toolkit for PAN sessions and runners.",
+  "description": "Direct GitHub-backed personal-agent toolkit for Pan sessions and runners.",
   "type": "module",
   "exports": {
     ".": "./src/index.js"

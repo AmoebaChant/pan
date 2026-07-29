@@ -118,18 +118,18 @@ export class PanAssetService {
     const bundle = await this.#loadBundle();
     const before = await this.status();
     if (before.status === "malformed" && before.package?.version === undefined) {
-      throw new PanAssetError("PAN asset package is malformed", { status: before });
+      throw new PanAssetError("Pan asset package is malformed", { status: before });
     }
     if (before.shadows.length > 0) {
       throw new PanAssetError(
-        "PAN asset installation is shadowed by another supported user scope",
+        "Pan asset installation is shadowed by another supported user scope",
         { status: before },
       );
     }
     const conflicts = before.assets.filter((asset) => asset.status === "conflicting");
     if (conflicts.length > 0 && !force) {
       throw new PanAssetError(
-        "PAN asset repair refuses to replace locally modified files; rerun with --force after reviewing status",
+        "Pan asset repair refuses to replace locally modified files; rerun with --force after reviewing status",
         { status: before },
       );
     }
@@ -150,7 +150,7 @@ export class PanAssetService {
   async #requireCurrent() {
     const result = await this.status();
     if (result.status !== "current") {
-      throw new PanAssetError("PAN asset installation did not verify as current", {
+      throw new PanAssetError("Pan asset installation did not verify as current", {
         status: result,
       });
     }
@@ -170,17 +170,17 @@ export class PanAssetService {
       manifest = JSON.parse(manifestSource);
       packageMetadata = packageSource ? JSON.parse(packageSource) : {};
     } catch (error) {
-      throw new PanAssetError("PAN asset manifest or package metadata is invalid JSON", {
+      throw new PanAssetError("Pan asset manifest or package metadata is invalid JSON", {
         cause: error,
       });
     }
     if (!Number.isInteger(manifest.version) || !Array.isArray(manifest.assets)) {
-      throw new PanAssetError("PAN asset manifest has an invalid shape");
+      throw new PanAssetError("Pan asset manifest has an invalid shape");
     }
     const packageVersion = this.packageVersion ?? packageMetadata.version;
     const packageName = packageMetadata.name ?? "pan";
     if (typeof packageVersion !== "string" || !packageVersion) {
-      throw new PanAssetError("PAN package version is required for asset installation");
+      throw new PanAssetError("Pan package version is required for asset installation");
     }
     const destinations = new Set();
     const assets = await Promise.all(
@@ -189,7 +189,7 @@ export class PanAssetService {
         const sourcePath = confinedPath(this.assetRoot, entry.source);
         const content = await readFile(sourcePath);
         if (hash(content) !== entry.sha256) {
-          throw new PanAssetError(`PAN asset hash does not match manifest: ${entry.source}`);
+          throw new PanAssetError(`Pan asset hash does not match manifest: ${entry.source}`);
         }
         validateAssetContent(entry.destination, content.toString("utf8"));
         return {
@@ -363,17 +363,17 @@ async function findShadows(assets, roots = []) {
 
 function ensureInstallable(status, operation) {
   if (status.status === "malformed" && status.package?.version === undefined) {
-    throw new PanAssetError("PAN asset package is malformed", { status });
+    throw new PanAssetError("Pan asset package is malformed", { status });
   }
   if (status.shadows.length > 0) {
     throw new PanAssetError(
-      "PAN asset installation is shadowed by another supported user scope",
+      "Pan asset installation is shadowed by another supported user scope",
       { status },
     );
   }
   if (status.assets.some((asset) => asset.status === "conflicting")) {
     throw new PanAssetError(
-      `PAN asset ${operation} refuses to overwrite locally modified files; use pan assets repair --force after reviewing status`,
+      `Pan asset ${operation} refuses to overwrite locally modified files; use pan assets repair --force after reviewing status`,
       { status },
     );
   }
@@ -436,7 +436,7 @@ function validateManifestEntry(entry, destinations) {
     !isSafeRelativePath(entry.destination) ||
     destinations.has(entry.destination)
   ) {
-    throw new PanAssetError("PAN asset manifest contains an invalid entry");
+    throw new PanAssetError("Pan asset manifest contains an invalid entry");
   }
   destinations.add(entry.destination);
 }
@@ -445,7 +445,7 @@ function assetDestinationPath(destination, scope) {
   const [kind, ...rest] = destination.split("/");
   const directory = scope[kind];
   if (!directory || rest.length === 0) {
-    throw new PanAssetError(`PAN asset destination is unsupported: ${destination}`);
+    throw new PanAssetError(`Pan asset destination is unsupported: ${destination}`);
   }
   return confinedPath(directory, rest.join("/"));
 }
@@ -453,18 +453,18 @@ function assetDestinationPath(destination, scope) {
 function validateAssetContent(destination, content) {
   if (destination.startsWith("agents/") || destination.includes("/SKILL.md")) {
     if (!/^---\r?\n[\s\S]*?\r?\n---\r?\n/.test(content)) {
-      throw new PanAssetError(`PAN asset is not parseable frontmatter: ${destination}`);
+      throw new PanAssetError(`Pan asset is not parseable frontmatter: ${destination}`);
     }
   }
   if (!content.trim()) {
-    throw new PanAssetError(`PAN asset is empty: ${destination}`);
+    throw new PanAssetError(`Pan asset is empty: ${destination}`);
   }
 }
 
 function confinedPath(root, relative) {
   const resolved = path.resolve(root, relative);
   if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
-    throw new PanAssetError("PAN asset path escapes its configured scope");
+    throw new PanAssetError("Pan asset path escapes its configured scope");
   }
   return resolved;
 }

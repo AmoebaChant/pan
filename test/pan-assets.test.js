@@ -36,13 +36,13 @@ test("installs and verifies user-scoped assets idempotently", async () => {
   }
 });
 
-test("identifies a PAN-owned package upgrade as stale and installs it", async () => {
+test("identifies a Pan-owned package upgrade as stale and installs it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pan-assets-upgrade-"));
   try {
     const fixture = await createFixture(root, "1.0.0");
     await new PanAssetService(fixture).install();
     const upgrade = await createFixture(root, "2.0.0", {
-      "instructions/pan.instructions.md": "# PAN instructions\n\nUpdated.\n",
+      "instructions/pan.instructions.md": "# Pan instructions\n\nUpdated.\n",
     });
     const service = new PanAssetService(upgrade);
 
@@ -145,7 +145,7 @@ test("leaves the existing asset intact when an atomic replacement fails", async 
     const fixture = await createFixture(root, "1.0.0");
     await new PanAssetService(fixture).install();
     const upgrade = await createFixture(root, "2.0.0", {
-      "instructions/pan.instructions.md": "# PAN instructions\n\nUpdated.\n",
+      "instructions/pan.instructions.md": "# Pan instructions\n\nUpdated.\n",
     });
     const target = path.join(upgrade.userScope.instructions, "pan.instructions.md");
     const original = await readFile(target, "utf8");
@@ -172,7 +172,7 @@ async function createFixture(root, version, changes = {}) {
   const packageRoot = path.join(root, "package", version);
   const contents = {
     "agents/pan.agent.md": "---\nname: pan\n---\n# Pan agent\n",
-    "instructions/pan.instructions.md": "# PAN instructions\n\nBase.\n",
+    "instructions/pan.instructions.md": "# Pan instructions\n\nBase.\n",
     "skills/pan-attention/SKILL.md": "---\nname: pan-attention\n---\n# Attention\n",
     ...changes,
   };

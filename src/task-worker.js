@@ -34,9 +34,9 @@ workerEnv.PAN_TASK_RESULT = context.paths.agentResult;
 workerEnv.PAN_NEEDS_HUMAN = context.paths.needsHuman;
 const log = createWriteStream(context.paths.log, { flags: "a" });
 writeWorkerLine(
-  `[PAN worker] Starting task #${context.issue.number}; model=${context.copilot.model ?? "auto"}, wall-clock=${context.copilot.deadline ? "bounded" : "unlimited"}, AI credits=${context.copilot.maxAiCredits ?? "unlimited"}.`,
+  `[Pan worker] Starting task #${context.issue.number}; model=${context.copilot.model ?? "auto"}, wall-clock=${context.copilot.deadline ? "bounded" : "unlimited"}, AI credits=${context.copilot.maxAiCredits ?? "unlimited"}.`,
 );
-writeWorkerLine(`[PAN worker] Activity log: ${context.paths.log}`);
+writeWorkerLine(`[Pan worker] Activity log: ${context.paths.log}`);
 await writeJsonAtomic(context.paths.worker, {
   pid: process.pid,
   startedAt: new Date().toISOString(),
@@ -121,14 +121,14 @@ if (!result) {
     ...(timedOut ? { budgetExceeded: true } : {}),
   };
 }
-log.write(`[PAN worker] ${result.status}: ${result.summary}\n`);
+log.write(`[Pan worker] ${result.status}: ${result.summary}\n`);
 log.end();
 await once(log, "finish");
 await writeJsonAtomic(context.paths.result, result);
 
 if (result.status === "blocked") {
   console.log("");
-  console.log("This PAN task needs human attention.");
+  console.log("This Pan task needs human attention.");
   console.log(result.summary);
   console.log("Close this terminal after reviewing the context above.");
   await new Promise(() => {});
@@ -184,7 +184,7 @@ async function terminateReliably(child) {
       return;
     } catch (error) {
       console.error(
-        `[PAN worker] Unable to stop Copilot process ${child.pid}; retrying.`,
+        `[Pan worker] Unable to stop Copilot process ${child.pid}; retrying.`,
         error,
       );
       await new Promise((resolve) => setTimeout(resolve, 5_000));
