@@ -139,7 +139,6 @@ function normalizeAvailabilityPlaybooks(profile) {
     {
       id: "legacy",
       capabilities: profile.capabilities,
-      delivery: "pull-request",
     },
   ];
   if (!Array.isArray(playbooks) || playbooks.length === 0) {
@@ -158,12 +157,6 @@ function normalizeAvailabilityPlaybooks(profile) {
         `Runner ${profile.id} playbook capabilities must be strings`,
       );
     }
-    const delivery = playbook.delivery ?? "pull-request";
-    if (!["pull-request", "direct", "report"].includes(delivery)) {
-      throw new TypeError(
-        `Runner ${profile.id} playbook delivery must be pull-request, direct, or report`,
-      );
-    }
     return {
       id: playbook.id,
       capabilities: [...playbook.capabilities].sort(),
@@ -173,7 +166,6 @@ function normalizeAvailabilityPlaybooks(profile) {
             .filter((capability) => capability.startsWith("repo:"))
             .map((capability) => capability.slice("repo:".length))),
       ].sort(),
-      delivery,
     };
   });
 }

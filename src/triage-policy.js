@@ -82,9 +82,7 @@ export function matchingRunner(requirements, profiles) {
               !playbook.repositories ||
               playbook.repositories.includes(repository)) &&
             requirements.every((requirement) =>
-              requirement.startsWith("delivery:")
-                ? requirement === `delivery:${playbook.delivery}`
-                : playbook.capabilities.includes(requirement),
+              playbook.capabilities.includes(requirement),
             ),
           )
         : requirements.every((requirement) =>

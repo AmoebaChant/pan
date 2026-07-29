@@ -20,39 +20,11 @@ test("normalizes explicit playbooks with independent capacity", () => {
       { id: "documentation", capacity: 1 },
     ],
   );
-  assert.deepEqual(
-    profile.playbooks.map(({ delivery }) => delivery),
-    ["pull-request", "pull-request"],
-  );
 });
 
-test("supports direct and report delivery and rejects unknown delivery policies", () => {
-  const profile = makeProfile();
-  profile.playbooks[0].delivery = "direct";
-  profile.playbooks[1].delivery = "report";
-
-  assert.deepEqual(
-    validateRunnerProfile(profile).playbooks.map(({ delivery }) => delivery),
-    ["direct", "report"],
-  );
-
-  profile.playbooks[0].delivery = "email";
-  assert.throws(
-    () => validateRunnerProfile(profile),
-    /delivery must be "pull-request", "direct", "report", or "playbook"/,
-  );
-
-  profile.playbooks[0].delivery = null;
-  assert.throws(
-    () => validateRunnerProfile(profile),
-    /delivery must be "pull-request", "direct", "report", or "playbook"/,
-  );
-});
-
-test("playbook delivery requires an absolute working directory", () => {
-  const withWorkingDirectory = (delivery, workingDirectory) => {
+test("treats workingDirectory as the agent-managed workspace switch", () => {
+  const withWorkingDirectory = (workingDirectory) => {
     const profile = makeProfile();
-    profile.playbooks[0].delivery = delivery;
     if (workingDirectory !== undefined) {
       profile.playbooks[0].workingDirectory = workingDirectory;
     }
@@ -60,50 +32,34 @@ test("playbook delivery requires an absolute working directory", () => {
   };
 
   assert.equal(
-    validateRunnerProfile(withWorkingDirectory("playbook", "C:\\Metarepo"))
-      .playbooks[0].workingDirectory,
+    validateRunnerProfile(withWorkingDirectory(undefined)).playbooks[0]
+      .workingDirectory,
+    undefined,
+  );
+  assert.equal(
+    validateRunnerProfile(withWorkingDirectory("C:\\Metarepo")).playbooks[0]
+      .workingDirectory,
     "C:\\Metarepo",
   );
   assert.equal(
-    validateRunnerProfile(withWorkingDirectory("playbook", "/srv/metarepo"))
-      .playbooks[0].workingDirectory,
+    validateRunnerProfile(withWorkingDirectory("/srv/metarepo")).playbooks[0]
+      .workingDirectory,
     "/srv/metarepo",
   );
 
   assert.throws(
-    () => validateRunnerProfile(withWorkingDirectory("playbook", undefined)),
-    /workingDirectory must be a non-empty string/,
-  );
-  assert.throws(
-    () => validateRunnerProfile(withWorkingDirectory("playbook", "relative")),
+    () => validateRunnerProfile(withWorkingDirectory("relative")),
     /workingDirectory must be an absolute path/,
-  );
-  assert.throws(
-    () => validateRunnerProfile(withWorkingDirectory("direct", "C:\\Metarepo")),
-    /workingDirectory is only valid for playbook delivery/,
   );
 });
 
-test("routes delivery:playbook requirements to a playbook-delivery playbook", () => {
+test("rejects a retired delivery field with an actionable message", () => {
   const profile = makeProfile();
-  profile.playbooks[0].delivery = "playbook";
-  profile.playbooks[0].workingDirectory = "C:\\Metarepo";
-  const validated = validateRunnerProfile(profile);
-  const repository = validated.playbooks[0].repositories[0];
+  profile.playbooks[0].delivery = "direct";
 
-  assert.equal(
-    matchingPlaybook(
-      { requirements: [`repo:${repository}`, "delivery:playbook"] },
-      validated,
-    )?.id,
-    validated.playbooks[0].id,
-  );
-  assert.equal(
-    matchingPlaybook(
-      { requirements: [`repo:${repository}`, "delivery:pull-request"] },
-      validated,
-    )?.id,
-    "documentation",
+  assert.throws(
+    () => validateRunnerProfile(profile),
+    /delivery is retired: describe how to deliver in .*\.instructions instead/,
   );
 });
 
@@ -158,21 +114,23 @@ test("treats capacity 0 as a disabled playbook and rejects negative capacity", (
   );
 });
 
-test("requires explicit playbook configuration for direct delivery", () => {
+test("requires a playbook that serves the task repository", () => {
   const profile = makeProfile();
   const item = {
-    requirements: ["repo:example/tool", "delivery:direct"],
+    requirements: ["repo:example/tool"],
   };
 
   assert.equal(
-    matchingPlaybook(item, validateRunnerProfile(profile)),
-    undefined,
-  );
-
-  profile.playbooks[0].delivery = "direct";
-  assert.equal(
     matchingPlaybook(item, validateRunnerProfile(profile)).id,
     "pan-development",
+  );
+
+  assert.equal(
+    matchingPlaybook(
+      { requirements: ["repo:other/repo"] },
+      validateRunnerProfile(profile),
+    ),
+    undefined,
   );
 });
 
@@ -232,10 +190,6 @@ test("names the playbook constraint that rejects a dispatchable item", () => {
   assert.equal(full.code, "no-compatible-playbook");
   assert.match(full.message, /pan-development \(at capacity 5\/5\)/);
 
-  assert.match(
-    playbookBlocker(item([...base, "delivery:direct"]), validated).message,
-    /pan-development \(delivery is pull-request, task requires delivery:direct\)/,
-  );
   assert.match(
     playbookBlocker(item([...base, "tool:docs"]), validated).message,
     /pan-development \(missing tool:docs\)/,

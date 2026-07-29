@@ -71,18 +71,9 @@ export class LocalTaskExecutor {
     const selectedPlaybook = playbook ?? {
       id: "legacy",
       instructions: [],
-      delivery: "pull-request",
     };
-    const delivery = selectedPlaybook.delivery ?? "pull-request";
-    const agentManaged = delivery === "playbook";
-    const workingDirectory = agentManaged
-      ? selectedPlaybook.workingDirectory
-      : undefined;
-    if (agentManaged && !workingDirectory) {
-      throw new Error(
-        `Playbook ${selectedPlaybook.id} must configure workingDirectory for playbook delivery`,
-      );
-    }
+    const workingDirectory = selectedPlaybook.workingDirectory;
+    const agentManaged = Boolean(workingDirectory);
 
     await mkdir(this.profile.workspaceRoot, { recursive: true });
     await mkdir(this.profile.stateDirectory, { recursive: true });
@@ -93,7 +84,6 @@ export class LocalTaskExecutor {
       repositoryConfig,
       runner,
       playbook: selectedPlaybook,
-      delivery,
       deadline,
       resumePath,
       resumeAffinity,
@@ -188,7 +178,6 @@ export class LocalTaskExecutor {
         playbook: {
           id: selectedPlaybook.id,
           instructions: selectedPlaybook.instructions,
-          delivery,
         },
         workstream: {
           path: item.fields.workstream,
@@ -264,7 +253,6 @@ export class LocalTaskExecutor {
         statePath,
         paths,
         deadline,
-        delivery,
         resumePath,
         sessionId,
         contextPath,
@@ -342,16 +330,13 @@ export class LocalTaskExecutor {
     repositoryConfig,
     runner,
     playbook,
-    delivery,
     deadline,
     resumePath,
     resumeAffinity,
     onResume,
   }) {
-    const agentManaged = delivery === "playbook";
-    const workingDirectory = agentManaged
-      ? playbook.workingDirectory
-      : undefined;
+    const agentManaged = Boolean(playbook.workingDirectory);
+    const workingDirectory = playbook.workingDirectory;
     const pointer = await readJsonIfReady(resumePath);
     if (!pointer) {
       return undefined;
@@ -475,7 +460,6 @@ export class LocalTaskExecutor {
       playbook: {
         id: playbook.id,
         instructions: playbook.instructions,
-        delivery,
       },
       workstream: {
         path: item.fields.workstream,
@@ -554,7 +538,6 @@ export class LocalTaskExecutor {
       statePath,
       paths,
       deadline,
-      delivery,
       resumePath,
       sessionId: pointer.sessionId,
       contextPath,
@@ -642,7 +625,6 @@ export class LocalTaskExecutor {
     statePath,
     paths,
     deadline,
-    delivery,
     resumePath,
     sessionId,
     contextPath,
@@ -674,7 +656,6 @@ export class LocalTaskExecutor {
       logger: this.logger,
       now: () => this.now().getTime(),
       deadline,
-      delivery,
       resumePath,
       sessionId,
       contextPath,
@@ -924,14 +905,10 @@ class LocalTaskHandle {
   async complete(result, { assertLease } = {}) {
     try {
       await assertLease?.();
-      const delivery = normalizeDelivery(
-        result.delivery,
-        this.delivery,
-        this.repository,
-      );
+      const outcome = normalizeOutcome(result);
       if (this.agentManaged) {
         await this.clearResumeState();
-        return delivery;
+        return outcome;
       }
       const currentBranch = await this.#run("git", [
         "-C",
@@ -958,23 +935,6 @@ class LocalTaskHandle {
         throw new Error("Task reported completion with uncommitted changes");
       }
 
-      const head = await this.#run("git", [
-        "-C",
-        this.worktreePath,
-        "rev-parse",
-        "HEAD",
-      ]);
-      if (delivery.mode === "report" && head !== this.baseCommit) {
-        throw new Error("Report-only task created a commit");
-      }
-      if (delivery.mode !== "report" && head !== delivery.commit) {
-        throw new Error(
-          `Reported delivery commit ${delivery.commit} does not match task HEAD ${head}`,
-        );
-      }
-      if (delivery.mode !== "report" && head === this.baseCommit) {
-        throw new Error("Task completed without producing a new commit");
-      }
       await this.#run("git", [
         "-C",
         this.worktreePath,
@@ -1017,14 +977,9 @@ class LocalTaskHandle {
         }
       }
 
-      if (delivery.mode === "direct") {
-        await this.#validateDirectDelivery(delivery, { assertLease });
-      } else if (delivery.mode === "pull-request") {
-        await this.#validatePullRequestDelivery(delivery, { assertLease });
-      }
       await this.clearResumeState();
       await this.#cleanupDeliveredWorktree();
-      return delivery;
+      return outcome;
     } catch (error) {
       if (error.code !== "PAN_LEASE_LOST") {
         error.code = "PAN_DELIVERY_INCOMPLETE";
@@ -1050,64 +1005,6 @@ class LocalTaskHandle {
     });
   }
 
-  async #validatePullRequestDelivery(delivery, { assertLease }) {
-    await assertLease?.();
-    const pullRequest = JSON.parse(
-      await this.#run("gh", [
-        "pr",
-        "view",
-        delivery.url,
-        "--repo",
-        this.repository,
-        "--json",
-        "url,state,headRefName,headRefOid,headRepository,headRepositoryOwner,baseRefName,body",
-      ]),
-    );
-    const closingDirective = new RegExp(
-      `(?:^|\\n)\\s*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+${escapeRegExp(this.item.repository)}#${this.item.number}(?:\\s|$)`,
-      "i",
-    );
-    if (
-      pullRequest.url !== delivery.url ||
-      !["OPEN", "MERGED"].includes(pullRequest.state) ||
-      pullRequest.headRefName !== this.branch ||
-      pullRequest.headRefOid !== delivery.commit ||
-      `${pullRequest.headRepositoryOwner?.login}/${pullRequest.headRepository?.name}`.toLowerCase() !==
-        this.expectedRemotes.push.pushRepository.toLowerCase() ||
-      pullRequest.baseRefName !== this.repositoryConfig.defaultBranch ||
-      typeof pullRequest.body !== "string" ||
-      !closingDirective.test(pullRequest.body)
-    ) {
-      throw new Error("Reported pull request does not match the task delivery");
-    }
-  }
-
-  async #validateDirectDelivery(delivery, { assertLease }) {
-    await assertLease?.();
-    await this.#run("git", [
-      "-C",
-      this.worktreePath,
-      "fetch",
-      this.expectedRemotes.base.name,
-      this.repositoryConfig.defaultBranch,
-    ]);
-    try {
-      await this.#run("git", [
-        "-C",
-        this.worktreePath,
-        "merge-base",
-        "--is-ancestor",
-        delivery.commit,
-        "FETCH_HEAD",
-      ]);
-    } catch (error) {
-      throw new Error(
-        `Reported commit ${delivery.commit} is not present on ${this.repositoryConfig.defaultBranch}`,
-        { cause: error },
-      );
-    }
-  }
-
   async #cleanupDeliveredWorktree() {
     try {
       await this.#run("git", [
@@ -1117,16 +1014,6 @@ class LocalTaskHandle {
         "remove",
         this.worktreePath,
       ]);
-      if (this.delivery !== "pull-request") {
-        await this.#run("git", [
-          "-C",
-          this.repositoryConfig.path,
-          "branch",
-          "--delete",
-          "--force",
-          this.branch,
-        ]);
-      }
     } catch (error) {
       this.logger.warn?.(
         `Delivery completed, but local cleanup failed for ${this.worktreePath}.`,
@@ -1323,64 +1210,23 @@ function normalizeResult(result) {
   };
 }
 
-function normalizeDelivery(delivery, expectedMode, repository) {
-  if (!delivery || typeof delivery !== "object" || Array.isArray(delivery)) {
-    throw new TypeError("completed task result must include delivery evidence");
-  }
-  if (delivery.mode !== expectedMode) {
+function normalizeOutcome(result) {
+  const outcome = result.outcome ?? "needs-review";
+  if (!["done", "needs-review"].includes(outcome)) {
     throw new TypeError(
-      `task delivery mode must be ${expectedMode}`,
+      'completed task result outcome must be "done" or "needs-review"',
     );
   }
-  if (expectedMode === "report") {
-    if (typeof delivery.report !== "string" || !delivery.report.trim()) {
-      throw new TypeError("task report delivery must include a non-empty report");
-    }
-    return {
-      mode: delivery.mode,
-      report: delivery.report.trim(),
-    };
+  if (result.details !== undefined && typeof result.details !== "string") {
+    throw new TypeError("completed task result details must be a string");
   }
-  if (expectedMode === "playbook") {
-    if (typeof delivery.details !== "string" || !delivery.details.trim()) {
-      throw new TypeError(
-        "task playbook delivery must describe what was delivered",
-      );
-    }
-    if (delivery.url !== undefined && !isAbsoluteUrl(delivery.url)) {
-      throw new TypeError("task playbook delivery URL must be an absolute URL");
-    }
-    return {
-      mode: delivery.mode,
-      details: delivery.details.trim(),
-      ...(delivery.url ? { url: delivery.url } : {}),
-    };
-  }
-  if (
-    typeof delivery.commit !== "string" ||
-    !/^[a-f0-9]{40}$/i.test(delivery.commit)
-  ) {
-    throw new TypeError("task delivery commit must be a 40-character SHA");
-  }
-  const expectedUrl =
-    expectedMode === "direct"
-      ? `https://github.com/${repository}/commit/${delivery.commit}`
-      : new RegExp(
-          `^https://github\\.com/${escapeRegExp(repository)}/pull/\\d+$`,
-          "i",
-        );
-  if (
-    typeof delivery.url !== "string" ||
-    (typeof expectedUrl === "string"
-      ? delivery.url !== expectedUrl
-      : !expectedUrl.test(delivery.url))
-  ) {
-    throw new TypeError(`task delivery URL is invalid for ${repository}`);
+  if (result.url !== undefined && !isAbsoluteUrl(result.url)) {
+    throw new TypeError("completed task result URL must be an absolute URL");
   }
   return {
-    mode: delivery.mode,
-    commit: delivery.commit.toLowerCase(),
-    url: delivery.url,
+    outcome,
+    ...(result.details?.trim() ? { details: result.details.trim() } : {}),
+    ...(result.url ? { url: result.url } : {}),
   };
 }
 
@@ -1418,10 +1264,6 @@ function allocationToken(value) {
 
 function truncate(value, length) {
   return value.length > length ? `${value.slice(0, length - 3)}...` : value;
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function remainingMilliseconds(deadline, now = Date.now) {

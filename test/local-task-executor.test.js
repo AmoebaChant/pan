@@ -86,7 +86,6 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
     assert.notEqual(handles[0].statePath, handles[1].statePath);
     assert.equal(contexts[0].playbook.id, "pan-development");
     assert.deepEqual(contexts[0].playbook.instructions, ["Run tests."]);
-    assert.equal(contexts[0].playbook.delivery, "pull-request");
     assert.equal(resumeRecords.length, 2);
     assert.equal(resumeRecords[0].machine, "machine-a");
     assert.equal(resumeRecords[0].playbook, "pan-development");
@@ -472,14 +471,14 @@ test("does not finish cancellation until the worker process stops", async () => 
   }
 });
 
-test("validates agent-delivered commits on the default branch", async () => {
+test("completes a runner-managed task without deleting its branch", async () => {
   const fixture = await createFixture();
-  const commands = new DirectDeliveryCommands();
+  const commands = new CompletableCommands();
   const executor = new LocalTaskExecutor({
     profile: fixture.profile,
     commands,
     spawnProcess: successfulSpawn,
-    randomId: () => "direct-delivery",
+    randomId: () => "completed-task",
   });
 
   try {
@@ -488,63 +487,58 @@ test("validates agent-delivered commits on the default branch", async () => {
       playbook: {
         id: "pan-development",
         instructions: ["Run tests."],
-        delivery: "direct",
       },
       deadline: undefined,
     });
     commands.branch = handle.branch;
 
-    const delivery = await handle.complete({
+    const outcome = await handle.complete({
       status: "completed",
-      summary: "Implemented directly.",
-      delivery: {
-        mode: "direct",
-        commit: "0123456789abcdef0123456789abcdef01234567",
-        url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
-      },
+      outcome: "needs-review",
+      summary: "Implemented and opened review.",
+      details: "Opened a pull request against main.",
+      url: "https://github.com/example/tool/pull/42",
     });
 
-    assert.deepEqual(delivery, {
-      mode: "direct",
-      commit: "0123456789abcdef0123456789abcdef01234567",
-      url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
+    assert.deepEqual(outcome, {
+      outcome: "needs-review",
+      details: "Opened a pull request against main.",
+      url: "https://github.com/example/tool/pull/42",
     });
+    assert.equal(
+      commands.calls.some(({ executable }) => executable === "gh"),
+      false,
+      "the runner must not verify how the agent delivered",
+    );
     assert.equal(
       commands.calls.some(({ args }) => args.includes("push")),
       false,
     );
-    assert.equal(
-      commands.calls.some(({ args }) => args.includes("rebase")),
-      false,
-    );
-    assert.equal(
-      commands.calls.some(({ executable }) => executable === "gh"),
-      false,
-    );
     assert.ok(
       commands.calls.some(
-        ({ args }) =>
-          args.includes("fetch") && args.includes("main"),
+        ({ args }) => args.includes("worktree") && args.includes("remove"),
       ),
     );
-    assert.ok(
+    assert.equal(
       commands.calls.some(
-        ({ args }) =>
-          args.includes("merge-base") && args.includes("FETCH_HEAD"),
+        ({ args }) => args.includes("branch") && args.includes("--delete"),
       ),
+      false,
+      "unpushed work must survive cleanup",
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("does not allow an agent to select direct delivery for a defaulted playbook", async () => {
+test("keeps a completed task isolated to its own branch and worktree", async () => {
   const fixture = await createFixture();
+  const commands = new CompletableCommands();
   const executor = new LocalTaskExecutor({
     profile: fixture.profile,
-    commands: new FakeCommands(),
+    commands,
     spawnProcess: successfulSpawn,
-    randomId: () => "default-delivery",
+    randomId: () => "isolation",
   });
 
   try {
@@ -553,129 +547,60 @@ test("does not allow an agent to select direct delivery for a defaulted playbook
       deadline: undefined,
     });
 
+    commands.branch = "main";
     await assert.rejects(
-      handle.complete({
-        status: "completed",
-        summary: "Attempted direct delivery.",
-        delivery: {
-          mode: "direct",
-          commit: "0123456789abcdef0123456789abcdef01234567",
-          url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
-        },
-      }),
-      /task delivery mode must be pull-request/,
+      handle.complete({ status: "completed", summary: "Wrong branch." }),
+      /changed branches/,
+    );
+
+    commands.branch = handle.branch;
+    commands.dirty = " M src/index.js";
+    await assert.rejects(
+      handle.complete({ status: "completed", summary: "Left work behind." }),
+      /uncommitted changes/,
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("rejects direct delivery that produced no task commit", async () => {
+test("defaults an unreported outcome to review and rejects an unknown one", async () => {
   const fixture = await createFixture();
-  const commands = new NoOpDeliveryCommands();
+  const commands = new CompletableCommands();
   const executor = new LocalTaskExecutor({
     profile: fixture.profile,
     commands,
     spawnProcess: successfulSpawn,
-    randomId: () => "no-op-delivery",
+    randomId: () => "outcome",
   });
 
   try {
     const handle = await executor.start({
       ...makeStartOptions(10),
-      playbook: {
-        id: "pan-development",
-        instructions: [],
-        delivery: "direct",
-      },
       deadline: undefined,
     });
     commands.branch = handle.branch;
 
+    assert.deepEqual(
+      await handle.complete({ status: "completed", summary: "Delivered." }),
+      { outcome: "needs-review" },
+    );
     await assert.rejects(
       handle.complete({
         status: "completed",
-        summary: "No change.",
-        delivery: {
-          mode: "direct",
-          commit: "0123456789abcdef0123456789abcdef01234567",
-          url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
-        },
+        outcome: "merged",
+        summary: "Delivered.",
       }),
-      /without producing a new commit/,
+      /outcome must be "done" or "needs-review"/,
     );
-  } finally {
-    await rm(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test("validates an agent-created pull request", async () => {
-  const fixture = await createFixture();
-  const commands = new PullRequestDeliveryCommands();
-  const executor = new LocalTaskExecutor({
-    profile: fixture.profile,
-    commands,
-    spawnProcess: successfulSpawn,
-    randomId: () => "pull-request-delivery",
-  });
-
-  try {
-    const handle = await executor.start(makeStartOptions(9));
-    commands.branch = handle.branch;
-
-    const delivery = await handle.complete({
-      status: "completed",
-      summary: "Implemented through review.",
-      delivery: {
-        mode: "pull-request",
-        commit: "0123456789abcdef0123456789abcdef01234567",
-        url: "https://github.com/example/tool/pull/42",
-      },
-    });
-
-    assert.deepEqual(delivery, {
-      mode: "pull-request",
-      commit: "0123456789abcdef0123456789abcdef01234567",
-      url: "https://github.com/example/tool/pull/42",
-    });
-    const view = commands.calls.find(
-      ({ executable, args }) =>
-        executable === "gh" &&
-        args[0] === "pr" &&
-        args[1] === "view",
-    );
-    assert.equal(view.args[2], "https://github.com/example/tool/pull/42");
-  } finally {
-    await rm(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test("rejects pull requests that do not link the source Issue", async () => {
-  const fixture = await createFixture();
-  const commands = new PullRequestDeliveryCommands();
-  commands.body = "Implements the requested change.";
-  const executor = new LocalTaskExecutor({
-    profile: fixture.profile,
-    commands,
-    spawnProcess: successfulSpawn,
-    randomId: () => "unlinked-pull-request",
-  });
-
-  try {
-    const handle = await executor.start(makeStartOptions(11));
-    commands.branch = handle.branch;
-
     await assert.rejects(
       handle.complete({
         status: "completed",
-        summary: "Implemented through review.",
-        delivery: {
-          mode: "pull-request",
-          commit: "0123456789abcdef0123456789abcdef01234567",
-          url: "https://github.com/example/tool/pull/42",
-        },
+        outcome: "done",
+        summary: "Delivered.",
+        url: "not-a-url",
       }),
-      /does not match the task delivery/,
+      /URL must be an absolute URL/,
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -704,7 +629,6 @@ test("runs no git and launches the agent in the playbook working directory", asy
       playbook: {
         id: "metarepo-development",
         instructions: ["Create your own isolated workspace."],
-        delivery: "playbook",
         workingDirectory,
       },
       onResume: async (record) => resumeRecords.push(record),
@@ -716,13 +640,12 @@ test("runs no git and launches the agent in the playbook working directory", asy
     assert.deepEqual(
       commands.calls,
       [],
-      "playbook delivery must not run any git command in the runner",
+      "an agent-managed playbook must not run any git command in the runner",
     );
     assert.deepEqual(context.target, {
       repository: "example/tool",
       workingDirectory,
     });
-    assert.equal(context.playbook.delivery, "playbook");
     assert.equal(
       buildTaskCopilotSpawnOptions(context, {}).cwd,
       workingDirectory,
@@ -731,67 +654,22 @@ test("runs no git and launches the agent in the playbook working directory", asy
     assert.equal(resumeRecords[0].branch, undefined);
     assert.equal(terminalLaunches.length, 1);
 
-    const delivery = await handle.complete({
+    const outcome = await handle.complete({
       status: "completed",
+      outcome: "needs-review",
       summary: "Delivered through the metarepo tooling.",
-      delivery: {
-        mode: "playbook",
-        details: "Pushed vbranch and opened review 4213.",
-        url: "https://example.visualstudio.com/Repo/pullrequest/4213",
-      },
+      details: "Pushed vbranch and opened review 4213.",
+      url: "https://example.visualstudio.com/Repo/pullrequest/4213",
     });
-    assert.deepEqual(delivery, {
-      mode: "playbook",
+    assert.deepEqual(outcome, {
+      outcome: "needs-review",
       details: "Pushed vbranch and opened review 4213.",
       url: "https://example.visualstudio.com/Repo/pullrequest/4213",
     });
     assert.deepEqual(
       commands.calls,
       [],
-      "playbook delivery must not verify delivery with git",
-    );
-  } finally {
-    await rm(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test("requires playbook delivery to describe what it delivered", async () => {
-  const fixture = await createFixture();
-  const commands = new FakeCommands();
-  const workingDirectory = path.join(fixture.root, "metarepo");
-  const executor = new LocalTaskExecutor({
-    profile: fixture.profile,
-    commands,
-    spawnProcess: () => successfulSpawn(),
-    randomId: () => "agent-managed-invalid",
-  });
-
-  try {
-    const handle = await executor.start({
-      ...makeStartOptions(8),
-      playbook: {
-        id: "metarepo-development",
-        instructions: [],
-        delivery: "playbook",
-        workingDirectory,
-      },
-    });
-
-    await assert.rejects(
-      handle.complete({
-        status: "completed",
-        summary: "Done.",
-        delivery: { mode: "playbook" },
-      }),
-      /must describe what was delivered/,
-    );
-    await assert.rejects(
-      handle.complete({
-        status: "completed",
-        summary: "Done.",
-        delivery: { mode: "pull-request", details: "x" },
-      }),
-      /delivery mode must be playbook/,
+      "an agent-managed playbook must not verify delivery with git",
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -812,11 +690,10 @@ class FakeCommands {
   }
 }
 
-class PullRequestDeliveryCommands extends FakeCommands {
+class CompletableCommands extends FakeCommands {
   constructor() {
     super();
-    this.headReads = 0;
-    this.body = "Closes example/data#9";
+    this.dirty = "";
   }
 
   async run(executable, args, options = {}) {
@@ -828,64 +705,9 @@ class PullRequestDeliveryCommands extends FakeCommands {
       return this.branch;
     }
     if (args.includes("--porcelain")) {
-      return "";
-    }
-    if (args.includes("rev-parse") && args.includes("HEAD")) {
-      this.headReads += 1;
-      return this.headReads === 1
-        ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        : "0123456789abcdef0123456789abcdef01234567";
-    }
-    if (executable === "gh" && args[0] === "pr" && args[1] === "view") {
-      return JSON.stringify({
-        url: "https://github.com/example/tool/pull/42",
-        state: "OPEN",
-        headRefName: this.branch,
-        headRefOid: "0123456789abcdef0123456789abcdef01234567",
-        headRepository: { name: "tool" },
-        headRepositoryOwner: { login: "example" },
-        baseRefName: "main",
-        body: this.body,
-      });
+      return this.dirty;
     }
     return "";
-  }
-}
-
-class DirectDeliveryCommands extends FakeCommands {
-  constructor() {
-    super();
-    this.headReads = 0;
-  }
-
-  async run(executable, args, options = {}) {
-    this.calls.push({ executable, args, options });
-    if (args.includes("get-url")) {
-      return "https://github.com/example/tool.git";
-    }
-    if (args.includes("--show-current")) {
-      return this.branch;
-    }
-    if (args.includes("--porcelain")) {
-      return "";
-    }
-    if (args.includes("rev-parse") && args.includes("HEAD")) {
-      this.headReads += 1;
-      return this.headReads === 1
-        ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        : "0123456789abcdef0123456789abcdef01234567";
-    }
-    return "";
-  }
-}
-
-class NoOpDeliveryCommands extends DirectDeliveryCommands {
-  async run(executable, args, options = {}) {
-    if (args.includes("rev-parse") && args.includes("HEAD")) {
-      this.calls.push({ executable, args, options });
-      return "0123456789abcdef0123456789abcdef01234567";
-    }
-    return super.run(executable, args, options);
   }
 }
 

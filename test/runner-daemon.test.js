@@ -37,14 +37,14 @@ test("claims matching work and advances a completed task to in-review", async ()
   ]);
   assert.match(store.comments.at(-1), /pull\/42/);
   assert.ok(messages.some((message) => message.includes("Claimed task #1")));
-  assert.ok(messages.some((message) => message.includes("pull-request")));
+  assert.ok(messages.some((message) => message.includes("needs-review")));
 });
 
-test("marks direct delivery done and records its commit", async () => {
+test("marks agent-reported done work done and records its delivery", async () => {
   const store = new FakeStore([makeItem()]);
   const handle = new FakeHandle(undefined, {
-    mode: "direct",
-    commit: "0123456789abcdef0123456789abcdef01234567",
+    outcome: "done",
+    details: "Committed to main.",
     url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
   });
   const profile = makePlaybookProfile({
@@ -52,7 +52,6 @@ test("marks direct delivery done and records its commit", async () => {
     panCapacity: 1,
   });
   profile.playbooks = [profile.playbooks[0]];
-  profile.playbooks[0].delivery = "direct";
   const executor = new FakeExecutor(handle);
   const daemon = new RunnerDaemon({
     store,
@@ -63,17 +62,16 @@ test("marks direct delivery done and records its commit", async () => {
 
   await daemon.runOnce();
 
-  assert.equal(executor.started.playbook.delivery, "direct");
   assert.equal(store.releases[0].status, "done");
-  assert.match(store.comments.at(-1), /Commit:/);
+  assert.match(store.comments.at(-1), /Committed to main\./);
   assert.match(store.comments.at(-1), /\/commit\//);
 });
 
-test("requeues direct finalization when its commit audit cannot be recorded", async () => {
+test("still finishes completed work when its audit comment cannot be recorded", async () => {
   const store = new FakeStore([makeItem()], { commentFailures: 3 });
   const handle = new FakeHandle(undefined, {
-    mode: "direct",
-    commit: "0123456789abcdef0123456789abcdef01234567",
+    outcome: "done",
+    details: "Committed to main.",
     url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
   });
   const profile = makePlaybookProfile({
@@ -81,7 +79,6 @@ test("requeues direct finalization when its commit audit cannot be recorded", as
     panCapacity: 1,
   });
   profile.playbooks = [profile.playbooks[0]];
-  profile.playbooks[0].delivery = "direct";
   const daemon = new RunnerDaemon({
     store,
     profile,
@@ -91,16 +88,16 @@ test("requeues direct finalization when its commit audit cannot be recorded", as
 
   await daemon.runOnce();
 
-  assert.equal(store.releases[0].status, "ready");
+  assert.equal(store.releases[0].status, "done");
 });
 
-test("requeues direct work when closing its completed Issue fails", async () => {
+test("requeues completed work when closing its Issue fails", async () => {
   const store = new FakeStore([makeItem()], {
     releaseFailures: { done: 3 },
   });
   const handle = new FakeHandle(undefined, {
-    mode: "direct",
-    commit: "0123456789abcdef0123456789abcdef01234567",
+    outcome: "done",
+    details: "Committed to main.",
     url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
   });
   const profile = makePlaybookProfile({
@@ -108,7 +105,6 @@ test("requeues direct work when closing its completed Issue fails", async () => 
     panCapacity: 1,
   });
   profile.playbooks = [profile.playbooks[0]];
-  profile.playbooks[0].delivery = "direct";
   const daemon = new RunnerDaemon({
     store,
     profile,
@@ -237,7 +233,7 @@ test("keeps the lease and the worker alive while a question is outstanding", asy
       status: "completed",
       summary: "Finished after the answer.",
     },
-    { mode: "direct", commit: "a".repeat(40) },
+    { outcome: "done", details: "Committed to main." },
     {
       kind: "question",
       prompt: "Should the implementation use option A or option B?",
@@ -329,10 +325,10 @@ test("does not release completed work after a final lease check fails", async ()
 
   assert.equal(handle.completed, true);
   assert.equal(store.releases.length, 0);
-  assert.equal(store.comments.length, 0);
+  assert.match(store.comments.at(-1), /Agent completed/);
 });
 
-test("records a direct commit before a post-delivery lease loss", async () => {
+test("records the delivery before a post-delivery lease loss", async () => {
   const store = new FakeStore([makeItem()], {
     heartbeat: [
       { renewed: true },
@@ -340,8 +336,8 @@ test("records a direct commit before a post-delivery lease loss", async () => {
     ],
   });
   const handle = new FakeHandle(undefined, {
-    mode: "direct",
-    commit: "0123456789abcdef0123456789abcdef01234567",
+    outcome: "done",
+    details: "Committed to main.",
     url: "https://github.com/example/tool/commit/0123456789abcdef0123456789abcdef01234567",
   });
   const profile = makePlaybookProfile({
@@ -349,7 +345,6 @@ test("records a direct commit before a post-delivery lease loss", async () => {
     panCapacity: 1,
   });
   profile.playbooks = [profile.playbooks[0]];
-  profile.playbooks[0].delivery = "direct";
   const daemon = new RunnerDaemon({
     store,
     profile,
@@ -360,7 +355,7 @@ test("records a direct commit before a post-delivery lease loss", async () => {
   await daemon.runOnce();
 
   assert.equal(store.releases.length, 0);
-  assert.match(store.comments.at(-1), /Commit:/);
+  assert.match(store.comments.at(-1), /Committed to main\./);
 });
 
 test("stops an unlimited worker when its lease is lost", async () => {
@@ -774,15 +769,15 @@ class FakeHandle {
       status: "completed",
       summary: "Completed.",
     },
-    delivery = {
-      mode: "pull-request",
+    outcome = {
+      outcome: "needs-review",
       url: "https://github.com/example/tool/pull/42",
     },
     needsHuman,
     answeredAtTerminal = false,
   ) {
     this.result = result;
-    this.delivery = delivery;
+    this.outcome = outcome;
     this.completed = false;
     this.needsHuman = needsHuman;
     this.answeredAtTerminal = answeredAtTerminal;
@@ -803,7 +798,7 @@ class FakeHandle {
 
   async complete() {
     this.completed = true;
-    return this.delivery;
+    return this.outcome;
   }
 
   async setResumeAffinity(value) {

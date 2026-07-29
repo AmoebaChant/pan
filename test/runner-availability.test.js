@@ -31,7 +31,6 @@ test("sanitizes legacy profiles and derives known free capacity", () => {
         id: "legacy",
         capabilities: ["env:local", "repo:example/tool"],
         repositories: ["example/tool"],
-        delivery: "pull-request",
       },
     ],
     maximumCapacity: 3,

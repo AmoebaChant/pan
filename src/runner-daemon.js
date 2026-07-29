@@ -212,7 +212,7 @@ export class RunnerDaemon {
       intervalMilliseconds: this.profile.heartbeatSeconds * 1_000,
       logger: this.logger,
     });
-    let delivery;
+    let outcome;
     let result;
     try {
       const comments = await this.store.listComments(item);
@@ -297,20 +297,25 @@ export class RunnerDaemon {
 
       if (result.status === "completed") {
         await heartbeat.renewNow();
-        delivery = await handle.complete(result, {
+        outcome = await handle.complete(result, {
           assertLease: heartbeat.renewNow,
         });
         this.logger.info?.(
-          `Task #${item.number} delivered via ${delivery.mode}${delivery.url ? `: ${delivery.url}` : ""}.`,
+          `Task #${item.number} reported ${outcome.outcome}${outcome.url ? `: ${outcome.url}` : ""}.`,
         );
-        if (delivery.mode !== "pull-request") {
+        try {
           await retry(() =>
-            this.store.addComment(item, completedComment(delivery, result)),
+            this.store.addComment(item, completedComment(outcome, result)),
+          );
+        } catch (commentError) {
+          this.logger.error(
+            `Unable to comment on completed Pan task #${item.number}`,
+            commentError,
           );
         }
         await heartbeat.renewNow();
         const completedStatus =
-          delivery.mode === "direct" ? "done" : "in-review";
+          outcome.outcome === "done" ? "done" : "in-review";
         const release = await retry(() =>
           this.store.release({
             itemId: item.id,
@@ -325,18 +330,6 @@ export class RunnerDaemon {
         this.logger.info?.(
           `Task #${item.number} moved to ${completedStatus} and its lease was released.`,
         );
-        if (delivery.mode === "pull-request") {
-          try {
-            await retry(() =>
-              this.store.addComment(item, completedComment(delivery, result)),
-            );
-          } catch (commentError) {
-            this.logger.error(
-              `Unable to comment on completed Pan task #${item.number}`,
-              commentError,
-            );
-          }
-        }
         return;
       }
 
@@ -448,14 +441,14 @@ export class RunnerDaemon {
         });
         return;
       }
-      if (delivery) {
+      if (outcome) {
         await this.#requeueOperationalStop({
           item,
           runner,
           playbook,
           handle: undefined,
           heartbeat,
-          summary: `Delivery${delivery.url ? ` ${delivery.url}` : ""} completed, but final Project updates failed: ${error.message}`,
+          summary: `Delivery${outcome.url ? ` ${outcome.url}` : ""} completed, but final Project updates failed: ${error.message}`,
         });
         return;
       }
@@ -869,22 +862,16 @@ function runnerStoppedError(reason) {
   return error;
 }
 
-function completedComment(delivery, result) {
-  const evidence =
-    delivery.mode === "report"
-      ? ["", delivery.report]
-      : delivery.mode === "playbook"
-        ? ["", delivery.details, ...(delivery.url ? ["", `Delivery: ${delivery.url}`] : [])]
-        : [
-            "",
-            `${delivery.mode === "direct" ? "Commit" : "Pull request"}: ${delivery.url}`,
-          ];
+function completedComment(outcome, result) {
   return [
     "<!-- pan:runner-result -->",
-    "### Agent completed",
+    outcome.outcome === "done"
+      ? "### Agent completed"
+      : "### Agent completed, ready for review",
     "",
     result.summary,
-    ...evidence,
+    ...(outcome.details ? ["", outcome.details] : []),
+    ...(outcome.url ? ["", `Delivery: ${outcome.url}`] : []),
   ].join("\n");
 }
 

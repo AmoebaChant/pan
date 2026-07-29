@@ -25,6 +25,10 @@ by a playbook on an online runner. An `agent` and `ready` item with empty
 `requirements` is inert: it is counted as ready but no runner can claim it. The
 runner names the missing field for each skipped item in its poll log.
 
+`requirements` selects a playbook and nothing else: one `repo:` entry plus the
+capabilities a runner advertises. How the work should be delivered belongs in
+the Issue text and the playbook instructions.
+
 Pan has no automatic missing-Issue reconciliation. Creating or triaging one
 open Issue may add that Issue to the Project; unrelated Issues are unchanged.
 
