@@ -5,6 +5,12 @@ import path from "node:path";
 export const SESSION_DUE_STATE_VERSION = 1;
 
 /**
+ * Absorbs the offset between a fixed-cadence tick and a due time anchored to the
+ * previous review, which would otherwise halve the effective review rate.
+ */
+export const SESSION_REVIEW_DUE_TOLERANCE_SECONDS = 60;
+
+/**
  * Creates metadata used only by one active Copilot session to gate long cadences.
  */
 export async function createSessionDueState({
@@ -56,9 +62,21 @@ export function createInitialSessionDueState({
   };
 }
 
-export function isSessionReviewDue(state, { now = new Date() } = {}) {
+export function isSessionReviewDue(
+  state,
+  {
+    now = new Date(),
+    toleranceSeconds = SESSION_REVIEW_DUE_TOLERANCE_SECONDS,
+  } = {},
+) {
   validateSessionDueState(state);
-  return Date.parse(toTimestamp(now, "now")) >= Date.parse(state.nextReviewAt);
+  if (!Number.isFinite(toleranceSeconds) || toleranceSeconds < 0) {
+    throw new TypeError("toleranceSeconds must be a non-negative number");
+  }
+  return (
+    Date.parse(toTimestamp(now, "now")) + toleranceSeconds * 1_000 >=
+    Date.parse(state.nextReviewAt)
+  );
 }
 
 export function recordSessionReview(state, { now = new Date() } = {}) {

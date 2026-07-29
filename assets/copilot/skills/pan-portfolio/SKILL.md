@@ -32,7 +32,10 @@ be added or resurrected without an explicit user request.
 
 ## Scheduled review
 
-First read the due metadata at `PAN_SCHEDULE_DUE_STATE`. If no review is due,
-stop. When due, perform the same direct GitHub reads. Scheduled reviews are
-read-only unless the user supplied an explicit standing mutation policy.
-Update the due metadata after the attempt and never create another scheduler.
+First read the due metadata at `PAN_SCHEDULE_DUE_STATE`. Treat the review as due
+when `nextReviewAt` is in the past or within the next 60 seconds; the recurring
+tick and the due time drift against each other, so a near-miss otherwise costs a
+full interval. If it is further out, stop. When due, perform the same direct
+GitHub reads. Scheduled reviews are read-only unless the user supplied an
+explicit standing mutation policy. Update the due metadata after the attempt and
+never create another scheduler.

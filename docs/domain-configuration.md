@@ -60,10 +60,20 @@ exists to restart.
 
 `triageAuthority` is the standing mutation policy for scheduled reviews.
 `report` keeps them read-only, so every change waits for approval in the
-session. `triage-fields` lets a scheduled review set `owner`, `Status`,
-`priority`, and `workstream` on untriaged items — those with no `Status` — 
-without asking. Already-triaged items and every other field, including
-`requirements`, still require approval under either value.
+session. `triage-fields` lets a scheduled review fully triage untriaged items —
+those with no `Status` — without asking. Triage means every field that makes an
+item actionable: `owner`, `Status`, `priority`, `workstream`, and the
+`requirements` that select a playbook. Setting the first four while omitting
+`requirements` produces an item that reads `ready` but that no runner can ever
+claim, so `requirements` is part of triage rather than a separately approved
+field. Already-triaged items still require approval under either value.
+
+A scheduled review counts as due when `nextReviewAt` is in the past or within
+the next 60 seconds. The recurring tick fires on a fixed cadence while
+`nextReviewAt` is anchored to the end of the previous review, so the two drift
+apart by however long a review takes. Without that tolerance a review that ran
+even a fraction of a second long would push the next one past the following
+tick, halving the effective review rate.
 
 Pan verifies the Copilot command-line options it passes, but it cannot verify
 scheduling support: interactive slash commands such as `/every` appear in no
