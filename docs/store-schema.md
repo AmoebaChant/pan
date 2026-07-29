@@ -66,5 +66,6 @@ repository Issues into the Project or resurrects closed work.
 
 The runner selects `owner=agent`, `Status=ready` items by priority, preserving
 Project order among equal priorities. It uses `claimed-by` and `lease-until` to
-coordinate concurrent workers. Direct delivery is complete only after the
-runner confirms its commit is on the default branch.
+coordinate concurrent workers. A completed task moves to `done` or `in-review`
+according to the outcome its agent reports, and work delivered as a pull request
+is complete only after the runner confirms the merge from GitHub.

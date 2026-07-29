@@ -58,6 +58,11 @@ playbook on that runner serves. `owner` and `Status` therefore depend on
 `requirements`, keep the item `needs-detail`, or propose the `requirements` and
 the readiness together and get approval for both.
 
+`requirements` exists only to select a playbook, so it holds one `repo:` entry
+and the capabilities a runner advertises. How the work should be delivered
+belongs in the Issue text and the playbook instructions, never in
+`requirements`.
+
 ## Session behavior
 
 Pan sessions are ordinary foreground Copilot sessions. There is no Pan

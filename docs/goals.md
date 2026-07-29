@@ -107,9 +107,8 @@ These are permanent. Pan does not:
 - combine knowledge from multiple domains without being asked to;
 - push work at a named machine;
 - keep an idle worker agent sitting in every repository; or
-- let autonomous workers push, force-push, or bypass delivery policy. A runner
-  may push to a default branch only when its playbook explicitly selects direct
-  delivery.
+- let autonomous workers push, force-push, or bypass their playbook. A runner
+  may write to a default branch only when its playbook instructions say so.
 
 ## Not yet
 

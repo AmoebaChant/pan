@@ -41,7 +41,7 @@ fields against `schema/project-fields.json`.
 
 - `schema/domain-config.json` - domain and foreground-session configuration.
 - `schema/playbook.json` and `schema/runner-profile.json` - private runner
-  capability and delivery configuration.
+  capability and workspace configuration.
 - `schema/project-fields.json` - shared GitHub Project fields.
 
 Schemas are reusable contracts, not locations for domain data, credentials,

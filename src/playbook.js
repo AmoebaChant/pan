@@ -9,7 +9,6 @@ export function normalizePlaybooks(profile) {
         capabilities: [...profile.capabilities],
         repositories: Object.keys(profile.repositories),
         instructions: [],
-        delivery: "pull-request",
         legacy: true,
       },
     ];
@@ -39,6 +38,11 @@ export function validatePlaybook(
   if (!playbook || typeof playbook !== "object" || Array.isArray(playbook)) {
     throw new TypeError(`${name} must be an object`);
   }
+  if (playbook.delivery !== undefined) {
+    throw new TypeError(
+      `${name}.delivery is retired: describe how to deliver in ${name}.instructions instead`,
+    );
+  }
   requireString(playbook.id, `${name}.id`);
   requireInteger(playbook.capacity, `${name}.capacity`, { minimum: 0 });
   requireStringArray(playbook.capabilities, `${name}.capabilities`, {
@@ -48,24 +52,11 @@ export function validatePlaybook(
     nonEmpty: true,
   });
   requireStringArray(playbook.instructions ?? [], `${name}.instructions`);
-  const delivery =
-    playbook.delivery === undefined
-      ? "pull-request"
-      : playbook.delivery;
-  if (!["pull-request", "direct", "report", "playbook"].includes(delivery)) {
-    throw new TypeError(
-      `${name}.delivery must be "pull-request", "direct", "report", or "playbook"`,
-    );
-  }
-  if (delivery === "playbook") {
+  if (playbook.workingDirectory !== undefined) {
     requireString(playbook.workingDirectory, `${name}.workingDirectory`);
     if (!isAbsolutePath(playbook.workingDirectory)) {
       throw new TypeError(`${name}.workingDirectory must be an absolute path`);
     }
-  } else if (playbook.workingDirectory !== undefined) {
-    throw new TypeError(
-      `${name}.workingDirectory is only valid for playbook delivery`,
-    );
   }
 
   if (new Set(playbook.capabilities).size !== playbook.capabilities.length) {
@@ -102,10 +93,9 @@ export function validatePlaybook(
     capabilities: [...playbook.capabilities],
     repositories: [...playbook.repositories],
     instructions: [...(playbook.instructions ?? [])],
-    delivery,
-    ...(delivery === "playbook"
-      ? { workingDirectory: playbook.workingDirectory.trim() }
-      : {}),
+    ...(playbook.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: playbook.workingDirectory.trim() }),
     legacy: false,
   };
 }
@@ -120,9 +110,7 @@ export function matchingPlaybook(item, profile, activeCounts = new Map()) {
       playbook.repositories.includes(repository) &&
       (activeCounts.get(playbook.id) ?? 0) < playbook.capacity &&
       item.requirements.every((requirement) =>
-        requirement.startsWith("delivery:")
-          ? requirement === `delivery:${playbook.delivery}`
-          : playbook.capabilities.includes(requirement),
+        playbook.capabilities.includes(requirement),
       ),
   );
 }
@@ -198,19 +186,8 @@ function explainPlaybookRejection(item, playbook, activeCounts) {
   if (active >= playbook.capacity) {
     return `at capacity ${active}/${playbook.capacity}`;
   }
-  const deliveries = item.requirements.filter((requirement) =>
-    requirement.startsWith("delivery:"),
-  );
-  const mismatched = deliveries.filter(
-    (requirement) => requirement !== `delivery:${playbook.delivery}`,
-  );
-  if (mismatched.length > 0) {
-    return `delivery is ${playbook.delivery}, task requires ${mismatched.join(", ")}`;
-  }
   const missing = item.requirements.filter(
-    (requirement) =>
-      !requirement.startsWith("delivery:") &&
-      !playbook.capabilities.includes(requirement),
+    (requirement) => !playbook.capabilities.includes(requirement),
   );
   if (missing.length > 0) {
     return `missing ${missing.join(", ")}`;

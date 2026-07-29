@@ -127,23 +127,22 @@ test("requires one playbook to satisfy the complete task", () => {
   );
 });
 
-test("matches delivery requirements against playbook policy", () => {
+test("does not match requirements a playbook cannot serve", () => {
   const profile = {
     online: true,
     playbooks: [
       {
-        capabilities: ["repo:example/tool"],
-        delivery: "direct",
+        capabilities: ["repo:example/tool", "env:local"],
       },
     ],
   };
 
   assert.equal(
-    matchingRunner(["repo:example/tool", "delivery:direct"], [profile]),
+    matchingRunner(["repo:example/tool", "env:local"], [profile]),
     profile,
   );
   assert.equal(
-    matchingRunner(["repo:example/tool", "delivery:pull-request"], [profile]),
+    matchingRunner(["repo:example/tool", "tool:missing"], [profile]),
     undefined,
   );
 });
@@ -155,7 +154,6 @@ test("does not match a playbook outside its repository scope", () => {
       {
         capabilities: ["repo:example/other", "repo:example/tool"],
         repositories: ["example/other"],
-        delivery: "pull-request",
       },
     ],
   };

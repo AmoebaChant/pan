@@ -32,47 +32,39 @@ Repository entries use `origin` for both the default-branch base and pushes
 unless configured otherwise. For a fork checkout, set `baseRemote` to the
 remote for the configured upstream repository and `pushRemote` to the fork
 remote. Pan validates both remotes before launch and again before accepting
-delivery, and requires them to be GitHub remotes. Repositories reached only
-through `"delivery": "playbook"` are exempt from all of that, so they may live
-on any host.
+completion, and requires them to be GitHub remotes. A playbook that sets
+`workingDirectory` is exempt from all of that, so its repository may live on
+any host.
 
-## Delivery policy
+## Delivery
 
-Playbooks default to `"delivery": "pull-request"`. That policy creates or
-updates a pull request and leaves the Project item in `in-review`; Pan confirms
-the merge directly from GitHub before completing the Issue and Project item.
+The runner does not implement delivery and does not verify it. The playbook's
+`instructions`, together with the Issue itself, tell the agent what to build and
+how to deliver it: open a pull request, commit to the default branch, write up an
+investigation, or drive a repository's own tooling. Where the two disagree, the
+Issue is the more specific instruction and wins.
 
-`"delivery": "direct"` is exceptional and must be explicitly authorized for
-that playbook. The worker integrates with the configured default branch and
-reports a commit. The runner validates that the commit is reachable from the
-default branch before moving the item to `done` and closing its Issue.
+The agent reports one outcome when it finishes: `done` when nothing further is
+needed, or `needs-review` when a human should look at the delivery first. Pan
+records the agent's summary and details on the Issue and moves the Project item
+to `done` or `in-review` accordingly. For work delivered as a pull request, Pan
+still confirms the merge directly from GitHub before completing the Issue.
 
-`"delivery": "report"` is read-only investigation. The worker may inspect and
-reproduce behavior but cannot change tracked files or create commits. Pan
-records the complete report on the Issue and moves the item to `in-review`.
-
-`"delivery": "playbook"` hands the whole workflow to the playbook's
-instructions. It requires an absolute `workingDirectory`, which is the only
-directory the runner gives the worker. The runner prepares nothing: it reads no
-remotes, creates no branch or worktree, records no base commit, and performs no
-git verification of the reported delivery. Use it when a repository's tooling
-owns workspace setup and delivery itself, or when the repository is not hosted
-on GitHub. The worker reports free-form `details` and an optional `url`, and Pan
-records them on the Issue and moves the item to `in-review`.
-
-Because the runner verifies nothing in this mode, the playbook instructions are
-the only thing standing between the worker and an unsafe change. Say explicitly
-how to isolate work, how to build and test, and how to deliver.
+Because the runner verifies nothing about how work was delivered, the playbook
+instructions are the only thing standing between the agent and an unsafe change.
+Say explicitly how to isolate work, how to build and test, and how to deliver.
 
 ## Worker lifecycle
 
 For a claimed task the runner creates a non-default branch and dedicated
 worktree, supplies Issue, answer, workstream, and playbook context to Copilot,
-and writes append-only Issue journal records. It owns task leases and
-deterministic delivery validation. It validates the reported remote commit or
-pull request before Project transition and cleanup. Playbook delivery is the
-exception: the runner only launches the worker in `workingDirectory`, holds the
-lease, and monitors progress and human-attention requests.
+and writes append-only Issue journal records. It owns task leases and the
+isolation guarantees around them: before accepting completion it confirms the
+task stayed on its own branch, left nothing uncommitted, and did not rewrite the
+repository's remotes. It never deletes the task branch, so unpushed work
+survives. A playbook that sets `workingDirectory` opts out of all workspace
+preparation: the runner only launches the worker there, holds the lease, and
+monitors progress and human-attention requests.
 
 An operational stop, terminal closure, launch failure, lost lease, or missing
 result returns work to `ready` with resumable state; it is not human attention.
