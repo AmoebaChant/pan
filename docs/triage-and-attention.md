@@ -19,6 +19,12 @@ the user, then writes approved values with `gh project item-edit`. It re-reads
 each Issue and Project item immediately before mutation and verifies the result
 afterward. Active runner status and lease fields are left untouched.
 
+An item is dispatchable only when `owner` is `agent`, `Status` is `ready`,
+`workstream` is set, and `requirements` names exactly one `repo:` entry served
+by a playbook on an online runner. An `agent` and `ready` item with empty
+`requirements` is inert: it is counted as ready but no runner can claim it. The
+runner names the missing field for each skipped item in its poll log.
+
 Pan has no automatic missing-Issue reconciliation. Creating or triaging one
 open Issue may add that Issue to the Project; unrelated Issues are unchanged.
 

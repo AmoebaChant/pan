@@ -128,10 +128,100 @@ export function matchingPlaybook(item, profile, activeCounts = new Map()) {
 }
 
 export function taskRepository(item) {
-  const repositories = item.requirements
+  const repositories = repositoryRequirements(item);
+  return repositories.length === 1 ? repositories[0] : undefined;
+}
+
+export function dispatchBlocker(item) {
+  if (item.fields?.owner !== "agent") {
+    return {
+      code: "owner-not-agent",
+      message: `owner is ${item.fields?.owner ?? "unset"}, not agent`,
+    };
+  }
+  if (!item.fields?.workstream?.trim()) {
+    return { code: "workstream-missing", message: "workstream is empty" };
+  }
+  const repositories = repositoryRequirements(item);
+  if (repositories.length === 0) {
+    return {
+      code: "repository-requirement-missing",
+      message:
+        "requirements have no repo: entry, so no playbook can be selected",
+    };
+  }
+  if (repositories.length > 1) {
+    return {
+      code: "repository-requirement-ambiguous",
+      message: `requirements name ${repositories.length} repositories (${repositories.join(", ")}); exactly one repo: entry is required`,
+    };
+  }
+  return undefined;
+}
+
+export function playbookBlocker(item, profile, activeCounts = new Map()) {
+  const blocker = dispatchBlocker(item);
+  if (blocker) {
+    return blocker;
+  }
+  const repository = taskRepository(item);
+  if (!profile.repositories[repository]) {
+    return {
+      code: "repository-unconfigured",
+      message: `runner has no repository entry for ${repository}`,
+    };
+  }
+  const serving = profile.playbooks.filter((playbook) =>
+    playbook.repositories.includes(repository),
+  );
+  if (serving.length === 0) {
+    return {
+      code: "no-playbook-for-repository",
+      message: `no playbook serves ${repository}`,
+    };
+  }
+  const reasons = serving.map(
+    (playbook) =>
+      `${playbook.id} (${explainPlaybookRejection(item, playbook, activeCounts)})`,
+  );
+  return {
+    code: "no-compatible-playbook",
+    message: `no playbook for ${repository} can take it: ${reasons.join("; ")}`,
+  };
+}
+
+function explainPlaybookRejection(item, playbook, activeCounts) {
+  if (playbook.capacity === 0) {
+    return "disabled";
+  }
+  const active = activeCounts.get(playbook.id) ?? 0;
+  if (active >= playbook.capacity) {
+    return `at capacity ${active}/${playbook.capacity}`;
+  }
+  const deliveries = item.requirements.filter((requirement) =>
+    requirement.startsWith("delivery:"),
+  );
+  const mismatched = deliveries.filter(
+    (requirement) => requirement !== `delivery:${playbook.delivery}`,
+  );
+  if (mismatched.length > 0) {
+    return `delivery is ${playbook.delivery}, task requires ${mismatched.join(", ")}`;
+  }
+  const missing = item.requirements.filter(
+    (requirement) =>
+      !requirement.startsWith("delivery:") &&
+      !playbook.capabilities.includes(requirement),
+  );
+  if (missing.length > 0) {
+    return `missing ${missing.join(", ")}`;
+  }
+  return "eligible";
+}
+
+function repositoryRequirements(item) {
+  return (item.requirements ?? [])
     .filter((requirement) => requirement.startsWith("repo:"))
     .map((requirement) => requirement.slice("repo:".length));
-  return repositories.length === 1 ? repositories[0] : undefined;
 }
 
 function requireString(value, name) {

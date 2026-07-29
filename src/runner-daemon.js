@@ -4,8 +4,10 @@ import {
 } from "./needs-human.js";
 import { AttentionService } from "./attention-service.js";
 import {
+  dispatchBlocker,
   matchingPlaybook,
   normalizePlaybooks,
+  playbookBlocker,
   taskRepository,
 } from "./playbook.js";
 import {
@@ -104,9 +106,18 @@ export class RunnerDaemon {
       status: "ready",
       claimable: true,
     });
-    const candidates = items
-      .filter((item) => isRunnable(item))
-      .sort(compareRunnerPriority);
+    const candidates = [];
+    for (const item of items) {
+      const blocker = dispatchBlocker(item);
+      if (blocker) {
+        this.logger.info?.(
+          `Skipping task #${item.number}: ${blocker.message}.`,
+        );
+        continue;
+      }
+      candidates.push(item);
+    }
+    candidates.sort(compareRunnerPriority);
     this.logger.info?.(
       `Poll found ${items.length} ready item(s), ${candidates.length} runnable; active=${this.active.size}, free=${freeSlots}.`,
     );
@@ -130,7 +141,7 @@ export class RunnerDaemon {
       const playbook = matchingPlaybook(item, eligibleProfile, activeCounts);
       if (!playbook) {
         this.logger.info?.(
-          `Skipping task #${item.number}: no compatible playbook with free capacity.`,
+          `Skipping task #${item.number}: ${playbookBlocker(item, eligibleProfile, activeCounts).message}.`,
         );
         continue;
       }
@@ -692,16 +703,6 @@ export class RunnerDaemon {
     }
     throw new Error(`No free slot for playbook ${playbook.id}`);
   }
-}
-
-function isRunnable(item) {
-  if (item.fields.owner !== "agent") {
-    return false;
-  }
-  if (!item.fields.workstream?.trim()) {
-    return false;
-  }
-  return Boolean(taskRepository(item));
 }
 
 function repositoryFor(item) {

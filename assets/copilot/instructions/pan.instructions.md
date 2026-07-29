@@ -50,6 +50,14 @@ when it is waiting for you; a non-empty value is the only signal that a human is
 needed, and it holds its lease and slot while it waits. Follow the values and
 formats in `PAN_PROJECT_SCHEMA`; do not invent fields or option values.
 
+A runner only claims an item when `owner` is `agent`, `Status` is `ready`,
+`workstream` is set, and `requirements` names exactly one `repo:` entry that a
+playbook on that runner serves. `owner` and `Status` therefore depend on
+`requirements`: never leave an item `agent` and `ready` with empty
+`requirements`, because no runner can ever claim it. When you may not set
+`requirements`, keep the item `needs-detail`, or propose the `requirements` and
+the readiness together and get approval for both.
+
 ## Session behavior
 
 Pan sessions are ordinary foreground Copilot sessions. There is no Pan

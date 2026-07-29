@@ -3,7 +3,9 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  dispatchBlocker,
   matchingPlaybook,
+  playbookBlocker,
   validateRunnerProfile,
 } from "../src/index.js";
 
@@ -174,8 +176,80 @@ test("requires explicit playbook configuration for direct delivery", () => {
   );
 });
 
-function makeProfile() {
-  const root = path.resolve("runner-root");
+test("names the field that makes a ready item undispatchable", () => {
+  const runnable = {
+    fields: { owner: "agent", workstream: "pan" },
+    requirements: ["repo:example/tool", "env:local", "tool:node22"],
+  };
+  const withFields = (fields) => ({ ...runnable, fields });
+  const withRequirements = (requirements) => ({ ...runnable, requirements });
+
+  assert.equal(dispatchBlocker(runnable), undefined);
+  assert.equal(
+    dispatchBlocker(withFields({ owner: "human", workstream: "pan" })).code,
+    "owner-not-agent",
+  );
+  assert.equal(
+    dispatchBlocker(withFields({ owner: "agent", workstream: "  " })).code,
+    "workstream-missing",
+  );
+  assert.equal(
+    dispatchBlocker(withRequirements([])).code,
+    "repository-requirement-missing",
+  );
+  assert.equal(
+    dispatchBlocker(withRequirements(["repo:a/b", "repo:c/d"])).code,
+    "repository-requirement-ambiguous",
+  );
+});
+
+test("names the playbook constraint that rejects a dispatchable item", () => {
+  const profile = makeProfile();
+  const validated = validateRunnerProfile(profile);
+  const item = (requirements) => ({
+    fields: { owner: "agent", workstream: "pan" },
+    requirements,
+  });
+  const base = ["repo:example/tool", "env:local", "tool:node22"];
+
+  assert.equal(
+    playbookBlocker(item(["repo:other/repo"]), validated).code,
+    "repository-unconfigured",
+  );
+  assert.equal(
+    playbookBlocker(item(base), { ...validated, playbooks: [] }).code,
+    "no-playbook-for-repository",
+  );
+
+  const full = playbookBlocker(
+    item(base),
+    validated,
+    new Map([
+      ["pan-development", 5],
+      ["documentation", 1],
+    ]),
+  );
+  assert.equal(full.code, "no-compatible-playbook");
+  assert.match(full.message, /pan-development \(at capacity 5\/5\)/);
+
+  assert.match(
+    playbookBlocker(item([...base, "delivery:direct"]), validated).message,
+    /pan-development \(delivery is pull-request, task requires delivery:direct\)/,
+  );
+  assert.match(
+    playbookBlocker(item([...base, "tool:docs"]), validated).message,
+    /pan-development \(missing tool:docs\)/,
+  );
+
+  profile.playbooks[0].capacity = 0;
+  profile.playbooks[1].capacity = 0;
+  assert.match(
+    playbookBlocker(item(base), validateRunnerProfile(profile)).message,
+    /pan-development \(disabled\); documentation \(disabled\)/,
+  );
+});
+
+function makeProfile() {  const root = path.resolve("runner-root");
   return {
     version: 1,
     id: "runner-a",
