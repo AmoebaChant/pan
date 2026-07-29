@@ -82,8 +82,10 @@ export {
   validateRunnerProfile,
 } from "./runner-profile.js";
 export {
+  dispatchBlocker,
   matchingPlaybook,
   normalizePlaybooks,
+  playbookBlocker,
   taskRepository,
   validatePlaybook,
 } from "./playbook.js";
