@@ -452,7 +452,14 @@ export class RunnerDaemon {
         });
         return;
       }
-      await handle?.interrupt?.(`Runner failure: ${error.message}`);
+      try {
+        await handle?.interrupt?.(`Runner failure: ${error.message}`);
+      } catch (interruptError) {
+        this.logger.warn?.(
+          `Task #${item.number} could not be marked resumable; releasing it anyway.`,
+          interruptError,
+        );
+      }
       await this.#requeueOperationalStop({
         item,
         runner,

@@ -1,6 +1,19 @@
+/**
+ * The directory a task actually runs in, whichever target shape it uses.
+ */
+export function taskWorkingDirectory(task) {
+  const directory = task.target.workingDirectory ?? task.target.worktreePath;
+  if (!directory) {
+    throw new TypeError(
+      "task target must have a workingDirectory or a worktreePath",
+    );
+  }
+  return directory;
+}
+
 export function buildTaskCopilotSpawnOptions(task, env) {
   return {
-    cwd: task.target.workingDirectory ?? task.target.worktreePath,
+    cwd: taskWorkingDirectory(task),
     env,
     stdio: "inherit",
     windowsHide: false,
@@ -10,7 +23,7 @@ export function buildTaskCopilotSpawnOptions(task, env) {
 export function buildTaskCopilotArgs(task, taskPrompt) {
   const args = [
     "-C",
-    task.target.worktreePath,
+    taskWorkingDirectory(task),
     "--disable-builtin-mcps",
     "--no-remote",
     "--no-auto-update",

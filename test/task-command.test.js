@@ -71,6 +71,43 @@ test("preserves supported optional task limits without enabling autopilot", () =
   assert.ok(!args.includes("--max-autopilot-continues"));
 });
 
+test("runs an agent-managed task in its playbook working directory", () => {
+  const task = {
+    target: { repository: "MeetingStage", workingDirectory: "C:\\Skype" },
+    paths: { statePath: "C:\\state" },
+    copilot: {
+      model: "gpt-5.6-sol",
+      sessionId: "00000000-0000-4000-8000-000000000001",
+    },
+  };
+  const env = {};
+
+  assert.equal(
+    buildTaskCopilotSpawnOptions(task, env).cwd,
+    "C:\\Skype",
+    "the worker process must start in the playbook working directory",
+  );
+  const args = buildTaskCopilotArgs(task, "Do the task.");
+  assert.equal(
+    args[args.indexOf("-C") + 1],
+    "C:\\Skype",
+    "an agent-managed target has no worktreePath, so -C must not be undefined",
+  );
+});
+
+test("refuses a task target that names no directory to run in", () => {
+  const task = {
+    target: { repository: "MeetingStage" },
+    paths: { statePath: "C:\\state" },
+    copilot: { model: "gpt-5.6-sol" },
+  };
+
+  assert.throws(
+    () => buildTaskCopilotArgs(task, "Do the task."),
+    /task target must have a workingDirectory or a worktreePath/,
+  );
+});
+
 function makeTask() {
   return {
     target: { worktreePath: "C:\\worktree" },
