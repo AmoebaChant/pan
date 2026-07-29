@@ -10,7 +10,10 @@ import {
   normalizeGitHubRepositoryUrl,
   resolveWorkstreamReadme,
 } from "../src/local-task-executor.js";
-import { buildTaskCopilotSpawnOptions } from "../src/task-command.js";
+import {
+  buildTaskCopilotArgs,
+  buildTaskCopilotSpawnOptions,
+} from "../src/task-command.js";
 
 test("confines workstream README paths to the data repository", () => {
   const store = path.resolve("private-data");
@@ -650,6 +653,11 @@ test("runs no git and launches the agent in the playbook working directory", asy
       buildTaskCopilotSpawnOptions(context, {}).cwd,
       workingDirectory,
     );
+    assert.equal(
+      buildTaskCopilotArgs(context, "Do the task.")[1],
+      workingDirectory,
+      "an agent-managed target has no worktreePath, so -C must not be undefined",
+    );
     assert.equal(resumeRecords[0].worktreePath, workingDirectory);
     assert.equal(resumeRecords[0].branch, undefined);
     assert.equal(terminalLaunches.length, 1);
@@ -670,6 +678,46 @@ test("runs no git and launches the agent in the playbook working directory", asy
       commands.calls,
       [],
       "an agent-managed playbook must not verify delivery with git",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("keeps an agent-managed task resumable when the runner interrupts it", async () => {
+  const fixture = await createFixture();
+  const commands = new FakeCommands();
+  const workingDirectory = path.join(fixture.root, "metarepo");
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: () => successfulSpawn(),
+    randomId: () => "agent-managed-interrupt",
+  });
+
+  try {
+    const handle = await executor.start({
+      ...makeStartOptions(8),
+      playbook: {
+        id: "metarepo-development",
+        instructions: ["Create your own isolated workspace."],
+        workingDirectory,
+      },
+    });
+
+    await handle.interrupt("Runner stopped: Ctrl+C");
+
+    const pointer = JSON.parse(await readFile(handle.resumePath, "utf8"));
+    assert.equal(pointer.requeue, true);
+    assert.deepEqual(
+      pointer.target,
+      { repository: "example/tool", workingDirectory },
+      "the requeue pointer must keep the agent-managed target shape",
+    );
+    assert.deepEqual(
+      commands.calls,
+      [],
+      "interrupting an agent-managed task must not run git",
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });

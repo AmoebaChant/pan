@@ -93,6 +93,7 @@ export { buildTaskPrompt } from "./task-prompt.js";
 export {
   buildTaskCopilotArgs,
   buildTaskCopilotSpawnOptions,
+  taskWorkingDirectory,
 } from "./task-command.js";
 export {
   normalizeGitHubRepositoryUrl,
