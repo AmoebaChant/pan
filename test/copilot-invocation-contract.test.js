@@ -76,9 +76,18 @@ test("grants a standing triage policy only when configured", () => {
 
   assert.match(reporting, /Discuss recommendations before mutation/i);
   assert.doesNotMatch(reporting, /standing policy/i);
-  assert.match(triaging, /standing policy to set owner, Status, priority, and workstream/i);
+  assert.match(triaging, /standing policy to triage untriaged items without asking/i);
   assert.match(triaging, /untriaged means the item has no Status/i);
-  assert.match(triaging, /including requirements, to an explicit approval/i);
+  assert.match(
+    triaging,
+    /owner, Status, priority, workstream, and the requirements that select a playbook/i,
+  );
+  assert.match(
+    triaging,
+    /Never leave an item owner agent and Status ready with empty requirements/i,
+  );
+  assert.doesNotMatch(triaging, /including requirements, to an explicit approval/i);
+  assert.match(triaging, /within the next 60 seconds/i);
   assert.doesNotMatch(triaging, /Discuss recommendations before mutation/i);
 });
 
@@ -90,7 +99,10 @@ test("uses launch-local due state without replaying another session", () => {
   });
 
   assert.equal(
-    isSessionReviewDue(state, { now: "2026-07-22T23:59:59.000Z" }),
+    isSessionReviewDue(state, {
+      now: "2026-07-22T23:59:59.000Z",
+      toleranceSeconds: 0,
+    }),
     false,
   );
   assert.equal(
@@ -104,6 +116,44 @@ test("uses launch-local due state without replaying another session", () => {
       lastReviewAt: "2026-07-23T00:00:00.000Z",
       nextReviewAt: "2026-07-24T00:00:00.000Z",
     },
+  );
+});
+
+test("treats a near-miss tick as due so drift cannot halve the review rate", () => {
+  const state = createInitialSessionDueState({
+    sessionId: "session-drift",
+    reviewIntervalSeconds: 3_600,
+    now: "2026-07-22T00:00:00.000Z",
+  });
+
+  assert.equal(state.nextReviewAt, "2026-07-22T01:00:00.000Z");
+  assert.equal(
+    isSessionReviewDue(state, { now: "2026-07-22T00:59:59.600Z" }),
+    true,
+    "a sub-second near-miss must not defer the review by a full interval",
+  );
+  assert.equal(
+    isSessionReviewDue(state, { now: "2026-07-22T00:59:00.000Z" }),
+    true,
+    "the tolerance window reaches exactly 60 seconds early",
+  );
+  assert.equal(
+    isSessionReviewDue(state, { now: "2026-07-22T00:58:59.000Z" }),
+    false,
+    "anything earlier than the window is still not due",
+  );
+});
+
+test("rejects a negative due tolerance", () => {
+  const state = createInitialSessionDueState({
+    sessionId: "session-bad-tolerance",
+    reviewIntervalSeconds: 3_600,
+    now: "2026-07-22T00:00:00.000Z",
+  });
+
+  assert.throws(
+    () => isSessionReviewDue(state, { toleranceSeconds: -1 }),
+    /toleranceSeconds must be a non-negative number/,
   );
 });
 

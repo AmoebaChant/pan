@@ -1,3 +1,5 @@
+import { SESSION_REVIEW_DUE_TOLERANCE_SECONDS } from "./session-due-state.js";
+
 export const COPILOT_SCHEDULING_CONTRACT_VERSION = 1;
 export const MAX_NATIVE_SCHEDULE_INTERVAL_SECONDS = 3_600;
 
@@ -72,7 +74,7 @@ export function buildScheduledReviewPrompt({ dueStatePath, triageAuthority = "re
   }
   return [
     "Run the scheduled Pan portfolio review in this session.",
-    `Read the launch-local due metadata at ${dueStatePath}. If its nextReviewAt is still in the future, report that no review is due and make no portfolio decision or mutation.`,
+    `Read the launch-local due metadata at ${dueStatePath}. Treat the review as due when nextReviewAt is in the past or within the next ${SESSION_REVIEW_DUE_TOLERANCE_SECONDS} seconds, because the recurring tick and the due time drift against each other; a near-miss otherwise costs a full interval. If nextReviewAt is further out than that, report that no review is due and make no portfolio decision or mutation.`,
     "When due, read the configured Project and current Issue state directly from GitHub. Never import unrelated Issues, resurrect closed Issues, or alter active runner lease fields.",
     mutationPolicyInstruction(triageAuthority),
     "Re-read each target immediately before an approved write and verify it afterward.",
@@ -86,7 +88,7 @@ function mutationPolicyInstruction(triageAuthority) {
     case "report":
       return "Discuss recommendations before mutation unless the user has already granted specific approval.";
     case "triage-fields":
-      return "You have a standing policy to set owner, Status, priority, and workstream on untriaged items without asking, where untriaged means the item has no Status. Leave every already-triaged item and every other field, including requirements, to an explicit approval.";
+      return "You have a standing policy to triage untriaged items without asking, where untriaged means the item has no Status. Triage means setting every field needed to make the item actionable: owner, Status, priority, workstream, and the requirements that select a playbook. Never leave an item owner agent and Status ready with empty requirements, because no runner can claim it. Leave every already-triaged item to an explicit approval.";
     default:
       throw new TypeError(`Unsupported Pan scheduling triage authority: ${triageAuthority}`);
   }
