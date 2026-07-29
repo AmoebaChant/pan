@@ -28,7 +28,8 @@ profile.
     "reviewIntervalSeconds": 3600,
     "startup": "immediate",
     "retrySeconds": 60,
-    "rateLimitRetrySeconds": 900
+    "rateLimitRetrySeconds": 900,
+    "triageAuthority": "report"
   }
 }
 ```
@@ -44,18 +45,30 @@ New configurations must use version 2.
 ## Scheduling and restart behavior
 
 Scheduling defaults to enabled, a 24-hour review interval, immediate startup,
-a 60-second ordinary retry, and a 900-second rate-limit retry. The interval is
+a 60-second ordinary retry, a 900-second rate-limit retry, and `report` triage
+authority. The interval is
 bounded to 300–604800 seconds in configuration; a native session schedule uses
 at most one-hour triggers to perform due checks. Pan neither catches up a missed
 session nor starts an external timer, and the Copilot session queue supplies
 non-overlap.
 
 `startup: "immediate"` performs a fresh startup review; `after-interval` waits
-for the first due trigger; `manual` performs no startup review. If the Copilot
-CLI lacks required scheduling support, create the
-displayed `/every` command manually. Changes to domain, session, or scheduling
+for the first due trigger; `manual` performs no startup review. Changes to
+domain, session, or scheduling
 settings require exiting and rerunning `pan session`; no background Pan process
 exists to restart.
+
+`triageAuthority` is the standing mutation policy for scheduled reviews.
+`report` keeps them read-only, so every change waits for approval in the
+session. `triage-fields` lets a scheduled review set `owner`, `Status`,
+`priority`, and `workstream` on untriaged items — those with no `Status` — 
+without asking. Already-triaged items and every other field, including
+`requirements`, still require approval under either value.
+
+Pan verifies the Copilot command-line options it passes, but it cannot verify
+scheduling support: interactive slash commands such as `/every` appear in no
+help surface. A session that cannot establish its schedule reports that in the
+session instead of failing to launch.
 
 ## Setup and migration
 
@@ -85,9 +98,8 @@ pan setup --repository example/personal-domain `
   --install-assets
 ```
 
-Fresh setup keeps scheduled reviews disabled so it works with Copilot CLI
-versions that do not yet expose native recurring schedules. Enable scheduling
-later only after `pan verify` succeeds with a scheduling-capable CLI.
+Fresh setup keeps scheduled reviews disabled. Enable scheduling once the domain
+is verified and you want unattended review turns.
 
 To connect an existing private repository and compatible Project, use
 `--repository-mode connect`, `--project-mode connect`, and

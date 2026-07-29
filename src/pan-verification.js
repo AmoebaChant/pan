@@ -40,8 +40,6 @@ export async function verifyPanSetup({
   await verifyCopilotInvocationContract({
     executable,
     commands,
-    requireScheduling: Boolean(config.scheduling?.enabled),
-    scheduling: config.scheduling,
   });
   const launchers = buildPanLaunchers({
     configPath: path.resolve(configPath),

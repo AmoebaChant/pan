@@ -75,8 +75,6 @@ export async function startPanSession({
     await verifyCopilot({
       executable,
       commands,
-      requireScheduling: schedulingEnabled,
-      scheduling: config.scheduling,
     });
     if (schedulingEnabled) {
       dueState = await dueStateFactory({
@@ -186,14 +184,10 @@ export function buildSessionEnvironment({
 export async function verifyCopilotContract({
   executable = "copilot",
   commands = new ProcessClient(),
-  requireScheduling = false,
-  scheduling,
 } = {}) {
   return verifyCopilotInvocationContract({
     executable,
     commands,
-    requireScheduling,
-    scheduling,
   });
 }
 

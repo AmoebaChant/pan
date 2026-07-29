@@ -19,7 +19,6 @@ export async function startPanOnboarding({
   await verifyCopilotInvocationContract({
     executable,
     commands,
-    requireScheduling: false,
   });
   const child = spawnProcess(
     executable,

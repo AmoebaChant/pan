@@ -36,25 +36,50 @@ test("defines a bounded native scheduling bootstrap contract", () => {
   assert.match(prompt, /Never import unrelated Issues, resurrect closed Issues/i);
 });
 
-test("requires the documented Copilot schedule commands or gives manual guidance", async () => {
+test("verifies the Copilot options Pan actually passes", async () => {
   await assert.rejects(
     verifyCopilotInvocationContract({
       commands: {
-        run: async () =>
-          "--agent --add-dir --model --no-auto-update --interactive",
+        run: async () => "--agent --add-dir --model --interactive",
       },
-      requireScheduling: true,
     }),
-    /Upgrade Copilot CLI.*\/every 3600s/i,
+    /does not support the required Pan session options: --no-auto-update/,
   );
 
   await verifyCopilotInvocationContract({
     commands: {
       run: async () =>
-        "--agent --add-dir --model --no-auto-update --interactive /every /after",
+        "--agent --add-dir --model --no-auto-update --interactive",
     },
-    requireScheduling: true,
   });
+});
+
+test("grants a standing triage policy only when configured", () => {
+  const reporting = buildScheduleBootstrapPrompt({
+    scheduling: {
+      enabled: true,
+      startup: "immediate",
+      reviewIntervalSeconds: 3_600,
+      triageAuthority: "report",
+    },
+    dueStatePath: "C:\\runtime\\session-a.due.json",
+  });
+  const triaging = buildScheduleBootstrapPrompt({
+    scheduling: {
+      enabled: true,
+      startup: "immediate",
+      reviewIntervalSeconds: 3_600,
+      triageAuthority: "triage-fields",
+    },
+    dueStatePath: "C:\\runtime\\session-a.due.json",
+  });
+
+  assert.match(reporting, /Discuss recommendations before mutation/i);
+  assert.doesNotMatch(reporting, /standing policy/i);
+  assert.match(triaging, /standing policy to set owner, Status, priority, and workstream/i);
+  assert.match(triaging, /untriaged means the item has no Status/i);
+  assert.match(triaging, /including requirements, to an explicit approval/i);
+  assert.doesNotMatch(triaging, /Discuss recommendations before mutation/i);
 });
 
 test("uses launch-local due state without replaying another session", () => {
@@ -103,8 +128,6 @@ test(
           });
         },
       },
-      requireScheduling: true,
-      scheduling: { reviewIntervalSeconds: 3_600 },
     });
   },
 );
