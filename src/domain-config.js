@@ -45,6 +45,7 @@ const DEFAULTS = Object.freeze({
     startup: "immediate",
     retrySeconds: 60,
     rateLimitRetrySeconds: 900,
+    triageAuthority: "report",
   },
 });
 
@@ -139,6 +140,7 @@ function normalizeV1(config, configPath) {
       reviewIntervalSeconds: cadences.fullReviewSeconds,
       retrySeconds: cadences.retrySeconds,
       rateLimitRetrySeconds: cadences.rateLimitRetrySeconds,
+      triageAuthority: DEFAULTS.scheduling.triageAuthority,
     },
     migrationDiagnostics: migrationDiagnostics(config),
   });
@@ -311,6 +313,7 @@ function normalizeScheduling(scheduling = {}) {
       "startup",
       "retrySeconds",
       "rateLimitRetrySeconds",
+      "triageAuthority",
     ]),
     "scheduling",
   );
@@ -338,6 +341,11 @@ function normalizeScheduling(scheduling = {}) {
     DEFAULTS.scheduling.rateLimitRetrySeconds,
     { minimum: 60, maximum: 86_400 },
   );
+  const triageAuthority =
+    scheduling.triageAuthority ?? DEFAULTS.scheduling.triageAuthority;
+  if (!["report", "triage-fields"].includes(triageAuthority)) {
+    fail("scheduling.triageAuthority", 'must be "report" or "triage-fields"');
+  }
   validateScheduling(reviewIntervalSeconds, retrySeconds, rateLimitRetrySeconds);
   return {
     enabled,
@@ -345,6 +353,7 @@ function normalizeScheduling(scheduling = {}) {
     reviewIntervalSeconds,
     retrySeconds,
     rateLimitRetrySeconds,
+    triageAuthority,
   };
 }
 

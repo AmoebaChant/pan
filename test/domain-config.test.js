@@ -24,6 +24,7 @@ test("normalizes the minimal version 2 session configuration", () => {
     reviewIntervalSeconds: 86_400,
     retrySeconds: 60,
     rateLimitRetrySeconds: 900,
+    triageAuthority: "report",
   });
   assert.equal(config.state, undefined);
   assert.equal(config.leadership, undefined);
@@ -105,6 +106,13 @@ test("validates product-context roots and scheduling", () => {
   assert.throws(
     () => validateDomainConfig(retry),
     /scheduling\.rateLimitRetrySeconds must be greater than or equal/,
+  );
+
+  const rejectedAuthority = makeConfig();
+  rejectedAuthority.scheduling = { triageAuthority: "everything" };
+  assert.throws(
+    () => validateDomainConfig(rejectedAuthority),
+    /scheduling\.triageAuthority must be "report" or "triage-fields"/,
   );
 
 });

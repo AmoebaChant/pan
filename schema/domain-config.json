@@ -149,7 +149,12 @@
             "reviewIntervalSeconds": { "type": "number", "minimum": 300, "maximum": 604800, "default": 86400 },
             "startup": { "enum": ["immediate", "after-interval", "manual"], "default": "immediate" },
             "retrySeconds": { "type": "number", "minimum": 5, "maximum": 3600, "default": 60 },
-            "rateLimitRetrySeconds": { "type": "number", "minimum": 60, "maximum": 86400, "default": 900 }
+            "rateLimitRetrySeconds": { "type": "number", "minimum": 60, "maximum": 86400, "default": 900 },
+            "triageAuthority": {
+              "enum": ["report", "triage-fields"],
+              "default": "report",
+              "description": "Standing mutation policy for scheduled reviews. \"report\" keeps them read-only. \"triage-fields\" lets a scheduled review set owner, Status, priority, and workstream on untriaged items without asking."
+            }
           }
         },
         "leadership": {

@@ -8,16 +8,17 @@ const REQUIRED_SESSION_OPTIONS = [
   "--no-auto-update",
   "--interactive",
 ];
-const REQUIRED_SCHEDULING_COMMANDS = ["/every", "/after"];
 
 /**
  * Verifies the documented Copilot CLI features that Pan relies on.
+ *
+ * Only command-line options are checked. Interactive slash commands such as
+ * `/every` are absent from every help surface, so their support cannot be
+ * probed; the session reports instead when it cannot establish its schedule.
  */
 export async function verifyCopilotInvocationContract({
   executable = "copilot",
   commands,
-  requireScheduling = false,
-  scheduling,
 } = {}) {
   if (!commands?.run) {
     throw new TypeError("commands with run() are required");
@@ -26,21 +27,10 @@ export async function verifyCopilotInvocationContract({
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
   });
-  const required = [
-    ...REQUIRED_SESSION_OPTIONS,
-    ...(requireScheduling ? REQUIRED_SCHEDULING_COMMANDS : []),
-  ];
-  const missing = required.filter((option) => !help.includes(option));
+  const missing = REQUIRED_SESSION_OPTIONS.filter((option) => !help.includes(option));
   if (missing.length > 0) {
-    const manual = requireScheduling
-      ? ` Upgrade Copilot CLI or start without scheduling, then create the schedule manually with ${manualScheduleCommand({
-          intervalSeconds: scheduling?.reviewIntervalSeconds
-            ? nativeScheduleIntervalSeconds(scheduling.reviewIntervalSeconds)
-            : MAX_NATIVE_SCHEDULE_INTERVAL_SECONDS,
-        })}.`
-      : "";
     throw new Error(
-      `Copilot CLI does not support the required Pan session options: ${missing.join(", ")}.${manual}`,
+      `Copilot CLI does not support the required Pan session options: ${missing.join(", ")}.`,
     );
   }
 }
@@ -60,7 +50,10 @@ export function buildScheduleBootstrapPrompt({
   }
 
   const intervalSeconds = nativeScheduleIntervalSeconds(scheduling.reviewIntervalSeconds);
-  const reviewPrompt = buildScheduledReviewPrompt({ dueStatePath });
+  const reviewPrompt = buildScheduledReviewPrompt({
+    dueStatePath,
+    triageAuthority: scheduling.triageAuthority,
+  });
   const startup = startupInstruction({
     startup: scheduling.startup,
     intervalSeconds,
@@ -69,11 +62,11 @@ export function buildScheduleBootstrapPrompt({
     "Establish exactly one native session-scoped recurring schedule; do not create a Node timer, detached process, or external queue.",
     `Use ${manualScheduleCommand({ intervalSeconds, prompt: reviewPrompt })}.`,
     startup,
-    "The Copilot session queue is the only non-overlap mechanism. Keep failed or incomplete reviews visible in this session.",
+    "The Copilot session queue is the only non-overlap mechanism. Keep failed or incomplete reviews visible in this session. If the schedule cannot be created, say so immediately and continue without one rather than substituting another mechanism.",
   ].join("\n\n");
 }
 
-export function buildScheduledReviewPrompt({ dueStatePath } = {}) {
+export function buildScheduledReviewPrompt({ dueStatePath, triageAuthority = "report" } = {}) {
   if (!dueStatePath) {
     throw new TypeError("dueStatePath is required");
   }
@@ -81,10 +74,22 @@ export function buildScheduledReviewPrompt({ dueStatePath } = {}) {
     "Run the scheduled Pan portfolio review in this session.",
     `Read the launch-local due metadata at ${dueStatePath}. If its nextReviewAt is still in the future, report that no review is due and make no portfolio decision or mutation.`,
     "When due, read the configured Project and current Issue state directly from GitHub. Never import unrelated Issues, resurrect closed Issues, or alter active runner lease fields.",
-    "Discuss recommendations before mutation unless the user has already granted specific approval. Re-read each target immediately before an approved write and verify it afterward.",
+    mutationPolicyInstruction(triageAuthority),
+    "Re-read each target immediately before an approved write and verify it afterward.",
     "After a completed review attempt, update the due metadata with the review time and next configured due time. Follow the configured bounded retry and rate-limit guidance; never busy-loop or create another schedule.",
     "Report failed or incomplete reviews accurately in this session.",
   ].join(" ");
+}
+
+function mutationPolicyInstruction(triageAuthority) {
+  switch (triageAuthority) {
+    case "report":
+      return "Discuss recommendations before mutation unless the user has already granted specific approval.";
+    case "triage-fields":
+      return "You have a standing policy to set owner, Status, priority, and workstream on untriaged items without asking, where untriaged means the item has no Status. Leave every already-triaged item and every other field, including requirements, to an explicit approval.";
+    default:
+      throw new TypeError(`Unsupported Pan scheduling triage authority: ${triageAuthority}`);
+  }
 }
 
 export function nativeScheduleIntervalSeconds(reviewIntervalSeconds) {

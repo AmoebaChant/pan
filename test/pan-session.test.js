@@ -92,7 +92,11 @@ test("bootstraps the configured native schedule without a leadership mode", asyn
     },
   });
 
-  assert.equal(contract.requireScheduling, true);
+  assert.deepEqual(
+    Object.keys(contract).sort(),
+    ["commands", "executable"],
+    "the CLI contract check must not depend on scheduling",
+  );
   assert.equal(
     launch.options.env.PAN_SCHEDULE_DUE_STATE,
     "C:\\runtime\\session-a.due.json",
