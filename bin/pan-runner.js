@@ -70,7 +70,7 @@ try {
     `Starting ${profile.id}; model=${profile.copilot.model ?? "auto"}, capacity=${profile.maxConcurrentDaemons}, wall-clock=${profile.taskBudget.wallClockMinutes ? `${profile.taskBudget.wallClockMinutes}m` : "unlimited"}, AI credits=${profile.taskBudget.maxAiCredits ?? "unlimited"}.`,
   );
   logger.info(
-    `Playbooks: ${profile.playbooks.map((playbook) => `${playbook.id}=${playbook.capacity}`).join(", ")}.`,
+    `Playbooks: ${profile.playbooks.map((playbook) => `${playbook.id}=${playbook.capacity === 0 ? "disabled" : playbook.capacity}`).join(", ")}.`,
   );
   logger.info(
     `Activity log: ${path.join(profile.stateDirectory, "runner.log")}`,

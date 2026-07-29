@@ -23,8 +23,10 @@ its selected tasks. Without it, the foreground runner continues until SIGINT or
 SIGTERM. It backs off while idle and uses bounded rate-limit handling.
 
 Each enabled playbook matches repository and capability requirements and has
-its own capacity in addition to global capacity. An offline profile may have no
-repositories; an online profile must have at least one.
+its own capacity in addition to global capacity. A playbook with `"capacity": 0`
+is disabled: it keeps its configuration but never claims work, which is how you
+take a workspace back for manual use without deleting the playbook. An offline
+profile may have no repositories; an online profile must have at least one.
 
 Repository entries use `origin` for both the default-branch base and pushes
 unless configured otherwise. For a fork checkout, set `baseRemote` to the
