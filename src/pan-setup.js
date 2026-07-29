@@ -11,6 +11,7 @@ import { normalizeGitHubRepositoryUrl } from "./github-repository.js";
 
 const APPROVAL_MODES = ["prompt", "allow-all"];
 const SETUP_MODES = ["create", "connect"];
+const SELF_REPAIR_PLAYBOOK_ID = "pan-self-repair";
 const PROJECT_FIELD_PAGE_SIZE = 100;
 const PROJECT_FIELD_SAFETY_LIMIT = 1_000;
 const PROJECT_FIELDS_QUERY = `
@@ -120,6 +121,7 @@ export async function setupPanDomain(
       "prompt",
     );
     validateApprovalMode(approvalMode);
+    const selfRepair = resolveSelfRepairOptions(options);
     const repositoryPath = await inspectRepositoryPath({
       directory,
       repository,
@@ -211,6 +213,7 @@ export async function setupPanDomain(
       approvalMode,
       directory,
       env,
+      selfRepair,
     });
     const config = configSetup.document;
     const runner = runnerSetup.document;
@@ -526,15 +529,16 @@ function starterRunnerProfile({
   approvalMode,
   directory,
   env,
+  selfRepair,
 }) {
   const localAppData =
     env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
   const machineRoot = path.join(localAppData, "PAN", fileSlug(machine));
-  return {
+  const profile = {
     version: 1,
     id: fileSlug(machine),
     machine,
-    online: false,
+    online: selfRepair !== undefined,
     maxConcurrentDaemons: 1,
     capabilities: ["env:local"],
     store: {
@@ -553,6 +557,7 @@ function starterRunnerProfile({
       approvalMode,
     },
   };
+  return applySelfRepairConfiguration(profile, selfRepair);
 }
 
 async function resolveRunnerProfilePath(directory, machine) {
@@ -758,6 +763,7 @@ async function existingOrStarterRunner({
   approvalMode,
   directory,
   env,
+  selfRepair,
 }) {
   const existing = await readJsonIfExists(runnerPath, "Pan runner profile");
   if (existing === undefined) {
@@ -769,6 +775,7 @@ async function existingOrStarterRunner({
       approvalMode,
       directory,
       env,
+      selfRepair,
     });
     document.domainConfigPath = configPath;
     return { document, content: json(document), write: true };
@@ -783,6 +790,24 @@ async function existingOrStarterRunner({
     directory,
     label: "Existing Pan runner profile",
   });
+  const updated = applySelfRepairConfiguration(
+    {
+      ...existing.document,
+      store: {
+        ...existing.document.store,
+        repository,
+        projectOwner,
+        projectNumber,
+        path: directory,
+      },
+      domainConfigPath: configPath,
+      copilot: {
+        ...existing.document.copilot,
+        approvalMode,
+      },
+    },
+    selfRepair,
+  );
   if (
     normalized.store.repository === repository &&
     normalized.store.projectOwner === projectOwner &&
@@ -791,27 +816,102 @@ async function existingOrStarterRunner({
     samePath(normalized.store.path, directory) &&
     normalized.domainConfigPath !== undefined &&
     samePath(normalized.domainConfigPath, configPath) &&
-    normalized.copilot.approvalMode === approvalMode
+    normalized.copilot.approvalMode === approvalMode &&
+    JSON.stringify(existing.document) === JSON.stringify(updated)
   ) {
     return { ...existing, write: false };
   }
-  const document = {
-    ...existing.document,
-    store: {
-      ...existing.document.store,
-      repository,
-      projectOwner,
-      projectNumber,
-      path: directory,
-    },
-    domainConfigPath: configPath,
-    copilot: {
-      ...existing.document.copilot,
-      approvalMode,
-    },
-  };
+  const document = updated;
   validateRunnerProfile(document, { profilePath: runnerPath });
   return { document, content: json(document), write: true };
+}
+
+function resolveSelfRepairOptions(options) {
+  const repository = options.selfRepairRepository;
+  const checkoutPath = options.selfRepairPath;
+  const defaultBranch = options.selfRepairDefaultBranch ?? "main";
+  if (repository === undefined && checkoutPath === undefined) {
+    return undefined;
+  }
+  if (repository === undefined || checkoutPath === undefined) {
+    throw new TypeError(
+      "Pan self-repair setup requires both repository and local checkout path",
+    );
+  }
+  validateRepository(repository);
+  if (typeof checkoutPath !== "string" || !path.isAbsolute(checkoutPath)) {
+    throw new TypeError("Pan self-repair checkout path must be absolute");
+  }
+  if (typeof defaultBranch !== "string" || !defaultBranch.trim()) {
+    throw new TypeError("Pan self-repair default branch must be a non-empty string");
+  }
+  return {
+    repository: repository.trim(),
+    path: path.resolve(checkoutPath),
+    defaultBranch: defaultBranch.trim(),
+  };
+}
+
+function applySelfRepairConfiguration(profile, selfRepair) {
+  if (!selfRepair) {
+    return profile;
+  }
+  const legacyPlaybook =
+    profile.playbooks === undefined && Object.keys(profile.repositories).length > 0
+      ? {
+          id: "legacy",
+          capacity: profile.maxConcurrentDaemons,
+          capabilities: [...profile.capabilities],
+          repositories: Object.keys(profile.repositories),
+          instructions: [],
+        }
+      : undefined;
+  const repositoryCapability = `repo:${selfRepair.repository}`;
+  const capabilities = profile.capabilities.includes(repositoryCapability)
+    ? [...profile.capabilities]
+    : [...profile.capabilities, repositoryCapability];
+  const repositories = {
+    ...profile.repositories,
+    [selfRepair.repository]: {
+      ...profile.repositories[selfRepair.repository],
+      path: selfRepair.path,
+      defaultBranch: selfRepair.defaultBranch,
+    },
+  };
+  const playbook = {
+    id: SELF_REPAIR_PLAYBOOK_ID,
+    capacity: 1,
+    capabilities: ["env:local", repositoryCapability],
+    repositories: [selfRepair.repository],
+    instructions: [
+      "Treat reported Pan failures as reusable product defects unless invalid domain data caused them.",
+      "Preserve fail-closed mutation behavior and add regression coverage for every code change.",
+      "Deliver fixes by pushing a task branch and opening a pull request against the default branch.",
+    ],
+  };
+  const existingPlaybooks =
+    profile.playbooks ?? (legacyPlaybook ? [legacyPlaybook] : []);
+  const existingSelfRepair = existingPlaybooks.find(
+    (candidate) => candidate.id === SELF_REPAIR_PLAYBOOK_ID,
+  );
+  if (
+    existingSelfRepair &&
+    (!existingSelfRepair.repositories.includes(selfRepair.repository) ||
+      !existingSelfRepair.capabilities.includes(repositoryCapability))
+  ) {
+    throw new Error(
+      `Existing ${SELF_REPAIR_PLAYBOOK_ID} playbook does not serve ${selfRepair.repository}`,
+    );
+  }
+  const playbooks = existingSelfRepair
+    ? [...existingPlaybooks]
+    : [playbook, ...existingPlaybooks];
+  return {
+    ...profile,
+    capabilities,
+    repositories,
+    playbooks,
+  };
 }
 
 function assertDomainIdentity(

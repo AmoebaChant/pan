@@ -158,6 +158,15 @@ export function parseArgs(args, env = process.env) {
     const repositoryMode = takeOption(remaining, "--repository-mode");
     const projectMode = takeOption(remaining, "--project-mode");
     const approvalMode = takeOption(remaining, "--approval-mode");
+    const selfRepairRepository = takeOption(
+      remaining,
+      "--self-repair-repository",
+    );
+    const selfRepairPath = takeOption(remaining, "--self-repair-path");
+    const selfRepairDefaultBranch = takeOption(
+      remaining,
+      "--self-repair-default-branch",
+    );
     const installAssets = takeFlag(remaining, "--install-assets");
     if (repositoryMode !== undefined) {
       validateChoice(
@@ -185,6 +194,19 @@ export function parseArgs(args, env = process.env) {
     if (projectNumber !== undefined && projectTitle !== undefined) {
       throw new TypeError("--project-number and --project-title cannot be used together");
     }
+    if ((selfRepairRepository === undefined) !== (selfRepairPath === undefined)) {
+      throw new TypeError(
+        "--self-repair-repository and --self-repair-path must be used together",
+      );
+    }
+    if (
+      selfRepairDefaultBranch !== undefined &&
+      selfRepairRepository === undefined
+    ) {
+      throw new TypeError(
+        "--self-repair-default-branch requires --self-repair-repository",
+      );
+    }
     requireNoArgs(remaining);
     return {
       command,
@@ -197,6 +219,9 @@ export function parseArgs(args, env = process.env) {
       repositoryMode,
       projectMode,
       approvalMode,
+      selfRepairRepository,
+      selfRepairPath,
+      selfRepairDefaultBranch,
       ...(installAssets ? { installAssets: true } : {}),
     };
   }
@@ -422,7 +447,7 @@ function usage() {
   return [
     "Usage:",
     "  pan onboard",
-    "  pan setup [--repository <owner/name>] [--repository-mode <create|connect>] [--path <path>] [--project-mode <create|connect>] [--project-number <number>] [--approval-mode <prompt|allow-all>] [--install-assets]",
+    "  pan setup [--repository <owner/name>] [--repository-mode <create|connect>] [--path <path>] [--project-mode <create|connect>] [--project-number <number>] [--approval-mode <prompt|allow-all>] [--self-repair-repository <owner/name> --self-repair-path <path> [--self-repair-default-branch <branch>]] [--install-assets]",
     "  pan verify --config <path> --profile <path>",
     "  pan shortcuts create --config <path> --profile <path> [--selection <chat|runner|both>]",
     "  pan assets <install|status|repair> [--force] [--json]",

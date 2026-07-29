@@ -23,6 +23,15 @@ Use only deterministic `pan setup`, `pan verify`, and `pan shortcuts create`
 commands for mechanics. Never ask the user to edit configuration files
 manually.
 
+Before setup, identify this Pan checkout with `git rev-parse --show-toplevel`
+and `gh repo view --json nameWithOwner,defaultBranchRef`. Pass the returned
+repository, checkout path, and default branch to `pan setup` using
+`--self-repair-repository`, `--self-repair-path`, and
+`--self-repair-default-branch`. This installs Pan's default self-repair
+playbook, which fixes reusable Pan defects on a task branch and opens a pull
+request. Explain that this is the initial playbook and that a domain-bound Pan
+session can help plan additional repository-specific playbooks after onboarding.
+
 Support creating a new private domain or connecting an existing private domain
 and GitHub Project. An existing domain's local path may already be a checkout;
 never require a new empty path for it. Preserve compatible configuration,
@@ -48,5 +57,6 @@ returns `ready`. If shortcuts were created, finish with their exact returned
 use those exact `launchCommands` directly. Explain that setup deliberately
 leaves scheduled reviews disabled. The setup agent has no domain leadership;
 direct post-setup configuration requests to a domain-bound Pan session. Only
-describe a newly generated runner as offline; for a connected runner, report
-profile eligibility without claiming process liveness.
+report `runnerOnline` as profile eligibility without claiming process
+liveness. If it is false, explain that the profile must be configured and
+enabled before it can accept work.

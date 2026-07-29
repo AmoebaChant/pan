@@ -24,6 +24,9 @@ test("ships the session, runner, Copilot assets, and shared schemas", async () =
   assert.deepEqual(packageMetadata.files, ["assets", "bin", "src", "schema"]);
   assert.match(packageMetadata.description, /direct GitHub-backed/i);
   assert.match(readme, /npx --yes --package \. pan onboard/);
+  assert.match(readme, /Ask an agent on your machine/i);
+  assert.match(readme, /Ask where you want Pan cloned/i);
+  assert.match(readme, /self-repair playbook/i);
   assert.doesNotMatch(readme, /npx @amoebachant\/pan/);
   assert.ok(readme.split(/\r?\n/).length < 30, "README should remain approachable");
   assert.equal(packageMetadata.files.includes("docs"), false);

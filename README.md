@@ -1,8 +1,7 @@
 # Pan
 
-Pan is a personal chief of staff that helps you navigate your workloads and
-manage agents on your behalf. Your work lives in a private GitHub repository and
-Project called a **domain**, and a session serves one domain at a time.
+Pan is a personal chief of staff for workloads and agents. Work lives in a
+private GitHub repository and Project called a **domain**.
 
 ## Requirements
 
@@ -10,19 +9,20 @@ Project called a **domain**, and a session serves one domain at a time.
 - GitHub CLI (`gh`), authenticated for private repositories and Projects
 - GitHub Copilot CLI, which Pan uses for setup, chat, and agent work
 
-## Get started
+## Set up Pan with an agent
 
-```powershell
-git clone https://github.com/AmoebaChant/pan.git
-Set-Location .\pan
-npx --yes --package . pan onboard
-```
+Ask an agent on your machine to follow this README. The agent should:
 
-The Pan Setup agent explains the model, creates or connects your domain, installs
-Pan and its skills, configures a local session and runner, and can create desktop
-shortcuts. Pan runs in the foreground and stops when its session exits.
+1. Introduce itself as your Pan setup guide and check the requirements above.
+2. Ask where you want Pan cloned; do not choose a location without asking.
+3. Clone `https://github.com/AmoebaChant/pan.git`, enter that checkout, and run:
+
+   ```powershell
+   npx --yes --package . pan onboard
+   ```
+
+Pan Setup explains domains, creates or connects yours, installs Pan's assets,
+configures a pull-request self-repair playbook, verifies setup, and offers shortcuts.
 
 ## Documentation
-
-Read [goals](docs/goals.md), [open questions](docs/open-questions.md), and [architecture](docs/architecture.md).
-Reference: [domain configuration](docs/domain-configuration.md), [runner](docs/runner.md), [triage and attention](docs/triage-and-attention.md).
+Read [goals](docs/goals.md), [architecture](docs/architecture.md), and the [documentation](docs/).

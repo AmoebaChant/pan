@@ -94,6 +94,72 @@ test("creates and bootstraps a private Pan domain with safe approvals", async ()
   }
 });
 
+test("configures a default pull-request playbook for Pan self-repair", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pan-setup-self-repair-"));
+  const directory = path.join(root, "domain");
+  const panPath = path.join(root, "pan");
+  try {
+    const result = await setupPanDomain(
+      {
+        repository: "example/domain",
+        path: directory,
+        projectOwner: "example",
+        projectTitle: "Personal Pan",
+        approvalMode: "prompt",
+        selfRepairRepository: "AmoebaChant/pan",
+        selfRepairPath: panPath,
+        selfRepairDefaultBranch: "main",
+      },
+      {
+        gh: new FakeGh(),
+        commands: new FakeCommands(),
+        hostname: "Machine A",
+        env: { LOCALAPPDATA: path.join(root, "local") },
+        ask: assert.fail,
+      },
+    );
+
+    const runner = JSON.parse(await readFile(result.runnerProfilePath, "utf8"));
+    assert.ok(runner.capabilities.includes("repo:AmoebaChant/pan"));
+    assert.deepEqual(runner.repositories["AmoebaChant/pan"], {
+      path: panPath,
+      defaultBranch: "main",
+    });
+    assert.equal(runner.online, true);
+    assert.equal(result.runnerOnline, true);
+    assert.equal(runner.playbooks[0].id, "pan-self-repair");
+    assert.match(runner.playbooks[0].instructions.join("\n"), /pull request/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects an invalid self-repair checkout before remote mutation", async () => {
+  const gh = new FakeGh();
+
+  await assert.rejects(
+    setupPanDomain(
+      {
+        repository: "example/domain",
+        path: "domain",
+        projectOwner: "example",
+        projectTitle: "Personal Pan",
+        approvalMode: "prompt",
+        selfRepairRepository: "AmoebaChant/pan",
+        selfRepairPath: "relative-pan",
+      },
+      {
+        gh,
+        commands: new FakeCommands(),
+        hostname: "Machine A",
+        ask: assert.fail,
+      },
+    ),
+    /self-repair checkout path must be absolute/,
+  );
+  assert.deepEqual(gh.calls, []);
+});
+
 test("connects an existing private repository and compatible Project without replacing its README", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pan-setup-connect-"));
   const directory = path.join(root, "domain");
@@ -149,17 +215,46 @@ test("adopts an existing local Pan domain and resumes without replacing its data
       machine: "Machine",
       online: false,
       maxConcurrentDaemons: 2,
-      capabilities: ["env:local"],
+      capabilities: [
+        "env:local",
+        "repo:example/tool",
+        "repo:AmoebaChant/pan",
+      ],
       store: {
         repository: "Example/Domain",
         projectOwner: "Example",
         projectNumber: 9,
       },
-      repositories: {},
+      repositories: {
+        "example/tool": {
+          path: path.join(root, "tool"),
+          defaultBranch: "main",
+        },
+        "AmoebaChant/pan": {
+          path: path.join(root, "pan"),
+          defaultBranch: "main",
+        },
+      },
       workspaceRoot: path.join(root, "worktrees"),
       stateDirectory: path.join(root, "state"),
       terminal: { type: "windows-terminal" },
       copilot: { approvalMode: "allow-all" },
+      playbooks: [
+        {
+          id: "pan-self-repair",
+          capacity: 1,
+          capabilities: ["env:local", "repo:AmoebaChant/pan"],
+          repositories: ["AmoebaChant/pan"],
+          instructions: ["Keep this local customization."],
+        },
+        {
+          id: "existing",
+          capacity: 1,
+          capabilities: ["env:local", "repo:example/tool"],
+          repositories: ["example/tool"],
+          instructions: [],
+        },
+      ],
       preservedSetting: "keep-me",
     };
     const existingRunnerSource = `${JSON.stringify(existingRunner, null, 4)}\n`;
@@ -176,6 +271,9 @@ test("adopts an existing local Pan domain and resumes without replacing its data
       projectMode: "connect",
       projectNumber: 9,
       approvalMode: "allow-all",
+      selfRepairRepository: "AmoebaChant/pan",
+      selfRepairPath: path.join(root, "pan"),
+      selfRepairDefaultBranch: "main",
     };
     const dependencies = {
       gh,
@@ -211,6 +309,13 @@ test("adopts an existing local Pan domain and resumes without replacing its data
     assert.equal(runner.store.path, path.resolve(directory));
     assert.equal(runner.domainConfigPath, first.configPath);
     assert.equal(runner.copilot.approvalMode, "allow-all");
+    assert.deepEqual(
+      runner.playbooks.map(({ id }) => id),
+      ["pan-self-repair", "existing"],
+    );
+    assert.deepEqual(runner.playbooks[0].instructions, [
+      "Keep this local customization.",
+    ]);
     assert.equal(resumed.runnerOnline, false);
     assert.equal(
       commands.calls.filter(({ args }) => args[2] === "commit").length,

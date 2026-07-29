@@ -48,6 +48,9 @@ test("packages a conversational setup agent that delegates mechanics to Pan comm
   assert.match(body, /pan setup/);
   assert.match(body, /pan verify/);
   assert.match(body, /pan shortcuts create/);
+  assert.match(body, /--self-repair-repository/);
+  assert.match(body, /--self-repair-path/);
+  assert.match(body, /pull requests/i);
   assert.match(body, /exact `launchCommands`/i);
   assert.match(body, /returned `command`.*verified commands/is);
   assert.doesNotMatch(body, /npx @amoebachant\/pan/);

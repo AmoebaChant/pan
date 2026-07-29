@@ -20,6 +20,12 @@ test("parses setup without pre-existing configuration", () => {
       "My Pan",
       "--approval-mode",
       "prompt",
+      "--self-repair-repository",
+      "AmoebaChant/pan",
+      "--self-repair-path",
+      "C:\\tools\\pan",
+      "--self-repair-default-branch",
+      "main",
       "--json",
     ], {}),
     {
@@ -33,6 +39,9 @@ test("parses setup without pre-existing configuration", () => {
       repositoryMode: undefined,
       projectMode: undefined,
       approvalMode: "prompt",
+      selfRepairRepository: "AmoebaChant/pan",
+      selfRepairPath: "C:\\tools\\pan",
+      selfRepairDefaultBranch: "main",
     },
   );
 
@@ -72,7 +81,14 @@ test("parses onboarding, verification, connected setup, and shortcut commands", 
       repositoryMode: "connect",
       projectMode: "connect",
       approvalMode: undefined,
+      selfRepairRepository: undefined,
+      selfRepairPath: undefined,
+      selfRepairDefaultBranch: undefined,
     },
+  );
+  assert.throws(
+    () => parsePanArgs(["setup", "--self-repair-path", "C:\\tools\\pan"], {}),
+    /must be used together/,
   );
   assert.deepEqual(
     parsePanArgs([

@@ -44,10 +44,26 @@ the user to hand-edit JSON, runner profiles, agent files, skills, or Project
 fields. Describe actions in first person before taking them, such as "I'll
 create your domain now" or "I'll verify that I can use this domain."
 
+Before running setup, identify the current Pan checkout with
+`git rev-parse --show-toplevel`, and read its GitHub repository and default
+branch with `gh repo view --json nameWithOwner,defaultBranchRef`. Pass those
+values to setup as `--self-repair-path`, `--self-repair-repository`, and
+`--self-repair-default-branch`. This installs the default `pan-self-repair`
+playbook, which treats Pan failures as reusable defects and delivers fixes
+through pull requests. Explain that this is the initial playbook and that a
+domain-bound Pan session can help plan additional repository-specific playbooks
+after onboarding.
+
 For a new repository and Project, run:
 
 ```powershell
 pan setup --repository <owner/name> --repository-mode create --path <path> --project-owner <owner> --project-mode create --project-title <title> --approval-mode <mode> --install-assets --json
+```
+
+Include:
+
+```powershell
+--self-repair-repository <pan-owner/name> --self-repair-path <pan-checkout> --self-repair-default-branch <branch>
 ```
 
 For existing resources, use `--repository-mode connect`,
@@ -94,10 +110,9 @@ Report failures accurately and use the command's diagnostics rather than
 guessing or applying manual repairs. When verification succeeds, explain that
 setup deliberately leaves scheduled reviews disabled. The setup agent is not a
 domain-bound Pan session and must not perform task or Project mutations; direct
-the user to start their Pan session and ask there. For a newly generated runner,
-explain that its profile starts
-offline until repositories and playbooks are configured. For a connected
-runner, report its returned eligibility without claiming process liveness.
-Then celebrate that setup is complete and give the exact `launchCommands`
-returned by verification. If shortcuts were created, their returned `command`
-values must agree with those verified commands.
+the user to start their Pan session and ask there. Report `runnerOnline` as profile eligibility without claiming that a runner
+process is currently alive. If it is false, explain that the profile must be
+configured and enabled before it can accept work. Then celebrate that setup is
+complete and give the exact `launchCommands` returned by verification. If
+shortcuts were created, their returned `command` values must agree with those
+verified commands.
