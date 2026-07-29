@@ -128,6 +128,34 @@ test("matches task requirements to a playbook with free capacity", () => {
   );
 });
 
+test("treats capacity 0 as a disabled playbook and rejects negative capacity", () => {
+  const profile = makeProfile();
+  profile.playbooks[0].capacity = 0;
+  const validated = validateRunnerProfile(profile);
+  const item = {
+    requirements: ["repo:example/tool", "env:local", "tool:node22"],
+  };
+
+  assert.equal(validated.playbooks[0].capacity, 0);
+  assert.equal(matchingPlaybook(item, validated), undefined);
+  assert.equal(
+    matchingPlaybook({ requirements: ["repo:example/tool"] }, validated).id,
+    "documentation",
+  );
+
+  profile.playbooks[0].capacity = -1;
+  assert.throws(
+    () => validateRunnerProfile(profile),
+    /playbooks\[0\]\.capacity must be an integer >= 0/,
+  );
+
+  profile.playbooks[0].capacity = 1.5;
+  assert.throws(
+    () => validateRunnerProfile(profile),
+    /playbooks\[0\]\.capacity must be an integer >= 0/,
+  );
+});
+
 test("requires explicit playbook configuration for direct delivery", () => {
   const profile = makeProfile();
   const item = {

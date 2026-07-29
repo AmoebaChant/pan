@@ -40,7 +40,7 @@ export function validatePlaybook(
     throw new TypeError(`${name} must be an object`);
   }
   requireString(playbook.id, `${name}.id`);
-  requireInteger(playbook.capacity, `${name}.capacity`);
+  requireInteger(playbook.capacity, `${name}.capacity`, { minimum: 0 });
   requireStringArray(playbook.capabilities, `${name}.capabilities`, {
     nonEmpty: true,
   });
@@ -150,9 +150,9 @@ function requireStringArray(value, name, { nonEmpty = false } = {}) {
   }
 }
 
-function requireInteger(value, name) {
-  if (!Number.isInteger(value) || value < 1) {
-    throw new TypeError(`${name} must be an integer >= 1`);
+function requireInteger(value, name, { minimum = 1 } = {}) {
+  if (!Number.isInteger(value) || value < minimum) {
+    throw new TypeError(`${name} must be an integer >= ${minimum}`);
   }
 }
 
