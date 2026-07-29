@@ -872,10 +872,12 @@ function completedComment(delivery, result) {
   const evidence =
     delivery.mode === "report"
       ? ["", delivery.report]
-      : [
-          "",
-          `${delivery.mode === "direct" ? "Commit" : "Pull request"}: ${delivery.url}`,
-        ];
+      : delivery.mode === "playbook"
+        ? ["", delivery.details, ...(delivery.url ? ["", `Delivery: ${delivery.url}`] : [])]
+        : [
+            "",
+            `${delivery.mode === "direct" ? "Commit" : "Pull request"}: ${delivery.url}`,
+          ];
   return [
     "<!-- pan:runner-result -->",
     "### Agent completed",

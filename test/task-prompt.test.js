@@ -114,3 +114,40 @@ test("keeps report delivery read-only", () => {
   assert.doesNotMatch(prompt, /git push/);
   assert.doesNotMatch(prompt, /Closes example\/tasks#31/);
 });
+
+test("hands the whole workflow to the playbook for playbook delivery", () => {
+  const prompt = buildTaskPrompt("C:\\state\\context.json", {
+    issue: {
+      number: 31,
+      repository: "example/tasks",
+    },
+    target: {
+      repository: "MeetingStage",
+      workingDirectory: "C:\\Metarepo",
+    },
+    playbook: {
+      id: "metarepo-development",
+      instructions: ["Create an isolated workspace with the metarepo tooling."],
+      delivery: "playbook",
+    },
+    paths: {
+      agentResult: "C:\\state\\agent-result.json",
+      needsHuman: "C:\\state\\needs-human.json",
+    },
+  });
+
+  assert.match(prompt, /Create an isolated workspace with the metarepo tooling/);
+  assert.match(prompt, /playbook above defines this task end to end/);
+  assert.match(prompt, /nothing else prepares a workspace for you/);
+  assert.match(prompt, /Work only inside C:\\Metarepo/);
+  assert.match(prompt, /target working directory/);
+  assert.match(prompt, /"mode":"playbook"/);
+  assert.match(prompt, /runner does not verify it for you/);
+  assert.match(prompt, /ask the same question in this terminal and wait/i);
+
+  assert.doesNotMatch(prompt, /git push/);
+  assert.doesNotMatch(prompt, /rebase the task branch/);
+  assert.doesNotMatch(prompt, /provided task branch/);
+  assert.doesNotMatch(prompt, /Closes example\/tasks#31/);
+  assert.doesNotMatch(prompt, /undefined/);
+});

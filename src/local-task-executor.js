@@ -74,6 +74,15 @@ export class LocalTaskExecutor {
       delivery: "pull-request",
     };
     const delivery = selectedPlaybook.delivery ?? "pull-request";
+    const agentManaged = delivery === "playbook";
+    const workingDirectory = agentManaged
+      ? selectedPlaybook.workingDirectory
+      : undefined;
+    if (agentManaged && !workingDirectory) {
+      throw new Error(
+        `Playbook ${selectedPlaybook.id} must configure workingDirectory for playbook delivery`,
+      );
+    }
 
     await mkdir(this.profile.workspaceRoot, { recursive: true });
     await mkdir(this.profile.stateDirectory, { recursive: true });
@@ -96,41 +105,47 @@ export class LocalTaskExecutor {
 
     const allocation = await this.#allocateTask(item);
     const { taskName, branch, worktreePath, statePath } = allocation;
-    if (branch === repositoryConfig.defaultBranch) {
+    if (!agentManaged && branch === repositoryConfig.defaultBranch) {
       throw new Error("Task branch must not be the default branch");
     }
 
     let worktreeCreated = false;
     try {
-      const remotes = await this.#readRepositoryRemotes(
-        deadline,
-        repository,
-        repositoryConfig,
-      );
-      await this.#run(deadline, "git", [
-        "-C",
-        repositoryConfig.path,
-        "fetch",
-        remotes.base.name,
-        repositoryConfig.defaultBranch,
-      ]);
-      await this.#run(deadline, "git", [
-        "-C",
-        repositoryConfig.path,
-        "worktree",
-        "add",
-        worktreePath,
-        "-b",
-        branch,
-        `${remotes.base.name}/${repositoryConfig.defaultBranch}`,
-      ]);
-      worktreeCreated = true;
-      const baseCommit = await this.#run(deadline, "git", [
-        "-C",
-        worktreePath,
-        "rev-parse",
-        "HEAD",
-      ]);
+      const remotes = agentManaged
+        ? undefined
+        : await this.#readRepositoryRemotes(
+            deadline,
+            repository,
+            repositoryConfig,
+          );
+      if (!agentManaged) {
+        await this.#run(deadline, "git", [
+          "-C",
+          repositoryConfig.path,
+          "fetch",
+          remotes.base.name,
+          repositoryConfig.defaultBranch,
+        ]);
+        await this.#run(deadline, "git", [
+          "-C",
+          repositoryConfig.path,
+          "worktree",
+          "add",
+          worktreePath,
+          "-b",
+          branch,
+          `${remotes.base.name}/${repositoryConfig.defaultBranch}`,
+        ]);
+        worktreeCreated = true;
+      }
+      const baseCommit = agentManaged
+        ? undefined
+        : await this.#run(deadline, "git", [
+            "-C",
+            worktreePath,
+            "rev-parse",
+            "HEAD",
+          ]);
 
       const workstreamPath = await resolveConfinedWorkstreamReadme(
         this.profile.store.path,
@@ -151,20 +166,25 @@ export class LocalTaskExecutor {
           repository: item.repository,
           comments: item.comments ?? [],
         },
-        target: {
-          repository,
-          defaultBranch: repositoryConfig.defaultBranch,
-          baseRemote: remotes.base.name,
-          baseRemoteUrl: remotes.base.url,
-          baseRemotePushUrl: remotes.base.pushUrl,
-          pushRemote: remotes.push.name,
-          pushRemoteUrl: remotes.push.url,
-          pushRemotePushUrl: remotes.push.pushUrl,
-          pushRepository: remotes.push.pushRepository,
-          baseCommit,
-          branch,
-          worktreePath,
-        },
+        target: agentManaged
+          ? {
+              repository,
+              workingDirectory,
+            }
+          : {
+              repository,
+              defaultBranch: repositoryConfig.defaultBranch,
+              baseRemote: remotes.base.name,
+              baseRemoteUrl: remotes.base.url,
+              baseRemotePushUrl: remotes.base.pushUrl,
+              pushRemote: remotes.push.name,
+              pushRemoteUrl: remotes.push.url,
+              pushRemotePushUrl: remotes.push.pushUrl,
+              pushRepository: remotes.push.pushRepository,
+              baseCommit,
+              branch,
+              worktreePath,
+            },
         playbook: {
           id: selectedPlaybook.id,
           instructions: selectedPlaybook.instructions,
@@ -212,8 +232,8 @@ export class LocalTaskExecutor {
         machine: this.profile.machine,
         playbook: selectedPlaybook.id,
         repository,
-        branch,
-        worktreePath,
+        branch: agentManaged ? undefined : branch,
+        worktreePath: agentManaged ? workingDirectory : worktreePath,
         terminalTitle: title,
         resumed: false,
       });
@@ -232,14 +252,15 @@ export class LocalTaskExecutor {
         repository,
         repositoryConfig,
         runner,
+        agentManaged,
         expectedRemotes: remotes,
         baseCommit,
         profile: this.profile,
         commands: this.commands,
         sleep: this.sleep,
         title,
-        branch,
-        worktreePath,
+        branch: agentManaged ? undefined : branch,
+        worktreePath: agentManaged ? workingDirectory : worktreePath,
         statePath,
         paths,
         deadline,
@@ -327,6 +348,10 @@ export class LocalTaskExecutor {
     resumeAffinity,
     onResume,
   }) {
+    const agentManaged = delivery === "playbook";
+    const workingDirectory = agentManaged
+      ? playbook.workingDirectory
+      : undefined;
     const pointer = await readJsonIfReady(resumePath);
     if (!pointer) {
       return undefined;
@@ -336,7 +361,7 @@ export class LocalTaskExecutor {
       typeof pointer.statePath !== "string" ||
       typeof pointer.contextPath !== "string" ||
       typeof pointer.sessionId !== "string" ||
-      !validSavedTarget(pointer.target) ||
+      !validSavedTarget(pointer.target, { agentManaged }) ||
       !pointer.launchPaths
     ) {
       throw new Error(`Saved task state is invalid for issue ${item.number}`);
@@ -362,51 +387,59 @@ export class LocalTaskExecutor {
       throw new Error(`Saved task context does not match issue ${item.number}`);
     }
 
-    const remotes = await this.#readRepositoryRemotes(
-      deadline,
-      repository,
-      repositoryConfig,
-    );
-    if (
-      (pointer.target.baseRemote ?? "origin") !== remotes.base.name ||
-      (pointer.target.pushRemote ?? "origin") !== remotes.push.name ||
-      pointer.target.baseRemoteUrl !== remotes.base.url ||
-      pointer.target.baseRemotePushUrl !== remotes.base.pushUrl ||
-      pointer.target.pushRemoteUrl !== remotes.push.url ||
-      pointer.target.pushRemotePushUrl !== remotes.push.pushUrl ||
-      pointer.target.pushRepository?.toLowerCase() !==
-        remotes.push.pushRepository.toLowerCase()
-    ) {
+    const remotes = agentManaged
+      ? undefined
+      : await this.#readRepositoryRemotes(
+          deadline,
+          repository,
+          repositoryConfig,
+        );
+    if (!agentManaged) {
+      if (
+        (pointer.target.baseRemote ?? "origin") !== remotes.base.name ||
+        (pointer.target.pushRemote ?? "origin") !== remotes.push.name ||
+        pointer.target.baseRemoteUrl !== remotes.base.url ||
+        pointer.target.baseRemotePushUrl !== remotes.base.pushUrl ||
+        pointer.target.pushRemoteUrl !== remotes.push.url ||
+        pointer.target.pushRemotePushUrl !== remotes.push.pushUrl ||
+        pointer.target.pushRepository?.toLowerCase() !==
+          remotes.push.pushRepository.toLowerCase()
+      ) {
+        throw new Error(
+          `Runner remote configuration changed while issue ${item.number} was resumable`,
+        );
+      }
+      for (const remote of [remotes.base, remotes.push]) {
+        const savedWorktreeRemote = await this.#run(deadline, "git", [
+          "-C",
+          pointer.target.worktreePath,
+          "remote",
+          "get-url",
+          remote.name,
+        ]);
+        if (savedWorktreeRemote !== remote.url) {
+          throw new Error(
+            `Saved task worktree has an unexpected ${remote.name} URL`,
+          );
+        }
+        const savedWorktreePushRemote = await this.#run(deadline, "git", [
+          "-C",
+          pointer.target.worktreePath,
+          "remote",
+          "get-url",
+          "--push",
+          remote.name,
+        ]);
+        if (savedWorktreePushRemote !== remote.pushUrl) {
+          throw new Error(
+            `Saved task worktree has an unexpected ${remote.name} push URL`,
+          );
+        }
+      }
+    } else if (pointer.target.workingDirectory !== workingDirectory) {
       throw new Error(
-        `Runner remote configuration changed while issue ${item.number} was resumable`,
+        `Playbook working directory changed while issue ${item.number} was resumable`,
       );
-    }
-    for (const remote of [remotes.base, remotes.push]) {
-      const savedWorktreeRemote = await this.#run(deadline, "git", [
-        "-C",
-        pointer.target.worktreePath,
-        "remote",
-        "get-url",
-        remote.name,
-      ]);
-      if (savedWorktreeRemote !== remote.url) {
-        throw new Error(
-          `Saved task worktree has an unexpected ${remote.name} URL`,
-        );
-      }
-      const savedWorktreePushRemote = await this.#run(deadline, "git", [
-        "-C",
-        pointer.target.worktreePath,
-        "remote",
-        "get-url",
-        "--push",
-        remote.name,
-      ]);
-      if (savedWorktreePushRemote !== remote.pushUrl) {
-        throw new Error(
-          `Saved task worktree has an unexpected ${remote.name} push URL`,
-        );
-      }
     }
     await this.#stopPreviousLaunch(statePath, pointer.launchPaths);
 
@@ -427,16 +460,18 @@ export class LocalTaskExecutor {
         repository: item.repository,
         comments: item.comments ?? [],
       },
-      target: {
-        ...pointer.target,
-        baseRemote: remotes.base.name,
-        baseRemoteUrl: remotes.base.url,
-        baseRemotePushUrl: remotes.base.pushUrl,
-        pushRemote: remotes.push.name,
-        pushRemoteUrl: remotes.push.url,
-        pushRemotePushUrl: remotes.push.pushUrl,
-        pushRepository: remotes.push.pushRepository,
-      },
+      target: agentManaged
+        ? { ...pointer.target }
+        : {
+            ...pointer.target,
+            baseRemote: remotes.base.name,
+            baseRemoteUrl: remotes.base.url,
+            baseRemotePushUrl: remotes.base.pushUrl,
+            pushRemote: remotes.push.name,
+            pushRemoteUrl: remotes.push.url,
+            pushRemotePushUrl: remotes.push.pushUrl,
+            pushRepository: remotes.push.pushRepository,
+          },
       playbook: {
         id: playbook.id,
         instructions: playbook.instructions,
@@ -487,7 +522,9 @@ export class LocalTaskExecutor {
       playbook: playbook.id,
       repository,
       branch: pointer.target.branch,
-      worktreePath: pointer.target.worktreePath,
+      worktreePath: agentManaged
+        ? pointer.target.workingDirectory
+        : pointer.target.worktreePath,
       terminalTitle: title,
       resumed: true,
     });
@@ -506,11 +543,14 @@ export class LocalTaskExecutor {
       repository,
       repositoryConfig,
       runner,
+      agentManaged,
       expectedRemotes: remotes,
       baseCommit: pointer.target.baseCommit,
       title,
       branch: pointer.target.branch,
-      worktreePath: pointer.target.worktreePath,
+      worktreePath: agentManaged
+        ? pointer.target.workingDirectory
+        : pointer.target.worktreePath,
       statePath,
       paths,
       deadline,
@@ -593,6 +633,7 @@ export class LocalTaskExecutor {
     repository,
     repositoryConfig,
     runner,
+    agentManaged,
     expectedRemotes,
     baseCommit,
     title,
@@ -612,6 +653,7 @@ export class LocalTaskExecutor {
       repository,
       repositoryConfig,
       runner,
+      agentManaged,
       expectedRemotes,
       baseCommit,
       profile: this.profile,
@@ -887,6 +929,10 @@ class LocalTaskHandle {
         this.delivery,
         this.repository,
       );
+      if (this.agentManaged) {
+        await this.clearResumeState();
+        return delivery;
+      }
       const currentBranch = await this.#run("git", [
         "-C",
         this.worktreePath,
@@ -1225,10 +1271,17 @@ function confinedChildPath(parentPath, savedPath) {
   return resolved;
 }
 
-function validSavedTarget(target) {
+function validSavedTarget(target, { agentManaged = false } = {}) {
+  if (!target || typeof target !== "object") {
+    return false;
+  }
+  if (agentManaged) {
+    return (
+      typeof target.repository === "string" &&
+      typeof target.workingDirectory === "string"
+    );
+  }
   return (
-    target &&
-    typeof target === "object" &&
     typeof target.repository === "string" &&
     typeof target.defaultBranch === "string" &&
     typeof target.baseCommit === "string" &&
@@ -1288,6 +1341,21 @@ function normalizeDelivery(delivery, expectedMode, repository) {
       report: delivery.report.trim(),
     };
   }
+  if (expectedMode === "playbook") {
+    if (typeof delivery.details !== "string" || !delivery.details.trim()) {
+      throw new TypeError(
+        "task playbook delivery must describe what was delivered",
+      );
+    }
+    if (delivery.url !== undefined && !isAbsoluteUrl(delivery.url)) {
+      throw new TypeError("task playbook delivery URL must be an absolute URL");
+    }
+    return {
+      mode: delivery.mode,
+      details: delivery.details.trim(),
+      ...(delivery.url ? { url: delivery.url } : {}),
+    };
+  }
   if (
     typeof delivery.commit !== "string" ||
     !/^[a-f0-9]{40}$/i.test(delivery.commit)
@@ -1318,6 +1386,17 @@ function normalizeDelivery(delivery, expectedMode, repository) {
 
 function terminalTitle(item) {
   return truncate(`Pan #${item.number} - ${item.title}`, 80);
+}
+
+function isAbsoluteUrl(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  try {
+    return Boolean(new URL(value).protocol);
+  } catch {
+    return false;
+  }
 }
 
 function slugify(value) {
