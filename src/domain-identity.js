@@ -38,7 +38,7 @@ export class DomainIdentity {
   async validate(config) {
     const domain = config?.domain;
     if (!domain?.path || !domain.repository) {
-      throw new TypeError("A normalized PAN domain configuration is required");
+      throw new TypeError("A normalized Pan domain configuration is required");
     }
 
     const domainPath = path.resolve(domain.path);

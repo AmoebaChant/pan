@@ -46,7 +46,7 @@ export async function startPanSession({
   const assets = await assetService.status();
   if (!isCurrentPanAssets(assets)) {
     throw new Error(
-      `PAN assets are ${assets.status}; run \`pan assets repair\` before starting a PAN session`,
+      `Pan assets are ${assets.status}; run \`pan assets repair\` before starting a Pan session`,
     );
   }
   const identity = await domainIdentity.validate(config);

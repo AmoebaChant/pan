@@ -199,7 +199,7 @@ async function createRepository(t) {
   );
 
   await git(repositoryPath, ["init", "-b", "main"]);
-  await git(repositoryPath, ["config", "user.name", "PAN Test"]);
+  await git(repositoryPath, ["config", "user.name", "Pan Test"]);
   await git(repositoryPath, ["config", "user.email", "pan@example.invalid"]);
   await git(repositoryPath, ["add", "workstreams"]);
   await git(repositoryPath, ["commit", "-m", "Add workstreams"]);

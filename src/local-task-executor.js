@@ -447,6 +447,7 @@ export class LocalTaskExecutor {
         sourcePath: workstreamPath,
         content: await readFile(workstreamPath, "utf8"),
       },
+      needsHumanSince: item.fields.needsHumanSince ?? "",
       paths,
       copilot: {
         executable: this.profile.copilot.executable,
@@ -703,14 +704,16 @@ class LocalTaskHandle {
   constructor(options) {
     Object.assign(this, options);
     this.lastNeedsHuman = undefined;
+    this.attentionSince = undefined;
     this.cancellation = new Promise((resolve) => {
       this.resolveCancellation = resolve;
     });
   }
 
-  async wait({ onNeedsHuman } = {}) {
+  async wait({ onNeedsHuman, onAttentionCleared } = {}) {
     while (
       this.deadline === undefined ||
+      this.attentionSince !== undefined ||
       this.now() < this.deadline + 60_000
     ) {
       if (this.cancelledResult) {
@@ -718,13 +721,19 @@ class LocalTaskHandle {
       }
       const needsHuman = await readJsonIfReady(this.needsHumanPath);
       const serialized = needsHuman ? JSON.stringify(needsHuman) : undefined;
-      if (
-        needsHuman &&
-        serialized !== this.lastNeedsHuman &&
-        onNeedsHuman
-      ) {
+      if (needsHuman && serialized !== this.lastNeedsHuman) {
         this.lastNeedsHuman = serialized;
-        await onNeedsHuman(normalizeNeedsHuman(needsHuman, this));
+        this.attentionSince ??= this.now();
+        await onNeedsHuman?.(normalizeNeedsHuman(needsHuman, this));
+      } else if (!needsHuman && this.lastNeedsHuman !== undefined) {
+        this.lastNeedsHuman = undefined;
+        if (this.attentionSince !== undefined) {
+          if (this.deadline !== undefined) {
+            this.deadline += this.now() - this.attentionSince;
+          }
+          this.attentionSince = undefined;
+        }
+        await onAttentionCleared?.();
       }
 
       const result = await readJsonIfReady(this.resultPath);
@@ -1308,7 +1317,7 @@ function normalizeDelivery(delivery, expectedMode, repository) {
 }
 
 function terminalTitle(item) {
-  return truncate(`PAN #${item.number} - ${item.title}`, 80);
+  return truncate(`Pan #${item.number} - ${item.title}`, 80);
 }
 
 function slugify(value) {

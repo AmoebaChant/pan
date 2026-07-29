@@ -1,9 +1,9 @@
 ---
 name: pan-workstream
-description: Edit and publish a PAN workstream directly from the domain repository's default branch.
+description: Edit and publish a Pan workstream directly from the domain repository's default branch.
 ---
 
-# PAN workstream delivery
+# Pan workstream delivery
 
 Use this skill to create or update a workstream README in the configured domain.
 
@@ -17,5 +17,5 @@ Use this skill to create or update a workstream README in the configured domain.
    discarding either side, then push and verify the remote commit. Never
    force-push or discard unrelated changes.
 5. Scan the saved content for action items. Ask whether any should be created as
-   Issues in the configured PAN domain, listing the candidates. Do not create
+   Issues in the configured Pan domain, listing the candidates. Do not create
    Issues without explicit approval.

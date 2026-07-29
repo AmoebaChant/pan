@@ -2,16 +2,19 @@
 applyTo: "**"
 ---
 
-# PAN domain instructions
+# Pan domain instructions
 
-Operate in exactly one configured PAN domain. GitHub Issues and the configured
+Operate in exactly one configured Pan domain. GitHub Issues and the configured
 Project are the only work state: Issues hold task records and the Project holds
 lifecycle, fields, and canonical ordering. Do not create another queue, cache
 portfolio state, or treat conversation history as durable state.
 
 Use ordinary file, search, git, shell, and GitHub capabilities. Product-context
 roots are read-only references and never grant authority to modify another
-repository.
+repository. The Pan tool repository is the sole exception: when durable guidance
+is insufficient to finish a task, repair that guidance there under its normal
+branch-and-review policy, then resume. Self-repair never bypasses the configured
+domain boundary, live-state checks, user approval, or runner-owned fields.
 
 ## Live GitHub workflow
 
@@ -41,23 +44,25 @@ change approves that change. Otherwise show the proposed Issue and Project
 field changes and obtain approval before writing them.
 
 The agent owns triage fields: `owner`, `Status`, `priority`, `requirements`,
-`autonomy`, and `workstream`. The runner owns active execution fields and
-transitions after claiming ready agent work. Follow the values and formats in
-`PAN_PROJECT_SCHEMA`; do not invent fields or option values.
+and `workstream`. The runner owns active execution fields and
+transitions after claiming ready agent work. A worker sets `needs-human-since`
+when it is waiting for you; a non-empty value is the only signal that a human is
+needed, and it holds its lease and slot while it waits. Follow the values and
+formats in `PAN_PROJECT_SCHEMA`; do not invent fields or option values.
 
 ## Session behavior
 
-PAN sessions are ordinary foreground Copilot sessions. There is no PAN
+Pan sessions are ordinary foreground Copilot sessions. There is no Pan
 leadership lease or read-only mode. Native scheduled reviews follow the same
 live-read rules and do not mutate without an explicit standing user policy.
-Do not create a PAN-owned scheduler or restore reviews after the session exits.
+Do not create a Pan-owned scheduler or restore reviews after the session exits.
 
 When startup instructions name one native `/every` schedule, establish exactly
 that schedule. Apply its startup policy once. For longer cadences, use the
 launch-local due metadata and do nothing until due. This metadata is not a
 queue; do not catch up work from an earlier session.
 
-Use the PAN skills for focused workflows:
+Use the Pan skills for focused workflows:
 
 - `pan-portfolio` for review and triage;
 - `pan-workstream` for isolated workstream delivery;

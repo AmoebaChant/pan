@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AttentionService, RunnerDaemon } from "../src/index.js";
+import { formatNeedsHuman } from "../src/needs-human.js";
 
 test("claims matching work and advances a completed task to in-review", async () => {
   const item = makeItem();
@@ -196,34 +197,94 @@ test("records durable resume information when an agent starts", async () => {
   assert.match(store.comments[0], /"worktree": "C:\\\\worktrees\\\\issue-1"/);
 });
 
-test("records a needs-human locator and blocks an incomplete task", async () => {
+test("clears stale attention when a task restarts from the beginning", async () => {
   const item = makeItem();
-  const store = new FakeStore([item]);
-  const handle = new FakeHandle({
-    status: "blocked",
-    summary: "A product decision is required.",
-  }, undefined, {
-    kind: "question",
-    prompt: "Should the implementation use option A or option B?",
+  item.fields.needsHumanSince = "2026-07-20T16:00:00Z";
+  const store = new FakeStore([item], {
+    issueComments: [
+      {
+        body: formatNeedsHuman({
+          kind: "question",
+          prompt: "Option A or option B?",
+          machine: "machine-a",
+          runner: "machine-a/slot-1",
+          worktreePath: "C:\\worktrees\\issue-1",
+          terminalTitle: "Pan #1 - Task",
+        }),
+      },
+    ],
   });
   const daemon = new RunnerDaemon({
     store,
     profile: makeProfile(),
-    executor: new FakeExecutor(handle),
-    attention: new AttentionService({
-      store,
-      humanAssignee: "octocat",
-    }),
+    executor: new ResumeAwareExecutor(new FakeHandle()),
+    attention: new AttentionService({ store }),
     logger: silentLogger,
   });
 
   await daemon.runOnce();
 
-  assert.match(store.comments.at(-1), /option A or option B/);
-  assert.match(store.comments.at(-1), /machine-a/);
+  assert.deepEqual(store.attentionResolutions, ["item-1"]);
+  assert.equal(item.fields.needsHumanSince, "");
+  assert.match(store.comments.join("\n"), /restarted from the beginning/);
+});
+
+test("keeps the lease and the worker alive while a question is outstanding", async () => {
+  const item = makeItem();
+  const store = new FakeStore([item]);
+  const handle = new FakeHandle(
+    {
+      status: "completed",
+      summary: "Finished after the answer.",
+    },
+    { mode: "direct", commit: "a".repeat(40) },
+    {
+      kind: "question",
+      prompt: "Should the implementation use option A or option B?",
+    },
+    true,
+  );
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(handle),
+    attention: new AttentionService({ store }),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  const log = store.comments.join("\n");
+  assert.match(log, /option A or option B/);
+  assert.match(log, /machine-a/);
+  assert.match(log, /Attention resolved/);
+  assert.deepEqual(store.attentionRequests, ["item-1"]);
+  assert.deepEqual(store.attentionResolutions, ["item-1"]);
+  assert.equal(item.fields.needsHumanSince, "");
+  assert.equal(handle.interrupted, undefined);
+  assert.equal(handle.completed, true);
+  assert.equal(store.releases[0].status, "done");
+});
+
+test("blocks a task that is waiting on something outside the human's control", async () => {
+  const item = makeItem();
+  const store = new FakeStore([item]);
+  const handle = new FakeHandle({
+    status: "blocked",
+    summary: "Waiting on an upstream release.",
+  });
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(handle),
+    attention: new AttentionService({ store }),
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
   assert.equal(store.releases[0].status, "blocked");
-  assert.equal(store.releases[0].owner, "human");
-  assert.equal(store.releases[0].priority, "urgent");
+  assert.deepEqual(store.attentionRequests, []);
 });
 
 test("does not mutate a task after losing its lease", async () => {
@@ -411,10 +472,7 @@ test("blocks budget exhaustion for approval instead of retrying indefinitely", a
     store,
     profile: makeProfile(),
     executor: new FakeExecutor(handle),
-    attention: new AttentionService({
-      store,
-      humanAssignee: "octocat",
-    }),
+    attention: new AttentionService({ store }),
     logger: silentLogger,
   });
 
@@ -594,6 +652,8 @@ class FakeStore {
     } = {},
   ) {
     this.items = items;
+    this.attentionRequests = [];
+    this.attentionResolutions = [];
     this.heartbeatResults = Array.isArray(heartbeat)
       ? [...heartbeat]
       : [heartbeat];
@@ -643,26 +703,18 @@ class FakeStore {
     return { released: true };
   }
 
-  async requestHumanAttention({
-    itemId,
-    humanAssignee,
-  }) {
+  async requestHumanAttention({ itemId }) {
     const item = this.items.find((candidate) => candidate.id === itemId);
-    Object.assign(item.fields, {
-      claimedBy: "",
-      leaseUntil: "",
-      status: "blocked",
-      owner: "human",
-      priority: "urgent",
-    });
-    this.releases.push({
-      itemId,
-      status: "blocked",
-      owner: "human",
-      priority: "urgent",
-      assignee: humanAssignee,
-    });
+    item.fields.needsHumanSince = "2026-07-20T16:00:00Z";
+    this.attentionRequests.push(itemId);
     return { requested: true, item };
+  }
+
+  async resolveHumanAttention({ itemId }) {
+    const item = this.items.find((candidate) => candidate.id === itemId);
+    item.fields.needsHumanSince = "";
+    this.attentionResolutions.push(itemId);
+    return { resolved: true, item };
   }
 
   async heartbeat() {
@@ -693,7 +745,7 @@ class ResumeAwareExecutor extends FakeExecutor {
       repository: "example/tool",
       branch: "pan/issue-1",
       worktreePath: "C:\\worktrees\\issue-1",
-      terminalTitle: "PAN #1 - Task",
+      terminalTitle: "Pan #1 - Task",
       resumed: false,
     });
     return super.start(context);
@@ -727,19 +779,24 @@ class FakeHandle {
       url: "https://github.com/example/tool/pull/42",
     },
     needsHuman,
+    answeredAtTerminal = false,
   ) {
     this.result = result;
     this.delivery = delivery;
     this.completed = false;
     this.needsHuman = needsHuman;
+    this.answeredAtTerminal = answeredAtTerminal;
   }
 
-  async wait({ onNeedsHuman } = {}) {
+  async wait({ onNeedsHuman, onAttentionCleared } = {}) {
     if (this.needsHuman) {
       await onNeedsHuman?.({
         ...this.needsHuman,
         locator: this.locator(),
       });
+      if (this.answeredAtTerminal) {
+        await onAttentionCleared?.();
+      }
     }
     return this.result;
   }
@@ -772,7 +829,7 @@ class FakeHandle {
       runner: "machine-a/slot-1",
       branch: "pan/issue-1",
       worktree: "C:\\worktrees\\issue-1",
-      terminalTitle: "PAN #1 - Task",
+      terminalTitle: "Pan #1 - Task",
     };
   }
 }
@@ -835,7 +892,6 @@ function makeItem({
     repository: "example/data",
     requirements,
     fields: {
-      autonomy: "full-auto",
       priority,
       workstream: "example",
       owner: "agent",

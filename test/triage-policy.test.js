@@ -20,11 +20,26 @@ test("infers agent routing and fields from Issue directives", () => {
     owner: "agent",
     priority: "high",
     requirements: ["repo:example/tool", "env:local"],
-    autonomy: "full-auto",
     workstream: "orchestration/pan",
     status: "ready",
   });
   assert.deepEqual(result.missing, []);
+});
+
+test("treats an empty Status as untriaged so manual Issues get triaged", () => {
+  const result = deriveTriage(
+    makeItem({
+      status: "",
+      body: [
+        "Implement the feature.",
+        "workstream: orchestration/pan",
+        "repo:example/tool",
+      ].join("\n"),
+    }),
+  );
+
+  assert.equal(result.fields.status, "ready");
+  assert.equal(result.fields.owner, "agent");
 });
 
 test("uses answer directives to complete missing triage details", () => {
@@ -157,7 +172,6 @@ function makeItem({
   status = "untriaged",
   priority = "normal",
   requirements = [],
-  autonomy = "manual",
   workstream = "",
 } = {}) {
   return {
@@ -168,7 +182,6 @@ function makeItem({
       status,
       priority,
       requirements: requirements.join("\n"),
-      autonomy,
       workstream,
     },
   };

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/domain-config.json",
-  "title": "PAN domain runtime configuration",
-  "description": "Configuration for one private PAN domain and its foreground Copilot session. It contains no runner-machine settings or credentials.",
+  "title": "Pan domain runtime configuration",
+  "description": "Configuration for one private Pan domain and its foreground Copilot session. It contains no runner-machine settings or credentials.",
   "oneOf": [
     { "$ref": "#/$defs/version1" },
     { "$ref": "#/$defs/version2" }

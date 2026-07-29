@@ -1,69 +1,130 @@
-# PAN goals
+# Pan goals
 
-PAN is a reusable personal chief-of-staff agent for a GitHub-backed domain of
-work. It understands the domain's tasks and workstream narrative, maintains the
-canonical queue for human and agent work, delegates compatible execution, and
-explains its decisions.
+Pan is a personal chief of staff. It holds everything you and your agents owe,
+decides what should happen next, keeps always-on runners supplied with work, and
+gets blocked agents back in front of you quickly.
+
+Pan operates on one **domain** at a time: one private GitHub repository plus one
+GitHub Project. Issues and Project fields are the only task state. Workstream
+Markdown in the same repository is the narrative record. Someone reading the
+GitHub UI and someone talking to Pan see the same queue.
 
 ## Product goals
 
-### Make good next-work decisions
+Each goal states the outcome that proves it.
 
-PAN considers every actionable task in its connected domain and the relevant
-workstream markdown, comments, dates, commitments, dependencies, blockers, and
-recent changes. It recommends what the human and available worker agents should
-do next, with evidence and explicit uncertainty.
+### 1. Track all the work, human and agent
 
-### Maintain one canonical queue
+One backlog holds both what the human will do and what agents will do. The
+`owner` field separates the two queues; nothing else does. Work that exists only
+in a conversation is not tracked.
 
-GitHub Issues, Project fields, and Project ordering are the source of truth.
-PAN updates that Project directly. A person looking at the GitHub UI and a
-person talking to PAN must see the same human queue, agent queue, and task state.
+**Done when** every commitment the user is accountable for is an Issue on the
+Project with an owner, and Pan can enumerate both queues completely.
 
-### Be a trusted advisor
+### 2. Reason about what should happen next
 
-PAN is:
+Pan weighs priority, dates, dependencies, blockers, recent activity, comments,
+and workstream narrative, then makes a call. It is opinionated enough to
+recommend, and honest enough to show its evidence and its uncertainty.
 
-- proactive about commitments, blockers, and opportunities;
-- opinionated enough to make a clear recommendation;
-- willing to challenge weak priorities or contradictions;
-- concise and focused on decisions;
-- warm and protective of the user's time and commitments; and
-- transparent about facts, inference, confidence, and tradeoffs.
+**Done when** Pan produces an ordered recommendation for both queues, cites the
+specific Issues and narrative behind the order, and names what it is unsure of.
 
-### Delegate without idle agents
+### 3. Keep always-on runners supplied
 
-Participating machines run lightweight pull-based runners, not idle agents in
-every project context. A runner launches a worker session only after it finds
-and atomically claims compatible work.
+Each participating machine runs one lightweight, pull-based runner configured
+with a set of **playbooks**. A playbook declares a kind of task that machine can
+take on, the instructions to give an agent working it, and how the result is
+delivered. A runner claims compatible ready work from the prioritized backlog,
+leases it, and executes it the way its playbook specifies. Work is never pushed
+at a named machine; machines pull only what their playbooks cover.
 
-### Remain reusable
+**Done when** a runner on any participating machine can take the highest-priority
+item its playbooks cover and deliver it without the human routing it there.
 
-This public repository contains generic agents, runtime behavior, tools,
-schemas, and protocols. User-specific workstreams, Issues, paths, credentials,
-runner state, and machine configuration remain outside it.
+### 4. Get blocked agents unblocked fast
+
+A worker's question is an interrupt, not a backlog item. An idle agent is wasted
+time, so questions surface with urgency proportional to what they block, and
+answering one costs the human no reconstruction of context.
+
+A question is a pause, not a failure. The worker stays alive holding its lease
+and its slot, spends no budget while it waits, and continues the moment it is
+answered. Discarding a waiting worker and launching a fresh instance throws away
+everything that worker had established, so the answer reaches the original
+session rather than a replacement. When a machine restarts, its waiting task is
+rehydrated on that same machine and the question is re-posed there.
+
+**Done when** a worker question reliably reaches the human, and answering it in
+one exchange continues the original worker with its context intact.
+
+### 5. Keep workstream knowledge current, and use it
+
+Findings, decisions, data, and state for every workstream live in committed
+Markdown, not in chat history. That narrative is an input to prioritization, not
+just documentation.
+
+**Done when** Pan can update a workstream from a conversation and later cite
+that narrative as a reason for a priority decision.
+
+### 6. Improve itself
+
+When Pan's durable guidance is insufficient to finish a task, the gap is a
+defect in Pan, not a one-off. Pan may diagnose it and repair its own
+instructions, schema, or helpers in the Pan tool repository under normal
+branch-and-review policy, then resume.
+
+Pan also reflects on how efficiently it worked, not only on whether it
+succeeded. Consulting documentation to correct a tool-call parameter, retrying a
+command that failed for a knowable reason, or rediscovering something it had
+already established are acceptable once and defects when they recur. Pan
+captures the lesson so the next attempt costs less.
+
+This authority is scoped to the Pan tool repository. It never extends to another
+product-context root and never bypasses domain, live-state, or approval rules.
+
+**Done when** Pan turns both a guidance gap that blocked it and a recurring
+inefficiency that merely slowed it into durable instruction changes.
+
+## How Pan behaves
+
+Pan is proactive about commitments and blockers, willing to challenge weak
+priorities or contradictions, concise and decision-focused, protective of the
+user's time, and transparent about what is fact, what is inference, and how
+confident it is.
+
+Pan stays reusable. This public repository holds generic agents, behavior,
+tools, schemas, and protocols. Workstreams, Issues, paths, credentials, runner
+state, and machine configuration live outside it.
 
 ## Non-goals
 
-- PAN does not maintain a second queue that can disagree with GitHub.
-- PAN does not silently combine knowledge from multiple domain repositories.
-- PAN does not push work to a named machine.
-- PAN does not keep an idle worker-agent session in every repository.
-- PAN does not treat model conversation history as the only durable record of a
-  commitment or decision.
-- PAN does not let autonomous workers push, force-push, or bypass delivery
-  policy. The runner may push to a default branch only when its playbook
-  explicitly selects direct delivery.
+These are permanent. Pan does not:
 
-## Success criteria
+- maintain a second queue that can disagree with GitHub;
+- treat conversation history as the durable record of a commitment or decision;
+- combine knowledge from multiple domains without being asked to;
+- push work at a named machine;
+- keep an idle worker agent sitting in every repository; or
+- let autonomous workers push, force-push, or bypass delivery policy. A runner
+  may push to a default branch only when its playbook explicitly selects direct
+  delivery.
 
-The first reasoning-focused release is successful when:
+## Not yet
 
-1. PAN considers every actionable item in one real domain repository.
-2. It maintains the Project ordering for both human and agent work.
-3. It explains a ranking using cited task and workstream evidence.
-4. It identifies a high-confidence commitment in narrative and, with user
-   approval, creates a sourced Issue without duplicating existing work.
-5. The user can discuss and change the same queue through the PAN personality.
-6. A compatible runner can claim ordered agent work, launch an isolated worker
-   session, and report progress or a need for human input through GitHub.
+These are deferred, not rejected. They are the two most likely expansions of
+Pan's scope.
+
+- **Always-on operation.** Today Pan runs only in the foreground and nothing
+  continues after its session exits, so its proactivity reaches the user only
+  while they are already talking to it. The intent is for Pan to notice and
+  raise things without being opened first.
+- **Multiple domains at once.** Today one session serves one domain, so work and
+  personal domains cannot be reasoned about together. The intent is explicit,
+  user-directed cross-domain views, never implicit blending.
+
+## Open questions
+
+The unresolved design decisions behind these goals are tracked in
+[open questions](open-questions.md).

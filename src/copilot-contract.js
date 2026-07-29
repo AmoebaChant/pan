@@ -11,7 +11,7 @@ const REQUIRED_SESSION_OPTIONS = [
 const REQUIRED_SCHEDULING_COMMANDS = ["/every", "/after"];
 
 /**
- * Verifies the documented Copilot CLI features that PAN relies on.
+ * Verifies the documented Copilot CLI features that Pan relies on.
  */
 export async function verifyCopilotInvocationContract({
   executable = "copilot",
@@ -40,7 +40,7 @@ export async function verifyCopilotInvocationContract({
         })}.`
       : "";
     throw new Error(
-      `Copilot CLI does not support the required PAN session options: ${missing.join(", ")}.${manual}`,
+      `Copilot CLI does not support the required Pan session options: ${missing.join(", ")}.${manual}`,
     );
   }
 }
@@ -78,7 +78,7 @@ export function buildScheduledReviewPrompt({ dueStatePath } = {}) {
     throw new TypeError("dueStatePath is required");
   }
   return [
-    "Run the scheduled PAN portfolio review in this session.",
+    "Run the scheduled Pan portfolio review in this session.",
     `Read the launch-local due metadata at ${dueStatePath}. If its nextReviewAt is still in the future, report that no review is due and make no portfolio decision or mutation.`,
     "When due, read the configured Project and current Issue state directly from GitHub. Never import unrelated Issues, resurrect closed Issues, or alter active runner lease fields.",
     "Discuss recommendations before mutation unless the user has already granted specific approval. Re-read each target immediately before an approved write and verify it afterward.",
@@ -96,7 +96,7 @@ export function nativeScheduleIntervalSeconds(reviewIntervalSeconds) {
 
 export function manualScheduleCommand({
   intervalSeconds,
-  prompt = "Run the scheduled PAN portfolio review.",
+  prompt = "Run the scheduled Pan portfolio review.",
 } = {}) {
   if (!Number.isInteger(intervalSeconds) || intervalSeconds <= 0) {
     throw new TypeError("intervalSeconds must be a positive integer");
@@ -113,7 +113,7 @@ function startupInstruction({ startup, intervalSeconds }) {
     case "manual":
       return "Do not run a startup review. The recurring schedule remains the only automatic review trigger.";
     default:
-      throw new TypeError(`Unsupported PAN scheduling startup policy: ${startup}`);
+      throw new TypeError(`Unsupported Pan scheduling startup policy: ${startup}`);
   }
 }
 

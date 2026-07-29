@@ -31,7 +31,7 @@ export async function verifyPanSetup({
     domainIdentity.validate(config),
   ]);
   if (!isCurrentPanAssets(assets)) {
-    throw new Error(`PAN assets are ${assets.status}; run \`pan assets repair\``);
+    throw new Error(`Pan assets are ${assets.status}; run \`pan assets repair\``);
   }
   assertMatchingDomain(config, profile, {
     configPath,
@@ -77,7 +77,7 @@ export function assertMatchingDomain(
     config.domain.projectNumber !== profile.store.projectNumber ||
     path.resolve(config.domain.path) !== path.resolve(profile.store.path)
   ) {
-    throw new Error("Runner and domain configuration must target the same PAN domain");
+    throw new Error("Runner and domain configuration must target the same Pan domain");
   }
   if (requireConfigPath) {
     const referencedConfigPath =
@@ -86,11 +86,11 @@ export function assertMatchingDomain(
         ? path.resolve(path.dirname(profile.profilePath), "..", "pan.json")
         : undefined);
     if (!referencedConfigPath) {
-      throw new Error("Runner profile must identify its PAN domain configuration");
+      throw new Error("Runner profile must identify its Pan domain configuration");
     }
     if (path.resolve(referencedConfigPath) !== path.resolve(configPath)) {
       throw new Error(
-        "Runner profile must reference the verified PAN domain configuration",
+        "Runner profile must reference the verified Pan domain configuration",
       );
     }
   }

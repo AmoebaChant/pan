@@ -64,7 +64,7 @@ export class RunnerDaemon {
       try {
         started = await this.tick({ signal });
       } catch (error) {
-        this.logger.error("PAN runner poll failed", error);
+        this.logger.error("Pan runner poll failed", error);
         rateLimited = isRateLimitError(error);
       }
       idlePolls = started > 0 || this.active.size > 0 ? 0 : idlePolls + 1;
@@ -153,7 +153,7 @@ export class RunnerDaemon {
         if (isRateLimitError(error)) {
           throw error;
         }
-        this.logger.error(`Unable to claim PAN task #${item.number}`, error);
+        this.logger.error(`Unable to claim Pan task #${item.number}`, error);
         continue;
       }
       if (!claim.claimed) {
@@ -168,7 +168,7 @@ export class RunnerDaemon {
 
       const promise = this.#runClaim(claim.item, runner, playbook, signal)
         .catch((error) => {
-          this.logger.error(`PAN task #${item.number} failed`, error);
+          this.logger.error(`Pan task #${item.number} failed`, error);
         })
         .finally(() => {
           this.active.delete(runner);
@@ -203,7 +203,6 @@ export class RunnerDaemon {
     });
     let delivery;
     let result;
-    let needsHuman;
     try {
       const comments = await this.store.listComments(item);
       this.logger.info?.(
@@ -223,7 +222,22 @@ export class RunnerDaemon {
             );
           } catch (error) {
             this.logger.error(
-              `Unable to record agent start for PAN task #${item.number}`,
+              `Unable to record agent start for Pan task #${item.number}`,
+              error,
+            );
+          }
+          if (record.resumed || !item.fields.needsHumanSince) {
+            return;
+          }
+          try {
+            await this.attention.resolve(item, {
+              runner,
+              reason:
+                "The previous worker did not survive to be answered; this task restarted from the beginning.",
+            });
+          } catch (error) {
+            this.logger.error(
+              `Unable to clear stale human attention for Pan task #${item.number}`,
               error,
             );
           }
@@ -233,8 +247,37 @@ export class RunnerDaemon {
         handle,
         heartbeat,
         signal,
-        onNeedsHuman: (record) => {
-          needsHuman = record;
+        onNeedsHuman: async (record) => {
+          try {
+            await this.attention.request(item, record, {
+              runner,
+              resumeAffinity: runnerResumeAffinity(
+                this.profile.id,
+                playbook.id,
+              ),
+            });
+            this.logger.info?.(
+              `Task #${item.number} is waiting for a human at its terminal; it keeps its lease and slot.`,
+            );
+          } catch (error) {
+            this.logger.error(
+              `Unable to flag human attention for Pan task #${item.number}`,
+              error,
+            );
+          }
+        },
+        onAttentionCleared: async () => {
+          try {
+            await this.attention.resolve(item, { runner });
+            this.logger.info?.(
+              `Task #${item.number} was answered at its terminal and resumed work.`,
+            );
+          } catch (error) {
+            this.logger.error(
+              `Unable to clear human attention for Pan task #${item.number}`,
+              error,
+            );
+          }
         },
       });
       this.logger.info?.(
@@ -278,7 +321,7 @@ export class RunnerDaemon {
             );
           } catch (commentError) {
             this.logger.error(
-              `Unable to comment on completed PAN task #${item.number}`,
+              `Unable to comment on completed Pan task #${item.number}`,
               commentError,
             );
           }
@@ -311,58 +354,63 @@ export class RunnerDaemon {
         return;
       }
 
-      if (
-        (result.status === "blocked" && needsHuman) ||
-        result.budgetExceeded
-      ) {
-        const resumeAffinity = runnerResumeAffinity(
-          this.profile.id,
-          playbook.id,
-        );
-        await handle.interrupt?.("Waiting for human attention.");
+      if (result.budgetExceeded) {
+        await handle.interrupt?.("The task budget was exhausted.");
         await heartbeat.renewNow();
         await this.attention.request(
           item,
           {
-            ...(needsHuman ?? {
-              kind: "approval",
-              prompt:
-                "Approve another runner attempt after increasing or removing the task budget.",
-            }),
-            locator:
-              needsHuman?.locator ?? handle.locator(result.localUrl),
-            source: needsHuman?.source ?? "runner",
-            reason:
-              needsHuman?.reason ??
-              (result.budgetExceeded
-                ? "budget-exhausted"
-                : "blocking-question"),
+            kind: "approval",
+            prompt:
+              "Approve another runner attempt after increasing or removing the task budget.",
+            locator: handle.locator(result.localUrl),
+            source: "runner",
+            reason: "budget-exhausted",
           },
           {
             runner,
-            runnerAssignee: this.profile.githubAssignee,
-            resumeAffinity,
+            resumeAffinity: runnerResumeAffinity(
+              this.profile.id,
+              playbook.id,
+            ),
           },
         );
+        await heartbeat.renewNow();
+        const release = await retry(() =>
+          this.store.release({
+            itemId: item.id,
+            runner,
+            assignee: this.profile.githubAssignee,
+            status: "blocked",
+          }),
+        );
+        if (!release.released) {
+          throw new Error(`Unable to release exhausted task: ${release.reason}`);
+        }
         this.logger.info?.(
-          `Task #${item.number} moved to urgent human attention and its lease was released.`,
+          `Task #${item.number} exhausted its budget and needs a human decision; its lease was released.`,
         );
         return;
       }
 
-      await handle.interrupt?.(
-        "Operational failure: The worker reported blocked without a structured needs-human request.",
-      );
-      await this.#requeueOperationalStop({
-        item,
-        runner,
-        playbook,
-        handle,
-        heartbeat,
-        summary:
-          "The worker reported blocked without a structured needs-human request.",
-      });
-      return;
+      if (result.status === "blocked") {
+        await heartbeat.renewNow();
+        const release = await retry(() =>
+          this.store.release({
+            itemId: item.id,
+            runner,
+            assignee: this.profile.githubAssignee,
+            status: "blocked",
+          }),
+        );
+        if (!release.released) {
+          throw new Error(`Unable to release blocked task: ${release.reason}`);
+        }
+        this.logger.info?.(
+          `Task #${item.number} is blocked on an external dependency and its lease was released.`,
+        );
+        return;
+      }
     } catch (error) {
       if (error.code === "PAN_LEASE_LOST") {
         await handle?.clearResumeState?.();
@@ -450,7 +498,7 @@ export class RunnerDaemon {
       );
     } catch (error) {
       this.logger.error(
-        `Unable to record agent stop for PAN task #${item.number}`,
+        `Unable to record agent stop for Pan task #${item.number}`,
         error,
       );
     }
@@ -601,6 +649,7 @@ export class RunnerDaemon {
         );
       }
       try {
+        await this.store.resolveHumanAttention({ itemId: item.id });
         await this.store.addComment(
           item,
           formatNeedsHumanResolved(
@@ -646,7 +695,7 @@ export class RunnerDaemon {
 }
 
 function isRunnable(item) {
-  if (!["full-auto", "agent-reviewer"].includes(item.fields.autonomy)) {
+  if (item.fields.owner !== "agent") {
     return false;
   }
   if (!item.fields.workstream?.trim()) {
@@ -659,7 +708,7 @@ function repositoryFor(item) {
   const repository = taskRepository(item);
   if (!repository) {
     throw new Error(
-      `PAN task #${item.number} must have exactly one repo: requirement`,
+      `Pan task #${item.number} must have exactly one repo: requirement`,
     );
   }
   return repository;
@@ -719,12 +768,12 @@ function startHeartbeat({
         });
         if (!result.renewed) {
           failure = new Error(
-            `Lease lost for PAN task #${item.number}: ${result.reason}`,
+            `Lease lost for Pan task #${item.number}: ${result.reason}`,
           );
           failure.code = "PAN_LEASE_LOST";
           throw failure;
         }
-        logger.info?.(`Heartbeat renewed for PAN task #${item.number}.`);
+        logger.info?.(`Heartbeat renewed for Pan task #${item.number}.`);
       } catch (error) {
         failure = error;
         reportFailure(error);
@@ -739,7 +788,7 @@ function startHeartbeat({
     try {
       await renewNow();
     } catch (error) {
-      logger.error(`Heartbeat failed for PAN task #${item.number}`, error);
+      logger.error(`Heartbeat failed for Pan task #${item.number}`, error);
     }
   }, intervalMilliseconds);
   return {
@@ -754,11 +803,14 @@ async function waitForTask({
   heartbeat,
   signal,
   onNeedsHuman,
+  onAttentionCleared,
 }) {
   const abort = createAbortWaiter(signal);
   try {
     const outcome = await Promise.race([
-      handle.wait({ onNeedsHuman }).then((result) => ({ result })),
+      handle
+        .wait({ onNeedsHuman, onAttentionCleared })
+        .then((result) => ({ result })),
       heartbeat.failed.then((error) => ({ error })),
       abort.promise.then((reason) => ({
         error: runnerStoppedError(reason),
@@ -922,12 +974,12 @@ function consecutiveOperationalFailures(comments) {
 function parseRunnerEvent(body) {
   const fence = body.match(/```json\s*([\s\S]*?)\s*```/i);
   if (!fence) {
-    throw new Error("PAN runner-event comment has no JSON record");
+    throw new Error("Pan runner-event comment has no JSON record");
   }
   try {
     return JSON.parse(fence[1]);
   } catch (error) {
-    throw new Error("PAN runner-event comment contains invalid JSON", {
+    throw new Error("Pan runner-event comment contains invalid JSON", {
       cause: error,
     });
   }

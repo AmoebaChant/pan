@@ -95,7 +95,7 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
     for (const [executable, args, options] of terminalLaunches) {
       assert.equal(executable, "wt");
       assert.equal(args[args.indexOf("-p") + 1], "PowerShell");
-      assert.match(args[args.indexOf("--title") + 1], /^PAN #1 - /);
+      assert.match(args[args.indexOf("--title") + 1], /^Pan #1 - /);
       const commandIndex = args.indexOf("--suppressApplicationTitle") + 1;
       assert.equal(args[commandIndex], process.execPath);
       assert.match(args[commandIndex + 1], /src[\\/]task-worker\.js$/);
@@ -213,6 +213,74 @@ test("uses a separate cleanup budget after the task deadline expires", async () 
         args.includes("--force"),
     );
     assert.equal(cleanup.options.timeout, 30_000);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("holds a task past its budget while a question is outstanding", async () => {
+  const fixture = await createFixture();
+  let now = 0;
+  let tick = 0;
+  let handle;
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "waiting-worker",
+    workerIsAlive: () => true,
+    now: () => new Date(now),
+    sleep: async () => {
+      tick += 1;
+      if (tick === 1) {
+        now = 300_000;
+      } else if (tick === 2) {
+        await rm(handle.needsHumanPath, { force: true });
+        now = 400_000;
+      } else {
+        await writeFile(
+          handle.resultPath,
+          JSON.stringify({
+            status: "completed",
+            summary: "Finished after the answer.",
+          }),
+        );
+        now = 410_000;
+      }
+    },
+  });
+
+  try {
+    handle = await executor.start({
+      ...makeStartOptions(7),
+      deadline: 100_000,
+    });
+    await writeFile(handle.workerPath, JSON.stringify({ pid: 1234 }));
+    await writeFile(
+      handle.needsHumanPath,
+      JSON.stringify({
+        kind: "question",
+        prompt: "Option A or option B?",
+      }),
+    );
+
+    const questions = [];
+    let cleared = 0;
+    const result = await handle.wait({
+      onNeedsHuman: (needsHuman) => {
+        questions.push(needsHuman);
+      },
+      onAttentionCleared: () => {
+        cleared += 1;
+      },
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(questions.length, 1);
+    assert.match(questions[0].prompt, /Option A or option B\?/);
+    assert.equal(cleared, 1);
+    assert.equal(handle.attentionSince, undefined);
+    assert.equal(handle.deadline, 500_000);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -657,6 +725,8 @@ class PullRequestDeliveryCommands extends FakeCommands {
         state: "OPEN",
         headRefName: this.branch,
         headRefOid: "0123456789abcdef0123456789abcdef01234567",
+        headRepository: { name: "tool" },
+        headRepositoryOwner: { login: "example" },
         baseRefName: "main",
         body: this.body,
       });

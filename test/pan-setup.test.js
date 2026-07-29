@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { setupPanDomain } from "../src/index.js";
 
-test("creates and bootstraps a private PAN domain with safe approvals", async () => {
+test("creates and bootstraps a private Pan domain with safe approvals", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pan-setup-"));
   const directory = path.join(root, "domain");
   const gh = new FakeGh();
@@ -18,7 +18,7 @@ test("creates and bootstraps a private PAN domain with safe approvals", async ()
         repository: "example/domain",
         path: directory,
         projectOwner: "example",
-        projectTitle: "Personal PAN",
+        projectTitle: "Personal Pan",
         approvalMode: "prompt",
       },
       {
@@ -134,7 +134,7 @@ test("connects an existing private repository and compatible Project without rep
   }
 });
 
-test("adopts an existing local PAN domain and resumes without replacing its data", async () => {
+test("adopts an existing local Pan domain and resumes without replacing its data", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pan-setup-existing-domain-"));
   const directory = path.join(root, "domain");
   const runnerPath = path.join(directory, "runners", "MACHINE.json");
@@ -430,7 +430,7 @@ test("refuses to overwrite an existing local path before remote mutation", async
           repository: "example/domain",
           path: root,
           projectOwner: "example",
-          projectTitle: "PAN",
+          projectTitle: "Pan",
           approvalMode: "prompt",
         },
         {
@@ -459,7 +459,7 @@ test("reports asset installation failure after preserving the bootstrapped domai
         repository: "example/domain",
         path: directory,
         projectOwner: "example",
-        projectTitle: "PAN",
+        projectTitle: "Pan",
         approvalMode: "prompt",
         installAssets: true,
       },
@@ -559,7 +559,7 @@ class ExistingDomainCommands extends FakeCommands {
       return this.dirty;
     }
     if (args[2] === "log") {
-      return this.pendingPush ? "Bootstrap PAN domain\n" : "";
+      return this.pendingPush ? "Bootstrap Pan domain\n" : "";
     }
     if (args[2] === "commit") {
       this.pendingPush = true;

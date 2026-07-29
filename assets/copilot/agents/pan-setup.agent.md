@@ -39,7 +39,7 @@ dumping the full questionnaire or command sequence on the user:
 5. On Windows, whether to create desktop shortcuts for Pan Chat, the runner, or
    both.
 
-Use PAN commands behind the conversation for every setup mutation. Never ask
+Use Pan commands behind the conversation for every setup mutation. Never ask
 the user to hand-edit JSON, runner profiles, agent files, skills, or Project
 fields. Describe actions in first person before taking them, such as "I'll
 create your domain now" or "I'll verify that I can use this domain."
@@ -53,8 +53,8 @@ pan setup --repository <owner/name> --repository-mode create --path <path> --pro
 For existing resources, use `--repository-mode connect`,
 `--project-mode connect`, and `--project-number <number>`. Mixed create/connect
 choices are supported. The path may be an existing local checkout of that
-domain or a missing path where PAN will clone it. Never tell the user that an
-existing domain needs a new empty path. PAN preserves compatible domain
+domain or a missing path where Pan will clone it. Never tell the user that an
+existing domain needs a new empty path. Pan preserves compatible domain
 configuration, runner settings, workstreams, and README content while adding
 only missing setup data. Read the JSON result and use its exact `configPath`
 and `runnerProfilePath`.
@@ -73,7 +73,7 @@ and final commands. `runnerOnline` reports whether the profile is eligible to
 accept work; it does not prove that a `pan-runner` process is currently running.
 
 Use command diagnostics before reading implementation code. If the same
-resumable command still fails and the PAN repository is available, inspect the
+resumable command still fails and the Pan repository is available, inspect the
 implementation only to diagnose an apparent product defect. Do not hand-edit
 domain JSON or apply ad hoc Git repairs. Fix the root cause with focused tests,
 preserve unrelated worktree changes, and then rerun the original command.

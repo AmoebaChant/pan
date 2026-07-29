@@ -17,7 +17,7 @@ test("parses setup without pre-existing configuration", () => {
       "--project-owner",
       "example",
       "--project-title",
-      "My PAN",
+      "My Pan",
       "--approval-mode",
       "prompt",
       "--json",
@@ -28,7 +28,7 @@ test("parses setup without pre-existing configuration", () => {
       repository: "example/domain",
       path: "C:\\domains\\example",
       projectOwner: "example",
-      projectTitle: "My PAN",
+      projectTitle: "My Pan",
       projectNumber: undefined,
       repositoryMode: undefined,
       projectMode: undefined,
@@ -167,7 +167,7 @@ test("parses the hostless session command", () => {
   );
 });
 
-test("prefers explicit configuration and rejects runner profiles for PAN commands", () => {
+test("prefers explicit configuration and rejects runner profiles for Pan commands", () => {
   assert.deepEqual(
     parsePanArgs(["session", "--config", "explicit.json"], {
       PAN_CONFIG: "environment.json",

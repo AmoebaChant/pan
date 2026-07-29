@@ -47,7 +47,7 @@ export function handleMcpRequest(message) {
             type: "text",
             text: JSON.stringify({
               domain: "fixture",
-              projects: [{ id: "fixture-1", title: "Synthetic PAN project" }],
+              projects: [{ id: "fixture-1", title: "Synthetic Pan project" }],
             }),
           },
         ],

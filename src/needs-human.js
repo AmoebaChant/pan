@@ -119,13 +119,13 @@ export function pullRequestUrl(comments) {
 function parseNeedsHuman(body) {
   const fence = body.match(/```json\s*([\s\S]*?)\s*```/i);
   if (!fence) {
-    throw new Error("PAN needs-human comment has no JSON record");
+    throw new Error("Pan needs-human comment has no JSON record");
   }
   let record;
   try {
     record = JSON.parse(fence[1]);
   } catch (error) {
-    throw new Error("PAN needs-human comment contains invalid JSON", {
+    throw new Error("Pan needs-human comment contains invalid JSON", {
       cause: error,
     });
   }
@@ -150,16 +150,6 @@ function validateNeedsHuman(record) {
       Array.isArray(record.locator))
   ) {
     throw new TypeError("needs-human locator must be an object");
-  }
-  if (record.priorState !== undefined) {
-    if (
-      !record.priorState ||
-      typeof record.priorState !== "object" ||
-      Array.isArray(record.priorState) ||
-      typeof record.priorState.priority !== "string"
-    ) {
-      throw new TypeError("needs-human priorState must include priority");
-    }
   }
   if (
     record.resume !== undefined &&

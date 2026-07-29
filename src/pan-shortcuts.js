@@ -8,7 +8,7 @@ import { ProcessClient } from "./process-client.js";
 const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SELECTIONS = ["chat", "runner", "both"];
 
-/** Creates self-contained Windows launch shortcuts for a configured PAN domain. */
+/** Creates self-contained Windows launch shortcuts for a configured Pan domain. */
 export async function createPanDesktopShortcuts({
   configPath,
   runnerProfilePath,
@@ -24,7 +24,7 @@ export async function createPanDesktopShortcuts({
   nodePath = process.execPath,
 } = {}) {
   if (platform !== "win32") {
-    throw new Error("PAN desktop shortcuts are currently supported on Windows only");
+    throw new Error("Pan desktop shortcuts are currently supported on Windows only");
   }
   if (!SELECTIONS.includes(selection)) {
     throw new TypeError(`shortcut selection must be one of ${SELECTIONS.join(", ")}`);
@@ -178,14 +178,15 @@ function shortcutDefinitions({
   if (selection === "runner" || selection === "both") {
     definitions.push({
       kind: "runner",
-      name: "Start PAN Runner.lnk",
-      description: "Start the PAN runner",
+      name: "Start Pan Runner.lnk",
+      legacyNames: ["Start PAN Runner.lnk"],
+      description: "Start the Pan runner",
       arguments: [
         "new-tab",
         "-d",
         quote(domainPath),
         "--title",
-        quote("PAN Runner"),
+        quote("Pan Runner"),
         "--suppressApplicationTitle",
         quote(nodePath),
         quote(runnerEntryPath),
@@ -284,7 +285,7 @@ async function windowsTerminalPath(env) {
     return candidate;
   } catch (error) {
     if (error.code === "ENOENT") {
-      throw new Error("Windows Terminal is required to create PAN desktop shortcuts");
+      throw new Error("Windows Terminal is required to create Pan desktop shortcuts");
     }
     throw error;
   }

@@ -73,9 +73,9 @@ test("rejects Copilot credit budgets below the CLI minimum", () => {
 
 test("preserves a configured Windows Terminal profile", () => {
   const source = makeProfile(path.resolve("runner-root"));
-  source.terminal.profile = "PAN Work";
+  source.terminal.profile = "Pan Work";
 
-  assert.equal(validateRunnerProfile(source).terminal.profile, "PAN Work");
+  assert.equal(validateRunnerProfile(source).terminal.profile, "Pan Work");
 });
 
 test("requires explicit opt-in for all-tools Copilot approval", () => {

@@ -1,4 +1,4 @@
-# PAN module and schemas
+# Pan module and schemas
 
 `@amoebachant/pan` is an ESM package with no runtime dependencies. It requires
 Node.js 22+ and uses the authenticated `gh` CLI for GitHub operations.

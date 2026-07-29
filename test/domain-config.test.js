@@ -143,7 +143,7 @@ test("rejects runner-only, credentials, and version 2 host fields", () => {
   hostSetting.cadences = {};
   assert.throws(
     () => validateDomainConfig(hostSetting),
-    /cadences is not a supported PAN domain configuration field/,
+    /cadences is not a supported Pan domain configuration field/,
   );
 });
 
@@ -178,7 +178,7 @@ test("publishes a parseable versioned domain configuration schema", async () => 
     await readFile(path.resolve("schema/domain-config.json"), "utf8"),
   );
 
-  assert.equal(schema.title, "PAN domain runtime configuration");
+  assert.equal(schema.title, "Pan domain runtime configuration");
   assert.equal(schema.$defs.version1.properties.version.const, 1);
   assert.equal(schema.$defs.version2.properties.version.const, 2);
   assert.ok(schema.$defs.version2.properties.session);

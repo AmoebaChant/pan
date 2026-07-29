@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AmoebaChant/pan/schema/playbook.json",
-  "title": "PAN runner playbook",
+  "title": "Pan runner playbook",
   "description": "A private runner policy that selects compatible work and declares its delivery mode.",
   "type": "object",
   "additionalProperties": false,

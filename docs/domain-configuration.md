@@ -1,6 +1,6 @@
-# PAN domain configuration
+# Pan domain configuration
 
-A version-2 domain configuration connects a foreground PAN session to one
+A version-2 domain configuration connects a foreground Pan session to one
 private GitHub repository and Project. It contains domain identity, session
 settings, and optional scheduling. Runner paths, capability,
 capacity, terminal, and approval settings belong only in the private runner
@@ -46,7 +46,7 @@ New configurations must use version 2.
 Scheduling defaults to enabled, a 24-hour review interval, immediate startup,
 a 60-second ordinary retry, and a 900-second rate-limit retry. The interval is
 bounded to 300–604800 seconds in configuration; a native session schedule uses
-at most one-hour triggers to perform due checks. PAN neither catches up a missed
+at most one-hour triggers to perform due checks. Pan neither catches up a missed
 session nor starts an external timer, and the Copilot session queue supplies
 non-overlap.
 
@@ -54,7 +54,7 @@ non-overlap.
 for the first due trigger; `manual` performs no startup review. If the Copilot
 CLI lacks required scheduling support, create the
 displayed `/every` command manually. Changes to domain, session, or scheduling
-settings require exiting and rerunning `pan session`; no background PAN process
+settings require exiting and rerunning `pan session`; no background Pan process
 exists to restart.
 
 ## Setup and migration
@@ -67,7 +67,7 @@ Set-Location .\pan
 npx --yes --package . pan onboard
 ```
 
-It installs PAN's user-scoped Copilot assets, gathers the setup choices, invokes
+It installs Pan's user-scoped Copilot assets, gathers the setup choices, invokes
 the deterministic commands below, verifies the result, and can create Windows
 desktop shortcuts.
 
@@ -80,7 +80,7 @@ pan setup --repository example/personal-domain `
   --path C:\domains\personal-domain `
   --project-owner example `
   --project-mode create `
-  --project-title "Personal PAN" `
+  --project-title "Personal Pan" `
   --approval-mode prompt `
   --install-assets
 ```
@@ -92,7 +92,7 @@ later only after `pan verify` succeeds with a scheduling-capable CLI.
 To connect an existing private repository and compatible Project, use
 `--repository-mode connect`, `--project-mode connect`, and
 `--project-number <number>`. `--path` may identify an existing local domain
-checkout or a missing path where PAN should clone the repository. PAN preserves
+checkout or a missing path where Pan should clone the repository. Pan preserves
 compatible configuration, runner settings, workstreams, and README content,
 creates missing setup data and Project fields, and rejects incompatible or
 locally modified setup files rather than replacing them. The same command may
@@ -106,7 +106,7 @@ pan verify --config C:\domains\personal-domain\pan.json `
   --profile C:\domains\personal-domain\runners\machine.json
 ```
 
-On Windows, create self-contained shortcuts that use PAN's packaged icon:
+On Windows, create self-contained shortcuts that use Pan's packaged icon:
 
 ```powershell
 pan shortcuts create `

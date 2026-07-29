@@ -82,7 +82,7 @@ function validateSessionDueState(state) {
     Number.isNaN(Date.parse(state.startedAt)) ||
     Number.isNaN(Date.parse(state.nextReviewAt))
   ) {
-    throw new TypeError("invalid PAN session due state");
+    throw new TypeError("invalid Pan session due state");
   }
 }
 

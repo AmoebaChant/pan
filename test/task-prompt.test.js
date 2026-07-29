@@ -31,8 +31,37 @@ test("requires complete implementation and agent-owned pull-request delivery", (
   assert.match(prompt, /Closes example\/tasks#31/);
   assert.match(prompt, /delivery.*pull-request.*commit.*url/);
   assert.match(prompt, /Follow the repository contribution guide/);
-  assert.match(prompt, /ask the user directly and continue after the reply/i);
+  assert.match(prompt, /ask the same question in this terminal and wait/i);
+  assert.match(prompt, /holds its slot and spends no budget/i);
+  assert.match(prompt, /delete .*needs-human\.json and continue working/i);
   assert.doesNotMatch(prompt, /non-interactive session/i);
+  assert.doesNotMatch(prompt, /re-state your outstanding question/i);
+});
+
+test("tells a restarted worker to re-state its outstanding question", () => {
+  const prompt = buildTaskPrompt("C:\\state\\context.json", {
+    issue: {
+      number: 31,
+      repository: "example/tasks",
+    },
+    target: {
+      defaultBranch: "main",
+    },
+    playbook: {
+      id: "pan-development",
+      instructions: [],
+      delivery: "pull-request",
+    },
+    needsHumanSince: "2026-07-20T16:00:00Z",
+    paths: {
+      agentResult: "C:\\state\\agent-result.json",
+      needsHuman: "C:\\state\\needs-human-2.json",
+    },
+  });
+
+  assert.match(prompt, /already waiting for a human answer as of 2026-07-20T16:00:00Z/);
+  assert.match(prompt, /re-state your outstanding question/i);
+  assert.match(prompt, /needs-human-2\.json again/);
 });
 
 test("authorizes agent-owned direct delivery without allowing unrelated git actions", () => {
@@ -55,8 +84,33 @@ test("authorizes agent-owned direct delivery without allowing unrelated git acti
     },
   });
 
-  assert.match(prompt, /push HEAD to main/);
+  assert.match(prompt, /push HEAD with origin to main/);
   assert.match(prompt, /git push origin HEAD:refs\/heads\/main/);
   assert.match(prompt, /Never force-push/);
   assert.doesNotMatch(prompt, /open the pull request/);
+});
+
+test("keeps report delivery read-only", () => {
+  const prompt = buildTaskPrompt("C:\\state\\context.json", {
+    issue: {
+      number: 31,
+      repository: "example/tasks",
+    },
+    target: {
+      defaultBranch: "main",
+    },
+    playbook: {
+      id: "pan-investigation",
+      instructions: [],
+      delivery: "report",
+    },
+    paths: {
+      agentResult: "C:\\state\\agent-result.json",
+      needsHuman: "C:\\state\\needs-human.json",
+    },
+  });
+
+  assert.match(prompt, /Report delivery is read-only/);
+  assert.doesNotMatch(prompt, /git push/);
+  assert.doesNotMatch(prompt, /Closes example\/tasks#31/);
 });

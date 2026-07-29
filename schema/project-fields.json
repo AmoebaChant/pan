@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Required GitHub Project fields for the canonical PAN queue. This manifest contains field names and formats, never project values.",
+  "description": "Required GitHub Project fields for the canonical Pan queue. This manifest contains field names and formats, never project values.",
   "fields": [
     {
       "key": "owner",
@@ -35,10 +35,10 @@
       "format": "newline-delimited capability requirements"
     },
     {
-      "key": "autonomy",
-      "name": "autonomy",
-      "type": "single_select",
-      "options": ["manual", "full-auto", "agent-reviewer"]
+      "key": "needsHumanSince",
+      "name": "needs-human-since",
+      "type": "text",
+      "format": "RFC 3339 UTC timestamp; empty means no human is needed"
     },
     {
       "key": "leaseUntil",

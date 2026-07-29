@@ -24,7 +24,7 @@ test("defines one user-scoped hostless Pan identity", async () => {
   assert.match(body, /Re-read targets before writes/i);
 });
 
-test("packages a conversational setup agent that delegates mechanics to PAN commands", async () => {
+test("packages a conversational setup agent that delegates mechanics to Pan commands", async () => {
   const source = await readFile(SETUP_AGENT_PATH, "utf8");
   const { frontmatter, body } = parseAgent(source);
 
@@ -57,7 +57,7 @@ test("shares direct GitHub triage and scheduling instructions", async () => {
   const source = await readFile(INSTRUCTIONS_PATH, "utf8");
 
   for (const heading of [
-    "# PAN domain instructions",
+    "# Pan domain instructions",
     "## Live GitHub workflow",
     "## Triage and mutations",
     "## Session behavior",
@@ -68,7 +68,7 @@ test("shares direct GitHub triage and scheduling instructions", async () => {
   assert.match(source, /Use `gh` directly/i);
   assert.match(source, /PAN_PROJECT_SCHEMA/);
   assert.match(source, /Never add a\s+closed Issue/i);
-  assert.match(source, /There is no PAN\s+leadership lease or read-only mode/i);
+  assert.match(source, /There is no Pan\s+leadership lease or read-only mode/i);
   assert.doesNotMatch(source, /pan evidence|pan action|pan reconcile/i);
 });
 
@@ -124,7 +124,7 @@ test("hostless assets contain no private identity, repository, or machine paths"
     "AmoebaChant",
     "kevbrown",
     "example/domain",
-    "Synthetic PAN project",
+    "Synthetic Pan project",
     "copilot-spike",
     "C:\\",
     "/Users/",

@@ -119,10 +119,10 @@ export async function runPanCli(
   }
 
   function formatSessionResult(result) {
-    return `PAN session exited with code ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}.`;
+    return `Pan session exited with code ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}.`;
   }
 
-  throw new Error(`Unknown PAN command: ${parsed.command}`);
+  throw new Error(`Unknown Pan command: ${parsed.command}`);
 }
 
 export function parseArgs(args, env = process.env) {
@@ -259,12 +259,12 @@ export function parseArgs(args, env = process.env) {
     throw retiredCommandError(
       "--background",
       json,
-      "PAN sessions run in the foreground. Run pan session --config <path>, then exit that session to stop it.",
+      "Pan sessions run in the foreground. Run pan session --config <path>, then exit that session to stop it.",
     );
   }
   if (config && profile) {
     throw new TypeError(
-      "PAN domain config and runner profile inputs cannot be used together",
+      "Pan domain config and runner profile inputs cannot be used together",
     );
   }
   if (!config) {
@@ -282,11 +282,11 @@ export function parseArgs(args, env = process.env) {
 function retiredCommand(command, json) {
   const guidance = {
     start:
-      "Run pan session --config <path> in the foreground; PAN no longer starts a host or background process.",
+      "Run pan session --config <path> in the foreground; Pan no longer starts a host or background process.",
     stop:
-      "PAN sessions are foreground processes. Exit the running pan session, then rerun pan session --config <path> when needed.",
+      "Pan sessions are foreground processes. Exit the running pan session, then rerun pan session --config <path> when needed.",
     host:
-      "Run pan session --config <path> in the foreground; PAN no longer runs a host or bridge.",
+      "Run pan session --config <path> in the foreground; Pan no longer runs a host or bridge.",
     connect:
       "Run pan session --config <path> and use that ordinary interactive Copilot session.",
     daemon:
@@ -315,7 +315,7 @@ function retiredCommandError(command, json, guidance) {
 
 function formatSetupResult(result) {
   const lines = [
-    `PAN domain ready: ${result.repository}`,
+    `Pan domain ready: ${result.repository}`,
     `Domain path: ${result.directory}`,
     `Project: ${result.projectUrl ?? `${result.projectOwner}#${result.projectNumber}`}`,
     `Config: ${result.configPath}`,
@@ -323,14 +323,14 @@ function formatSetupResult(result) {
     `Copilot approvals: ${result.approvalMode}`,
   ];
   if (result.assets) {
-    lines.push(`PAN assets: ${result.assets.status}`);
+    lines.push(`Pan assets: ${result.assets.status}`);
     lines.push(...(result.assets.diagnostics ?? []));
   }
   return lines.join("\n");
 }
 
 function formatAssetResult(result) {
-  const lines = [`PAN assets: ${result.status}`];
+  const lines = [`Pan assets: ${result.status}`];
   for (const asset of result.assets) {
     lines.push(`${asset.status}: ${asset.destination}`);
   }
@@ -342,7 +342,7 @@ function formatAssetResult(result) {
 
 function formatVerificationResult(result) {
   return [
-    `PAN setup: ${result.status}`,
+    `Pan setup: ${result.status}`,
     `Repository: ${result.repository}`,
     `Project: ${result.project}`,
     `Config: ${result.configPath}`,
@@ -353,7 +353,7 @@ function formatVerificationResult(result) {
 
 function formatShortcutResult(result) {
   return [
-    `PAN desktop shortcuts: ${result.status}`,
+    `Pan desktop shortcuts: ${result.status}`,
     ...result.shortcuts.map((shortcut) => `${shortcut.kind}: ${shortcut.path}`),
   ].join("\n");
 }

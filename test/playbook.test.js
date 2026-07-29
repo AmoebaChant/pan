@@ -24,26 +24,26 @@ test("normalizes explicit playbooks with independent capacity", () => {
   );
 });
 
-test("supports direct delivery and rejects unknown delivery policies", () => {
+test("supports direct and report delivery and rejects unknown delivery policies", () => {
   const profile = makeProfile();
   profile.playbooks[0].delivery = "direct";
-  profile.playbooks[1].delivery = "pull-request";
+  profile.playbooks[1].delivery = "report";
 
   assert.deepEqual(
     validateRunnerProfile(profile).playbooks.map(({ delivery }) => delivery),
-    ["direct", "pull-request"],
+    ["direct", "report"],
   );
 
   profile.playbooks[0].delivery = "email";
   assert.throws(
     () => validateRunnerProfile(profile),
-    /delivery must be "pull-request" or "direct"/,
+    /delivery must be "pull-request", "direct", or "report"/,
   );
 
   profile.playbooks[0].delivery = null;
   assert.throws(
     () => validateRunnerProfile(profile),
-    /delivery must be "pull-request" or "direct"/,
+    /delivery must be "pull-request", "direct", or "report"/,
   );
 });
 
