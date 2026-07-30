@@ -34,3 +34,10 @@
    README and in an `AGENTS.md` that Copilot CLI auto-loads from the repository
    root, and the guidance should cover the case where the agent has only cloned
    Pan in order to read that guidance.
+9. Before finishing, the setup agent should explain that playbooks are
+   machine-local runner policies, that connecting an existing domain on a new
+   machine does not configure that machine for the same work, and what the
+   default self-repair playbook covers. It should ask whether the user wants the
+   machine to handle additional work and guide those who do through the choices
+   needed for a domain-bound Pan session to configure and validate the runner
+   profile.
