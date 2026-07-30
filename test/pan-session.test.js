@@ -129,6 +129,22 @@ test("builds and verifies the Copilot invocation contract", async () => {
     "--add-dir",
     "C:\\product-reference",
   ]);
+  assert.deepEqual(
+    buildSessionCopilotArgs({
+      config: sessionConfig(),
+      allowAllTools: true,
+    }),
+    [
+      "--agent",
+      "pan",
+      "--no-auto-update",
+      "--allow-all-tools",
+      "--model",
+      "gpt-5.6-sol",
+      "--add-dir",
+      "C:\\product-reference",
+    ],
+  );
   let invocation;
   await verifyCopilotContract({
     executable: "copilot-test",

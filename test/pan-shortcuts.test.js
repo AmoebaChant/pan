@@ -37,6 +37,7 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
       configPath: path.join(root, "domain", "pan.json"),
       runnerProfilePath: path.join(root, "domain", "runners", "machine.json"),
       domainPath: path.join(root, "domain"),
+      approvalMode: "allow-all",
       selection: "both",
       desktopPath: desktop,
       iconPath: icon,
@@ -111,7 +112,16 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
       shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS,
       /--title "Pan Chat"/,
     );
+    assert.match(
+      shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS,
+      /--allow-all-tools$/,
+    );
+    assert.doesNotMatch(
+      shortcutCalls[1].options.env.PAN_SHORTCUT_ARGUMENTS,
+      /--allow-all-tools/,
+    );
     assert.match(result.shortcuts[0].command, /pan\.js' 'session' '--config'/);
+    assert.match(result.shortcuts[0].command, /'--allow-all-tools'$/);
     assert.match(result.shortcuts[1].command, /pan-runner\.js' '--profile'/);
     assert.equal(legacyExistsWhenChatWritten, false);
     await assert.rejects(access(legacyChatShortcut), {
