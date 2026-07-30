@@ -21,8 +21,10 @@ const domainConfig = profile.domainConfigPath
   : undefined;
 if (
   domainConfig &&
-  (domainConfig.domain.repository !== profile.store.repository ||
-    domainConfig.domain.projectOwner !== profile.store.projectOwner ||
+  (domainConfig.domain.repository.toLowerCase() !==
+      profile.store.repository.toLowerCase() ||
+    domainConfig.domain.projectOwner.toLowerCase() !==
+      profile.store.projectOwner.toLowerCase() ||
     domainConfig.domain.projectNumber !== profile.store.projectNumber)
 ) {
   throw new Error("Runner and domain configuration must target the same Pan store");

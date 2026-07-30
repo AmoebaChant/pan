@@ -14,8 +14,7 @@ profile.
   "domain": {
     "repository": "example/personal-domain",
     "projectOwner": "example",
-    "projectNumber": 12,
-    "path": "C:\\domains\\personal-domain"
+    "projectNumber": 12
   },
   "session": {
     "agent": { "name": "pan", "model": "gpt-5.6-sol" },
@@ -34,10 +33,13 @@ profile.
 }
 ```
 
-`domain.path` is an absolute local clone path. `session.agent.name` is required; its
-`executable` defaults to `copilot`, and `model` defaults to Copilot's `auto`
-selection when omitted. Product-context roots are optional local directories
-added to the Copilot session.
+The local domain path is the directory containing `pan.json`, so the same domain
+repository can be cloned to different locations on different machines. Legacy
+configurations may still contain `domain.path`; Pan accepts it as compatibility
+input but resolves the active checkout from `pan.json`.
+`session.agent.name` is required; its `executable` defaults to `copilot`, and
+`model` defaults to Copilot's `auto` selection when omitted. Product-context
+roots are optional local directories added to the Copilot session.
 
 The `schema/domain-config.json` contract accepts version 1 only for migration.
 New configurations must use version 2.

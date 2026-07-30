@@ -11,12 +11,17 @@
     "domain": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "projectOwner", "projectNumber", "path"],
+      "required": ["repository", "projectOwner", "projectNumber"],
       "properties": {
         "repository": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]+$" },
         "projectOwner": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$" },
         "projectNumber": { "type": "integer", "minimum": 1 },
-        "path": { "type": "string", "minLength": 1 }
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "deprecated": true,
+          "description": "Legacy compatibility input. Pan resolves the local domain checkout from the directory containing pan.json."
+        }
       }
     },
     "state": {
@@ -178,8 +183,7 @@
         "domain": {
           "repository": "example/personal-domain",
           "projectOwner": "example",
-          "projectNumber": 12,
-          "path": "C:\\domains\\personal-domain"
+          "projectNumber": 12
         },
         "session": { "agent": { "name": "pan" } }
       }

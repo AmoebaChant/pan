@@ -30,7 +30,7 @@ export async function replaceDomainConfigFile(configPath, document) {
 export async function migrateDomainConfigFile(configPath) {
   const loaded = await loadDomainConfig(configPath);
   const source = await importConfigDocument(configPath);
-  const migration = migrateDomainConfig(source);
+  const migration = migrateDomainConfig(source, { configPath });
   await replaceDomainConfigFile(configPath, migration.document);
   return { ...migration, config: loaded };
 }

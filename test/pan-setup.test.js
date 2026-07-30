@@ -56,7 +56,7 @@ test("creates and bootstraps a private Pan domain with safe approvals", async ()
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     assert.equal(config.version, 2);
-    assert.equal(config.domain.path, path.resolve(directory));
+    assert.equal(config.domain.path, undefined);
     assert.equal(config.domain.projectNumber, 7);
     assert.deepEqual(config.scheduling, { enabled: false });
 
@@ -209,6 +209,27 @@ test("adopts an existing local Pan domain and resumes without replacing its data
   try {
     await mkdir(path.dirname(runnerPath), { recursive: true });
     await writeFile(path.join(directory, "README.md"), "# Existing domain\n");
+    await writeFile(
+      path.join(directory, "pan.json"),
+      `${JSON.stringify(
+        {
+          version: 2,
+          domain: {
+            repository: "Example/Domain",
+            projectOwner: "Example",
+            projectNumber: 9,
+            path: path.join(root, "different-machine", "domain"),
+          },
+          session: {
+            agent: { name: "pan" },
+            productContextRoots: [],
+          },
+          scheduling: { enabled: false },
+        },
+        null,
+        2,
+      )}\n`,
+    );
     const existingRunner = {
       version: 1,
       id: "machine",
@@ -289,6 +310,10 @@ test("adopts an existing local Pan domain and resumes without replacing its data
 
     assert.equal(first.configPath, path.join(directory, "pan.json"));
     assert.equal(resumed.configPath, first.configPath);
+    assert.equal(
+      JSON.parse(await readFile(first.configPath, "utf8")).domain.path,
+      path.join(root, "different-machine", "domain"),
+    );
     assert.equal(
       gh.calls.some(
         (args) => args[0] === "repo" && args[1] === "clone",

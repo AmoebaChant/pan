@@ -66,6 +66,21 @@ test("rejects a runner aimed at another domain", () => {
   );
 });
 
+test("matches GitHub repository and owner casing", () => {
+  const profile = makeProfile();
+  profile.store.repository = "Example/Domain";
+  profile.store.projectOwner = "Example";
+
+  assert.doesNotThrow(() => assertMatchingDomain(makeConfig(), profile));
+});
+
+test("matches Windows domain path casing", { skip: process.platform !== "win32" }, () => {
+  const profile = makeProfile();
+  profile.store.path = profile.store.path.toUpperCase();
+
+  assert.doesNotThrow(() => assertMatchingDomain(makeConfig(), profile));
+});
+
 test("rejects a runner that references another domain configuration file", () => {
   const profile = makeProfile();
   profile.domainConfigPath = path.resolve("C:\\domains\\other\\pan.json");

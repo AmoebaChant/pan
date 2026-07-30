@@ -33,6 +33,34 @@ test("normalizes the minimal version 2 session configuration", () => {
   assert.equal(config.transcripts, undefined);
 });
 
+test("resolves the domain checkout from the configuration file location", () => {
+  const configPath = path.resolve("portable-domain", "pan.json");
+  const source = makeConfig();
+  source.domain.path = "path-from-another-machine";
+
+  const config = validateDomainConfig(source, { configPath });
+
+  assert.equal(config.domain.path, path.dirname(configPath));
+
+  delete source.domain.path;
+  assert.equal(
+    validateDomainConfig(source, { configPath }).domain.path,
+    path.dirname(configPath),
+  );
+
+  assert.throws(
+    () => validateDomainConfig(source),
+    /domain\.path is required when configPath is not provided/,
+  );
+
+  const relative = makeConfig();
+  relative.domain.path = "relative-domain";
+  assert.throws(
+    () => validateDomainConfig(relative),
+    /domain\.path must be an absolute path/,
+  );
+});
+
 test("reads version 1 into the version 2 runtime shape with diagnostics", () => {
   const legacy = makeVersion1Config();
   legacy.cadences = {
@@ -71,7 +99,26 @@ test("proposes an explicit version 2 migration without mutating the input", () =
   assert.equal(document.version, 2);
   assert.equal(document.session.agent.name, "pan");
   assert.equal(document.scheduling.reviewIntervalSeconds, 86_400);
+  assert.equal(document.domain.path, undefined);
   assert.match(diagnostics.join("\n"), /cadences.fullReviewSeconds/);
+});
+
+test("migrates a pathless version 2 configuration file", async () => {
+  const directory = path.resolve(`.domain-config-portable-${randomUUID()}`);
+  const configPath = path.join(directory, "pan.json");
+  const source = makeConfig();
+  delete source.domain.path;
+  await mkdir(directory);
+  await writeFile(configPath, JSON.stringify(source));
+
+  try {
+    const migration = await migrateDomainConfigFile(configPath);
+
+    assert.equal(migration.document.domain.path, undefined);
+    assert.equal(migration.config.domain.path, directory);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("validates product-context roots and scheduling", () => {
@@ -176,6 +223,7 @@ test("replaces and migrates files atomically", async () => {
 
     const loaded = await loadDomainConfig(configPath);
     assert.equal(loaded.configPath, configPath);
+    assert.equal(loaded.domain.path, directory);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -190,6 +238,10 @@ test("publishes a parseable versioned domain configuration schema", async () => 
   assert.equal(schema.$defs.version1.properties.version.const, 1);
   assert.equal(schema.$defs.version2.properties.version.const, 2);
   assert.ok(schema.$defs.version2.properties.session);
+  assert.equal(
+    schema.$defs.domain.required.includes("path"),
+    false,
+  );
 });
 
 function makeConfig() {

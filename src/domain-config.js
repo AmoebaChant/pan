@@ -77,10 +77,10 @@ export function validateDomainConfig(config, { configPath } = {}) {
   fail("version", "must be 1 or 2");
 }
 
-export function migrateDomainConfig(config) {
+export function migrateDomainConfig(config, { configPath } = {}) {
   requireRecord(config, "domain config");
   if (config.version === 2) {
-    const normalized = normalizeV2(config);
+    const normalized = normalizeV2(config, configPath);
     return {
       document: domainConfigDocument(normalized),
       diagnostics: normalized.migrationDiagnostics,
@@ -90,7 +90,7 @@ export function migrateDomainConfig(config) {
     fail("version", "must be 1 or 2");
   }
 
-  const normalized = normalizeV1(config);
+  const normalized = normalizeV1(config, configPath);
   const diagnostics = [
     "version: migrated domain configuration from version 1 to version 2",
     "agent: remapped to session.agent",
@@ -121,7 +121,7 @@ export function migrateDomainConfig(config) {
 
 function normalizeV1(config, configPath) {
   rejectUnexpectedKeys(config, V1_KEYS);
-  const identity = normalizeIdentity(config);
+  const identity = normalizeIdentity(config, configPath);
   const agent = normalizeAgent(config.agent, "agent");
   const cadences = normalizeV1Cadences(config.cadences);
   validateScheduling(
@@ -148,7 +148,7 @@ function normalizeV1(config, configPath) {
 
 function normalizeV2(config, configPath) {
   rejectUnexpectedKeys(config, V2_KEYS);
-  const identity = normalizeIdentity(config);
+  const identity = normalizeIdentity(config, configPath);
   requireRecord(config.session, "session");
   rejectObjectKeys(config.session, new Set(["agent", "productContextRoots"]), "session");
   const session = {
@@ -168,7 +168,7 @@ function normalizeV2(config, configPath) {
   });
 }
 
-function normalizeIdentity(config) {
+function normalizeIdentity(config, configPath) {
   requireRecord(config.domain, "domain");
   rejectObjectKeys(
     config.domain,
@@ -178,14 +178,26 @@ function normalizeIdentity(config) {
   requireRepository(config.domain.repository, "domain.repository");
   requireOwner(config.domain.projectOwner, "domain.projectOwner");
   requireInteger(config.domain.projectNumber, "domain.projectNumber", 1);
-  requireAbsolutePath(config.domain.path, "domain.path");
+  if (config.domain.path !== undefined) {
+    if (configPath) {
+      requireString(config.domain.path, "domain.path");
+    } else {
+      requireAbsolutePath(config.domain.path, "domain.path");
+    }
+  }
+  const domainPath = configPath
+    ? path.dirname(path.resolve(configPath))
+    : config.domain.path;
+  if (domainPath === undefined) {
+    fail("domain.path", "is required when configPath is not provided");
+  }
 
   const normalized = {
     domain: {
       repository: config.domain.repository,
       projectOwner: config.domain.projectOwner,
       projectNumber: config.domain.projectNumber,
-      path: path.resolve(config.domain.path),
+      path: path.resolve(domainPath),
     },
   };
   if (config.state !== undefined) {
@@ -392,7 +404,11 @@ function normalizedConfig({
 function domainConfigDocument(config) {
   return {
     version: 2,
-    domain: config.domain,
+    domain: {
+      repository: config.domain.repository,
+      projectOwner: config.domain.projectOwner,
+      projectNumber: config.domain.projectNumber,
+    },
     ...(config.state
       ? { state: { branch: config.state.branch, path: config.state.path } }
       : {}),

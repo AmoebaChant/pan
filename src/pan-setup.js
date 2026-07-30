@@ -8,6 +8,7 @@ import { PanAssetService } from "./pan-assets.js";
 import { ProcessClient } from "./process-client.js";
 import { validateRunnerProfile } from "./runner-profile.js";
 import { normalizeGitHubRepositoryUrl } from "./github-repository.js";
+import { samePath } from "./path-identity.js";
 
 const APPROVAL_MODES = ["prompt", "allow-all"];
 const SETUP_MODES = ["create", "connect"];
@@ -218,7 +219,7 @@ export async function setupPanDomain(
     const config = configSetup.document;
     const runner = runnerSetup.document;
 
-    validateDomainConfig(config);
+    validateDomainConfig(config, { configPath });
     validateRunnerProfile(runner, { profilePath: runnerPath });
 
     const managedFiles = [
@@ -499,7 +500,6 @@ function domainConfig({
   repository,
   projectOwner,
   projectNumber,
-  directory,
 }) {
   return {
     version: 2,
@@ -507,7 +507,6 @@ function domainConfig({
       repository,
       projectOwner,
       projectNumber,
-      path: directory,
     },
     session: {
       agent: {
@@ -738,7 +737,6 @@ async function existingOrStarterConfig({
       repository,
       projectOwner,
       projectNumber,
-      directory,
     });
     return { document, content: json(document), write: true };
   }
@@ -747,7 +745,6 @@ async function existingOrStarterConfig({
     repository,
     projectOwner,
     projectNumber,
-    directory,
     label: "Existing Pan domain configuration",
   });
   return { ...existing, write: false };
@@ -787,7 +784,6 @@ async function existingOrStarterRunner({
     repository,
     projectOwner,
     projectNumber,
-    directory,
     label: "Existing Pan runner profile",
   });
   const updated = applySelfRepairConfiguration(
@@ -809,8 +805,8 @@ async function existingOrStarterRunner({
     selfRepair,
   );
   if (
-    normalized.store.repository === repository &&
-    normalized.store.projectOwner === projectOwner &&
+    normalized.store.repository.toLowerCase() === repository.toLowerCase() &&
+    normalized.store.projectOwner.toLowerCase() === projectOwner.toLowerCase() &&
     normalized.store.projectNumber === projectNumber &&
     normalized.store.path !== undefined &&
     samePath(normalized.store.path, directory) &&
@@ -916,13 +912,12 @@ function applySelfRepairConfiguration(profile, selfRepair) {
 
 function assertDomainIdentity(
   actual,
-  { repository, projectOwner, projectNumber, directory, label },
+  { repository, projectOwner, projectNumber, label },
 ) {
   if (
     actual?.repository?.toLowerCase() !== repository.toLowerCase() ||
     actual?.projectOwner?.toLowerCase() !== projectOwner.toLowerCase() ||
-    actual?.projectNumber !== projectNumber ||
-    (actual.path !== undefined && !samePath(actual.path, directory))
+    actual?.projectNumber !== projectNumber
   ) {
     throw new Error(`${label} targets a different Pan domain`);
   }
@@ -999,14 +994,6 @@ async function requireCleanManagedPaths({ commands, directory, paths }) {
       `Pan setup-managed files have uncommitted changes: ${relativePaths.join(", ")}`,
     );
   }
-}
-
-function samePath(left, right) {
-  const resolvedLeft = path.resolve(left);
-  const resolvedRight = path.resolve(right);
-  return process.platform === "win32"
-    ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
-    : resolvedLeft === resolvedRight;
 }
 
 async function setupCommitNeedsPush({ commands, directory }) {

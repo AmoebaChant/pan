@@ -9,6 +9,7 @@ import {
   buildPanLaunchers,
   validatePanLaunchers,
 } from "./pan-shortcuts.js";
+import { samePath } from "./path-identity.js";
 
 /** Verifies that the installed assets, domain, session, and runner agree. */
 export async function verifyPanSetup({
@@ -70,10 +71,12 @@ export function assertMatchingDomain(
   { configPath, requireConfigPath = false } = {},
 ) {
   if (
-    config.domain.repository !== profile.store.repository ||
-    config.domain.projectOwner !== profile.store.projectOwner ||
+    config.domain.repository.toLowerCase() !==
+      profile.store.repository.toLowerCase() ||
+    config.domain.projectOwner.toLowerCase() !==
+      profile.store.projectOwner.toLowerCase() ||
     config.domain.projectNumber !== profile.store.projectNumber ||
-    path.resolve(config.domain.path) !== path.resolve(profile.store.path)
+    !samePath(config.domain.path, profile.store.path)
   ) {
     throw new Error("Runner and domain configuration must target the same Pan domain");
   }
