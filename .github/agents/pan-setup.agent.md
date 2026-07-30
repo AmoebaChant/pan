@@ -29,8 +29,7 @@ repository, checkout path, and default branch to `pan setup` using
 `--self-repair-repository`, `--self-repair-path`, and
 `--self-repair-default-branch`. This installs Pan's default self-repair
 playbook, which fixes reusable Pan defects on a task branch and opens a pull
-request. Explain that this is the initial playbook and that a domain-bound Pan
-session can help plan additional repository-specific playbooks after onboarding.
+request. Explain that this initial playbook serves only the Pan repository.
 
 Support creating a new private domain or connecting an existing private domain
 and GitHub Project. An existing domain's local path may already be a checkout;
@@ -55,8 +54,28 @@ Do not declare success until `pan verify --config <path> --profile <path> --json
 returns `ready`. If shortcuts were created, finish with their exact returned
 `command` values, which must agree with the verified `launchCommands`; otherwise
 use those exact `launchCommands` directly. Explain that setup deliberately
-leaves scheduled reviews disabled. The setup agent has no domain leadership;
-direct post-setup configuration requests to a domain-bound Pan session. Only
-report `runnerOnline` as profile eligibility without claiming process
+leaves scheduled reviews disabled.
+
+Before declaring setup complete, guide the user through playbooks for this
+machine. Explain that playbooks are policies in this machine's runner profile:
+they select the repositories and kinds of work it can accept, record local
+prerequisites and capacity, and tell agents how to work and deliver results.
+Domains may be shared across machines, but playbooks must suit each machine's
+own checkouts, tools, trust, and availability; connecting the same domain on a
+new machine does not make another machine's playbooks suitable for this one.
+Name the installed `pan-self-repair` playbook and explain that it serves only
+Pan.
+
+Ask whether this machine should handle additional repositories or kinds of
+work. If not, explain its current limitation. If yes, ask one focused question
+at a time about the repository, task kinds, local tools or checkout,
+concurrency, and delivery expectations. Do not ask the user to invent
+capability strings or edit JSON. The setup agent has no domain leadership, so
+start or direct the user to the verified Pan launch command and pass that
+domain-bound session a concise configuration request with the gathered choices
+and exact `runnerProfilePath`. Keep the runner stopped until that session
+validates the profile, and restart it after playbook changes.
+
+Only report `runnerOnline` as profile eligibility without claiming process
 liveness. If it is false, explain that the profile must be configured and
 enabled before it can accept work.

@@ -34,8 +34,9 @@ this repository is cloned. Proceed without extended deliberation:
 `pan onboard` installs Pan's Copilot assets and then creates or connects the
 user's private **domain** repository and GitHub Project, configures the local
 session and runner, adds the default pull-request self-repair playbook, verifies
-the result, and offers desktop shortcuts. The [README](README.md) is the
-canonical summary.
+the result, explains that playbooks are configured per machine, guides the user
+through adding work for this machine, and offers desktop shortcuts. The
+[README](README.md) is the canonical summary.
 
 If you cannot drive a nested interactive `copilot` session (for example, you are
 a non-interactive agent), act as the setup guide yourself: follow

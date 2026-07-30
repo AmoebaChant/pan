@@ -22,6 +22,8 @@ Ask an agent on your machine to follow this README. The agent should:
 
 Pan Setup explains domains, creates or connects yours, installs Pan's assets,
 configures a pull-request self-repair playbook, verifies setup, and offers shortcuts.
+It also explains that playbooks are configured per machine and guides you
+through adding the kinds of work you want this machine to handle.
 
 ## Requirements
 

@@ -50,9 +50,8 @@ branch with `gh repo view --json nameWithOwner,defaultBranchRef`. Pass those
 values to setup as `--self-repair-path`, `--self-repair-repository`, and
 `--self-repair-default-branch`. This installs the default `pan-self-repair`
 playbook, which treats Pan failures as reusable defects and delivers fixes
-through pull requests. Explain that this is the initial playbook and that a
-domain-bound Pan session can help plan additional repository-specific playbooks
-after onboarding.
+through pull requests. Explain that this initial playbook serves only the Pan
+repository.
 
 For a new repository and Project, run:
 
@@ -108,9 +107,36 @@ pan shortcuts create --config <configPath> --profile <runnerProfilePath> --selec
 
 Report failures accurately and use the command's diagnostics rather than
 guessing or applying manual repairs. When verification succeeds, explain that
-setup deliberately leaves scheduled reviews disabled. The setup agent is not a
-domain-bound Pan session and must not perform task or Project mutations; direct
-the user to start their Pan session and ask there. Report `runnerOnline` as profile eligibility without claiming that a runner
+setup deliberately leaves scheduled reviews disabled.
+
+Before declaring setup complete, guide the user through playbooks for this
+machine:
+
+1. Explain that playbooks are runner policies stored in this machine's runner
+   profile. They describe which repositories and kinds of work this machine can
+   accept, the capacity and local prerequisites, the instructions an agent
+   follows, and how it delivers results.
+2. Make the machine boundary explicit. A domain can be shared by several
+   machines, but each machine needs playbooks that match its own checkouts,
+   tools, trust, and availability. Connecting the same domain on a new machine
+   does not make another machine's playbooks suitable for this one.
+3. Name the installed `pan-self-repair` playbook and explain that, unless other
+   playbooks already exist in the returned runner profile, the runner can accept
+   only Pan self-repair work.
+4. Ask whether the user wants this machine to handle additional repositories or
+   kinds of work. If not, acknowledge that choice and explain the current
+   limitation. If yes, guide them one focused question at a time through the
+   repository, kinds of tasks, required local tools or checkout, concurrency,
+   and delivery expectations. Do not ask them to invent capability strings or
+   edit JSON.
+5. The setup agent is not a domain-bound Pan session and must not mutate runner
+   policy itself. Start or direct the user to the verified Pan launch command,
+   and give that session a concise configuration request containing the choices
+   just gathered and the exact `runnerProfilePath`. Tell the user to keep the
+   runner stopped until that session confirms the profile is valid, then restart
+   it after any playbook change.
+
+Report `runnerOnline` as profile eligibility without claiming that a runner
 process is currently alive. If it is false, explain that the profile must be
 configured and enabled before it can accept work. Then celebrate that setup is
 complete and give the exact `launchCommands` returned by verification. If

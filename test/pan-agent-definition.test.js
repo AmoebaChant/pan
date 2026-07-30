@@ -51,6 +51,28 @@ test("packages a conversational setup agent that delegates mechanics to Pan comm
   assert.match(body, /--self-repair-repository/);
   assert.match(body, /--self-repair-path/);
   assert.match(body, /pull requests/i);
+  assert.match(
+    body,
+    /Before declaring setup complete.*playbooks for this\s+machine/is,
+  );
+  assert.match(
+    body,
+    /runner policies stored in this machine's runner\s+profile/i,
+  );
+  assert.match(body, /same domain on a\s+new machine.*does not/is);
+  assert.match(body, /pan-self-repair.*only Pan self-repair work/is);
+  assert.match(body, /additional repositories or\s+kinds of work/i);
+  for (const choice of [
+    "repository",
+    "kinds of tasks",
+    "required local tools or checkout",
+    "concurrency",
+    "delivery expectations",
+  ]) {
+    assert.match(body, new RegExp(choice, "i"));
+  }
+  assert.match(body, /domain-bound Pan session.*choices.*runnerProfilePath/is);
+  assert.match(body, /restart\s+it after any playbook change/i);
   assert.match(body, /exact `launchCommands`/i);
   assert.match(body, /returned `command`.*verified commands/is);
   assert.doesNotMatch(body, /npx @amoebachant\/pan/);
