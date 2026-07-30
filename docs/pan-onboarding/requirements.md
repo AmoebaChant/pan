@@ -26,3 +26,11 @@
 7. Connecting an existing domain should accept its existing local checkout,
    preserve compatible domain data and runner configuration, and support
    resuming setup without restarting the conversational questionnaire.
+8. The onboarding trigger should be unambiguous to an agent. When a user tells an
+   agent to "onboard to Pan" or "set up Pan" — including from only the repository
+   URL, before anything is cloned — the agent should recognize that as a request
+   to run `pan onboard` and proceed with the guided setup, rather than reasoning
+   about whether it means studying the code. This intent should be stated in the
+   README and in an `AGENTS.md` that Copilot CLI auto-loads from the repository
+   root, and the guidance should cover the case where the agent has only cloned
+   Pan in order to read that guidance.

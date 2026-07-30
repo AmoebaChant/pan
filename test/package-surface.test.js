@@ -28,7 +28,9 @@ test("ships the session, runner, Copilot assets, and shared schemas", async () =
   assert.match(readme, /Ask where you want Pan cloned/i);
   assert.match(readme, /self-repair playbook/i);
   assert.doesNotMatch(readme, /npx @amoebachant\/pan/);
-  assert.ok(readme.split(/\r?\n/).length < 30, "README should remain approachable");
+  assert.match(readme, /onboard to pan/i);
+  assert.match(readme, /AGENTS\.md/);
+  assert.ok(readme.split(/\r?\n/).length < 40, "README should remain approachable");
   assert.equal(packageMetadata.files.includes("docs"), false);
   assert.equal(packageMetadata.files.includes(".github/agents"), false);
 
@@ -93,6 +95,7 @@ test("package archive excludes private and retired surfaces", async () => {
     );
   }
   for (const forbidden of [
+    "AGENTS.md",
     ".github/agents/pan.agent.md",
     "bin/pan-mcp.js",
     "docs/hostless-pan/task-board.md",
@@ -103,4 +106,16 @@ test("package archive excludes private and retired surfaces", async () => {
   ]) {
     assert.equal(paths.includes(forbidden), false, `${forbidden} must not be published`);
   }
+});
+
+test("routes onboarding requests to Pan's guided setup for agents", async () => {
+  const agents = await readFile(path.resolve("AGENTS.md"), "utf8");
+
+  assert.match(agents, /onboard to pan/i);
+  assert.match(agents, /set up pan/i);
+  assert.match(agents, /npx --yes --package \. pan onboard/);
+  assert.match(agents, /pan-setup/);
+  assert.match(agents, /guided setup/i);
+  assert.match(agents, /before\s+this repository is cloned/i);
+  assert.doesNotMatch(agents, /npx @amoebachant\/pan/);
 });
