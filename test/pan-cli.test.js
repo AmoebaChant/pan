@@ -58,6 +58,24 @@ test("parses onboarding, verification, connected setup, and shortcut commands", 
   });
   assert.deepEqual(
     parsePanArgs([
+      "config",
+      "validate",
+      "--schema-version",
+      "1",
+      "--config",
+      "domain.json",
+      "--json",
+    ], {}),
+    {
+      command: "config",
+      operation: "validate",
+      schemaVersion: 1,
+      config: "domain.json",
+      json: true,
+    },
+  );
+  assert.deepEqual(
+    parsePanArgs([
       "setup",
       "--repository",
       "example/domain",

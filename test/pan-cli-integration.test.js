@@ -50,6 +50,32 @@ test("runs setup before loading any existing configuration", async () => {
   assert.deepEqual(JSON.parse(stdout.value), expected);
 });
 
+test("validates a domain configuration for launcher checks", async () => {
+  const stdout = capture();
+  const result = await runPanCli(
+    [
+      "config",
+      "validate",
+      "--schema-version",
+      "1",
+      "--config",
+      "domain.json",
+      "--json",
+    ],
+    {
+      stdout,
+      domainConfigLoader: async () => ({ version: 2 }),
+    },
+  );
+
+  assert.deepEqual(result, {
+    status: "valid",
+    configPath: "domain.json",
+    version: 2,
+  });
+  assert.deepEqual(JSON.parse(stdout.value), result);
+});
+
 test("dispatches verification and shortcut creation with both configurations", async () => {
   const stdout = capture();
   const config = {

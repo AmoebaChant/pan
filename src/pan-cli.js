@@ -62,6 +62,19 @@ export async function runPanCli(
     );
     return result;
   }
+  if (parsed.command === "config") {
+    const domainConfig = await domainConfigLoader(parsed.config);
+    const result = {
+      status: "valid",
+      configPath: parsed.config,
+      version: domainConfig.version,
+    };
+    write(
+      stdout,
+      parsed.json ? JSON.stringify(result, null, 2) : "Pan configuration is valid.",
+    );
+    return result;
+  }
   if (parsed.command === "verify") {
     const domainConfig = await domainConfigLoader(parsed.config);
     const result = await verificationFactory({
@@ -239,6 +252,25 @@ export function parseArgs(args, env = process.env) {
     }
     requireNoArgs(remaining);
     return { command, operation, force, json };
+  }
+  if (command === "config") {
+    const operation = remaining.shift();
+    if (operation !== "validate") {
+      throw new TypeError(
+        "Usage: pan config validate --schema-version 1 --config <path> [--json]",
+      );
+    }
+    const schemaVersion = takeOption(remaining, "--schema-version");
+    if (schemaVersion !== "1") {
+      throw new TypeError("pan config validate requires --schema-version 1");
+    }
+    if (!config || profile) {
+      throw new TypeError(
+        "pan config validate requires --config <path>; --profile is not supported",
+      );
+    }
+    requireNoArgs(remaining);
+    return { command, operation, schemaVersion: 1, config, json };
   }
   if (command === "verify") {
     if (!config || !profile) {
@@ -448,6 +480,7 @@ function usage() {
     "Usage:",
     "  pan onboard",
     "  pan setup [--repository <owner/name>] [--repository-mode <create|connect>] [--path <path>] [--project-mode <create|connect>] [--project-number <number>] [--approval-mode <prompt|allow-all>] [--self-repair-repository <owner/name> --self-repair-path <path> [--self-repair-default-branch <branch>]] [--install-assets]",
+    "  pan config validate --schema-version 1 --config <path> [--json]",
     "  pan verify --config <path> --profile <path>",
     "  pan shortcuts create --config <path> --profile <path> [--selection <chat|runner|both>]",
     "  pan assets <install|status|repair> [--force] [--json]",
