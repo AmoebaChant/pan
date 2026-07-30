@@ -95,7 +95,9 @@ test("dispatches verification and shortcut creation with both configurations", a
       projectNumber: 12,
       path: "C:\\domains\\example",
     },
+    copilot: { approvalMode: "allow-all" },
   };
+  let shortcutOptions;
   const verified = await runPanCli(
     ["verify", "--config", "domain.json", "--profile", "runner.json", "--json"],
     {
@@ -126,13 +128,17 @@ test("dispatches verification and shortcut creation with both configurations", a
       stdout,
       domainConfigLoader: async () => config,
       runnerProfileLoader: async () => profile,
-      shortcutFactory: async (options) => ({
-        status: "created",
-        shortcuts: [{ kind: options.selection, path: "desktop" }],
-      }),
+      shortcutFactory: async (options) => {
+        shortcutOptions = options;
+        return {
+          status: "created",
+          shortcuts: [{ kind: options.selection, path: "desktop" }],
+        };
+      },
     },
   );
   assert.equal(shortcuts.status, "created");
+  assert.equal(shortcutOptions.approvalMode, "allow-all");
 });
 
 test("dispatches an ordinary foreground session", async () => {
@@ -145,7 +151,13 @@ test("dispatches an ordinary foreground session", async () => {
     session: { agent: { name: "pan", executable: "copilot-test" }, productContextRoots: [] },
   };
 
-  const result = await runPanCli(["session", "--config", "domain.json", "--json"], {
+  const result = await runPanCli([
+    "session",
+    "--config",
+    "domain.json",
+    "--allow-all-tools",
+    "--json",
+  ], {
     stdout,
     stderr: capture(),
     domainConfigLoader: async () => config,
@@ -158,6 +170,7 @@ test("dispatches an ordinary foreground session", async () => {
   assert.equal(received.config, config);
   assert.equal(received.configPath, "domain.json");
   assert.equal(received.executable, "copilot-test");
+  assert.equal(received.allowAllTools, true);
   assert.deepEqual(result, { exitCode: 0, domain: { repository: "example/domain" } });
   assert.deepEqual(JSON.parse(stdout.value), result);
 });

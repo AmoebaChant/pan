@@ -28,6 +28,7 @@ test("verifies assets, domain identity, Copilot, and runner agreement", async ()
   assert.equal(result.status, "ready");
   assert.equal(result.runnerOnline, false);
   assert.match(result.launchCommands.chat, /pan\.js' 'session' '--config'/);
+  assert.match(result.launchCommands.chat, /'--allow-all-tools'$/);
   assert.match(result.launchCommands.runner, /pan-runner\.js' '--profile'/);
   assert.deepEqual(commands, [
     { executable: "copilot", args: ["--help"] },
@@ -126,6 +127,7 @@ function makeConfig() {
 function makeProfile() {
   return {
     online: false,
+    copilot: { approvalMode: "allow-all" },
     domainConfigPath: path.resolve("C:\\domains\\example\\pan.json"),
     store: {
       repository: "example/domain",

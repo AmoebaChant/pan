@@ -144,6 +144,21 @@ test("parses onboarding, verification, connected setup, and shortcut commands", 
       json: false,
     },
   );
+  assert.deepEqual(
+    parsePanArgs([
+      "session",
+      "--config",
+      "domain.json",
+      "--allow-all-tools",
+    ], {}),
+    {
+      command: "session",
+      config: "domain.json",
+      profile: undefined,
+      allowAllTools: true,
+      json: false,
+    },
+  );
 });
 
 test("runs onboarding before loading domain configuration", async () => {

@@ -23,6 +23,7 @@ export async function startPanSession({
   configPath,
   executable = config?.session?.agent?.executable ?? "copilot",
   model = config?.session?.agent?.model,
+  allowAllTools = false,
   env = process.env,
   spawnProcess = spawn,
   assetService = new PanAssetService({ env }),
@@ -94,6 +95,7 @@ export async function startPanSession({
     const args = buildSessionCopilotArgs({
       config,
       model,
+      allowAllTools,
       bootstrapPrompt: schedulingEnabled
         ? buildScheduleBootstrapPrompt({
             scheduling: config.scheduling,
@@ -127,6 +129,7 @@ export async function startPanSession({
 export function buildSessionCopilotArgs({
   config,
   model = config?.session?.agent?.model,
+  allowAllTools = false,
   bootstrapPrompt,
 } = {}) {
   if (!config?.session?.agent?.name) {
@@ -136,6 +139,7 @@ export function buildSessionCopilotArgs({
     "--agent",
     config.session.agent.name,
     "--no-auto-update",
+    ...(allowAllTools ? ["--allow-all-tools"] : []),
     ...(model ? ["--model", model] : []),
     ...config.session.productContextRoots.flatMap((root) => [
       "--add-dir",

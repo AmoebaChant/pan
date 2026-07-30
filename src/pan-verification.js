@@ -45,6 +45,7 @@ export async function verifyPanSetup({
   const launchers = buildPanLaunchers({
     configPath: path.resolve(configPath),
     runnerProfilePath: path.resolve(runnerProfilePath),
+    approvalMode: profile.copilot.approvalMode,
   });
   await validatePanLaunchers({
     ...launchers,

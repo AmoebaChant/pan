@@ -102,6 +102,7 @@ export async function runPanCli(
       configPath: parsed.config,
       runnerProfilePath: parsed.profile,
       domainPath: domainConfig.domain.path,
+      approvalMode: runnerProfile.copilot.approvalMode,
       selection: parsed.selection,
       desktopPath: parsed.desktopPath,
       env,
@@ -120,6 +121,7 @@ export async function runPanCli(
       configPath: parsed.config,
       executable: agent?.executable,
       model: agent?.model,
+      allowAllTools: parsed.allowAllTools,
       env,
     });
     write(
@@ -332,8 +334,14 @@ export function parseArgs(args, env = process.env) {
   if (command !== "session") {
     throw new TypeError(usage());
   }
+  const allowAllTools = takeFlag(remaining, "--allow-all-tools");
   requireNoArgs(remaining);
-  return { command, ...configuration, json };
+  return {
+    command,
+    ...configuration,
+    ...(allowAllTools ? { allowAllTools: true } : {}),
+    json,
+  };
 }
 
 function retiredCommand(command, json) {

@@ -13,6 +13,7 @@ export async function createPanDesktopShortcuts({
   configPath,
   runnerProfilePath,
   domainPath,
+  approvalMode = "prompt",
   selection = "both",
   desktopPath,
   iconPath = path.join(MODULE_ROOT, "assets", "pan.ico"),
@@ -38,6 +39,7 @@ export async function createPanDesktopShortcuts({
   const launchers = buildPanLaunchers({
     configPath: path.resolve(configPath),
     runnerProfilePath: path.resolve(runnerProfilePath),
+    approvalMode,
     nodePath,
     moduleRoot,
   });
@@ -63,6 +65,7 @@ export async function createPanDesktopShortcuts({
     configPath: path.resolve(configPath),
     runnerProfilePath: path.resolve(runnerProfilePath),
     domainPath: path.resolve(domainPath),
+    approvalMode,
     selection,
     ...launchers,
   });
@@ -146,6 +149,7 @@ function shortcutDefinitions({
   configPath,
   runnerProfilePath,
   domainPath,
+  approvalMode,
   selection,
   nodePath,
   panEntryPath,
@@ -171,6 +175,7 @@ function shortcutDefinitions({
         "session",
         "--config",
         quote(configPath),
+        ...(approvalMode === "allow-all" ? ["--allow-all-tools"] : []),
       ].join(" "),
       command: launchCommands.chat,
     });
@@ -202,6 +207,7 @@ function shortcutDefinitions({
 export function buildPanLaunchers({
   configPath,
   runnerProfilePath,
+  approvalMode = "prompt",
   moduleRoot = MODULE_ROOT,
   nodePath = process.execPath,
 }) {
@@ -209,8 +215,18 @@ export function buildPanLaunchers({
   requireAbsolutePath(runnerProfilePath, "runnerProfilePath");
   requireAbsolutePath(moduleRoot, "moduleRoot");
   requireAbsolutePath(nodePath, "nodePath");
+  if (!["prompt", "allow-all"].includes(approvalMode)) {
+    throw new TypeError('approvalMode must be "prompt" or "allow-all"');
+  }
   const panEntryPath = path.join(moduleRoot, "bin", "pan.js");
   const runnerEntryPath = path.join(moduleRoot, "bin", "pan-runner.js");
+  const chatArgs = [
+    panEntryPath,
+    "session",
+    "--config",
+    configPath,
+    ...(approvalMode === "allow-all" ? ["--allow-all-tools"] : []),
+  ];
   return {
     configPath,
     runnerProfilePath,
@@ -218,12 +234,7 @@ export function buildPanLaunchers({
     panEntryPath,
     runnerEntryPath,
     launchCommands: {
-      chat: powershellCommand(nodePath, [
-        panEntryPath,
-        "session",
-        "--config",
-        configPath,
-      ]),
+      chat: powershellCommand(nodePath, chatArgs),
       runner: powershellCommand(nodePath, [
         runnerEntryPath,
         "--profile",
