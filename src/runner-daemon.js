@@ -9,6 +9,7 @@ import {
   normalizePlaybooks,
   playbookBlocker,
   taskRepository,
+  unsatisfiableRequirements,
 } from "./playbook.js";
 import {
   isRateLimitError,
@@ -47,6 +48,7 @@ export class RunnerDaemon {
     this.sleep = sleep;
     this.logger = logger;
     this.active = new Map();
+    this.escalatedRequirements = new Set();
   }
 
   async runOnce({ signal } = {}) {
@@ -140,9 +142,7 @@ export class RunnerDaemon {
         : this.profile;
       const playbook = matchingPlaybook(item, eligibleProfile, activeCounts);
       if (!playbook) {
-        this.logger.info?.(
-          `Skipping task #${item.number}: ${playbookBlocker(item, eligibleProfile, activeCounts).message}.`,
-        );
+        await this.#reportUndispatchable(item, eligibleProfile, activeCounts);
         continue;
       }
       const slot = this.#nextPlaybookSlot(playbook);
@@ -675,6 +675,31 @@ export class RunnerDaemon {
       }
       this.logger.info?.(
         `Recovered legacy runner-stopped task #${item.number} to ready.`,
+      );
+    }
+  }
+
+  async #reportUndispatchable(item, eligibleProfile, activeCounts) {
+    const blocker = playbookBlocker(item, eligibleProfile, activeCounts);
+    const unsatisfiable = unsatisfiableRequirements(item, this.profile);
+    if (unsatisfiable.length === 0) {
+      this.logger.info?.(`Skipping task #${item.number}: ${blocker.message}.`);
+      return;
+    }
+    const key = `${item.number}:${unsatisfiable.join(",")}`;
+    if (this.escalatedRequirements.has(key)) {
+      return;
+    }
+    this.escalatedRequirements.add(key);
+    this.logger.warn?.(
+      `Task #${item.number} can never be claimed here: ${blocker.message}. ` +
+        `requirements only selects a playbook, so it must contain one repo: entry and capabilities a runner advertises.`,
+    );
+    try {
+      await this.store.requestHumanAttention({ itemId: item.id });
+    } catch (error) {
+      this.logger.warn?.(
+        `Unable to flag task #${item.number} for a human: ${error.message}`,
       );
     }
   }

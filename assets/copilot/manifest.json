@@ -14,7 +14,7 @@
     {
       "source": "instructions/pan.instructions.md",
       "destination": "instructions/pan.instructions.md",
-      "sha256": "27691b953739231fa7c433983684f0384ef81b0e06eb4eaf67c68c7d8beefaf6"
+      "sha256": "e91b04c55d29fff8954e88ec9c72d7386dbe1090780655ecb3ad7a31c4f23fcd"
     },
     {
       "source": "skills/pan-attention/SKILL.md",

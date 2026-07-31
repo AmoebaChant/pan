@@ -63,6 +63,16 @@ and the capabilities a runner advertises. How the work should be delivered
 belongs in the Issue text and the playbook instructions, never in
 `requirements`.
 
+`requirements` is a closed vocabulary, not a description of the work. Copy each
+token from a runner profile's advertised capabilities; never derive one from the
+Issue text. Words like pull request, review, branch, worktree, environment, and
+tooling appear in Issue bodies constantly and must not become `delivery:`,
+`env:`, `os:`, or `tool:` tokens on that basis. A token no playbook advertises
+does not narrow dispatch, it removes the task from every runner permanently, and
+the task then sits `ready` forever without ever being claimed. When you believe a
+task genuinely needs a capability no runner advertises, say so and stop; do not
+write the token.
+
 ## Session behavior
 
 Pan sessions are ordinary foreground Copilot sessions. There is no Pan

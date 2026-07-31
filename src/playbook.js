@@ -120,6 +120,26 @@ export function taskRepository(item) {
   return repositories.length === 1 ? repositories[0] : undefined;
 }
 
+/** Requirements no playbook serving this task's repository can ever provide. */
+export function unsatisfiableRequirements(item, profile) {
+  const repository = taskRepository(item);
+  if (!repository) {
+    return [];
+  }
+  const serving = profile.playbooks.filter((playbook) =>
+    playbook.repositories.includes(repository),
+  );
+  if (serving.length === 0) {
+    return [];
+  }
+  const provided = new Set(
+    serving.flatMap((playbook) => playbook.capabilities),
+  );
+  return (item.requirements ?? []).filter(
+    (requirement) => !provided.has(requirement),
+  );
+}
+
 export function dispatchBlocker(item) {
   if (item.fields?.owner !== "agent") {
     return {
@@ -166,6 +186,17 @@ export function playbookBlocker(item, profile, activeCounts = new Map()) {
     return {
       code: "no-playbook-for-repository",
       message: `no playbook serves ${repository}`,
+    };
+  }
+  const unsatisfiable = unsatisfiableRequirements(item, profile);
+  if (unsatisfiable.length > 0) {
+    const advertised = [
+      ...new Set(serving.flatMap((playbook) => playbook.capabilities)),
+    ].sort();
+    return {
+      code: "requirements-unsatisfiable",
+      requirements: unsatisfiable,
+      message: `no playbook for ${repository} can ever satisfy ${unsatisfiable.join(", ")}; playbooks serving it advertise ${advertised.join(", ")}`,
     };
   }
   const reasons = serving.map(

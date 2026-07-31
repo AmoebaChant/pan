@@ -878,6 +878,49 @@ class ThrowingHandle extends FakeHandle {
   }
 }
 
+test("flags a permanently unsatisfiable requirement instead of skipping it forever", async () => {
+  const store = new FakeStore([
+    makeItem({
+      requirements: ["repo:example/tool", "env:local", "delivery:pull-request"],
+    }),
+  ]);
+  const warnings = [];
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(new FakeHandle({ status: "completed" })),
+    logger: { ...silentLogger, warn: (message) => warnings.push(message) },
+  });
+
+  await daemon.runOnce();
+  await daemon.runOnce();
+  await daemon.runOnce();
+
+  assert.equal(store.claims.length, 0);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /delivery:pull-request/);
+  assert.deepEqual(store.attentionRequests, ["item-1"]);
+});
+
+test("leaves a satisfiable requirement unflagged so it can still be claimed", async () => {
+  const store = new FakeStore([makeItem()]);
+  const warnings = [];
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(
+      new FakeHandle({ status: "completed", summary: "Done." }),
+    ),
+    logger: { ...silentLogger, warn: (message) => warnings.push(message) },
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.claims.length, 1);
+  assert.deepEqual(store.attentionRequests, []);
+  assert.deepEqual(warnings, []);
+});
+
 function makeItem({
   id = "item-1",
   number = 1,
