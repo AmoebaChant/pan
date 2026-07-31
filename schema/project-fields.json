@@ -32,7 +32,7 @@
       "key": "requirements",
       "name": "requirements",
       "type": "text",
-      "format": "newline-delimited capability requirements"
+      "format": "newline-delimited playbook selectors: exactly one repo:<owner>/<name> entry plus capability tokens a runner advertises in its profile. Never invent a token from the Issue text. Delivery method, process, environment, and tooling preferences do not belong here; a token no playbook advertises makes the task permanently unclaimable."
     },
     {
       "key": "needsHumanSince",

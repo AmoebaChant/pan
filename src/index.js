@@ -87,6 +87,7 @@ export {
   normalizePlaybooks,
   playbookBlocker,
   taskRepository,
+  unsatisfiableRequirements,
   validatePlaybook,
 } from "./playbook.js";
 export { buildTaskPrompt } from "./task-prompt.js";

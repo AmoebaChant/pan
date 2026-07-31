@@ -6,6 +6,7 @@ import {
   dispatchBlocker,
   matchingPlaybook,
   playbookBlocker,
+  unsatisfiableRequirements,
   validateRunnerProfile,
 } from "../src/index.js";
 
@@ -200,6 +201,37 @@ test("names the playbook constraint that rejects a dispatchable item", () => {
   assert.match(
     playbookBlocker(item(base), validateRunnerProfile(profile)).message,
     /pan-development \(disabled\); documentation \(disabled\)/,
+  );
+});
+
+test("separates a permanently unsatisfiable requirement from a busy playbook", () => {
+  const validated = validateRunnerProfile(makeProfile());
+  const item = (requirements) => ({
+    fields: { owner: "agent", workstream: "pan" },
+    requirements,
+  });
+  const base = ["repo:example/tool", "env:local", "tool:node22"];
+
+  const stranded = item([...base, "delivery:pull-request"]);
+  assert.deepEqual(unsatisfiableRequirements(stranded, validated), [
+    "delivery:pull-request",
+  ]);
+  const blocker = playbookBlocker(stranded, validated);
+  assert.equal(blocker.code, "requirements-unsatisfiable");
+  assert.deepEqual(blocker.requirements, ["delivery:pull-request"]);
+  assert.match(blocker.message, /can ever satisfy delivery:pull-request/);
+
+  assert.deepEqual(
+    unsatisfiableRequirements(item([...base, "tool:docs"]), validated),
+    [],
+  );
+  assert.deepEqual(unsatisfiableRequirements(item(base), validated), []);
+  assert.deepEqual(
+    unsatisfiableRequirements(item(base), {
+      ...validated,
+      playbooks: [],
+    }),
+    [],
   );
 });
 
