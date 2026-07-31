@@ -14,14 +14,21 @@ foreground pan session -- gh CLI --> GitHub Issues + Project
 
 ## Pan session
 
-`pan session` validates the configured domain and Project schema, then launches
-the Pan agent in the domain checkout. The agent reads and writes Issues and
+`pan session` fetches the shared `pan.json`, validates the configured domain and
+Project schema, then launches the Pan agent from its machine-local configuration
+directory. The agent reads and writes Issues and
 Project fields directly with `gh`. Skills provide workflow guidance. Pan keeps
 no portfolio snapshot, no cached state, and no second queue.
 
 The agent re-reads a target before mutation and verifies it afterward. This is
 enough for Pan's single-user workflow while still protecting active runner
 leases and detecting changed Issue state.
+
+The domain repository is never required as a local checkout. Workstreams are
+long-lived Issues carrying the exact `Workstream` label; their bodies are the
+canonical narrative, parent/sub-issue relationships are the hierarchy, and
+closing one archives it. Workstream Issues never belong to the backlog Project.
+Tasks are the remaining domain Issues that belong to that Project.
 
 Native recurring reviews belong to the foreground Copilot session. Launch-local
 due metadata prevents catch-up work but is not durable task state.
@@ -45,7 +52,7 @@ approval, or runner-owned execution fields.
 
 [`schema/project-fields.json`](../schema/project-fields.json) is the contract
 shared by setup, the Pan agent, and the runner. The agent sets triage fields:
-owner, status, priority, requirements, and workstream. The runner
+owner, status, priority, requirements, and the optional Workstream Issue URL. The runner
 claims eligible `owner=agent`, `status=ready` work and owns its active
 `claimed-by` and `lease-until` fields. A worker that needs an answer sets
 `needs-human-since` and waits in its own terminal without giving up its lease.

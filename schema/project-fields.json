@@ -56,7 +56,7 @@
       "key": "workstream",
       "name": "workstream",
       "type": "text",
-      "format": "path relative to workstreams/"
+      "format": "optional full https://github.com/<configured-domain>/issues/<number> URL. A non-empty value must resolve to an Issue carrying the exact Workstream label."
     }
   ]
 }

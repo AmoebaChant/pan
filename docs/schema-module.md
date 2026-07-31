@@ -15,7 +15,7 @@ import {
 ## Public surface
 
 The package exports domain configuration, setup, asset, session, Project store,
-runner, playbook, and task-execution utilities. The sole package executable is
+Workstream Issue, migration, runner, playbook, and task-execution utilities. The sole package executable is
 `pan`; `pan-runner` remains available as `bin/pan-runner.js` for its
 profile-based worker process.
 
@@ -40,6 +40,8 @@ fields against `schema/project-fields.json`.
 ## Contracts
 
 - `schema/domain-config.json` - domain and foreground-session configuration.
+- `schema/machine-domain-config.json` - local API-domain locator and session
+  paths.
 - `schema/playbook.json` and `schema/runner-profile.json` - private runner
   capability and workspace configuration.
 - `schema/project-fields.json` - shared GitHub Project fields.

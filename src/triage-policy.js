@@ -1,11 +1,12 @@
 import { answerTexts, latestNeedsHuman } from "./needs-human.js";
+import { parseWorkstreamIssueUrl } from "./workstream-issue-store.js";
 
 const REQUIREMENT_PATTERN =
   /\b(?:repo|env|os|tool|needs):[A-Za-z0-9_.\/-]+/gi;
 const DIRECTIVE_PATTERN =
   /^(?:[-*]\s*)?(owner|priority|workstream)\s*:\s*(.+)$/gim;
 
-export function deriveTriage(item, comments = []) {
+export function deriveTriage(item, comments = [], { workstreams = [] } = {}) {
   const answers = answerTexts(comments);
   const source = [item.body, ...answers].filter(Boolean).join("\n");
   const description = [item.body, ...answers]
@@ -34,8 +35,21 @@ export function deriveTriage(item, comments = []) {
     workstream: directives.workstream ?? current.workstream,
   };
   const missing = [];
-  if (!fields.workstream) {
-    missing.push("a workstream path");
+  if (directives.invalidWorkstream || fields.workstream) {
+    try {
+      const parsed = parseWorkstreamIssueUrl(
+        fields.workstream,
+        item.repository,
+      );
+      const resolved = workstreams.find(
+        (workstream) => workstream.url === parsed.url,
+      );
+      if (workstreams.length > 0 && !resolved) {
+        missing.push("a valid Workstream Issue URL");
+      }
+    } catch {
+      missing.push("a valid Workstream Issue URL");
+    }
   }
   if (owner === "agent" && repositoryRequirements.length !== 1) {
     missing.push("exactly one repo:<owner/name> requirement");
@@ -61,9 +75,13 @@ export function deriveTriage(item, comments = []) {
   return {
     fields: { ...fields, status },
     missing,
+    workstreamProposal:
+      fields.workstream || workstreams.length === 0
+        ? undefined
+        : inferWorkstream(source, workstreams),
     prompt:
       missing.length > 0
-        ? `Provide ${joinList(missing)}. You can answer with directives such as "workstream: path" or "repo:owner/name".`
+        ? `Provide ${joinList(missing)}. You can answer with directives such as "workstream: https://github.com/owner/domain/issues/12" or "repo:owner/name".`
         : undefined,
   };
 }
@@ -123,8 +141,12 @@ function parseDirectives(text) {
       ["urgent", "high", "normal", "low"].includes(value)
     ) {
       directives.priority = value;
-    } else if (key === "workstream" && validWorkstream(value)) {
-      directives.workstream = value.replaceAll("\\", "/");
+    } else if (key === "workstream") {
+      if (validWorkstream(value)) {
+        directives.workstream = value;
+      } else {
+        directives.invalidWorkstream = true;
+      }
     }
   }
   return directives;
@@ -137,12 +159,28 @@ function parseRequirements(text) {
 }
 
 function validWorkstream(value) {
-  return (
-    !value.startsWith("/") &&
-    !value.endsWith("/") &&
-    !value.includes("..") &&
-    /^[A-Za-z0-9_.\/-]+$/.test(value)
+  try {
+    parseWorkstreamIssueUrl(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function inferWorkstream(source, workstreams) {
+  const linked = workstreams.filter((workstream) =>
+    source.includes(workstream.url),
   );
+  if (linked.length === 1) {
+    return linked[0];
+  }
+  const lowered = source.toLowerCase();
+  const titled = workstreams.filter(
+    (workstream) =>
+      workstream.title.length >= 4 &&
+      lowered.includes(workstream.title.toLowerCase()),
+  );
+  return titled.length === 1 ? titled[0] : undefined;
 }
 
 function stripTriageMetadata(text = "") {

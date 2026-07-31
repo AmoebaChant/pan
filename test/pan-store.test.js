@@ -111,6 +111,26 @@ test("clears an empty requirements array", async () => {
   assert.equal((await store.getItem("item-1")).fields.requirements, "");
 });
 
+test("validates a non-empty workstream URL before writing the Project field", async () => {
+  const validated = [];
+  const { store } = fixture({
+    workstreamStore: {
+      async validate(url) {
+        validated.push(url);
+        return { url };
+      },
+    },
+  });
+
+  await store.setFields("item-1", {
+    workstream: "https://github.com/AmoebaChant/pan-work/issues/10",
+  });
+
+  assert.deepEqual(validated, [
+    "https://github.com/AmoebaChant/pan-work/issues/10",
+  ]);
+});
+
 test("filters canonical items by fields, requirements, and lease state", async () => {
   const { store } = fixture({
     items: [
@@ -674,6 +694,7 @@ function fixture({
   failIssueClose = false,
   projectPageSize,
   projectItemSafetyLimit,
+  workstreamStore,
 } = {}) {
   const gh = new FakeGh(items, {
     failAssignee,
@@ -699,6 +720,7 @@ function fixture({
       projectItemSafetyLimit,
       now: () => NOW,
       sleep: async () => {},
+      workstreamStore,
     }),
   };
 }

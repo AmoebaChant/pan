@@ -34,7 +34,8 @@ A recorded answer is durable task context: a worker that has to be relaunched
 reads it from the Issue. Answering in the terminal and recording the answer on
 the Issue are complementary, not alternatives.
 
-To create a task, use `gh issue create`, add that open Issue to the configured
-Project, and initialize fields from `PAN_PROJECT_SCHEMA`. New tasks start
+To create a task, use `gh issue create` without the `Workstream` label, add that
+open Issue to the configured Project as part of the same explicitly requested
+operation, and initialize fields from `PAN_PROJECT_SCHEMA`. New tasks start
 `untriaged` unless the user supplied enough information to triage immediately.
 Confirm the Issue is open before registration and verify all fields afterward.

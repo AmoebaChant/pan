@@ -14,14 +14,24 @@ Issue state with `gh issue list` or `gh issue view`, and join by Issue URL.
 Closed Issues are not triage candidates and are never automatically added back
 to the Project.
 
+Join the complete repository Issue list to the Project by URL. A valid
+Workstream has the exact `Workstream` label and is not a Project member. A valid
+task has no `Workstream` label and is a Project member. Report both invalid
+states: Workstream Issues in the Project and non-Workstream Issues outside it.
+Only open outside Issues may be proposed for task registration.
+
 Pan discusses priority, ownership, requirements, and workstream with
 the user, then writes approved values with `gh project item-edit`. It re-reads
 each Issue and Project item immediately before mutation and verifies the result
 afterward. Active runner status and lease fields are left untouched.
 
-An item is dispatchable only when `owner` is `agent`, `Status` is `ready`,
-`workstream` is set, and `requirements` names exactly one `repo:` entry served
-by a playbook on an online runner. An `agent` and `ready` item with empty
+The `workstream` association is optional. If set, it must be the full URL of a
+Workstream Issue in the configured domain. Triage may propose a likely
+association from links or text, but it never assigns one without approval.
+
+An item is dispatchable only when `owner` is `agent`, `Status` is `ready`, and
+`requirements` names exactly one `repo:` entry served by a playbook on an
+online runner. An `agent` and `ready` item with empty
 `requirements` is inert: it is counted as ready but no runner can claim it. The
 runner names the missing field for each skipped item in its poll log.
 

@@ -32,7 +32,7 @@ Acknowledge each answer, briefly explain why the next choice matters, and avoid
 dumping the full questionnaire or command sequence on the user:
 
 1. Whether to create a new domain or connect an existing private domain.
-2. The `owner/name`, local domain path, and GitHub Project owner.
+2. The domain `owner/name` and GitHub Project owner.
 3. Whether to create a Project or connect a compatible existing Project.
 4. The runner's Copilot approval mode: `prompt` by default, or `allow-all` only
    after the user explicitly confirms that machine-local trust choice.
@@ -56,7 +56,7 @@ repository.
 For a new repository and Project, run:
 
 ```powershell
-pan setup --repository <owner/name> --repository-mode create --path <path> --project-owner <owner> --project-mode create --project-title <title> --approval-mode <mode> --install-assets --json
+pan setup <owner/name> --repository-mode create --project-owner <owner> --project-mode create --project-title <title> --approval-mode <mode> --install-assets --json
 ```
 
 Include:
@@ -67,12 +67,13 @@ Include:
 
 For existing resources, use `--repository-mode connect`,
 `--project-mode connect`, and `--project-number <number>`. Mixed create/connect
-choices are supported. The path may be an existing local checkout of that
-domain or a missing path where Pan will clone it. Never tell the user that an
-existing domain needs a new empty path. Pan preserves compatible domain
-configuration, runner settings, workstreams, and README content while adding
-only missing setup data. Read the JSON result and use its exact `configPath`
-and `runnerProfilePath`.
+choices are supported. Pan accesses the domain through GitHub APIs and never
+clones it. Shared `pan.json`, the Project schema, and the exact `Workstream`
+label are created or validated remotely. Setup writes only a local repository
+locator and this machine's runner settings. On another machine, rerun the same
+repository command; Pan fetches shared configuration and asks only for local
+choices. Read the JSON result and use its exact `configPath` and
+`runnerProfilePath`.
 
 Treat setup as resumable. Keep every confirmed answer in the current
 conversation. If a deterministic command reports a recoverable failure, explain

@@ -16,8 +16,9 @@ import {
 
 const options = parseArgs(process.argv.slice(2));
 const profile = await loadRunnerProfile(options.profile);
+const gh = new GhClient();
 const domainConfig = profile.domainConfigPath
-  ? await loadDomainConfig(profile.domainConfigPath)
+  ? await loadDomainConfig(profile.domainConfigPath, { gh })
   : undefined;
 if (
   domainConfig &&
@@ -40,14 +41,13 @@ if (options.validateProfile) {
   process.exit(0);
 }
 
-const gh = new GhClient();
 const store = new PanStore({
   repository: profile.store.repository,
   projectOwner: profile.store.projectOwner,
   projectNumber: profile.store.projectNumber,
   gh,
 });
-const executor = new LocalTaskExecutor({ profile, logger });
+const executor = new LocalTaskExecutor({ profile, logger, gh });
 const attention = new AttentionService({ store });
 const daemon = new RunnerDaemon({
   store,

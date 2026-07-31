@@ -21,8 +21,8 @@ export function buildTaskPrompt(taskContextPath, task) {
     "",
     `Read the complete canonical task context from ${taskContextPath}.`,
     agentManaged
-      ? "It contains the Issue body, acceptance criteria, comments and answers, target working directory, workstream README, and playbook guidance."
-      : "It contains the Issue body, acceptance criteria, comments and answers, target worktree and branch, workstream README, and playbook guidance.",
+      ? "It contains the Issue body, acceptance criteria, comments and answers, target working directory, optional Workstream Issue context, and playbook guidance."
+      : "It contains the Issue body, acceptance criteria, comments and answers, target worktree and branch, optional Workstream Issue context, and playbook guidance.",
     "",
     "The playbook below and the Issue itself define this task. Together they say what to do and how to deliver it. Follow both; where they conflict, the Issue is the more specific instruction and wins.",
     ...playbookInstructions,

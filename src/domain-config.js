@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  loadMachineDomainConfig,
+  MACHINE_DOMAIN_CONFIG_KIND,
+} from "./github-domain-config.js";
+
 const RUNNER_ONLY_KEYS = new Set([
   "id",
   "machine",
@@ -49,7 +54,7 @@ const DEFAULTS = Object.freeze({
   },
 });
 
-export async function loadDomainConfig(configPath) {
+export async function loadDomainConfig(configPath, options = {}) {
   if (!configPath) {
     throw new TypeError("configPath is required");
   }
@@ -62,6 +67,9 @@ export async function loadDomainConfig(configPath) {
       `Unable to read Pan domain config ${configPath}: ${error.message}`,
       { cause: error },
     );
+  }
+  if (parsed.kind === MACHINE_DOMAIN_CONFIG_KIND) {
+    return loadMachineDomainConfig(configPath, options);
   }
   return validateDomainConfig(parsed, { configPath });
 }

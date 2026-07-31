@@ -1,6 +1,12 @@
 
+import { readFile } from "node:fs/promises";
+
 import { PanAssetService } from "./pan-assets.js";
 import { loadDomainConfig } from "./domain-config.js";
+import {
+  GitHubDomainConfigStore,
+  readMachineDomainConfig,
+} from "./github-domain-config.js";
 import { GhClient } from "./gh-client.js";
 import { startPanOnboarding } from "./pan-onboarding.js";
 import { createPanDesktopShortcuts } from "./pan-shortcuts.js";
@@ -8,6 +14,11 @@ import { startPanSession } from "./pan-session.js";
 import { setupPanDomain } from "./pan-setup.js";
 import { assertMatchingDomain, verifyPanSetup } from "./pan-verification.js";
 import { loadRunnerProfile } from "./runner-profile.js";
+import {
+  readMigrationReport,
+  WorkstreamMigration,
+  writeMigrationReport,
+} from "./workstream-migration.js";
 
 export async function runPanCli(
   args,
@@ -62,8 +73,63 @@ export async function runPanCli(
     );
     return result;
   }
+  if (parsed.command === "migrate-workstreams") {
+    const domainConfig = await domainConfigLoader(parsed.config, { gh });
+    const resume = parsed.resume
+      ? await readMigrationReport(parsed.resume)
+      : undefined;
+    const result = await new WorkstreamMigration({
+      repository: domainConfig.domain.repository,
+      projectOwner: domainConfig.domain.projectOwner,
+      projectNumber: domainConfig.domain.projectNumber,
+      gh,
+    }).run({
+      dryRun: parsed.dryRun,
+      resume,
+      createRemovalPullRequest: parsed.createRemovalPullRequest,
+      checkpoint: (report) => writeMigrationReport(parsed.report, report),
+    });
+    await writeMigrationReport(parsed.report, result);
+    write(
+      stdout,
+      parsed.json
+        ? JSON.stringify(result, null, 2)
+        : `Workstream migration ${result.dryRun ? "dry-run" : "run"} report: ${parsed.report}`,
+    );
+    return result;
+  }
   if (parsed.command === "config") {
-    const domainConfig = await domainConfigLoader(parsed.config);
+    if (parsed.operation === "get") {
+      const machine = await readMachineDomainConfig(parsed.config);
+      const result = await new GitHubDomainConfigStore({
+        repository: machine.domain.repository,
+        gh,
+      }).read();
+      if (!result) {
+        throw new Error("The configured domain has no shared pan.json");
+      }
+      write(stdout, JSON.stringify(result, null, 2));
+      return result;
+    }
+    if (parsed.operation === "update") {
+      const machine = await readMachineDomainConfig(parsed.config);
+      const document = JSON.parse(await readFile(parsed.document, "utf8"));
+      const result = await new GitHubDomainConfigStore({
+        repository: machine.domain.repository,
+        gh,
+      }).write(document, {
+        expectedSha: parsed.expectedSha,
+        message: parsed.message,
+      });
+      write(
+        stdout,
+        parsed.json
+          ? JSON.stringify(result, null, 2)
+          : `Updated shared pan.json at ${result.sha}.`,
+      );
+      return result;
+    }
+    const domainConfig = await domainConfigLoader(parsed.config, { gh });
     const result = {
       status: "valid",
       configPath: parsed.config,
@@ -76,7 +142,7 @@ export async function runPanCli(
     return result;
   }
   if (parsed.command === "verify") {
-    const domainConfig = await domainConfigLoader(parsed.config);
+    const domainConfig = await domainConfigLoader(parsed.config, { gh });
     const result = await verificationFactory({
       config: domainConfig,
       configPath: parsed.config,
@@ -91,7 +157,7 @@ export async function runPanCli(
   }
   if (parsed.command === "shortcuts") {
     const [domainConfig, runnerProfile] = await Promise.all([
-      domainConfigLoader(parsed.config),
+      domainConfigLoader(parsed.config, { gh }),
       runnerProfileLoader(parsed.profile),
     ]);
     assertMatchingDomain(domainConfig, runnerProfile, {
@@ -113,7 +179,7 @@ export async function runPanCli(
     );
     return result;
   }
-  const domainConfig = await domainConfigLoader(parsed.config);
+  const domainConfig = await domainConfigLoader(parsed.config, { gh });
   if (parsed.command === "session") {
     const agent = domainConfig.session?.agent ?? domainConfig.agent;
     const result = await sessionFactory({
@@ -162,8 +228,19 @@ export function parseArgs(args, env = process.env) {
         "pan setup creates configuration and cannot use --config, --profile, PAN_CONFIG, or PAN_PROFILE",
       );
     }
-    const repository = takeOption(remaining, "--repository");
+    const positionalRepository =
+      remaining[0] && !remaining[0].startsWith("--")
+        ? remaining.shift()
+        : undefined;
+    const repositoryOption = takeOption(remaining, "--repository");
+    if (positionalRepository && repositoryOption) {
+      throw new TypeError(
+        "Specify the domain repository positionally or with --repository, not both",
+      );
+    }
+    const repository = positionalRepository ?? repositoryOption;
     const setupPath = takeOption(remaining, "--path");
+    const localConfigPath = takeOption(remaining, "--local-config");
     const projectOwner = takeOption(remaining, "--project-owner");
     const projectTitle = takeOption(remaining, "--project-title");
     const projectNumber = optionalPositiveInteger(
@@ -228,6 +305,7 @@ export function parseArgs(args, env = process.env) {
       json,
       repository,
       path: setupPath,
+      ...(localConfigPath ? { localConfigPath } : {}),
       projectOwner,
       projectTitle,
       projectNumber,
@@ -238,6 +316,43 @@ export function parseArgs(args, env = process.env) {
       selfRepairPath,
       selfRepairDefaultBranch,
       ...(installAssets ? { installAssets: true } : {}),
+    };
+  }
+
+  if (command === "migrate-workstreams") {
+    if (!config || profile) {
+      throw new TypeError(
+        "pan migrate-workstreams requires --config <machine-config>",
+      );
+    }
+    const report = takeOption(remaining, "--report");
+    const resume = takeOption(remaining, "--resume");
+    const apply = takeFlag(remaining, "--apply");
+    const dryRunFlag = takeFlag(remaining, "--dry-run");
+    const createRemovalPullRequest = takeFlag(
+      remaining,
+      "--create-removal-pr",
+    );
+    if (!report) {
+      throw new TypeError(
+        "pan migrate-workstreams requires --report <path>",
+      );
+    }
+    if (apply && dryRunFlag) {
+      throw new TypeError("--apply and --dry-run cannot be used together");
+    }
+    if (createRemovalPullRequest && !apply) {
+      throw new TypeError("--create-removal-pr requires --apply");
+    }
+    requireNoArgs(remaining);
+    return {
+      command,
+      config,
+      report,
+      resume,
+      dryRun: !apply,
+      createRemovalPullRequest,
+      json,
     };
   }
 
@@ -257,19 +372,43 @@ export function parseArgs(args, env = process.env) {
   }
   if (command === "config") {
     const operation = remaining.shift();
-    if (operation !== "validate") {
+    if (!["validate", "get", "update"].includes(operation)) {
       throw new TypeError(
-        "Usage: pan config validate --schema-version 1 --config <path> [--json]",
+        "Usage: pan config <validate|get|update> --config <path>",
       );
+    }
+    if (!config || profile) {
+      throw new TypeError(
+        "pan config requires --config <path>; --profile is not supported",
+      );
+    }
+    if (operation === "get") {
+      requireNoArgs(remaining);
+      return { command, operation, config, json };
+    }
+    if (operation === "update") {
+      const document = takeOption(remaining, "--document");
+      const expectedSha = takeOption(remaining, "--expected-sha");
+      const message = takeOption(remaining, "--message");
+      if (!document || !expectedSha) {
+        throw new TypeError(
+          "pan config update requires --document <path> and --expected-sha <sha>",
+        );
+      }
+      requireNoArgs(remaining);
+      return {
+        command,
+        operation,
+        config,
+        document,
+        expectedSha,
+        message,
+        json,
+      };
     }
     const schemaVersion = takeOption(remaining, "--schema-version");
     if (schemaVersion !== "1") {
       throw new TypeError("pan config validate requires --schema-version 1");
-    }
-    if (!config || profile) {
-      throw new TypeError(
-        "pan config validate requires --config <path>; --profile is not supported",
-      );
     }
     requireNoArgs(remaining);
     return { command, operation, schemaVersion: 1, config, json };
@@ -381,7 +520,7 @@ function retiredCommandError(command, json, guidance) {
 function formatSetupResult(result) {
   const lines = [
     `Pan domain ready: ${result.repository}`,
-    `Domain path: ${result.directory}`,
+    `${result.apiOnly ? "Machine config directory" : "Domain path"}: ${result.directory}`,
     `Project: ${result.projectUrl ?? `${result.projectOwner}#${result.projectNumber}`}`,
     `Config: ${result.configPath}`,
     `Runner profile: ${result.runnerProfilePath} (${result.runnerOnline ? "online" : "offline"})`,
@@ -487,8 +626,11 @@ function usage() {
   return [
     "Usage:",
     "  pan onboard",
-    "  pan setup [--repository <owner/name>] [--repository-mode <create|connect>] [--path <path>] [--project-mode <create|connect>] [--project-number <number>] [--approval-mode <prompt|allow-all>] [--self-repair-repository <owner/name> --self-repair-path <path> [--self-repair-default-branch <branch>]] [--install-assets]",
+    "  pan setup <owner/name> [--repository-mode <create|connect>] [--local-config <path>] [--project-mode <create|connect>] [--project-number <number>] [--approval-mode <prompt|allow-all>] [--self-repair-repository <owner/name> --self-repair-path <path> [--self-repair-default-branch <branch>]] [--install-assets]",
     "  pan config validate --schema-version 1 --config <path> [--json]",
+    "  pan config get --config <machine-config> [--json]",
+    "  pan config update --config <machine-config> --document <pan.json> --expected-sha <sha> [--message <text>] [--json]",
+    "  pan migrate-workstreams --config <machine-config> --report <path> [--dry-run|--apply] [--resume <report>] [--create-removal-pr] [--json]",
     "  pan verify --config <path> --profile <path>",
     "  pan shortcuts create --config <path> --profile <path> [--selection <chat|runner|both>]",
     "  pan assets <install|status|repair> [--force] [--json]",

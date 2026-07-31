@@ -42,7 +42,8 @@ test("packages a conversational setup agent that delegates mechanics to Pan comm
   assert.match(body, /work and\s+personal life/i);
   assert.match(body, /one focused question at a time/i);
   assert.match(body, /Focus on what I do for the user/i);
-  assert.match(body, /existing local checkout/i);
+  assert.match(body, /never\s+clones it/i);
+  assert.match(body, /shared `pan\.json`/i);
   assert.match(body, /resumable/i);
   assert.match(body, /Do not restart the welcome or\s+questionnaire/i);
   assert.match(body, /pan setup/);
@@ -106,7 +107,11 @@ test("packages direct-GitHub portfolio, workstream, and attention skills", async
       "gh issue view",
       "gh project item-edit",
     ],
-    "pan-workstream": ["default branch", "Do not create a feature branch or worktree"],
+    "pan-workstream": [
+      "Workstream",
+      "gh issue edit",
+      "sub-issue API",
+    ],
   };
 
   for (const [name, commands] of Object.entries(expected)) {

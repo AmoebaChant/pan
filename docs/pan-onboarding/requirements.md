@@ -23,9 +23,10 @@
    - explain what Pan is;
    - show the single get-started command; and
    - link to the architecture and deeper documentation.
-7. Connecting an existing domain should accept its existing local checkout,
-   preserve compatible domain data and runner configuration, and support
-   resuming setup without restarting the conversational questionnaire.
+7. Domain setup and connection must use GitHub APIs and must not clone the
+   domain repository. Shared `pan.json` configuration is read and updated with
+   blob-SHA optimistic concurrency; only machine settings and runner profiles
+   are stored locally.
 8. The onboarding trigger should be unambiguous to an agent. When a user tells an
    agent to "onboard to Pan" or "set up Pan" — including from only the repository
    URL, before anything is cloned — the agent should recognize that as a request
@@ -41,3 +42,6 @@
    machine to handle additional work and guide those who do through the choices
    needed for a domain-bound Pan session to configure and validate the runner
    profile.
+10. Setup creates or validates the exact `Workstream` label. Workstreams are
+    Issues outside the backlog Project, while tasks are non-Workstream Issues
+    inside it.

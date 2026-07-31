@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { normalizeGitHubRepositoryUrl } from "./github-repository.js";
 export { normalizeGitHubRepositoryUrl } from "./github-repository.js";
+import { GhClient } from "./gh-client.js";
 import { ProcessClient } from "./process-client.js";
 import {
   processIsAlive,
@@ -22,6 +23,7 @@ import {
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,
 } from "./workstream-store.js";
+import { WorkstreamIssueStore } from "./workstream-issue-store.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./task-worker.js", import.meta.url));
 const RESULT_POLL_MS = 1_000;
@@ -41,6 +43,8 @@ export class LocalTaskExecutor {
     workerIsAlive = processIsAlive,
     terminateWorker = terminateProcessByPid,
     logger = console,
+    gh = new GhClient(),
+    workstreamStore,
   }) {
     this.profile = profile;
     this.commands = commands;
@@ -53,6 +57,14 @@ export class LocalTaskExecutor {
     this.workerIsAlive = workerIsAlive;
     this.terminateWorker = terminateWorker;
     this.logger = logger;
+    this.workstreamStore =
+      workstreamStore ??
+      (profile.store.repository
+        ? new WorkstreamIssueStore({
+            repository: profile.store.repository,
+            gh,
+          })
+        : undefined);
   }
 
   async start({
@@ -137,11 +149,7 @@ export class LocalTaskExecutor {
             "HEAD",
           ]);
 
-      const workstreamPath = await resolveConfinedWorkstreamReadme(
-        this.profile.store.path,
-        item.fields.workstream,
-      );
-      const workstream = await readFile(workstreamPath, "utf8");
+      const workstream = await this.#workstreamContext(item.fields.workstream);
       const launchId = this.launchIdFactory();
       const paths = taskStatePaths(statePath, launchId);
       const sessionId = this.sessionIdFactory();
@@ -179,11 +187,7 @@ export class LocalTaskExecutor {
           id: selectedPlaybook.id,
           instructions: selectedPlaybook.instructions,
         },
-        workstream: {
-          path: item.fields.workstream,
-          sourcePath: workstreamPath,
-          content: workstream,
-        },
+        ...(workstream ? { workstream } : {}),
         paths,
         copilot: {
           executable: this.profile.copilot.executable,
@@ -430,10 +434,7 @@ export class LocalTaskExecutor {
     }
     await this.#stopPreviousLaunch(statePath, pointer.launchPaths);
 
-    const workstreamPath = await resolveConfinedWorkstreamReadme(
-      this.profile.store.path,
-      item.fields.workstream,
-    );
+    const workstream = await this.#workstreamContext(item.fields.workstream);
     const launchId = this.launchIdFactory();
     const paths = taskStatePaths(statePath, launchId);
     const context = {
@@ -463,11 +464,7 @@ export class LocalTaskExecutor {
         id: playbook.id,
         instructions: playbook.instructions,
       },
-      workstream: {
-        path: item.fields.workstream,
-        sourcePath: workstreamPath,
-        content: await readFile(workstreamPath, "utf8"),
-      },
+      ...(workstream ? { workstream } : {}),
       needsHumanSince: item.fields.needsHumanSince ?? "",
       paths,
       copilot: {
@@ -676,6 +673,35 @@ export class LocalTaskExecutor {
         () => this.now().getTime(),
       ),
     });
+  }
+
+  async #workstreamContext(reference) {
+    if (!reference?.trim()) {
+      return undefined;
+    }
+    if (reference.startsWith("https://github.com/")) {
+      if (!this.workstreamStore) {
+        throw new Error(
+          "A GitHub-backed Workstream store is required for Workstream Issue URLs",
+        );
+      }
+      const issue = await this.workstreamStore.read(reference);
+      return {
+        url: issue.url,
+        title: issue.title,
+        content: issue.body,
+        updatedAt: issue.updatedAt,
+      };
+    }
+    const sourcePath = await resolveConfinedWorkstreamReadme(
+      this.profile.store.path,
+      reference,
+    );
+    return {
+      path: reference,
+      sourcePath,
+      content: await readFile(sourcePath, "utf8"),
+    };
   }
 
   async #readRepositoryRemotes(deadline, repository, repositoryConfig) {

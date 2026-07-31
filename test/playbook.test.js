@@ -135,7 +135,7 @@ test("requires a playbook that serves the task repository", () => {
   );
 });
 
-test("names the field that makes a ready item undispatchable", () => {
+test("allows tasks without a workstream and names routing blockers", () => {
   const runnable = {
     fields: { owner: "agent", workstream: "pan" },
     requirements: ["repo:example/tool", "env:local", "tool:node22"],
@@ -149,8 +149,8 @@ test("names the field that makes a ready item undispatchable", () => {
     "owner-not-agent",
   );
   assert.equal(
-    dispatchBlocker(withFields({ owner: "agent", workstream: "  " })).code,
-    "workstream-missing",
+    dispatchBlocker(withFields({ owner: "agent", workstream: "  " })),
+    undefined,
   );
   assert.equal(
     dispatchBlocker(withRequirements([])).code,

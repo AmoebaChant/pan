@@ -25,6 +25,9 @@ configures a pull-request self-repair playbook, verifies setup, and offers short
 It also explains that playbooks are configured per machine and guides you
 through adding the kinds of work you want this machine to handle.
 
+Pan accesses the private domain through GitHub APIs without cloning it. Shared
+`pan.json` policy stays on GitHub; machine and runner settings stay local.
+
 ## Requirements
 
 - Node.js 22+
