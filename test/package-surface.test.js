@@ -40,6 +40,7 @@ test("ships the session, runner, Copilot assets, and shared schemas", async () =
   await access(path.resolve("assets/pan.ico"));
   for (const schema of [
     "domain-config.json",
+    "machine-domain-config.json",
     "playbook.json",
     "project-fields.json",
     "runner-profile.json",

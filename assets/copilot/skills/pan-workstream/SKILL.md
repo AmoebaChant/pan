@@ -1,21 +1,21 @@
 ---
 name: pan-workstream
-description: Edit and publish a Pan workstream directly from the domain repository's default branch.
+description: Edit and publish repository-backed Pan workstreams through the GitHub Contents API.
 ---
 
 # Pan workstream delivery
 
-Use this skill to create or update a workstream README in the configured domain.
+A workstream is `workstreams/<path>/README.md` on the default branch of
+`PAN_DOMAIN_REPOSITORY`. Folder nesting is the hierarchy. The Project
+`workstream` field stores `<path>`, relative to `workstreams/`.
 
-1. Read the workstream and directly related live GitHub Issue or Project item.
-2. Work directly in the domain repository on its default branch. Pull remote
-   changes before editing. Do not create a feature branch or worktree.
-3. Edit only the intended workstream README. Preserve unrelated changes and
-   record durable facts rather than session-only claims.
-4. Commit only the intended README with the repository convention and push the
-   default branch. If the remote changed, pull and resolve the conflict without
-   discarding either side, then push and verify the remote commit. Never
-   force-push or discard unrelated changes.
-5. Scan the saved content for action items. Ask whether any should be created as
-   Issues in the configured Pan domain, listing the candidates. Do not create
-   Issues without explicit approval.
+1. Read repository guidance, the workstream README, its parent and child
+   READMEs, and directly associated live task items through GitHub APIs.
+2. For an update, show the proposed Markdown and get approval unless the user
+   explicitly requested that exact change.
+3. Re-read the file and SHA immediately before writing. Create or update it with
+   the GitHub Contents API on the default branch using the repository's commit
+   convention. Never clone the domain or force-update a changed SHA.
+4. Re-read the file after every write and report the confirmed commit.
+5. Scan saved content for action items. Ask whether any should become domain
+   task Issues; list candidates and never create them silently.

@@ -8,6 +8,19 @@ export {
   migrateDomainConfigFile,
   replaceDomainConfigFile,
 } from "./domain-config-file.js";
+export {
+  defaultMachineConfigPath,
+  defaultSharedDomainConfig,
+  GitHubDomainConfigStore,
+  loadMachineDomainConfig,
+  MACHINE_DOMAIN_CONFIG_KIND,
+  MACHINE_DOMAIN_CONFIG_VERSION,
+  readMachineDomainConfig,
+  SHARED_DOMAIN_CONFIG_VERSION,
+  validateMachineDomainConfig,
+  validateSharedDomainConfig,
+  writeMachineDomainConfig,
+} from "./github-domain-config.js";
 export { AttentionService } from "./attention-service.js";
 export {
   discoverCopilotUserScope,
@@ -66,7 +79,7 @@ export {
   parseArgs as parsePanArgs,
   runPanCli,
 } from "./pan-cli.js";
-export { PanStore } from "./pan-store.js";
+export { classifyDomainIssues, PanStore } from "./pan-store.js";
 export {
   buildRunnerAvailability,
   normalizeRunnerAvailability,
@@ -99,6 +112,9 @@ export {
 export {
   normalizeGitHubRepositoryUrl,
 } from "./github-repository.js";
+export {
+  GitHubWorkstreamStore,
+} from "./github-workstream-store.js";
 export {
   resolveNewConfinedWorkstreamReadme,
   resolveConfinedWorkstreamReadme,

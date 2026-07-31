@@ -5,10 +5,11 @@ Issues and Project fields are the only task state.
 
 ## Workstreams and queue
 
-Workstream narrative lives at `workstreams/<path>/README.md`; directory nesting
-is the hierarchy. The Project `workstream` field stores that slash-separated
-path. Project ordering is canonical among items with the same priority. Pan
-updates GitHub directly and never maintains a second queue.
+Workstream narrative lives at `workstreams/<path>/README.md` on the domain
+repository's default branch; directory nesting is the hierarchy. Pan accesses
+these files through the GitHub Contents API, so setup does not require a clone.
+Every repository Issue is a task and belongs to the Project. Project ordering is
+canonical among items with the same priority.
 
 | Field | Type | Owned by | Meaning |
 | --- | --- | --- | --- |
@@ -22,7 +23,8 @@ updates GitHub directly and never maintains a second queue.
 | `claimed-by` | text | the runner | stable runner identity |
 
 `schema/project-fields.json` is the shared machine-readable contract.
-`PanStore` validates fields and select values before runner mutations.
+`PanStore` validates fields, select values, and non-empty workstream paths
+against repository README files before runner mutations.
 
 `Status` is the built-in Projects field, so its display name is capitalized and
 cannot be renamed; Pan's own key for it is `status`. Empty is a legitimate value
@@ -61,11 +63,10 @@ cleared.
 ## Direct GitHub operation
 
 Pan reads current Issues and Project items with `gh`, re-reads a target before
-mutation, and verifies the result afterward. Every repository Issue is a task.
-During live review and triage, Pan automatically adds any Issue missing from the
-Project with `Status=untriaged`. Closed Issues are registered without reopening
-or editing them, so their state and history remain intact. Existing Project
-items, including runner-owned active fields, are not rewritten by registration.
+mutation, and verifies the result afterward. During live review and triage it
+automatically adds every repository Issue missing from the Project with
+`Status=untriaged`. Closed Issues are added without reopening or editing them.
+Existing items and runner-owned fields are not rewritten.
 
 The runner selects `owner=agent`, `Status=ready` items by priority, preserving
 Project order among equal priorities. It uses `claimed-by` and `lease-until` to

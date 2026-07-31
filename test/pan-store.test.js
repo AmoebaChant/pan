@@ -111,6 +111,26 @@ test("clears an empty requirements array", async () => {
   assert.equal((await store.getItem("item-1")).fields.requirements, "");
 });
 
+test("validates a non-empty workstream path before writing the Project field", async () => {
+  const validated = [];
+  const { store } = fixture({
+    workstreamStore: {
+      async validate(workstream) {
+        validated.push(workstream);
+        return { path: workstream };
+      },
+    },
+  });
+
+  await store.setFields("item-1", {
+    workstream: "lab/pan",
+  });
+
+  assert.deepEqual(validated, [
+    "lab/pan",
+  ]);
+});
+
 test("filters canonical items by fields, requirements, and lease state", async () => {
   const { store } = fixture({
     items: [
@@ -660,7 +680,7 @@ test("reads Issue comments", async () => {
   ]);
 });
 
-test("registers every missing repository Issue as untriaged without reopening closed work", async () => {
+test("live classification registers every missing Issue without reopening closed work", async () => {
   const existing = makeItem({
     status: "in-progress",
     claimedBy: "runner-a",
@@ -676,11 +696,19 @@ test("registers every missing repository Issue as untriaged without reopening cl
     openIssues: issues,
   });
 
-  const registered = await store.registerMissingIssues();
+  const classified = await store.classify();
 
   assert.deepEqual(
-    registered.map((item) => item.number),
-    [2, 3],
+    classified.map(({ issue, type, valid }) => ({
+      number: issue.number,
+      type,
+      valid,
+    })),
+    [
+      { number: 1, type: "task", valid: true },
+      { number: 2, type: "task", valid: true },
+      { number: 3, type: "task", valid: true },
+    ],
   );
   assert.equal((await store.getItem("item-2")).fields.status, "untriaged");
   assert.equal((await store.getItem("item-3")).fields.status, "untriaged");
@@ -689,10 +717,6 @@ test("registers every missing repository Issue as untriaged without reopening cl
   assert.equal(unchanged.fields.claimedBy, "runner-a");
   assert.equal(unchanged.fields.leaseUntil, FUTURE);
   assert.deepEqual(gh.issueStateEdits, []);
-  assert.equal(
-    issues.find((issue) => issue.number === 3).state,
-    "closed",
-  );
 });
 
 function fixture({
@@ -709,6 +733,7 @@ function fixture({
   failIssueClose = false,
   projectPageSize,
   projectItemSafetyLimit,
+  workstreamStore,
 } = {}) {
   const gh = new FakeGh(items, {
     failAssignee,
@@ -734,6 +759,7 @@ function fixture({
       projectItemSafetyLimit,
       now: () => NOW,
       sleep: async () => {},
+      workstreamStore,
     }),
   };
 }
@@ -1054,20 +1080,6 @@ class FakeGh {
   }
 }
 
-function repositoryIssue(number, state) {
-  return {
-    number,
-    title: `Issue ${number}`,
-    body: "",
-    url: `https://github.com/AmoebaChant/pan-work/issues/${number}`,
-    state,
-    labels: [],
-    createdAt: "2026-07-17T18:00:00Z",
-    updatedAt: "2026-07-17T19:00:00Z",
-    closedAt: state === "closed" ? "2026-07-17T19:00:00Z" : null,
-  };
-}
-
 function makeItem({
   id = "item-1",
   number = 1,
@@ -1116,6 +1128,20 @@ function makeItem({
     "lease-until": leaseUntil,
     "claimed-by": claimedBy,
     workstream,
+  };
+}
+
+function repositoryIssue(number, state) {
+  return {
+    number,
+    title: `Issue ${number}`,
+    body: "",
+    url: `https://github.com/AmoebaChant/pan-work/issues/${number}`,
+    state,
+    labels: [],
+    createdAt: "2026-07-17T18:00:00Z",
+    updatedAt: "2026-07-17T19:00:00Z",
+    closedAt: state === "closed" ? "2026-07-17T19:00:00Z" : null,
   };
 }
 

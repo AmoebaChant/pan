@@ -11,19 +11,22 @@ Pan works directly with the configured GitHub repository and Project through
 
 Read the Project in canonical order with `gh project item-list`, read current
 Issue state with `gh issue list` or `gh issue view`, and join by Issue URL.
-Every repository Issue is a task. Before triage, Pan automatically adds every
-Issue missing from the Project with `Status=untriaged`, including closed Issues.
-Registration does not edit or reopen the Issue and does not rewrite fields on
-an existing Project item.
+Every repository Issue is a task. Join the complete repository Issue list to
+the Project by URL and automatically add each missing Issue with
+`Status=untriaged`, including closed Issues, without editing or reopening it.
+Do not rewrite existing Project items or runner-owned fields.
 
 Pan discusses priority, ownership, requirements, and workstream with
 the user, then writes approved values with `gh project item-edit`. It re-reads
 each Issue and Project item immediately before mutation and verifies the result
 afterward. Active runner status and lease fields are left untouched.
 
-An item is dispatchable only when `owner` is `agent`, `Status` is `ready`,
-`workstream` is set, and `requirements` names exactly one `repo:` entry served
-by a playbook on an online runner. An `agent` and `ready` item with empty
+The `workstream` field is a canonical path relative to `workstreams/`. Validate
+it by reading the corresponding README through the GitHub Contents API.
+
+An item is dispatchable only when `owner` is `agent`, `Status` is `ready`, and
+`requirements` names exactly one `repo:` entry served by a playbook on an
+online runner. An `agent` and `ready` item with empty
 `requirements` is inert: it is counted as ready but no runner can claim it. The
 runner names the missing field for each skipped item in its poll log.
 
@@ -31,9 +34,8 @@ runner names the missing field for each skipped item in its poll log.
 capabilities a runner advertises. How the work should be delivered belongs in
 the Issue text and the playbook instructions.
 
-Missing-Issue registration is automatic during every live review and triage.
-All other mutations retain the normal approval and runner-field ownership
-rules.
+Pan has no automatic missing-Issue reconciliation. Creating or triaging one
+open Issue may add that Issue to the Project; unrelated Issues are unchanged.
 
 ## Attention
 

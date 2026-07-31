@@ -90,11 +90,13 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
     assert.equal(contexts[0].playbook.id, "pan-development");
     assert.deepEqual(contexts[0].playbook.instructions, ["Run tests."]);
     assert.equal(resumeRecords.length, 2);
-    assert.equal(resumeRecords[0].machine, "machine-a");
-    assert.equal(resumeRecords[0].playbook, "pan-development");
-    assert.equal(resumeRecords[0].sessionId, contexts[0].copilot.sessionId);
-    assert.match(resumeRecords[0].branch, /^pan\/issue-1-/);
-    assert.match(resumeRecords[0].worktreePath, /issue-1-/);
+    const firstResume = resumeRecords.find(
+      (record) => record.sessionId === contexts[0].copilot.sessionId,
+    );
+    assert.equal(firstResume.machine, "machine-a");
+    assert.equal(firstResume.playbook, "pan-development");
+    assert.match(firstResume.branch, /^pan\/issue-1-/);
+    assert.match(firstResume.worktreePath, /issue-1-/);
     assert.equal(terminalLaunches.length, 2);
     for (const [executable, args, options] of terminalLaunches) {
       assert.equal(executable, "wt");

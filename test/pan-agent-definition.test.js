@@ -42,7 +42,8 @@ test("packages a conversational setup agent that delegates mechanics to Pan comm
   assert.match(body, /work and\s+personal life/i);
   assert.match(body, /one focused question at a time/i);
   assert.match(body, /Focus on what I do for the user/i);
-  assert.match(body, /existing local checkout/i);
+  assert.match(body, /never\s+clones it/i);
+  assert.match(body, /shared `pan\.json`/i);
   assert.match(body, /resumable/i);
   assert.match(body, /Do not restart the welcome or\s+questionnaire/i);
   assert.match(body, /pan setup/);
@@ -92,8 +93,8 @@ test("shares direct GitHub triage and scheduling instructions", async () => {
   assert.match(source, /GitHub Issues and the configured\s+Project are the only work state/i);
   assert.match(source, /Use `gh` directly/i);
   assert.match(source, /PAN_PROJECT_SCHEMA/);
-  assert.match(source, /Automatically add every missing Issue, open or closed/i);
-  assert.match(source, /must not edit Issue state, reopen closed\s+Issues/i);
+  assert.match(source, /Automatically add every missing\s+Issue, open or closed/i);
+  assert.match(source, /must not edit or reopen the Issue/i);
   assert.match(source, /There is no Pan\s+leadership lease or read-only mode/i);
   assert.doesNotMatch(source, /pan evidence|pan action|pan reconcile/i);
 });
@@ -107,7 +108,7 @@ test("packages direct-GitHub portfolio, workstream, and attention skills", async
       "gh issue view",
       "gh project item-edit",
     ],
-    "pan-workstream": ["default branch", "Do not create a feature branch or worktree"],
+    "pan-workstream": ["workstreams/<path>/README.md", "GitHub Contents API"],
   };
 
   for (const [name, commands] of Object.entries(expected)) {

@@ -35,6 +35,7 @@ reads it from the Issue. Answering in the terminal and recording the answer on
 the Issue are complementary, not alternatives.
 
 To create a task, use `gh issue create`, add that Issue to the configured
-Project, and initialize fields from `PAN_PROJECT_SCHEMA`. New tasks start
+Project as part of the same explicitly requested
+operation, and initialize fields from `PAN_PROJECT_SCHEMA`. New tasks start
 `untriaged` unless the user supplied enough information to triage immediately.
 Verify all fields afterward.

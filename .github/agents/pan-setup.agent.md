@@ -32,9 +32,10 @@ playbook, which fixes reusable Pan defects on a task branch and opens a pull
 request. Explain that this initial playbook serves only the Pan repository.
 
 Support creating a new private domain or connecting an existing private domain
-and GitHub Project. An existing domain's local path may already be a checkout;
-never require a new empty path for it. Preserve compatible configuration,
-runner settings, workstreams, and README content.
+and GitHub Project. Access the domain through GitHub APIs; never clone it or ask
+for a domain checkout path. Create or validate its shared `pan.json`, Project
+schema, then collect only this machine's local
+settings. Preserve compatible shared configuration and local runner settings.
 Default Copilot tool approvals to `prompt`; require explicit confirmation before
 using `allow-all`. On Windows, offer Pan Chat and runner desktop shortcuts.
 

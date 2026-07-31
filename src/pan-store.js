@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { GitHubWorkstreamStore } from "./github-workstream-store.js";
 
 const DEFAULT_PROJECT_ITEM_SAFETY_LIMIT = 1_000;
 const PROJECT_PAGE_SIZE = 20;
@@ -158,6 +159,7 @@ export class PanStore {
     now = () => new Date(),
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    workstreamStore,
   }) {
     if (!repository || !projectOwner || !Number.isInteger(projectNumber)) {
       throw new TypeError(
@@ -182,6 +184,8 @@ export class PanStore {
     this.projectItemSafetyLimit = projectItemSafetyLimit;
     this.now = now;
     this.sleep = sleep;
+    this.workstreamStore =
+      workstreamStore ?? new GitHubWorkstreamStore({ repository, gh });
     this.schemaPromise = undefined;
   }
 
@@ -205,6 +209,9 @@ export class PanStore {
 
     const schema = await this.getSchema();
     validateFieldValues(values, schema);
+    if (values.workstream) {
+      await this.workstreamStore.validate(values.workstream, { signal });
+    }
     for (const [key, value] of Object.entries(values)) {
       signal?.throwIfAborted();
       await beforeWrite?.();
@@ -252,6 +259,25 @@ export class PanStore {
   }
 
   async listRepositoryIssues({ state = "all", signal } = {}) {
+    if (this.gh.paginateRestJson) {
+      const issues = await this.gh.paginateRestJson(
+        `repos/${this.repository}/issues?state=${encodeURIComponent(state)}`,
+        { safetyLimit: this.projectItemSafetyLimit, signal },
+      );
+      return issues
+        .filter((issue) => !issue.pull_request)
+        .map((issue) => ({
+          number: issue.number,
+          title: issue.title,
+          body: issue.body ?? "",
+          url: issue.html_url,
+          state: issue.state,
+          labels: issue.labels ?? [],
+          createdAt: issue.created_at,
+          updatedAt: issue.updated_at,
+          closedAt: issue.closed_at,
+        }));
+    }
     const issues = await this.gh.runJson(
       [
         "issue",
@@ -272,10 +298,19 @@ export class PanStore {
     }
     if (issues.length >= this.projectItemSafetyLimit) {
       throw new Error(
-        `Repository Issue inventory reached the ${this.projectItemSafetyLimit}-entry safety limit`,
+        `Repository Issue inventory reached the ${this.projectItemSafetyLimit}-entry safety limit without pagination support`,
       );
     }
     return issues;
+  }
+
+  async classify({ signal, beforeWrite } = {}) {
+    await this.registerMissingIssues({ signal, beforeWrite });
+    const [issues, items] = await Promise.all([
+      this.listRepositoryIssues({ signal }),
+      this.listItems(),
+    ]);
+    return classifyDomainIssues(issues, items);
   }
 
   async registerMissingIssues({ signal, beforeWrite } = {}) {
@@ -294,15 +329,24 @@ export class PanStore {
         continue;
       }
       registered.push(
-        await this.addIssueToProject(issue, { signal, beforeWrite }),
+        await this.addIssueToProject(issue, {
+          allowClosed: true,
+          fields: { status: "untriaged" },
+          signal,
+          beforeWrite,
+        }),
       );
       projectIssueUrls.add(issue.url);
     }
     return registered;
   }
 
-  async addIssueToProject(issue, { signal, beforeWrite } = {}) {
+  async addIssueToProject(
+    issue,
+    { allowClosed = false, fields = {}, signal, beforeWrite } = {},
+  ) {
     const issueRepository =
+      issue?.repository ??
       /^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/\d+\/?$/.exec(
         issue?.url ?? "",
       )?.[1];
@@ -311,6 +355,9 @@ export class PanStore {
       issueRepository?.toLowerCase() !== this.repository.toLowerCase()
     ) {
       throw new TypeError("a configured-domain Issue is required");
+    }
+    if (issue.state?.toLowerCase() === "closed" && !allowClosed) {
+      throw new Error("Closed Issues cannot be added to the backlog Project");
     }
     signal?.throwIfAborted();
     await beforeWrite?.();
@@ -332,16 +379,33 @@ export class PanStore {
     if (!itemId) {
       throw new Error("GitHub did not return the added Project item ID");
     }
-    await this.setFields(
-      itemId,
-      {
-        owner: "unassigned",
-        status: "untriaged",
-        priority: "normal",
-      },
-      { signal, beforeWrite },
-    );
+    const initialized = {
+      owner: "unassigned",
+      status: "untriaged",
+      priority: "normal",
+      ...fields,
+    };
+    await this.setFields(itemId, initialized, { signal, beforeWrite });
     return this.getItem(itemId, { signal });
+  }
+
+  async removeItem(itemId, { signal, beforeWrite } = {}) {
+    const schema = await this.getSchema();
+    signal?.throwIfAborted();
+    await beforeWrite?.();
+    await this.gh.run(
+      [
+        "project",
+        "item-delete",
+        String(this.projectNumber),
+        "--owner",
+        this.projectOwner,
+        "--id",
+        itemId,
+      ],
+      { signal },
+    );
+    return { removed: true, itemId, projectId: schema.projectId };
   }
 
   async getItem(itemId, { signal } = {}) {
@@ -1177,6 +1241,40 @@ function serializeTextField(key, value) {
     throw new TypeError(`${key} must be a string`);
   }
   return value;
+}
+
+export function classifyDomainIssues(issues, projectItems) {
+  const projectIssueUrls = new Set(
+    projectItems
+      .filter((item) => item.contentClassification === "domain-issue")
+      .map((item) => item.url),
+  );
+  const byUrl = new Map(issues.map((issue) => [issue.url, issue]));
+  const results = issues.map((issue) => ({
+    issue,
+    type: "task",
+    valid: projectIssueUrls.has(issue.url),
+    ...(!projectIssueUrls.has(issue.url)
+      ? {
+          code: "issue-outside-project",
+          proposal: "register-untriaged",
+        }
+      : {}),
+  }));
+  for (const item of projectItems) {
+    if (
+      item.contentClassification === "domain-issue" &&
+      !byUrl.has(item.url)
+    ) {
+      results.push({
+        issue: item,
+        type: "task",
+        valid: false,
+        code: "project-issue-missing-from-repository-read",
+      });
+    }
+  }
+  return results;
 }
 
 function validateFieldValues(values, schema) {

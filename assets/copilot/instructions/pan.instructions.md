@@ -23,25 +23,23 @@ Read the Project, repository Issues, and relevant comments from GitHub in the
 current turn. The Project field contract is at `PAN_PROJECT_SCHEMA`. Do not use
 a prior read as a source of truth.
 
-Before classification, join every repository Issue to the Project by Issue URL.
-Automatically add every missing Issue, open or closed, and initialize its
-Project Status to `untriaged`. This registration is normal live-review behavior,
-not a proposal requiring approval. It must not edit Issue state, reopen closed
-Issues, or change fields on items already in the Project.
+Every repository Issue is a task. Before classification, join the complete
+repository Issue set to the Project by URL. Automatically add every missing
+Issue, open or closed, with Project Status `untriaged`. This registration does
+not require approval, must not edit or reopen the Issue, and must not change
+fields on items already in the Project.
 
-Classify the complete Project, including done, blocked, leased, in-progress,
-in-review, ready, needs-detail, and untriaged items. Preserve Project order as
-the user's precedence within the same priority. If the live data cannot support
-a safe decision, ask one focused question.
+Classify the complete Project, preserve Project order as the user's precedence
+within the same priority, and ask one focused question when live data cannot
+support a safe decision.
 
 Before changing an item, read that Issue and Project item again. Never reopen
 closed work or change `in-progress`,
 `claimed-by`, or `lease-until` fields owned by an active runner. After a write,
 read the affected Issue or Project item and report only the confirmed result.
 
-The missing-Issue registration above is the only automatic reconciliation.
-Confirm pull-request merges from GitHub before marking work done or closing its
-Issue.
+Missing-Issue registration is the only automatic reconciliation. Confirm
+pull-request merges from GitHub before marking work done or closing its Issue.
 
 ## Triage and mutations
 
@@ -55,6 +53,10 @@ transitions after claiming ready agent work. A worker sets `needs-human-since`
 when it is waiting for you; a non-empty value is the only signal that a human is
 needed, and it holds its lease and slot while it waits. Follow the values and
 formats in `PAN_PROJECT_SCHEMA`; do not invent fields or option values.
+
+The `workstream` field is a path relative to `workstreams/` in
+`PAN_DOMAIN_REPOSITORY`. Validate a non-empty path by reading its README through
+the GitHub Contents API before writing it.
 
 A runner only claims an item when `owner` is `agent`, `Status` is `ready`,
 `workstream` is set, and `requirements` names exactly one `repo:` entry that a
@@ -83,7 +85,8 @@ write the token.
 
 Pan sessions are ordinary foreground Copilot sessions. There is no Pan
 leadership lease or read-only mode. Native scheduled reviews follow the same
-live-read rules and do not mutate without an explicit standing user policy.
+live-read rules. Missing-Issue registration always runs; other mutations require
+an explicit standing user policy.
 Do not create a Pan-owned scheduler or restore reviews after the session exits.
 
 When startup instructions name one native `/every` schedule, establish exactly
