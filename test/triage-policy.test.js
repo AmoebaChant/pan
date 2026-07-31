@@ -8,7 +8,7 @@ test("infers agent routing and fields from Issue directives", () => {
     makeItem({
       body: [
         "Implement the feature.",
-        "workstream: https://github.com/example/domain/issues/20",
+        "workstream: orchestration/pan",
         "repo:example/tool",
         "env:local",
         "priority: high",
@@ -20,7 +20,7 @@ test("infers agent routing and fields from Issue directives", () => {
     owner: "agent",
     priority: "high",
     requirements: ["repo:example/tool", "env:local"],
-    workstream: "https://github.com/example/domain/issues/20",
+    workstream: "orchestration/pan",
     status: "ready",
   });
   assert.deepEqual(result.missing, []);
@@ -32,7 +32,7 @@ test("treats an empty Status as untriaged so manual Issues get triaged", () => {
       status: "",
       body: [
         "Implement the feature.",
-        "workstream: https://github.com/example/domain/issues/20",
+        "workstream: orchestration/pan",
         "repo:example/tool",
       ].join("\n"),
     }),
@@ -44,26 +44,18 @@ test("treats an empty Status as untriaged so manual Issues get triaged", () => {
 
 test("uses answer directives to complete missing triage details", () => {
   const result = deriveTriage(makeItem({ status: "needs-detail" }), [
-    {
-      body: formatAnswer(
-        "workstream: https://github.com/example/domain/issues/20\nrepo:example/tool",
-      ),
-    },
+    { body: formatAnswer("workstream: orchestration/pan\nrepo:example/tool") },
   ]);
 
   assert.equal(result.fields.status, "ready");
-  assert.equal(
-    result.fields.workstream,
-    "https://github.com/example/domain/issues/20",
-  );
+  assert.equal(result.fields.workstream, "orchestration/pan");
   assert.equal(result.fields.owner, "agent");
 });
 
 test("uses a substantive answer as the missing task description", () => {
   const result = deriveTriage(
     makeItem({
-      body:
-        "workstream: https://github.com/example/domain/issues/20\nrepo:example/tool",
+      body: "workstream: orchestration/pan\nrepo:example/tool",
     }),
     [{ body: formatAnswer("Implement option A and preserve existing behavior.") }],
   );
@@ -83,54 +75,6 @@ test("reports missing agent routing details", () => {
 
   assert.equal(result.fields.status, "needs-detail");
   assert.match(result.prompt, /exactly one repo/);
-});
-
-test("keeps workstream optional and proposes but does not assign a likely Issue", () => {
-  const workstream = {
-    title: "Runtime modernization",
-    url: "https://github.com/example/domain/issues/20",
-  };
-  const result = deriveTriage(
-    makeItem({
-      body: "Implement Runtime modernization.\nrepo:example/tool",
-      workstream: "",
-    }),
-    [],
-    { workstreams: [workstream] },
-  );
-
-  assert.equal(result.fields.workstream, "");
-  assert.equal(result.fields.status, "ready");
-  assert.deepEqual(result.workstreamProposal, workstream);
-});
-
-test("rejects a workstream URL outside the configured domain", () => {
-  const result = deriveTriage(
-    {
-      ...makeItem({
-        body: [
-          "Implement it.",
-          "workstream: https://github.com/other/domain/issues/2",
-          "repo:example/tool",
-        ].join("\n"),
-      }),
-      repository: "example/domain",
-    },
-  );
-
-  assert.equal(result.fields.status, "needs-detail");
-  assert.match(result.prompt, /valid Workstream Issue URL/);
-});
-
-test("rejects legacy workstream paths", () => {
-  const result = deriveTriage(
-    makeItem({
-      body: "Implement it.\nworkstream: legacy/path\nrepo:example/tool",
-    }),
-  );
-
-  assert.equal(result.fields.status, "needs-detail");
-  assert.match(result.prompt, /valid Workstream Issue URL/);
 });
 
 test("matches all requirements against online runner capabilities", () => {

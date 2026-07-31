@@ -23,22 +23,25 @@ Read the Project, repository Issues, and relevant comments from GitHub in the
 current turn. The Project field contract is at `PAN_PROJECT_SCHEMA`. Do not use
 a prior read as a source of truth.
 
-Classify the complete Project and repository Issue set. A Workstream is an
-exact-`Workstream` Issue outside the Project. A task is a non-Workstream Issue
-in the Project. Detect both invalid states, preserve Project order as the user's
-precedence within the same priority, and ask one focused question when live data
-cannot support a safe decision.
+Before classification, join every repository Issue to the Project by Issue URL.
+Automatically add every missing Issue, open or closed, and initialize its
+Project Status to `untriaged`. This registration is normal live-review behavior,
+not a proposal requiring approval. It must not edit Issue state, reopen closed
+Issues, or change fields on items already in the Project.
 
-Before changing an item, read that Issue and Project item again. Never add a
-closed Issue to the Project, reopen closed work, or change `in-progress`,
+Classify the complete Project, including done, blocked, leased, in-progress,
+in-review, ready, needs-detail, and untriaged items. Preserve Project order as
+the user's precedence within the same priority. If the live data cannot support
+a safe decision, ask one focused question.
+
+Before changing an item, read that Issue and Project item again. Never reopen
+closed work or change `in-progress`,
 `claimed-by`, or `lease-until` fields owned by an active runner. After a write,
 read the affected Issue or Project item and report only the confirmed result.
 
-Do not run automatic reconciliation. Propose adding an open non-Workstream Issue
-outside the Project and wait for approval. A Workstream Issue in the Project
-must be proposed for removal. Add an Issue directly only as part of an
-explicitly requested task creation or triage. Confirm pull-request merges from
-GitHub before marking work done or closing its Issue.
+The missing-Issue registration above is the only automatic reconciliation.
+Confirm pull-request merges from GitHub before marking work done or closing its
+Issue.
 
 ## Triage and mutations
 
@@ -53,13 +56,8 @@ when it is waiting for you; a non-empty value is the only signal that a human is
 needed, and it holds its lease and slot while it waits. Follow the values and
 formats in `PAN_PROJECT_SCHEMA`; do not invent fields or option values.
 
-The `workstream` field is optional. A non-empty value must be a full URL to one
-Workstream Issue in `PAN_DOMAIN_REPOSITORY`. Resolve and validate it before
-writing. You may infer and propose a likely association, but never assign it
-without approval.
-
-A runner only claims an item when `owner` is `agent`, `Status` is `ready`, and
-`requirements` names exactly one `repo:` entry that a
+A runner only claims an item when `owner` is `agent`, `Status` is `ready`,
+`workstream` is set, and `requirements` names exactly one `repo:` entry that a
 playbook on that runner serves. `owner` and `Status` therefore depend on
 `requirements`: never leave an item `agent` and `ready` with empty
 `requirements`, because no runner can ever claim it. When you may not set

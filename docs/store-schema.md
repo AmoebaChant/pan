@@ -5,11 +5,10 @@ Issues and Project fields are the only task state.
 
 ## Workstreams and queue
 
-Workstream narrative is the body of a domain Issue carrying the exact
-`Workstream` label. GitHub parent/sub-issue relationships are the hierarchy.
-Those Issues are never Project members. A task is a non-Workstream Issue that
-belongs to the Project, including completed historical tasks. Project ordering
-is canonical among items with the same priority.
+Workstream narrative lives at `workstreams/<path>/README.md`; directory nesting
+is the hierarchy. The Project `workstream` field stores that slash-separated
+path. Project ordering is canonical among items with the same priority. Pan
+updates GitHub directly and never maintains a second queue.
 
 | Field | Type | Owned by | Meaning |
 | --- | --- | --- | --- |
@@ -17,14 +16,13 @@ is canonical among items with the same priority.
 | `Status` | single select | triage, then the runner | `untriaged`, `needs-detail`, `ready`, `in-progress`, `in-review`, `done`, `blocked`; empty reads as `untriaged` |
 | `priority` | single select | triage | `urgent`, `high`, `normal`, or `low`; empty reads as `normal` |
 | `requirements` | text | triage | newline-delimited capabilities such as `repo:owner/repo` |
-| `workstream` | text | triage | optional full URL of one Workstream Issue in the configured domain |
+| `workstream` | text | triage | path relative to `workstreams/` |
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp; non-empty means a live worker is waiting for you |
 | `lease-until` | text | the runner | RFC 3339 UTC expiry |
 | `claimed-by` | text | the runner | stable runner identity |
 
 `schema/project-fields.json` is the shared machine-readable contract.
-`PanStore` validates fields, select values, and non-empty Workstream Issue URLs
-before runner mutations.
+`PanStore` validates fields and select values before runner mutations.
 
 `Status` is the built-in Projects field, so its display name is capitalized and
 cannot be renamed; Pan's own key for it is `status`. Empty is a legitimate value
@@ -63,10 +61,11 @@ cleared.
 ## Direct GitHub operation
 
 Pan reads current Issues and Project items with `gh`, re-reads a target before
-mutation, and verifies the result afterward. Open non-Workstream Issues outside
-the Project are proposals for task registration, never automatic imports.
-Closed Issues are not imported during normal operation; the one-time migration
-is the explicit exception and preserves their closed state.
+mutation, and verifies the result afterward. Every repository Issue is a task.
+During live review and triage, Pan automatically adds any Issue missing from the
+Project with `Status=untriaged`. Closed Issues are registered without reopening
+or editing them, so their state and history remain intact. Existing Project
+items, including runner-owned active fields, are not rewritten by registration.
 
 The runner selects `owner=agent`, `Status=ready` items by priority, preserving
 Project order among equal priorities. It uses `claimed-by` and `lease-until` to

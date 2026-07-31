@@ -1,6 +1,4 @@
 import { readFile } from "node:fs/promises";
-import { WorkstreamIssueStore } from "./workstream-issue-store.js";
-import { classifyDomainIssues } from "./workstream-issue-store.js";
 
 const DEFAULT_PROJECT_ITEM_SAFETY_LIMIT = 1_000;
 const PROJECT_PAGE_SIZE = 20;
@@ -160,7 +158,6 @@ export class PanStore {
     now = () => new Date(),
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    workstreamStore,
   }) {
     if (!repository || !projectOwner || !Number.isInteger(projectNumber)) {
       throw new TypeError(
@@ -185,8 +182,6 @@ export class PanStore {
     this.projectItemSafetyLimit = projectItemSafetyLimit;
     this.now = now;
     this.sleep = sleep;
-    this.workstreamStore =
-      workstreamStore ?? new WorkstreamIssueStore({ repository, gh });
     this.schemaPromise = undefined;
   }
 
@@ -210,9 +205,6 @@ export class PanStore {
 
     const schema = await this.getSchema();
     validateFieldValues(values, schema);
-    if (values.workstream) {
-      await this.workstreamStore.validate(values.workstream, { signal });
-    }
     for (const [key, value] of Object.entries(values)) {
       signal?.throwIfAborted();
       await beforeWrite?.();
@@ -260,25 +252,6 @@ export class PanStore {
   }
 
   async listRepositoryIssues({ state = "all", signal } = {}) {
-    if (this.gh.paginateRestJson) {
-      const issues = await this.gh.paginateRestJson(
-        `repos/${this.repository}/issues?state=${encodeURIComponent(state)}`,
-        { safetyLimit: this.projectItemSafetyLimit, signal },
-      );
-      return issues
-        .filter((issue) => !issue.pull_request)
-        .map((issue) => ({
-          number: issue.number,
-          title: issue.title,
-          body: issue.body ?? "",
-          url: issue.html_url,
-          state: issue.state,
-          labels: issue.labels ?? [],
-          createdAt: issue.created_at,
-          updatedAt: issue.updated_at,
-          closedAt: issue.closed_at,
-        }));
-    }
     const issues = await this.gh.runJson(
       [
         "issue",
@@ -299,26 +272,37 @@ export class PanStore {
     }
     if (issues.length >= this.projectItemSafetyLimit) {
       throw new Error(
-        `Repository Issue inventory reached the ${this.projectItemSafetyLimit}-entry safety limit without pagination support`,
+        `Repository Issue inventory reached the ${this.projectItemSafetyLimit}-entry safety limit`,
       );
     }
     return issues;
   }
 
-  async classify({ signal } = {}) {
+  async registerMissingIssues({ signal, beforeWrite } = {}) {
     const [issues, items] = await Promise.all([
       this.listRepositoryIssues({ signal }),
       this.listItems(),
     ]);
-    return classifyDomainIssues(issues, items);
+    const projectIssueUrls = new Set(
+      items
+        .filter((item) => item.contentClassification === "domain-issue")
+        .map((item) => item.url),
+    );
+    const registered = [];
+    for (const issue of issues) {
+      if (projectIssueUrls.has(issue.url)) {
+        continue;
+      }
+      registered.push(
+        await this.addIssueToProject(issue, { signal, beforeWrite }),
+      );
+      projectIssueUrls.add(issue.url);
+    }
+    return registered;
   }
 
-  async addIssueToProject(
-    issue,
-    { allowClosed = false, fields = {}, signal, beforeWrite } = {},
-  ) {
+  async addIssueToProject(issue, { signal, beforeWrite } = {}) {
     const issueRepository =
-      issue?.repository ??
       /^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/\d+\/?$/.exec(
         issue?.url ?? "",
       )?.[1];
@@ -327,16 +311,6 @@ export class PanStore {
       issueRepository?.toLowerCase() !== this.repository.toLowerCase()
     ) {
       throw new TypeError("a configured-domain Issue is required");
-    }
-    if (
-      issue.labels?.some((label) =>
-        (typeof label === "string" ? label : label.name) === "Workstream",
-      )
-    ) {
-      throw new Error("Workstream Issues must never be added to the backlog Project");
-    }
-    if (issue.state?.toLowerCase() === "closed" && !allowClosed) {
-      throw new Error("Closed Issues cannot be added to the backlog Project");
     }
     signal?.throwIfAborted();
     await beforeWrite?.();
@@ -358,36 +332,16 @@ export class PanStore {
     if (!itemId) {
       throw new Error("GitHub did not return the added Project item ID");
     }
-    const initialized = {
-      owner: "unassigned",
-      status:
-        issue.state?.toLowerCase() === "closed" && allowClosed
-          ? "done"
-          : "untriaged",
-      priority: "normal",
-      ...fields,
-    };
-    await this.setFields(itemId, initialized, { signal, beforeWrite });
-    return this.getItem(itemId, { signal });
-  }
-
-  async removeItem(itemId, { signal, beforeWrite } = {}) {
-    const schema = await this.getSchema();
-    signal?.throwIfAborted();
-    await beforeWrite?.();
-    await this.gh.run(
-      [
-        "project",
-        "item-delete",
-        String(this.projectNumber),
-        "--owner",
-        this.projectOwner,
-        "--id",
-        itemId,
-      ],
-      { signal },
+    await this.setFields(
+      itemId,
+      {
+        owner: "unassigned",
+        status: "untriaged",
+        priority: "normal",
+      },
+      { signal, beforeWrite },
     );
-    return { removed: true, itemId, projectId: schema.projectId };
+    return this.getItem(itemId, { signal });
   }
 
   async getItem(itemId, { signal } = {}) {

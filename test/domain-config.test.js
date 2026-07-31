@@ -237,21 +237,11 @@ test("publishes a parseable versioned domain configuration schema", async () => 
   assert.equal(schema.title, "Pan domain runtime configuration");
   assert.equal(schema.$defs.version1.properties.version.const, 1);
   assert.equal(schema.$defs.version2.properties.version.const, 2);
-  assert.equal(schema.$defs.version3.properties.version.const, 3);
   assert.ok(schema.$defs.version2.properties.session);
   assert.equal(
     schema.$defs.domain.required.includes("path"),
     false,
   );
-});
-
-test("publishes a machine-local API domain locator schema", async () => {
-  const schema = JSON.parse(
-    await readFile(path.resolve("schema/machine-domain-config.json"), "utf8"),
-  );
-
-  assert.equal(schema.properties.kind.const, "pan-machine");
-  assert.deepEqual(schema.properties.domain.required, ["repository"]);
 });
 
 function makeConfig() {

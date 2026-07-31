@@ -49,11 +49,6 @@ test("parses setup without pre-existing configuration", () => {
     () => parsePanArgs(["setup"], { PAN_CONFIG: "domain.json" }),
     /creates configuration/,
   );
-
-  assert.equal(
-    parsePanArgs(["setup", "example/domain"], {}).repository,
-    "example/domain",
-  );
 });
 
 test("parses onboarding, verification, connected setup, and shortcut commands", () => {
@@ -77,46 +72,6 @@ test("parses onboarding, verification, connected setup, and shortcut commands", 
       schemaVersion: 1,
       config: "domain.json",
       json: true,
-    },
-  );
-  assert.deepEqual(
-    parsePanArgs([
-      "config",
-      "update",
-      "--config",
-      "pan-local.json",
-      "--document",
-      "pan.json",
-      "--expected-sha",
-      "abc123",
-    ], {}),
-    {
-      command: "config",
-      operation: "update",
-      config: "pan-local.json",
-      document: "pan.json",
-      expectedSha: "abc123",
-      message: undefined,
-      json: false,
-    },
-  );
-  assert.deepEqual(
-    parsePanArgs([
-      "migrate-workstreams",
-      "--config",
-      "pan-local.json",
-      "--report",
-      "report.json",
-      "--dry-run",
-    ], {}),
-    {
-      command: "migrate-workstreams",
-      config: "pan-local.json",
-      report: "report.json",
-      resume: undefined,
-      dryRun: true,
-      createRemovalPullRequest: false,
-      json: false,
     },
   );
   assert.deepEqual(

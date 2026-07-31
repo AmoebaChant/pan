@@ -4,7 +4,6 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 
 import { validateDomainConfig } from "./domain-config.js";
-import { setupApiPanDomain } from "./api-domain-setup.js";
 import { PanAssetService } from "./pan-assets.js";
 import { ProcessClient } from "./process-client.js";
 import { validateRunnerProfile } from "./runner-profile.js";
@@ -68,14 +67,6 @@ export async function setupPanDomain(
 ) {
   if (!gh?.run || !gh?.runJson) {
     throw new TypeError("gh must provide run() and runJson()");
-  }
-  if (options.path === undefined) {
-    return setupApiPanDomain(options, {
-      gh,
-      env,
-      hostname,
-      assetServiceFactory,
-    });
   }
 
   const prompt = ask ?? createPrompt({ input, output });

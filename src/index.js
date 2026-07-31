@@ -8,19 +8,6 @@ export {
   migrateDomainConfigFile,
   replaceDomainConfigFile,
 } from "./domain-config-file.js";
-export {
-  defaultMachineConfigPath,
-  defaultSharedDomainConfig,
-  GitHubDomainConfigStore,
-  loadMachineDomainConfig,
-  MACHINE_DOMAIN_CONFIG_KIND,
-  MACHINE_DOMAIN_CONFIG_VERSION,
-  readMachineDomainConfig,
-  SHARED_DOMAIN_CONFIG_VERSION,
-  validateMachineDomainConfig,
-  validateSharedDomainConfig,
-  writeMachineDomainConfig,
-} from "./github-domain-config.js";
 export { AttentionService } from "./attention-service.js";
 export {
   discoverCopilotUserScope,
@@ -119,20 +106,6 @@ export {
   validateWorkstreamPath,
   WorkstreamStore,
 } from "./workstream-store.js";
-export {
-  classifyDomainIssue,
-  classifyDomainIssues,
-  parseWorkstreamIssueUrl,
-  resolveTaskWorkstreams,
-  WORKSTREAM_LABEL,
-  WorkstreamIssueStore,
-} from "./workstream-issue-store.js";
-export {
-  readMigrationReport,
-  WORKSTREAM_MIGRATION_REPORT_VERSION,
-  WorkstreamMigration,
-  writeMigrationReport,
-} from "./workstream-migration.js";
 export { LocalTaskExecutor } from "./local-task-executor.js";
 export { RunnerDaemon } from "./runner-daemon.js";
 export { acquireRunnerLock } from "./runner-lock.js";

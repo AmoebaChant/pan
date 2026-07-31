@@ -80,7 +80,7 @@ test("grants a standing triage policy only when configured", () => {
   assert.match(triaging, /untriaged means the item has no Status/i);
   assert.match(
     triaging,
-    /owner, Status, priority, and the requirements that select a playbook/i,
+    /owner, Status, priority, workstream, and the requirements that select a playbook/i,
   );
   assert.match(
     triaging,

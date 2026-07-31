@@ -43,47 +43,6 @@ export class DomainIdentity {
 
     const domainPath = path.resolve(domain.path);
     await this.#validateDirectory(domainPath, "Configured domain path");
-    if (config.version >= 3 || config.sharedConfigSha) {
-      if (!this.gh.runJson) {
-        throw new TypeError("gh must provide runJson() for an API-only domain");
-      }
-      await this.gh.run(["auth", "status", "--hostname", "github.com"]);
-      const [defaultBranch, repository, schema] = await Promise.all([
-        this.#defaultBranch(domain.repository),
-        this.gh.runJson([
-          "repo",
-          "view",
-          domain.repository,
-          "--json",
-          "nameWithOwner,isPrivate",
-        ]),
-        this.#schema(config),
-      ]);
-      if (
-        repository?.nameWithOwner?.toLowerCase() !==
-          domain.repository.toLowerCase() ||
-        repository.isPrivate !== true
-      ) {
-        throw new Error(
-          `Configured Pan domain repository is unavailable or not private: ${domain.repository}`,
-        );
-      }
-      await this.#validateProductContextRoots(
-        config.session?.productContextRoots ?? [],
-      );
-      return Object.freeze({
-        domain: Object.freeze({
-          repository: domain.repository,
-          path: domainPath,
-          defaultBranch,
-        }),
-        project: Object.freeze({
-          owner: domain.projectOwner,
-          number: domain.projectNumber,
-          id: schema.projectId,
-        }),
-      });
-    }
     const [root, remote] = await Promise.all([
       this.#git(["-C", domainPath, "rev-parse", "--show-toplevel"]),
       this.#git(["-C", domainPath, "remote", "get-url", "origin"]),

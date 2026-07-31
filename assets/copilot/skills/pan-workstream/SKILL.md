@@ -1,28 +1,21 @@
 ---
 name: pan-workstream
-description: Read, create, update, archive, and relate Pan Workstream Issues through GitHub APIs.
+description: Edit and publish a Pan workstream directly from the domain repository's default branch.
 ---
 
 # Pan workstream delivery
 
-A workstream is a long-lived Issue in `PAN_DOMAIN_REPOSITORY` carrying the exact
-`Workstream` label. Its body is canonical GitHub Flavored Markdown. It must
-never be added to the backlog Project. Parent/sub-issue relationships represent
-nested workstreams, and closing the Issue archives it.
+Use this skill to create or update a workstream README in the configured domain.
 
-1. Read the Workstream Issue, its parent and children, and directly associated
-   live task items.
-2. For an update, show the proposed body or structured update comment and get
-   approval unless the user explicitly requested that exact change.
-3. Re-read the Issue immediately before writing. Update its body with
-   `gh issue edit`; record significant change context in a comment containing
-   `<!-- pan:workstream-update -->`.
-4. Create workstreams with the exact label and no Project membership. Use
-   GitHub's documented sub-issue API to establish an approved parent.
-5. Re-read the Issue and relationships after every write.
-6. Scan saved content for action items. Ask whether any should become domain
-   task Issues; list candidates and never create them silently.
-
-Activity reports use the current body as current state, structured comments,
-documented edit metadata, and associated task activity. State explicitly when
-historical body diffs are unavailable.
+1. Read the workstream and directly related live GitHub Issue or Project item.
+2. Work directly in the domain repository on its default branch. Pull remote
+   changes before editing. Do not create a feature branch or worktree.
+3. Edit only the intended workstream README. Preserve unrelated changes and
+   record durable facts rather than session-only claims.
+4. Commit only the intended README with the repository convention and push the
+   default branch. If the remote changed, pull and resolve the conflict without
+   discarding either side, then push and verify the remote commit. Never
+   force-push or discard unrelated changes.
+5. Scan the saved content for action items. Ask whether any should be created as
+   Issues in the configured Pan domain, listing the candidates. Do not create
+   Issues without explicit approval.

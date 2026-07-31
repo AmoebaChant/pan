@@ -147,6 +147,9 @@ export function dispatchBlocker(item) {
       message: `owner is ${item.fields?.owner ?? "unset"}, not agent`,
     };
   }
+  if (!item.fields?.workstream?.trim()) {
+    return { code: "workstream-missing", message: "workstream is empty" };
+  }
   const repositories = repositoryRequirements(item);
   if (repositories.length === 0) {
     return {
