@@ -77,7 +77,10 @@ test("grants a standing triage policy only when configured", () => {
   assert.match(reporting, /Discuss recommendations before mutation/i);
   assert.doesNotMatch(reporting, /standing policy/i);
   assert.match(triaging, /standing policy to triage untriaged items without asking/i);
-  assert.match(triaging, /untriaged means the item has no Status/i);
+  assert.match(
+    triaging,
+    /Status is missing, empty, or explicitly set to untriaged/i,
+  );
   assert.match(
     triaging,
     /owner, Status, priority, workstream, and the requirements that select a playbook/i,
