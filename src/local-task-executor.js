@@ -220,6 +220,7 @@ export class LocalTaskExecutor {
         runner,
         machine: this.profile.machine,
         playbook: selectedPlaybook.id,
+        sessionId,
         repository,
         branch: agentManaged ? undefined : branch,
         worktreePath: agentManaged ? workingDirectory : worktreePath,
@@ -505,6 +506,7 @@ export class LocalTaskExecutor {
       runner,
       machine: this.profile.machine,
       playbook: playbook.id,
+      sessionId: pointer.sessionId,
       repository,
       branch: pointer.target.branch,
       worktreePath: agentManaged

@@ -92,6 +92,7 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
     assert.equal(resumeRecords.length, 2);
     assert.equal(resumeRecords[0].machine, "machine-a");
     assert.equal(resumeRecords[0].playbook, "pan-development");
+    assert.equal(resumeRecords[0].sessionId, contexts[0].copilot.sessionId);
     assert.match(resumeRecords[0].branch, /^pan\/issue-1-/);
     assert.match(resumeRecords[0].worktreePath, /issue-1-/);
     assert.equal(terminalLaunches.length, 2);
@@ -376,10 +377,12 @@ test("resumes an interrupted task with its saved worktree and Copilot session", 
     );
 
     await first.interrupt("Runner stopped: Ctrl+C");
+    const resumeRecords = [];
     const resumed = await executor.start({
       ...makeStartOptions(9),
       runner: "runner/slot-resumed",
       deadline: undefined,
+      onResume: async (record) => resumeRecords.push(record),
     });
     const resumedContext = JSON.parse(
       await readFile(path.join(resumed.statePath, "context.json"), "utf8"),
@@ -392,6 +395,9 @@ test("resumes an interrupted task with its saved worktree and Copilot session", 
     assert.equal(resumedContext.copilot.sessionId, firstContext.copilot.sessionId);
     assert.equal(resumedContext.copilot.resume, true);
     assert.equal(resumedContext.runner, "runner/slot-resumed");
+    assert.equal(resumeRecords[0].playbook, "pan-development");
+    assert.equal(resumeRecords[0].sessionId, firstContext.copilot.sessionId);
+    assert.equal(resumeRecords[0].resumed, true);
     assert.equal(terminalLaunches.length, 2);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });

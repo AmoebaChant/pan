@@ -895,6 +895,7 @@ function agentStartedComment(record) {
         machine: record.machine,
         runner: record.runner,
         playbook: record.playbook,
+        sessionId: record.sessionId,
         repository: record.repository,
         branch: record.branch,
         worktree: record.worktreePath,

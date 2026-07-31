@@ -189,6 +189,11 @@ test("records durable resume information when an agent starts", async () => {
 
   assert.match(store.comments[0], /### Agent started/);
   assert.match(store.comments[0], /"machine": "machine-a"/);
+  assert.match(store.comments[0], /"playbook": "pan-development"/);
+  assert.match(
+    store.comments[0],
+    /"sessionId": "00000000-0000-4000-8000-000000000001"/,
+  );
   assert.match(store.comments[0], /"branch": "pan\/issue-1"/);
   assert.match(store.comments[0], /"worktree": "C:\\\\worktrees\\\\issue-1"/);
 });
@@ -737,6 +742,7 @@ class ResumeAwareExecutor extends FakeExecutor {
       machine: "machine-a",
       runner: "machine-a/slot-1",
       playbook: "pan-development",
+      sessionId: "00000000-0000-4000-8000-000000000001",
       repository: "example/tool",
       branch: "pan/issue-1",
       worktreePath: "C:\\worktrees\\issue-1",
