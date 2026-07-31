@@ -152,7 +152,6 @@ export async function setupApiPanDomain(
   const fieldPlan = await planProjectFields(gh, project.id, {
     replaceDefaultStatus: !existingShared && project.created,
   });
-  await ensureWorkstreamLabel(gh, repository);
   await gh.run([
     "project",
     "link",
@@ -330,43 +329,6 @@ function normalizeProject(project, created) {
   };
 }
 
-async function ensureWorkstreamLabel(gh, repository) {
-  const labels = gh.paginateRestJson
-    ? await gh.paginateRestJson(`repos/${repository}/labels`)
-    : await gh.runJson([
-        "api",
-        "--method",
-        "GET",
-        `repos/${repository}/labels?per_page=100`,
-      ]);
-  if (!Array.isArray(labels)) {
-    throw new Error("GitHub returned an invalid label list");
-  }
-  const exact = labels.find((label) => label?.name === "Workstream");
-  const conflicting = labels.find(
-    (label) =>
-      label?.name?.toLowerCase() === "workstream" &&
-      label.name !== "Workstream",
-  );
-  if (conflicting) {
-    throw new Error(
-      `Conflicting label "${conflicting.name}" exists; rename it to exactly "Workstream"`,
-    );
-  }
-  if (!exact) {
-    await gh.run([
-      "label",
-      "create",
-      "Workstream",
-      "--repo",
-      repository,
-      "--color",
-      "5319e7",
-      "--description",
-      "Long-lived Pan workstream; never add to the backlog Project.",
-    ]);
-  }
-}
 
 async function planProjectFields(gh, projectId, { replaceDefaultStatus }) {
   const manifest = JSON.parse(

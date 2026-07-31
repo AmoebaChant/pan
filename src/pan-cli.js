@@ -14,11 +14,6 @@ import { startPanSession } from "./pan-session.js";
 import { setupPanDomain } from "./pan-setup.js";
 import { assertMatchingDomain, verifyPanSetup } from "./pan-verification.js";
 import { loadRunnerProfile } from "./runner-profile.js";
-import {
-  readMigrationReport,
-  WorkstreamMigration,
-  writeMigrationReport,
-} from "./workstream-migration.js";
 
 export async function runPanCli(
   args,
@@ -70,31 +65,6 @@ export async function runPanCli(
       parsed.json
         ? JSON.stringify(result, null, 2)
         : formatSetupResult(result),
-    );
-    return result;
-  }
-  if (parsed.command === "migrate-workstreams") {
-    const domainConfig = await domainConfigLoader(parsed.config, { gh });
-    const resume = parsed.resume
-      ? await readMigrationReport(parsed.resume)
-      : undefined;
-    const result = await new WorkstreamMigration({
-      repository: domainConfig.domain.repository,
-      projectOwner: domainConfig.domain.projectOwner,
-      projectNumber: domainConfig.domain.projectNumber,
-      gh,
-    }).run({
-      dryRun: parsed.dryRun,
-      resume,
-      createRemovalPullRequest: parsed.createRemovalPullRequest,
-      checkpoint: (report) => writeMigrationReport(parsed.report, report),
-    });
-    await writeMigrationReport(parsed.report, result);
-    write(
-      stdout,
-      parsed.json
-        ? JSON.stringify(result, null, 2)
-        : `Workstream migration ${result.dryRun ? "dry-run" : "run"} report: ${parsed.report}`,
     );
     return result;
   }
@@ -316,43 +286,6 @@ export function parseArgs(args, env = process.env) {
       selfRepairPath,
       selfRepairDefaultBranch,
       ...(installAssets ? { installAssets: true } : {}),
-    };
-  }
-
-  if (command === "migrate-workstreams") {
-    if (!config || profile) {
-      throw new TypeError(
-        "pan migrate-workstreams requires --config <machine-config>",
-      );
-    }
-    const report = takeOption(remaining, "--report");
-    const resume = takeOption(remaining, "--resume");
-    const apply = takeFlag(remaining, "--apply");
-    const dryRunFlag = takeFlag(remaining, "--dry-run");
-    const createRemovalPullRequest = takeFlag(
-      remaining,
-      "--create-removal-pr",
-    );
-    if (!report) {
-      throw new TypeError(
-        "pan migrate-workstreams requires --report <path>",
-      );
-    }
-    if (apply && dryRunFlag) {
-      throw new TypeError("--apply and --dry-run cannot be used together");
-    }
-    if (createRemovalPullRequest && !apply) {
-      throw new TypeError("--create-removal-pr requires --apply");
-    }
-    requireNoArgs(remaining);
-    return {
-      command,
-      config,
-      report,
-      resume,
-      dryRun: !apply,
-      createRemovalPullRequest,
-      json,
     };
   }
 
@@ -630,7 +563,6 @@ function usage() {
     "  pan config validate --schema-version 1 --config <path> [--json]",
     "  pan config get --config <machine-config> [--json]",
     "  pan config update --config <machine-config> --document <pan.json> --expected-sha <sha> [--message <text>] [--json]",
-    "  pan migrate-workstreams --config <machine-config> --report <path> [--dry-run|--apply] [--resume <report>] [--create-removal-pr] [--json]",
     "  pan verify --config <path> --profile <path>",
     "  pan shortcuts create --config <path> --profile <path> [--selection <chat|runner|both>]",
     "  pan assets <install|status|repair> [--force] [--json]",

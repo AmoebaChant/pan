@@ -79,7 +79,7 @@ export {
   parseArgs as parsePanArgs,
   runPanCli,
 } from "./pan-cli.js";
-export { PanStore } from "./pan-store.js";
+export { classifyDomainIssues, PanStore } from "./pan-store.js";
 export {
   buildRunnerAvailability,
   normalizeRunnerAvailability,
@@ -113,26 +113,15 @@ export {
   normalizeGitHubRepositoryUrl,
 } from "./github-repository.js";
 export {
+  GitHubWorkstreamStore,
+} from "./github-workstream-store.js";
+export {
   resolveNewConfinedWorkstreamReadme,
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,
   validateWorkstreamPath,
   WorkstreamStore,
 } from "./workstream-store.js";
-export {
-  classifyDomainIssue,
-  classifyDomainIssues,
-  parseWorkstreamIssueUrl,
-  resolveTaskWorkstreams,
-  WORKSTREAM_LABEL,
-  WorkstreamIssueStore,
-} from "./workstream-issue-store.js";
-export {
-  readMigrationReport,
-  WORKSTREAM_MIGRATION_REPORT_VERSION,
-  WorkstreamMigration,
-  writeMigrationReport,
-} from "./workstream-migration.js";
 export { LocalTaskExecutor } from "./local-task-executor.js";
 export { RunnerDaemon } from "./runner-daemon.js";
 export { acquireRunnerLock } from "./runner-lock.js";

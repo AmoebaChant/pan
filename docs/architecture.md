@@ -25,10 +25,9 @@ enough for Pan's single-user workflow while still protecting active runner
 leases and detecting changed Issue state.
 
 The domain repository is never required as a local checkout. Workstreams are
-long-lived Issues carrying the exact `Workstream` label; their bodies are the
-canonical narrative, parent/sub-issue relationships are the hierarchy, and
-closing one archives it. Workstream Issues never belong to the backlog Project.
-Tasks are the remaining domain Issues that belong to that Project.
+Markdown files at `workstreams/<path>/README.md` on its default branch and
+folder nesting is their hierarchy. Pan reads and writes them through the GitHub
+Contents API. Every domain Issue is a task and belongs to the Project.
 
 Native recurring reviews belong to the foreground Copilot session. Launch-local
 due metadata prevents catch-up work but is not durable task state.
@@ -52,7 +51,7 @@ approval, or runner-owned execution fields.
 
 [`schema/project-fields.json`](../schema/project-fields.json) is the contract
 shared by setup, the Pan agent, and the runner. The agent sets triage fields:
-owner, status, priority, requirements, and the optional Workstream Issue URL. The runner
+owner, status, priority, requirements, and the relative workstream path. The runner
 claims eligible `owner=agent`, `status=ready` work and owns its active
 `claimed-by` and `lease-until` fields. A worker that needs an answer sets
 `needs-human-since` and waits in its own terminal without giving up its lease.

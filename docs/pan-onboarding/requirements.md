@@ -42,6 +42,5 @@
    machine to handle additional work and guide those who do through the choices
    needed for a domain-bound Pan session to configure and validate the runner
    profile.
-10. Setup creates or validates the exact `Workstream` label. Workstreams are
-    Issues outside the backlog Project, while tasks are non-Workstream Issues
-    inside it.
+10. Workstreams remain Markdown files under `workstreams/` and are accessed
+    through GitHub APIs. Every repository Issue is a Project task.

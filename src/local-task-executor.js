@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeGitHubRepositoryUrl } from "./github-repository.js";
 export { normalizeGitHubRepositoryUrl } from "./github-repository.js";
 import { GhClient } from "./gh-client.js";
+import { GitHubWorkstreamStore } from "./github-workstream-store.js";
 import { ProcessClient } from "./process-client.js";
 import {
   processIsAlive,
@@ -23,7 +24,6 @@ import {
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,
 } from "./workstream-store.js";
-import { WorkstreamIssueStore } from "./workstream-issue-store.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./task-worker.js", import.meta.url));
 const RESULT_POLL_MS = 1_000;
@@ -59,8 +59,8 @@ export class LocalTaskExecutor {
     this.logger = logger;
     this.workstreamStore =
       workstreamStore ??
-      (profile.store.repository
-        ? new WorkstreamIssueStore({
+      (profile.domainConfigPath && profile.store.repository
+        ? new GitHubWorkstreamStore({
             repository: profile.store.repository,
             gh,
           })
@@ -679,18 +679,14 @@ export class LocalTaskExecutor {
     if (!reference?.trim()) {
       return undefined;
     }
-    if (reference.startsWith("https://github.com/")) {
-      if (!this.workstreamStore) {
-        throw new Error(
-          "A GitHub-backed Workstream store is required for Workstream Issue URLs",
-        );
-      }
-      const issue = await this.workstreamStore.read(reference);
+    if (this.workstreamStore) {
+      const workstream = await this.workstreamStore.read(reference);
       return {
-        url: issue.url,
-        title: issue.title,
-        content: issue.body,
-        updatedAt: issue.updatedAt,
+        path: reference,
+        sourcePath: workstream.sourcePath,
+        url: workstream.url,
+        content: workstream.content,
+        revision: workstream.revision,
       };
     }
     const sourcePath = await resolveConfinedWorkstreamReadme(

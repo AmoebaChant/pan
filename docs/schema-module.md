@@ -15,7 +15,7 @@ import {
 ## Public surface
 
 The package exports domain configuration, setup, asset, session, Project store,
-Workstream Issue, migration, runner, playbook, and task-execution utilities. The sole package executable is
+repository workstream, runner, playbook, and task-execution utilities. The sole package executable is
 `pan`; `pan-runner` remains available as `bin/pan-runner.js` for its
 profile-based worker process.
 

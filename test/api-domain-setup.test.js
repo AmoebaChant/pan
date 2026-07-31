@@ -34,10 +34,11 @@ test("sets up a domain through GitHub APIs without cloning it", async (t) => {
     ),
     false,
   );
-  assert.ok(
+  assert.equal(
     gh.calls.some(
       (args) => args[0] === "label" && args[1] === "create",
     ),
+    false,
   );
   const local = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(local.kind, "pan-machine");
@@ -78,7 +79,7 @@ test("sets up a domain through GitHub APIs without cloning it", async (t) => {
     gh.calls.filter(
       (args) => args[0] === "label" && args[1] === "create",
     ).length,
-    1,
+    0,
   );
 });
 
@@ -173,9 +174,6 @@ class SetupGh {
     if (args[0] === "repo" && args[1] === "create") {
       this.repositoryExists = true;
     }
-    if (args[0] === "label" && args[1] === "create") {
-      this.labelExists = true;
-    }
     return "";
   }
 
@@ -225,9 +223,6 @@ class SetupGh {
         number: 7,
         url: "https://github.com/users/example/projects/7",
       };
-    }
-    if (endpoint === "repos/example/domain/labels?per_page=100") {
-      return this.labelExists ? [{ name: "Workstream" }] : [];
     }
     if (args[0] === "api" && args[1] === "graphql") {
       if (this.configDocument) {

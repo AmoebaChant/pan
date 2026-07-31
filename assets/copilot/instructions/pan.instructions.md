@@ -23,22 +23,23 @@ Read the Project, repository Issues, and relevant comments from GitHub in the
 current turn. The Project field contract is at `PAN_PROJECT_SCHEMA`. Do not use
 a prior read as a source of truth.
 
-Classify the complete Project and repository Issue set. A Workstream is an
-exact-`Workstream` Issue outside the Project. A task is a non-Workstream Issue
-in the Project. Detect both invalid states, preserve Project order as the user's
-precedence within the same priority, and ask one focused question when live data
-cannot support a safe decision.
+Every repository Issue is a task. Before classification, join the complete
+repository Issue set to the Project by URL. Automatically add every missing
+Issue, open or closed, with Project Status `untriaged`. This registration does
+not require approval, must not edit or reopen the Issue, and must not change
+fields on items already in the Project.
 
-Before changing an item, read that Issue and Project item again. Never add a
-closed Issue to the Project, reopen closed work, or change `in-progress`,
+Classify the complete Project, preserve Project order as the user's precedence
+within the same priority, and ask one focused question when live data cannot
+support a safe decision.
+
+Before changing an item, read that Issue and Project item again. Never reopen
+closed work or change `in-progress`,
 `claimed-by`, or `lease-until` fields owned by an active runner. After a write,
 read the affected Issue or Project item and report only the confirmed result.
 
-Do not run automatic reconciliation. Propose adding an open non-Workstream Issue
-outside the Project and wait for approval. A Workstream Issue in the Project
-must be proposed for removal. Add an Issue directly only as part of an
-explicitly requested task creation or triage. Confirm pull-request merges from
-GitHub before marking work done or closing its Issue.
+Missing-Issue registration is the only automatic reconciliation. Confirm
+pull-request merges from GitHub before marking work done or closing its Issue.
 
 ## Triage and mutations
 
@@ -53,13 +54,12 @@ when it is waiting for you; a non-empty value is the only signal that a human is
 needed, and it holds its lease and slot while it waits. Follow the values and
 formats in `PAN_PROJECT_SCHEMA`; do not invent fields or option values.
 
-The `workstream` field is optional. A non-empty value must be a full URL to one
-Workstream Issue in `PAN_DOMAIN_REPOSITORY`. Resolve and validate it before
-writing. You may infer and propose a likely association, but never assign it
-without approval.
+The `workstream` field is a path relative to `workstreams/` in
+`PAN_DOMAIN_REPOSITORY`. Validate a non-empty path by reading its README through
+the GitHub Contents API before writing it.
 
-A runner only claims an item when `owner` is `agent`, `Status` is `ready`, and
-`requirements` names exactly one `repo:` entry that a
+A runner only claims an item when `owner` is `agent`, `Status` is `ready`,
+`workstream` is set, and `requirements` names exactly one `repo:` entry that a
 playbook on that runner serves. `owner` and `Status` therefore depend on
 `requirements`: never leave an item `agent` and `ready` with empty
 `requirements`, because no runner can ever claim it. When you may not set
@@ -85,7 +85,8 @@ write the token.
 
 Pan sessions are ordinary foreground Copilot sessions. There is no Pan
 leadership lease or read-only mode. Native scheduled reviews follow the same
-live-read rules and do not mutate without an explicit standing user policy.
+live-read rules. Missing-Issue registration always runs; other mutations require
+an explicit standing user policy.
 Do not create a Pan-owned scheduler or restore reviews after the session exits.
 
 When startup instructions name one native `/every` schedule, establish exactly

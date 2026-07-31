@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { WorkstreamIssueStore } from "./workstream-issue-store.js";
-import { classifyDomainIssues } from "./workstream-issue-store.js";
+import { GitHubWorkstreamStore } from "./github-workstream-store.js";
 
 const DEFAULT_PROJECT_ITEM_SAFETY_LIMIT = 1_000;
 const PROJECT_PAGE_SIZE = 20;
@@ -186,7 +185,7 @@ export class PanStore {
     this.now = now;
     this.sleep = sleep;
     this.workstreamStore =
-      workstreamStore ?? new WorkstreamIssueStore({ repository, gh });
+      workstreamStore ?? new GitHubWorkstreamStore({ repository, gh });
     this.schemaPromise = undefined;
   }
 
@@ -305,12 +304,41 @@ export class PanStore {
     return issues;
   }
 
-  async classify({ signal } = {}) {
+  async classify({ signal, beforeWrite } = {}) {
+    await this.registerMissingIssues({ signal, beforeWrite });
     const [issues, items] = await Promise.all([
       this.listRepositoryIssues({ signal }),
       this.listItems(),
     ]);
     return classifyDomainIssues(issues, items);
+  }
+
+  async registerMissingIssues({ signal, beforeWrite } = {}) {
+    const [issues, items] = await Promise.all([
+      this.listRepositoryIssues({ signal }),
+      this.listItems(),
+    ]);
+    const projectIssueUrls = new Set(
+      items
+        .filter((item) => item.contentClassification === "domain-issue")
+        .map((item) => item.url),
+    );
+    const registered = [];
+    for (const issue of issues) {
+      if (projectIssueUrls.has(issue.url)) {
+        continue;
+      }
+      registered.push(
+        await this.addIssueToProject(issue, {
+          allowClosed: true,
+          fields: { status: "untriaged" },
+          signal,
+          beforeWrite,
+        }),
+      );
+      projectIssueUrls.add(issue.url);
+    }
+    return registered;
   }
 
   async addIssueToProject(
@@ -327,13 +355,6 @@ export class PanStore {
       issueRepository?.toLowerCase() !== this.repository.toLowerCase()
     ) {
       throw new TypeError("a configured-domain Issue is required");
-    }
-    if (
-      issue.labels?.some((label) =>
-        (typeof label === "string" ? label : label.name) === "Workstream",
-      )
-    ) {
-      throw new Error("Workstream Issues must never be added to the backlog Project");
     }
     if (issue.state?.toLowerCase() === "closed" && !allowClosed) {
       throw new Error("Closed Issues cannot be added to the backlog Project");
@@ -360,10 +381,7 @@ export class PanStore {
     }
     const initialized = {
       owner: "unassigned",
-      status:
-        issue.state?.toLowerCase() === "closed" && allowClosed
-          ? "done"
-          : "untriaged",
+      status: "untriaged",
       priority: "normal",
       ...fields,
     };
@@ -1223,6 +1241,40 @@ function serializeTextField(key, value) {
     throw new TypeError(`${key} must be a string`);
   }
   return value;
+}
+
+export function classifyDomainIssues(issues, projectItems) {
+  const projectIssueUrls = new Set(
+    projectItems
+      .filter((item) => item.contentClassification === "domain-issue")
+      .map((item) => item.url),
+  );
+  const byUrl = new Map(issues.map((issue) => [issue.url, issue]));
+  const results = issues.map((issue) => ({
+    issue,
+    type: "task",
+    valid: projectIssueUrls.has(issue.url),
+    ...(!projectIssueUrls.has(issue.url)
+      ? {
+          code: "issue-outside-project",
+          proposal: "register-untriaged",
+        }
+      : {}),
+  }));
+  for (const item of projectItems) {
+    if (
+      item.contentClassification === "domain-issue" &&
+      !byUrl.has(item.url)
+    ) {
+      results.push({
+        issue: item,
+        type: "task",
+        valid: false,
+        code: "project-issue-missing-from-repository-read",
+      });
+    }
+  }
+  return results;
 }
 
 function validateFieldValues(values, schema) {

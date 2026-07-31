@@ -11,23 +11,18 @@ Pan works directly with the configured GitHub repository and Project through
 
 Read the Project in canonical order with `gh project item-list`, read current
 Issue state with `gh issue list` or `gh issue view`, and join by Issue URL.
-Closed Issues are not triage candidates and are never automatically added back
-to the Project.
-
-Join the complete repository Issue list to the Project by URL. A valid
-Workstream has the exact `Workstream` label and is not a Project member. A valid
-task has no `Workstream` label and is a Project member. Report both invalid
-states: Workstream Issues in the Project and non-Workstream Issues outside it.
-Only open outside Issues may be proposed for task registration.
+Every repository Issue is a task. Join the complete repository Issue list to
+the Project by URL and automatically add each missing Issue with
+`Status=untriaged`, including closed Issues, without editing or reopening it.
+Do not rewrite existing Project items or runner-owned fields.
 
 Pan discusses priority, ownership, requirements, and workstream with
 the user, then writes approved values with `gh project item-edit`. It re-reads
 each Issue and Project item immediately before mutation and verifies the result
 afterward. Active runner status and lease fields are left untouched.
 
-The `workstream` association is optional. If set, it must be the full URL of a
-Workstream Issue in the configured domain. Triage may propose a likely
-association from links or text, but it never assigns one without approval.
+The `workstream` field is a canonical path relative to `workstreams/`. Validate
+it by reading the corresponding README through the GitHub Contents API.
 
 An item is dispatchable only when `owner` is `agent`, `Status` is `ready`, and
 `requirements` names exactly one `repo:` entry served by a playbook on an

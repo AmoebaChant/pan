@@ -68,8 +68,9 @@ Include:
 For existing resources, use `--repository-mode connect`,
 `--project-mode connect`, and `--project-number <number>`. Mixed create/connect
 choices are supported. Pan accesses the domain through GitHub APIs and never
-clones it. Shared `pan.json`, the Project schema, and the exact `Workstream`
-label are created or validated remotely. Setup writes only a local repository
+clones it. Shared `pan.json` and the Project schema are created or validated
+remotely. Workstreams remain repository Markdown accessed through GitHub APIs.
+Setup writes only a local repository
 locator and this machine's runner settings. On another machine, rerun the same
 repository command; Pan fetches shared configuration and asks only for local
 choices. Read the JSON result and use its exact `configPath` and

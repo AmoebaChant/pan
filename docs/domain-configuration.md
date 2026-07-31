@@ -67,10 +67,10 @@ pan setup example/personal-domain
 ```
 
 Setup creates or validates the private repository, backlog Project, required
-Project fields, exact `Workstream` label, and shared `pan.json`, then writes
+Project fields and shared `pan.json`, then writes
 only this machine's local configuration. Re-running the command on another
 machine fetches the existing shared configuration and asks only for local
-settings. Setup is idempotent and fails on incompatible Projects, labels, or
+settings. Setup is idempotent and fails on incompatible Projects or
 shared identity instead of replacing them.
 
 Fresh setup leaves scheduled reviews disabled. Enable them in shared

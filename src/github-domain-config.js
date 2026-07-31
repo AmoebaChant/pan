@@ -183,7 +183,6 @@ export async function loadMachineDomainConfig(
       triageAuthority: shared.document.policy.triageAuthority,
     },
     policy: shared.document.policy,
-    migration: shared.document.migration,
   };
 }
 
@@ -225,7 +224,7 @@ export function validateSharedDomainConfig(document) {
   requireRecord(document, "shared domain config");
   rejectKeys(
     document,
-    new Set(["version", "domain", "agent", "scheduling", "policy", "migration"]),
+    new Set(["version", "domain", "agent", "scheduling", "policy"]),
     "shared domain config",
   );
   if (document.version !== SHARED_DOMAIN_CONFIG_VERSION) {
@@ -270,24 +269,12 @@ export function validateSharedDomainConfig(document) {
       'policy.triageAuthority must be "report" or "triage-fields"',
     );
   }
-  const migration = document.migration;
-  if (migration !== undefined) {
-    requireRecord(migration, "migration");
-    rejectKeys(migration, new Set(["workstreamReportIssue"]), "migration");
-    if (migration.workstreamReportIssue !== undefined) {
-      requireInteger(
-        migration.workstreamReportIssue,
-        "migration.workstreamReportIssue",
-      );
-    }
-  }
   return {
     version: SHARED_DOMAIN_CONFIG_VERSION,
     domain: { ...document.domain },
     agent: removeUndefined({ ...document.agent }),
     scheduling,
     policy: { triageAuthority },
-    ...(migration ? { migration: { ...migration } } : {}),
   };
 }
 

@@ -93,7 +93,8 @@ test("shares direct GitHub triage and scheduling instructions", async () => {
   assert.match(source, /GitHub Issues and the configured\s+Project are the only work state/i);
   assert.match(source, /Use `gh` directly/i);
   assert.match(source, /PAN_PROJECT_SCHEMA/);
-  assert.match(source, /Never add a\s+closed Issue/i);
+  assert.match(source, /Automatically add every missing\s+Issue, open or closed/i);
+  assert.match(source, /must not edit or reopen the Issue/i);
   assert.match(source, /There is no Pan\s+leadership lease or read-only mode/i);
   assert.doesNotMatch(source, /pan evidence|pan action|pan reconcile/i);
 });
@@ -107,11 +108,7 @@ test("packages direct-GitHub portfolio, workstream, and attention skills", async
       "gh issue view",
       "gh project item-edit",
     ],
-    "pan-workstream": [
-      "Workstream",
-      "gh issue edit",
-      "sub-issue API",
-    ],
+    "pan-workstream": ["workstreams/<path>/README.md", "GitHub Contents API"],
   };
 
   for (const [name, commands] of Object.entries(expected)) {

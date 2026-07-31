@@ -225,13 +225,6 @@
               "default": "report"
             }
           }
-        },
-        "migration": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "workstreamReportIssue": { "type": "integer", "minimum": 1 }
-          }
         }
       }
     },

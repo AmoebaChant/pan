@@ -102,25 +102,6 @@ test("parses onboarding, verification, connected setup, and shortcut commands", 
   );
   assert.deepEqual(
     parsePanArgs([
-      "migrate-workstreams",
-      "--config",
-      "pan-local.json",
-      "--report",
-      "report.json",
-      "--dry-run",
-    ], {}),
-    {
-      command: "migrate-workstreams",
-      config: "pan-local.json",
-      report: "report.json",
-      resume: undefined,
-      dryRun: true,
-      createRemovalPullRequest: false,
-      json: false,
-    },
-  );
-  assert.deepEqual(
-    parsePanArgs([
       "setup",
       "--repository",
       "example/domain",
