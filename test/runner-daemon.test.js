@@ -11,6 +11,7 @@ test("claims matching work and advances a completed task to in-review", async ()
     status: "completed",
     summary: "Added the requested documentation.",
   });
+
   const messages = [];
   const daemon = new RunnerDaemon({
     store,
@@ -38,6 +39,87 @@ test("claims matching work and advances a completed task to in-review", async ()
   assert.match(store.comments.at(-1), /pull\/42/);
   assert.ok(messages.some((message) => message.includes("Claimed task #1")));
   assert.ok(messages.some((message) => message.includes("needs-review")));
+});
+
+test("adopts a live worker before polling and prevents a double dispatch", async () => {
+  const adopted = makeItem({
+    id: "item-adopted",
+    number: 56,
+    requirements: ["repo:example/tool", "tool:node22"],
+  });
+  adopted.fields.status = "in-progress";
+  adopted.fields.claimedBy = "machine-a/pan-development/slot-1";
+  adopted.fields.leaseUntil = "2026-07-31T12:00:00Z";
+  const ready = makeItem({
+    id: "item-ready",
+    number: 57,
+    requirements: ["repo:example/tool", "tool:node22"],
+  });
+  const handle = new DeferredHandle();
+  const executor = new StartupRecoveryExecutor(
+    [
+      {
+        itemId: adopted.id,
+        issueNumber: adopted.number,
+        runner: adopted.fields.claimedBy,
+        playbookId: "pan-development",
+        resumeAffinity: "resume:machine-a/pan-development",
+        workerState: "live",
+        requeue: false,
+      },
+    ],
+    handle,
+  );
+  const store = new RecoveryStore([adopted, ready]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makePlaybookProfile({ maximum: 1, panCapacity: 1 }),
+    executor,
+    logger: silentLogger,
+  });
+
+  const started = await daemon.tick();
+
+  assert.equal(started, 0);
+  assert.equal(executor.adopted.item.id, adopted.id);
+  assert.equal(store.claims.length, 1);
+  assert.equal(store.claims[0].itemId, adopted.id);
+  assert.equal(daemon.active.size, 1);
+
+  handle.resolve();
+  await daemon.active.get(adopted.fields.claimedBy).promise;
+  assert.ok(store.heartbeats.length > 0);
+  assert.equal(store.releases.at(-1).status, "in-review");
+});
+
+test("reconciles a dead worker to resumable ready state", async () => {
+  const item = makeItem({ number: 56 });
+  item.fields.status = "in-progress";
+  item.fields.claimedBy = "machine-a/slot-1";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: item.fields.claimedBy,
+    playbookId: "legacy",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: false,
+  };
+  const executor = new StartupRecoveryExecutor([task], new FakeHandle());
+  const store = new RecoveryStore([item]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
+  assert.equal(store.releases[0].status, "ready");
+  assert.equal(store.releases[0].allowExpired, true);
+  assert.equal(store.releases[0].resumeAffinity, "resume:machine-a");
+  assert.equal(executor.requeued, task);
 });
 
 test("marks agent-reported done work done and records its delivery", async () => {
@@ -405,6 +487,7 @@ test("stops unlimited workers during runner shutdown", async () => {
   while (!executor.started) {
     await new Promise((resolve) => setImmediate(resolve));
   }
+
   controller.abort(new Error("Ctrl+C"));
   await running;
 
@@ -432,6 +515,7 @@ test("stops unlimited workers when a one-shot run is interrupted", async () => {
   while (!executor.started) {
     await new Promise((resolve) => setImmediate(resolve));
   }
+
   controller.abort(new Error("Ctrl+C"));
   await running;
 
@@ -664,10 +748,15 @@ class FakeStore {
     this.claims = [];
     this.comments = [];
     this.releases = [];
+    this.heartbeats = [];
   }
 
   async listByFilter() {
     return this.items;
+  }
+
+  async getItem(itemId) {
+    return this.items.find((item) => item.id === itemId);
   }
 
   async claimWithLease(claim) {
@@ -717,7 +806,8 @@ class FakeStore {
     return { resolved: true, item };
   }
 
-  async heartbeat() {
+  async heartbeat(heartbeat) {
+    this.heartbeats.push(heartbeat);
     if (this.heartbeatResults.length > 1) {
       return this.heartbeatResults.shift();
     }
@@ -766,6 +856,55 @@ class SequencedExecutor {
 
   async start() {
     return this.handles.shift();
+  }
+}
+
+class StartupRecoveryExecutor extends FakeExecutor {
+  constructor(tasks, handle) {
+    super(handle);
+    this.tasks = tasks;
+  }
+
+  async listResumeTasks() {
+    const tasks = this.tasks;
+    this.tasks = [];
+    return tasks;
+  }
+
+  async adoptTask(task, item) {
+    this.adopted = { task, item };
+    return this.handle;
+  }
+
+  async markInterruptedRequeued(task) {
+    this.requeued = task;
+  }
+}
+
+class RecoveryStore extends FakeStore {
+  async listByFilter(filters = {}) {
+    return this.items.filter(
+      (item) =>
+        (!filters.owner || item.fields.owner === filters.owner) &&
+        (!filters.status || item.fields.status === filters.status),
+    );
+  }
+
+  async claimWithLease(claim) {
+    const result = await super.claimWithLease(claim);
+    result.item.fields.status = claim.status;
+    result.item.fields.claimedBy = claim.runner;
+    result.item.fields.leaseUntil = claim.leaseUntil;
+    return result;
+  }
+
+  async release(release) {
+    const result = await super.release(release);
+    const item = this.items.find((candidate) => candidate.id === release.itemId);
+    item.fields.status = release.status;
+    item.fields.claimedBy = release.resumeAffinity ?? "";
+    item.fields.leaseUntil = "";
+    return { ...result, item };
   }
 }
 

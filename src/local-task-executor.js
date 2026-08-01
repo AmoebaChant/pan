@@ -18,6 +18,7 @@ import { GitHubWorkstreamStore } from "./github-workstream-store.js";
 import { ProcessClient } from "./process-client.js";
 import {
   processIsAlive,
+  readProcessIdentity,
   terminateProcessByPid,
 } from "./process-tree.js";
 import {
@@ -41,6 +42,7 @@ export class LocalTaskExecutor {
     sessionIdFactory = randomUUID,
     launchIdFactory = randomUUID,
     workerIsAlive = processIsAlive,
+    processIdentity = readProcessIdentity,
     terminateWorker = terminateProcessByPid,
     logger = console,
     gh = new GhClient(),
@@ -55,6 +57,7 @@ export class LocalTaskExecutor {
     this.sessionIdFactory = sessionIdFactory;
     this.launchIdFactory = launchIdFactory;
     this.workerIsAlive = workerIsAlive;
+    this.processIdentity = processIdentity;
     this.terminateWorker = terminateWorker;
     this.logger = logger;
     this.workstreamStore =
@@ -575,6 +578,11 @@ export class LocalTaskExecutor {
   }
 
   async listInterruptedTasks() {
+    const tasks = await this.listResumeTasks();
+    return tasks.filter((task) => task.requeue);
+  }
+
+  async listResumeTasks() {
     let entries;
     try {
       entries = await readdir(this.profile.stateDirectory);
@@ -592,24 +600,163 @@ export class LocalTaskExecutor {
       const resumePath = path.join(this.profile.stateDirectory, entry);
       const pointer = await readJsonIfReady(resumePath);
       if (
-        pointer?.requeue === true &&
-        pointer.itemId &&
-        typeof pointer.runner === "string"
+        pointer?.version !== 1 ||
+        !pointer.itemId ||
+        typeof pointer.runner !== "string" ||
+        typeof pointer.statePath !== "string" ||
+        typeof pointer.contextPath !== "string" ||
+        !pointer.launchPaths
       ) {
-        tasks.push({
-          resumePath,
-          itemId: pointer.itemId,
-          runner: pointer.runner,
-          resumeAffinity: pointer.resumeAffinity,
-          issueNumber: pointer.issueNumber,
-        });
+        continue;
       }
+      const statePath = confinedStatePath(
+        this.profile.stateDirectory,
+        pointer.statePath,
+      );
+      const contextPath = confinedChildPath(statePath, pointer.contextPath);
+      const context = await readJsonIfReady(contextPath);
+      const workerPath = confinedChildPath(
+        statePath,
+        pointer.launchPaths.worker,
+      );
+      const worker = await readJsonIfReady(workerPath);
+      let workerState = "gone";
+      if (
+        Number.isInteger(worker?.pid) &&
+        worker.pid > 0 &&
+        this.workerIsAlive(worker.pid)
+      ) {
+        try {
+          const identity = await this.processIdentity(worker.pid);
+          workerState = matchesWorkerIdentity(identity, {
+            contextPath,
+            startedAt: worker.startedAt,
+          })
+            ? "live"
+            : "identity-mismatch";
+        } catch (error) {
+          workerState = "unknown";
+          this.logger.warn?.(
+            `Unable to verify task worker ${worker.pid}; preserving its resume state.`,
+            error,
+          );
+        }
+      }
+      tasks.push({
+        resumePath,
+        statePath,
+        contextPath,
+        context,
+        pointer,
+        worker,
+        workerState,
+        itemId: pointer.itemId,
+        runner: pointer.runner,
+        resumeAffinity: pointer.resumeAffinity,
+        issueNumber: pointer.issueNumber,
+        playbookId: context?.playbook?.id,
+        requeue: pointer.requeue === true,
+      });
     }
     return tasks;
   }
 
   async markInterruptedRequeued(task) {
+    if (
+      task.workerState === "gone" ||
+      task.workerState === "identity-mismatch"
+    ) {
+      const workerPath = confinedChildPath(
+        task.statePath,
+        task.pointer.launchPaths.worker,
+      );
+      await rm(workerPath, { force: true });
+    }
     await markResumePointerRequeued(task.resumePath, this.now().toISOString());
+  }
+
+  async adoptTask(task, item) {
+    const { context, pointer, statePath, contextPath } = task;
+    if (
+      task.workerState !== "live" ||
+      !context ||
+      context.issue?.number !== item.number ||
+      context.issue?.repository !== item.repository ||
+      pointer.itemId !== item.id ||
+      context.runner !== pointer.runner
+    ) {
+      throw new Error(
+        `Saved task context does not match adopted issue ${item.number}`,
+      );
+    }
+    const repository = context.target?.repository;
+    const repositoryConfig = this.profile.repositories[repository];
+    if (!repositoryConfig) {
+      throw new Error(`Runner cannot service repository ${repository}`);
+    }
+    const agentManaged = Boolean(context.target?.workingDirectory);
+    const paths = context.paths;
+    await writeResumePointer(task.resumePath, {
+      ...pointer,
+      adoptedAt: this.now().toISOString(),
+    });
+    return this.#createHandle({
+      item,
+      repository,
+      repositoryConfig,
+      runner: pointer.runner,
+      agentManaged,
+      expectedRemotes: agentManaged
+        ? undefined
+        : {
+            base: {
+              name: context.target.baseRemote,
+              url: context.target.baseRemoteUrl,
+              pushUrl: context.target.baseRemotePushUrl,
+            },
+            push: {
+              name: context.target.pushRemote,
+              url: context.target.pushRemoteUrl,
+              pushUrl: context.target.pushRemotePushUrl,
+            },
+          },
+      target: context.target,
+      baseCommit: context.target.baseCommit,
+      title: terminalTitle(item),
+      branch: context.target.branch,
+      worktreePath:
+        context.target.workingDirectory ?? context.target.worktreePath,
+      statePath,
+      paths,
+      deadline: context.copilot?.deadline,
+      resumePath: task.resumePath,
+      sessionId: pointer.sessionId,
+      contextPath,
+      resumeAffinity: pointer.resumeAffinity,
+    });
+  }
+
+  async discardResumeTask(task, summary) {
+    const cancelPath = confinedChildPath(
+      task.statePath,
+      task.pointer.launchPaths.cancel,
+    );
+    await writeJsonAtomic(cancelPath, {
+      status: "failed",
+      summary,
+    });
+    if (task.workerState === "live") {
+      const identity = await this.processIdentity(task.worker.pid);
+      if (
+        matchesWorkerIdentity(identity, {
+          contextPath: task.contextPath,
+          startedAt: task.worker.startedAt,
+        })
+      ) {
+        await this.terminateWorker(task.worker.pid);
+      }
+    }
+    await rm(task.resumePath, { force: true });
   }
 
   #createHandle({
@@ -1151,6 +1298,27 @@ function taskContextPath(statePath, launchId) {
 function taskResumePath(stateDirectory, itemId) {
   const key = createHash("sha256").update(String(itemId)).digest("hex").slice(0, 24);
   return path.join(stateDirectory, `resume-${key}.json`);
+}
+
+function matchesWorkerIdentity(identity, { contextPath, startedAt }) {
+  if (!identity?.commandLine) {
+    return false;
+  }
+  const expectedContext = path.resolve(contextPath).toLowerCase();
+  if (!identity.commandLine.toLowerCase().includes(expectedContext)) {
+    return false;
+  }
+  if (!identity.startedAt || !startedAt) {
+    return true;
+  }
+  const processStart = Date.parse(identity.startedAt);
+  const workerStart = Date.parse(startedAt);
+  return (
+    Number.isFinite(processStart) &&
+    Number.isFinite(workerStart) &&
+    processStart <= workerStart &&
+    workerStart - processStart <= 5 * 60_000
+  );
 }
 
 function confinedStatePath(stateDirectory, savedPath) {

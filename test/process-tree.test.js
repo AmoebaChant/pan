@@ -2,9 +2,29 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  readProcessIdentity,
   terminateProcessByPid,
   terminateProcessTree,
 } from "../src/process-tree.js";
+
+test("reads a Windows process command line and creation time", async () => {
+  const identity = await readProcessIdentity(4321, {
+    platform: "win32",
+    execFileImpl: (_file, _args, _options, callback) =>
+      callback(
+        undefined,
+        JSON.stringify({
+          CommandLine: "node task-worker.js --context C:\\state\\context.json",
+          CreationDate: "2026-07-31T12:00:00.000Z",
+        }),
+      ),
+  });
+
+  assert.deepEqual(identity, {
+    commandLine: "node task-worker.js --context C:\\state\\context.json",
+    startedAt: "2026-07-31T12:00:00.000Z",
+  });
+});
 
 test("terminates only the supplied child process tree", async () => {
   const calls = [];

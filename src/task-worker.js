@@ -40,6 +40,7 @@ writeWorkerLine(`[Pan worker] Activity log: ${context.paths.log}`);
 await writeJsonAtomic(context.paths.worker, {
   pid: process.pid,
   startedAt: new Date().toISOString(),
+  contextPath,
 });
 const cancellation = await readAgentResult(context.paths.cancel, {
   allowInterrupted: true,

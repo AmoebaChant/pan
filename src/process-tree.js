@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 
 export async function terminateProcessTree(childProcess, options = {}) {
   if (!childProcess?.pid) {
@@ -66,4 +67,110 @@ export function processIsAlive(pid) {
   } catch (error) {
     return error.code === "EPERM";
   }
+}
+
+export async function readProcessIdentity(
+  pid,
+  {
+    execFileImpl = execFile,
+    platform = process.platform,
+  } = {},
+) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return undefined;
+  }
+  if (platform === "linux") {
+    try {
+      const [commandLine, stat, systemStat] = await Promise.all([
+        readFile(`/proc/${pid}/cmdline`),
+        readFile(`/proc/${pid}/stat`, "utf8"),
+        readFile("/proc/stat", "utf8"),
+      ]);
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      const clockTicks = Number(fields[19]);
+      const bootTime = Number(
+        systemStat.match(/^btime\s+(\d+)$/m)?.[1],
+      );
+      return {
+        commandLine: commandLine.toString("utf8").replaceAll("\0", " ").trim(),
+        startedAt:
+          Number.isFinite(clockTicks) && Number.isFinite(bootTime)
+            ? new Date((bootTime + clockTicks / 100) * 1_000).toISOString()
+            : undefined,
+      };
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  if (platform === "win32") {
+    const script = [
+      `$process = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"`,
+      "if ($null -eq $process) { exit 3 }",
+      "$process | Select-Object CommandLine,CreationDate | ConvertTo-Json -Compress",
+    ].join("; ");
+    try {
+      const output = await execFileText(execFileImpl, "powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+      ]);
+      const value = JSON.parse(output);
+      return {
+        commandLine: value.CommandLine ?? "",
+        startedAt: value.CreationDate
+          ? new Date(value.CreationDate).toISOString()
+          : undefined,
+      };
+    } catch (error) {
+      if (error.code === 3) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  try {
+    const output = await execFileText(execFileImpl, "ps", [
+      "-p",
+      String(pid),
+      "-o",
+      "lstart=",
+      "-o",
+      "command=",
+    ]);
+    const startedAt = output.slice(0, 24).trim();
+    return {
+      commandLine: output.slice(24).trim(),
+      startedAt: startedAt
+        ? new Date(startedAt).toISOString()
+        : undefined,
+    };
+  } catch (error) {
+    if (error.code === 1) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function execFileText(execFileImpl, executable, args) {
+  return new Promise((resolve, reject) => {
+    execFileImpl(
+      executable,
+      args,
+      { windowsHide: true },
+      (error, stdout = "") => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stdout.trim());
+      },
+    );
+  });
 }

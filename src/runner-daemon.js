@@ -92,8 +92,8 @@ export class RunnerDaemon {
       this.logger.info?.("Runner is offline; skipping poll.");
       return 0;
     }
+    await this.#recoverResumeTasks(signal);
     await this.#recoverLegacyRunnerStops();
-    await this.#recoverInterruptedTasks();
     const freeSlots =
       this.profile.maxConcurrentDaemons - this.active.size;
     if (freeSlots <= 0) {
@@ -197,7 +197,7 @@ export class RunnerDaemon {
     return started;
   }
 
-  async #runClaim(item, runner, playbook, signal) {
+  async #runClaim(item, runner, playbook, signal, adoptedHandle) {
     const repository = repositoryFor(item);
     const deadline = this.profile.taskBudget?.wallClockMinutes
       ? this.now().getTime() +
@@ -215,45 +215,52 @@ export class RunnerDaemon {
     let outcome;
     let result;
     try {
-      const comments = await this.store.listComments(item);
-      this.logger.info?.(
-        `Launching task #${item.number} for ${repository}; model=${this.profile.copilot?.model ?? "auto"}, wall-clock=${deadline ? `${this.profile.taskBudget.wallClockMinutes}m` : "unlimited"}, AI credits=${this.profile.taskBudget?.maxAiCredits ?? "unlimited"}.`,
-      );
-      handle = await this.executor.start({
-        item: { ...item, comments },
-        repository,
-        runner,
-        playbook,
-        deadline,
-        resumeAffinity: runnerResumeAffinity(this.profile.id, playbook.id),
-        onResume: async (record) => {
-          try {
-            await retry(() =>
-              this.store.addComment(item, agentStartedComment(record)),
-            );
-          } catch (error) {
-            this.logger.error(
-              `Unable to record agent start for Pan task #${item.number}`,
-              error,
-            );
-          }
-          if (record.resumed || !item.fields.needsHumanSince) {
-            return;
-          }
-          try {
-            await this.attention.resolve(item, {
-              runner,
-              reason:
-                "The previous worker did not survive to be answered; this task restarted from the beginning.",
-            });
-          } catch (error) {
-            this.logger.error(
-              `Unable to clear stale human attention for Pan task #${item.number}`,
-              error,
-            );
-          }
-        },
-      });
+      if (adoptedHandle) {
+        handle = adoptedHandle;
+        this.logger.info?.(
+          `Watching adopted task #${item.number} for ${repository}.`,
+        );
+      } else {
+        const comments = await this.store.listComments(item);
+        this.logger.info?.(
+          `Launching task #${item.number} for ${repository}; model=${this.profile.copilot?.model ?? "auto"}, wall-clock=${deadline ? `${this.profile.taskBudget.wallClockMinutes}m` : "unlimited"}, AI credits=${this.profile.taskBudget?.maxAiCredits ?? "unlimited"}.`,
+        );
+        handle = await this.executor.start({
+          item: { ...item, comments },
+          repository,
+          runner,
+          playbook,
+          deadline,
+          resumeAffinity: runnerResumeAffinity(this.profile.id, playbook.id),
+          onResume: async (record) => {
+            try {
+              await retry(() =>
+                this.store.addComment(item, agentStartedComment(record)),
+              );
+            } catch (error) {
+              this.logger.error(
+                `Unable to record agent start for Pan task #${item.number}`,
+                error,
+              );
+            }
+            if (record.resumed || !item.fields.needsHumanSince) {
+              return;
+            }
+            try {
+              await this.attention.resolve(item, {
+                runner,
+                reason:
+                  "The previous worker did not survive to be answered; this task restarted from the beginning.",
+              });
+            } catch (error) {
+              this.logger.error(
+                `Unable to clear stale human attention for Pan task #${item.number}`,
+                error,
+              );
+            }
+          },
+        });
+      }
       result = await waitForTask({
         handle,
         heartbeat,
@@ -580,10 +587,42 @@ export class RunnerDaemon {
     ).toISOString();
   }
 
-  async #recoverInterruptedTasks() {
-    const interrupted = await this.executor.listInterruptedTasks?.();
-    for (const task of interrupted ?? []) {
+  async #recoverResumeTasks(signal) {
+    const tasks = this.executor.listResumeTasks
+      ? await this.executor.listResumeTasks()
+      : await this.executor.listInterruptedTasks?.();
+    for (const task of tasks ?? []) {
       try {
+        const item = await this.store.getItem(task.itemId, { signal });
+        if (!item) {
+          this.logger.warn?.(
+            `Resume pointer for task #${task.issueNumber ?? "unknown"} has no Project item; preserving it for manual recovery.`,
+          );
+          continue;
+        }
+        if (
+          item.state?.toLowerCase() === "closed" ||
+          item.fields.status === "done"
+        ) {
+          await this.executor.discardResumeTask?.(
+            task,
+            "The Issue was closed while its runner was offline.",
+          );
+          this.logger.info?.(
+            `Discarded resume state for closed task #${item.number}.`,
+          );
+          continue;
+        }
+        if (task.workerState === "live" && !task.requeue) {
+          await this.#adoptResumeTask(task, item, signal);
+          continue;
+        }
+        if (task.workerState === "unknown") {
+          this.logger.warn?.(
+            `Task #${task.issueNumber ?? "unknown"} has an active worker whose identity could not be verified; preserving it without dispatching a duplicate.`,
+          );
+          continue;
+        }
         if (!resumableAffinity(task.resumeAffinity)) {
           this.logger.error(
             `Interrupted task #${task.issueNumber ?? "unknown"} has no valid resume affinity; preserving it for manual recovery.`,
@@ -614,7 +653,7 @@ export class RunnerDaemon {
         }
         await this.executor.markInterruptedRequeued?.(task);
         this.logger.info?.(
-          `Recovered interrupted task #${task.issueNumber ?? "unknown"} to ready.`,
+          `Recovered stopped task #${task.issueNumber ?? "unknown"} to ready${task.workerState === "identity-mismatch" ? " after rejecting a mismatched worker PID" : ""}.`,
         );
       } catch (error) {
         this.logger.error(
@@ -622,6 +661,68 @@ export class RunnerDaemon {
           error,
         );
       }
+    }
+  }
+
+  async #adoptResumeTask(task, item, signal) {
+    const playbook = this.profile.playbooks.find(
+      (candidate) => candidate.id === task.playbookId,
+    );
+    const slot = runnerPlaybookSlot(
+      task.runner,
+      this.profile.id,
+      playbook,
+    );
+    if (!playbook || !slot || slot > playbook.capacity) {
+      throw new Error(
+        `Resume pointer for task #${item.number} has an invalid runner slot`,
+      );
+    }
+    if (this.active.has(task.runner)) {
+      return;
+    }
+
+    const reserved = {
+      playbookId: playbook.id,
+      slot,
+      promise: Promise.resolve(),
+    };
+    this.active.set(task.runner, reserved);
+    try {
+      const claim = await this.store.claimWithLease({
+        itemId: item.id,
+        runner: task.runner,
+        assignee: this.profile.githubAssignee,
+        leaseUntil: this.#leaseUntil(),
+        status: "in-progress",
+      });
+      if (!claim.claimed) {
+        throw new Error(`Unable to refresh adopted claim: ${claim.reason}`);
+      }
+      const handle = await this.executor.adoptTask(task, claim.item);
+      const promise = this.#runClaim(
+        claim.item,
+        task.runner,
+        playbook,
+        signal,
+        handle,
+      )
+        .catch((error) => {
+          this.logger.error(`Adopted Pan task #${item.number} failed`, error);
+        })
+        .finally(() => {
+          this.active.delete(task.runner);
+          this.logger.info?.(
+            `Released local capacity for adopted task #${item.number}; active=${this.active.size}.`,
+          );
+        });
+      reserved.promise = promise;
+      this.logger.info?.(
+        `Adopted still-running task #${item.number} as ${task.runner}; slot ${slot}/${playbook.capacity} is reserved.`,
+      );
+    } catch (error) {
+      this.active.delete(task.runner);
+      throw error;
     }
   }
 
@@ -748,6 +849,20 @@ function runnerResumeAffinity(runnerId, playbookId) {
 
 function resumableAffinity(claimedBy) {
   return claimedBy?.startsWith("resume:") ? claimedBy : undefined;
+}
+
+function runnerPlaybookSlot(runner, profileId, playbook) {
+  if (!playbook) {
+    return undefined;
+  }
+  const prefix = playbook.legacy
+    ? `${profileId}/slot-`
+    : `${profileId}/${playbook.id}/slot-`;
+  if (!runner.startsWith(prefix)) {
+    return undefined;
+  }
+  const slot = Number(runner.slice(prefix.length));
+  return Number.isInteger(slot) && slot > 0 ? slot : undefined;
 }
 
 const PRIORITY_ORDER = new Map([

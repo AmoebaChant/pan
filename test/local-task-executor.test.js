@@ -732,6 +732,141 @@ test("keeps an agent-managed task resumable when the runner interrupts it", asyn
   }
 });
 
+test("discovers and rebuilds a handle for a still-running worker", async () => {
+  const fixture = await createFixture();
+  let handle;
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "adopt-live",
+    workerIsAlive: () => true,
+    processIdentity: async () => ({
+      commandLine: `${process.execPath} task-worker.js --context "${handle.contextPath}"`,
+      startedAt: "2026-07-31T12:00:00.000Z",
+    }),
+  });
+
+  try {
+    const options = makeStartOptions(56);
+    options.item.id = "item-56";
+    handle = await executor.start(options);
+    await writeFile(
+      handle.workerPath,
+      JSON.stringify({
+        pid: 1234,
+        startedAt: "2026-07-31T12:00:01.000Z",
+        contextPath: handle.contextPath,
+      }),
+    );
+
+    const [task] = await executor.listResumeTasks();
+    const adopted = await executor.adoptTask(task, options.item);
+
+    assert.equal(task.workerState, "live");
+    assert.equal(adopted.workerPath, handle.workerPath);
+    assert.equal(adopted.resultPath, handle.resultPath);
+    assert.equal(adopted.runner, options.runner);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a recycled worker PID whose command line has another context", async () => {
+  const fixture = await createFixture();
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "recycled-pid",
+    workerIsAlive: () => true,
+    processIdentity: async () => ({
+      commandLine: `${process.execPath} task-worker.js --context C:\\state\\another-context.json`,
+      startedAt: "2026-07-31T12:00:00.000Z",
+    }),
+  });
+
+  try {
+    const options = makeStartOptions(57);
+    options.item.id = "item-57";
+    const handle = await executor.start(options);
+    await writeFile(
+      handle.workerPath,
+      JSON.stringify({
+        pid: 1234,
+        startedAt: "2026-07-31T12:00:01.000Z",
+      }),
+    );
+
+    const [task] = await executor.listResumeTasks();
+
+    assert.equal(task.workerState, "identity-mismatch");
+    await assert.rejects(
+      executor.adoptTask(task, options.item),
+      /does not match adopted issue/,
+    );
+    await executor.markInterruptedRequeued(task);
+    await assert.rejects(readFile(handle.workerPath), { code: "ENOENT" });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("signals closed workers and rechecks identity before terminating", async () => {
+  const fixture = await createFixture();
+  let handle;
+  let identityReads = 0;
+  let terminated = false;
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "closed-worker",
+    workerIsAlive: () => true,
+    processIdentity: async () => {
+      identityReads += 1;
+      return {
+        commandLine:
+          identityReads === 1
+            ? `${process.execPath} task-worker.js --context "${handle.contextPath}"`
+            : `${process.execPath} unrelated.js`,
+        startedAt: "2026-07-31T12:00:00.000Z",
+      };
+    },
+    terminateWorker: async () => {
+      terminated = true;
+    },
+  });
+
+  try {
+    const options = makeStartOptions(58);
+    options.item.id = "item-58";
+    handle = await executor.start(options);
+    await writeFile(
+      handle.workerPath,
+      JSON.stringify({
+        pid: 1234,
+        startedAt: "2026-07-31T12:00:01.000Z",
+      }),
+    );
+    const [task] = await executor.listResumeTasks();
+
+    await executor.discardResumeTask(task, "Issue closed.");
+
+    assert.equal(terminated, false);
+    assert.deepEqual(
+      JSON.parse(await readFile(handle.cancelPath, "utf8")),
+      {
+        status: "failed",
+        summary: "Issue closed.",
+      },
+    );
+    await assert.rejects(readFile(handle.resumePath), { code: "ENOENT" });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 class FakeCommands {
   constructor() {
     this.calls = [];

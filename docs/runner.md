@@ -74,6 +74,13 @@ human attention so an unattended runner cannot retry it indefinitely.
 Intentional runner shutdowns do not count toward that limit, and resolving the
 attention request explicitly re-arms the task.
 
+When the runner itself restarts while a worker survives, startup verifies the
+worker process against its saved context, reserves the same playbook slot, and
+re-adopts it before polling for new work. The adopted task resumes lease
+heartbeats and normal result and attention monitoring. A missing or mismatched
+worker is released to resumable `ready` state; an unverifiable process is
+preserved without launching a possible duplicate.
+
 A real worker question is a pause, not a failure. The worker sets
 `needs-human-since`, asks in its own terminal, and keeps running: it holds its
 lease and its concurrency slot, and its budget clock stops until the answer
