@@ -83,7 +83,7 @@ test("grants a standing triage policy only when configured", () => {
   );
   assert.match(
     triaging,
-    /owner, Status, priority, workstream, and the requirements that select a playbook/i,
+    /owner, Status, priority, an optional workstream, and the requirements that select a playbook/i,
   );
   assert.match(
     triaging,

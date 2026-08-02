@@ -63,8 +63,8 @@ Say explicitly how to isolate work, how to build and test, and how to deliver.
 ## Worker lifecycle
 
 For a claimed task the runner creates a non-default branch and dedicated
-worktree, supplies Issue, answer, workstream, and playbook context to Copilot,
-and writes append-only Issue journal records that identify the selected
+worktree, supplies Issue, answer, optional workstream, and playbook context to
+Copilot, and writes append-only Issue journal records that identify the selected
 playbook and Copilot session. It owns task leases and the
 isolation guarantees around them: before accepting completion it confirms the
 task stayed on its own branch, left nothing uncommitted, and did not rewrite the

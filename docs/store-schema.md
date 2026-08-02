@@ -17,7 +17,7 @@ canonical among items with the same priority.
 | `Status` | single select | triage, then the runner | `untriaged`, `needs-detail`, `ready`, `in-progress`, `in-review`, `done`, `blocked`; empty reads as `untriaged` |
 | `priority` | single select | triage | `urgent`, `high`, `normal`, or `low`; empty reads as `normal` |
 | `requirements` | text | triage | newline-delimited capabilities such as `repo:owner/repo` |
-| `workstream` | text | triage | path relative to `workstreams/` |
+| `workstream` | text | triage | optional path relative to `workstreams/`; empty means no workstream |
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp; non-empty means a live worker is waiting for you |
 | `lease-until` | text | the runner | RFC 3339 UTC expiry |
 | `claimed-by` | text | the runner | stable runner identity |

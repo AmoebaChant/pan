@@ -56,7 +56,7 @@
       "key": "workstream",
       "name": "workstream",
       "type": "text",
-      "format": "path relative to workstreams/"
+      "format": "optional path relative to workstreams/; empty means the task has no workstream"
     }
   ]
 }

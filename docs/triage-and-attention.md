@@ -21,8 +21,9 @@ the user, then writes approved values with `gh project item-edit`. It re-reads
 each Issue and Project item immediately before mutation and verifies the result
 afterward. Active runner status and lease fields are left untouched.
 
-The `workstream` field is a canonical path relative to `workstreams/`. Validate
-it by reading the corresponding README through the GitHub Contents API.
+The `workstream` field is an optional canonical path relative to `workstreams/`.
+A task may have no workstream. When one is set, validate it by reading the
+corresponding README through the GitHub Contents API.
 
 An item is dispatchable only when `owner` is `agent`, `Status` is `ready`, and
 `requirements` names exactly one `repo:` entry served by a playbook on an

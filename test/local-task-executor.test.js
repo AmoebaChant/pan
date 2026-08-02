@@ -242,6 +242,63 @@ test("cleans a reserved worktree and state directory after launch failure", asyn
   }
 });
 
+test("associates a workstream README into the task context when one is set", async () => {
+  const fixture = await createFixture();
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands: new FakeCommands(),
+    spawnProcess: successfulSpawn,
+    randomId: () => "with-workstream",
+  });
+
+  try {
+    const handle = await executor.start(makeStartOptions(11));
+    const context = JSON.parse(
+      await readFile(path.join(handle.statePath, "context.json"), "utf8"),
+    );
+
+    assert.equal(context.workstream.path, "example");
+    assert.equal(context.workstream.content, "# Example\n");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("launches and omits workstream context for a task with no workstream", async () => {
+  const fixture = await createFixture();
+  const commands = new FakeCommands();
+  const terminalLaunches = [];
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: (...args) => {
+      terminalLaunches.push(args);
+      return successfulSpawn();
+    },
+    randomId: () => "no-workstream",
+  });
+
+  try {
+    const options = makeStartOptions(12);
+    const handle = await executor.start({
+      ...options,
+      item: { ...options.item, fields: {} },
+    });
+    const context = JSON.parse(
+      await readFile(path.join(handle.statePath, "context.json"), "utf8"),
+    );
+
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(context, "workstream"),
+      "context must omit workstream when the task has none",
+    );
+    assert.equal(context.playbook.id, "pan-development");
+    assert.equal(terminalLaunches.length, 1);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("uses the Windows Terminal default profile when none is configured", async () => {
   const fixture = await createFixture();
   const commands = new FakeCommands();

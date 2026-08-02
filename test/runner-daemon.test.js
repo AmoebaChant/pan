@@ -41,6 +41,40 @@ test("claims matching work and advances a completed task to in-review", async ()
   assert.ok(messages.some((message) => message.includes("needs-review")));
 });
 
+test("claims and completes an eligible ready task that has no workstream", async () => {
+  const item = makeItem();
+  item.fields.workstream = "";
+  const store = new FakeStore([item]);
+  const handle = new FakeHandle({
+    status: "completed",
+    summary: "Completed without a workstream.",
+  });
+  const executor = new FakeExecutor(handle);
+
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.claims.length, 1);
+  assert.equal(store.claims[0].runner, "machine-a/slot-1");
+  assert.equal(handle.completed, true);
+  assert.equal(executor.started.item.number, 1);
+  assert.equal(store.attentionRequests.length, 0);
+  assert.deepEqual(store.releases, [
+    {
+      itemId: "item-1",
+      runner: "machine-a/slot-1",
+      assignee: "octocat",
+      status: "in-review",
+    },
+  ]);
+});
+
 test("sets a task-specific terminal title while working and reverts when done", async () => {
   const item = makeItem({ number: 34 });
   const store = new FakeStore([item]);

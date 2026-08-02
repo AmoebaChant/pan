@@ -131,6 +131,40 @@ test("validates a non-empty workstream path before writing the Project field", a
   ]);
 });
 
+test("skips workstream validation when the field is empty", async () => {
+  const validated = [];
+  const { store } = fixture({
+    workstreamStore: {
+      async validate(workstream) {
+        validated.push(workstream);
+        return { path: workstream };
+      },
+    },
+  });
+
+  await store.setFields("item-1", {
+    owner: "agent",
+    workstream: "",
+  });
+
+  assert.deepEqual(validated, []);
+});
+
+test("rejects a non-empty workstream path that fails validation", async () => {
+  const { store } = fixture({
+    workstreamStore: {
+      async validate(workstream) {
+        throw new Error(`workstream ${workstream} not found`);
+      },
+    },
+  });
+
+  await assert.rejects(
+    store.setFields("item-1", { workstream: "missing/path" }),
+    /workstream missing\/path not found/,
+  );
+});
+
 test("filters canonical items by fields, requirements, and lease state", async () => {
   const { store } = fixture({
     items: [

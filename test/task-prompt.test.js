@@ -41,6 +41,55 @@ test("hands the task to the playbook and Issue and asks for one outcome", () => 
   assert.doesNotMatch(prompt, /undefined/);
 });
 
+test("omits workstream README from context when the task has no workstream", () => {
+  const prompt = buildTaskPrompt("C:\\state\\context.json", {
+    issue: {
+      number: 31,
+      repository: "example/tasks",
+    },
+    target: {
+      defaultBranch: "main",
+    },
+    playbook: {
+      id: "pan-development",
+      instructions: [],
+    },
+    paths,
+  });
+
+  assert.match(
+    prompt,
+    /It contains the Issue body, acceptance criteria, comments and answers, target worktree and branch, and playbook guidance\./,
+  );
+  assert.doesNotMatch(prompt, /workstream README/i);
+});
+
+test("names the workstream README in context when the task has a workstream", () => {
+  const prompt = buildTaskPrompt("C:\\state\\context.json", {
+    issue: {
+      number: 31,
+      repository: "example/tasks",
+    },
+    target: {
+      defaultBranch: "main",
+    },
+    playbook: {
+      id: "pan-development",
+      instructions: [],
+    },
+    workstream: {
+      path: "example",
+      content: "# Example\n",
+    },
+    paths,
+  });
+
+  assert.match(
+    prompt,
+    /It contains the Issue body, acceptance criteria, comments and answers, target worktree and branch, workstream README, and playbook guidance\./,
+  );
+});
+
 test("tells a restarted worker to re-state its outstanding question", () => {
   const prompt = buildTaskPrompt("C:\\state\\context.json", {
     issue: {
