@@ -1,4 +1,4 @@
-import { access, mkdir, rm } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,8 +7,9 @@ import { ProcessClient } from "./process-client.js";
 
 const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SELECTIONS = ["chat", "runner", "both"];
+const ICON_SIZES = [16, 32, 128, 256, 512];
 
-/** Creates self-contained Windows launch shortcuts for a configured Pan domain. */
+/** Creates self-contained launch shortcuts for a configured Pan domain. */
 export async function createPanDesktopShortcuts({
   configPath,
   runnerProfilePath,
@@ -23,9 +24,12 @@ export async function createPanDesktopShortcuts({
   commands = new ProcessClient(),
   moduleRoot = MODULE_ROOT,
   nodePath = process.execPath,
+  iconConverter,
 } = {}) {
-  if (platform !== "win32") {
-    throw new Error("Pan desktop shortcuts are currently supported on Windows only");
+  if (platform !== "win32" && platform !== "darwin") {
+    throw new Error(
+      "Pan desktop shortcuts are currently supported on Windows and macOS only",
+    );
   }
   if (!SELECTIONS.includes(selection)) {
     throw new TypeError(`shortcut selection must be one of ${SELECTIONS.join(", ")}`);
@@ -60,11 +64,53 @@ export async function createPanDesktopShortcuts({
         commands,
       });
   await mkdir(desktop, { recursive: true });
+  const shortcuts =
+    platform === "darwin"
+      ? await createMacShortcuts({
+          configPath: path.resolve(configPath),
+          runnerProfilePath: path.resolve(runnerProfilePath),
+          domainPath: path.resolve(domainPath),
+          approvalMode,
+          selection,
+          desktop,
+          iconPath: path.resolve(iconPath),
+          env,
+          commands,
+          iconConverter,
+          ...launchers,
+        })
+      : await createWindowsShortcuts({
+          configPath: path.resolve(configPath),
+          runnerProfilePath: path.resolve(runnerProfilePath),
+          domainPath: path.resolve(domainPath),
+          approvalMode,
+          selection,
+          desktop,
+          iconPath: path.resolve(iconPath),
+          env,
+          commands,
+          ...launchers,
+        });
+  return { status: "created", desktopPath: desktop, shortcuts };
+}
+
+async function createWindowsShortcuts({
+  configPath,
+  runnerProfilePath,
+  domainPath,
+  approvalMode,
+  selection,
+  desktop,
+  iconPath,
+  env,
+  commands,
+  ...launchers
+}) {
   const terminal = await windowsTerminalPath(env);
   const definitions = shortcutDefinitions({
-    configPath: path.resolve(configPath),
-    runnerProfilePath: path.resolve(runnerProfilePath),
-    domainPath: path.resolve(domainPath),
+    configPath,
+    runnerProfilePath,
+    domainPath,
     approvalMode,
     selection,
     ...launchers,
@@ -81,8 +127,8 @@ export async function createPanDesktopShortcuts({
       shortcutPath,
       targetPath: terminal,
       argumentsValue: definition.arguments,
-      workingDirectory: path.resolve(domainPath),
-      iconPath: path.resolve(iconPath),
+      workingDirectory: domainPath,
+      iconPath,
       description: definition.description,
       env,
       commands,
@@ -90,11 +136,203 @@ export async function createPanDesktopShortcuts({
     shortcuts.push({
       kind: definition.kind,
       path: shortcutPath,
-      iconPath: path.resolve(iconPath),
+      iconPath,
       command: definition.command,
     });
   }
-  return { status: "created", desktopPath: desktop, shortcuts };
+  return shortcuts;
+}
+
+async function createMacShortcuts({
+  configPath,
+  runnerProfilePath,
+  domainPath,
+  approvalMode,
+  selection,
+  desktop,
+  iconPath,
+  env,
+  commands,
+  iconConverter = convertIcoToIcns,
+  nodePath,
+  panEntryPath,
+  runnerEntryPath,
+}) {
+  const definitions = macShortcutDefinitions({
+    configPath,
+    runnerProfilePath,
+    domainPath,
+    approvalMode,
+    selection,
+    nodePath,
+    panEntryPath,
+    runnerEntryPath,
+  });
+  const workDir = await mkdtemp(path.join(os.tmpdir(), "pan-icns-"));
+  try {
+    const icnsSource = await iconConverter({
+      iconPath,
+      workDir,
+      env,
+      commands,
+    });
+    const shortcuts = [];
+    // Only the selected shortcuts are managed here; unselected bundles are left
+    // in place. This matches the Windows semantics, where shortcutDefinitions
+    // returns only the selected definitions and each removes only its own name.
+    for (const definition of definitions) {
+      const bundlePath = path.join(desktop, definition.name);
+      await rm(bundlePath, { recursive: true, force: true });
+      const contents = path.join(bundlePath, "Contents");
+      const macOsDir = path.join(contents, "MacOS");
+      const resources = path.join(contents, "Resources");
+      await mkdir(macOsDir, { recursive: true });
+      await mkdir(resources, { recursive: true });
+      const launchPath = path.join(macOsDir, "launch");
+      const commandPath = path.join(resources, "run.command");
+      const iconTarget = path.join(resources, "pan.icns");
+      await writeFile(path.join(contents, "Info.plist"), definition.plist);
+      await writeFile(launchPath, MAC_LAUNCH_SCRIPT);
+      await writeFile(commandPath, definition.runCommand);
+      await copyFile(icnsSource, iconTarget);
+      await chmod(launchPath, 0o755);
+      await chmod(commandPath, 0o755);
+      shortcuts.push({
+        kind: definition.kind,
+        path: bundlePath,
+        iconPath: iconTarget,
+        command: definition.command,
+      });
+    }
+    return shortcuts;
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+const MAC_LAUNCH_SCRIPT = [
+  "#!/bin/bash",
+  'DIR="$(cd "$(dirname "$0")" && pwd)"',
+  'open -a Terminal "$DIR/../Resources/run.command"',
+  "",
+].join("\n");
+
+function macShortcutDefinitions({
+  configPath,
+  runnerProfilePath,
+  domainPath,
+  approvalMode,
+  selection,
+  nodePath,
+  panEntryPath,
+  runnerEntryPath,
+}) {
+  const definitions = [];
+  if (selection === "chat" || selection === "both") {
+    const command = [
+      "exec",
+      shellQuote(nodePath),
+      shellQuote(panEntryPath),
+      "session",
+      "--config",
+      shellQuote(configPath),
+      ...(approvalMode === "allow-all" ? ["--allow-all-tools"] : []),
+    ].join(" ");
+    definitions.push({
+      kind: "chat",
+      name: "Start Pan Chat.app",
+      command,
+      runCommand: macRunCommand(domainPath, command),
+      plist: infoPlist({
+        name: "Start Pan Chat",
+        identifier: "com.amoebachant.pan.chat",
+      }),
+    });
+  }
+  if (selection === "runner" || selection === "both") {
+    const command = [
+      "exec",
+      shellQuote(nodePath),
+      shellQuote(runnerEntryPath),
+      "--profile",
+      shellQuote(runnerProfilePath),
+    ].join(" ");
+    definitions.push({
+      kind: "runner",
+      name: "Start Pan Runner.app",
+      command,
+      runCommand: macRunCommand(domainPath, command),
+      plist: infoPlist({
+        name: "Start Pan Runner",
+        identifier: "com.amoebachant.pan.runner",
+      }),
+    });
+  }
+  return definitions;
+}
+
+function macRunCommand(domainPath, command) {
+  return [
+    "#!/bin/bash",
+    `cd ${shellQuote(domainPath)} || exit 1`,
+    command,
+    "",
+  ].join("\n");
+}
+
+function infoPlist({ name, identifier }) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    "<dict>",
+    "  <key>CFBundleName</key>",
+    `  <string>${name}</string>`,
+    "  <key>CFBundleDisplayName</key>",
+    `  <string>${name}</string>`,
+    "  <key>CFBundleIdentifier</key>",
+    `  <string>${identifier}</string>`,
+    "  <key>CFBundleExecutable</key>",
+    "  <string>launch</string>",
+    "  <key>CFBundleIconFile</key>",
+    "  <string>pan</string>",
+    "  <key>CFBundlePackageType</key>",
+    "  <string>APPL</string>",
+    "  <key>CFBundleVersion</key>",
+    "  <string>1.0</string>",
+    "  <key>CFBundleShortVersionString</key>",
+    "  <string>1.0</string>",
+    "  <key>NSHighResolutionCapable</key>",
+    "  <true/>",
+    "</dict>",
+    "</plist>",
+    "",
+  ].join("\n");
+}
+
+/** Converts a packaged .ico into an .icns using the standard macOS tools. */
+export async function convertIcoToIcns({ iconPath, workDir, env, commands }) {
+  const options = { env, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 };
+  const pngPath = path.join(workDir, "pan.png");
+  await commands.run("sips", ["-s", "format", "png", iconPath, "--out", pngPath], options);
+  const iconsetDir = path.join(workDir, "pan.iconset");
+  await mkdir(iconsetDir, { recursive: true });
+  for (const size of ICON_SIZES) {
+    await commands.run(
+      "sips",
+      ["-z", String(size), String(size), pngPath, "--out", path.join(iconsetDir, `icon_${size}x${size}.png`)],
+      options,
+    );
+    const retina = size * 2;
+    await commands.run(
+      "sips",
+      ["-z", String(retina), String(retina), pngPath, "--out", path.join(iconsetDir, `icon_${size}x${size}@2x.png`)],
+      options,
+    );
+  }
+  const icnsPath = path.join(workDir, "pan.icns");
+  await commands.run("iconutil", ["-c", "icns", iconsetDir, "-o", icnsPath], options);
+  return icnsPath;
 }
 
 export async function discoverDesktopPath({
@@ -103,6 +341,9 @@ export async function discoverDesktopPath({
   homedir = os.homedir,
   commands = new ProcessClient(),
 } = {}) {
+  if (platform === "darwin") {
+    return path.join(homedir(), "Desktop");
+  }
   if (platform === "win32") {
     const desktop = await commands.run(
       "powershell.exe",
@@ -349,6 +590,13 @@ function requireAbsolutePath(value, name) {
 
 function quote(value) {
   return `"${value.replaceAll('"', '\\"')}"`;
+}
+
+function shellQuote(value) {
+  // Wrap in single quotes; close/escape/reopen for embedded single quotes.
+  // This prevents shell expansion or command substitution from interpolated
+  // paths that contain $, backticks, spaces, quotes, or other metacharacters.
+  return `'${String(value).replaceAll("'", `'\\''`)}'`;
 }
 
 function powershellCommand(executable, args) {
