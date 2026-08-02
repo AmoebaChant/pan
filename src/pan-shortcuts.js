@@ -286,7 +286,12 @@ function macShortcutDefinitions({
     name: "Update Pan.app",
     legacyNames: [],
     command: macUpdateCommandSummary({ nodePath, panEntryPath }),
-    runCommand: macUpdateRunCommand({ panRepoPath, nodePath, panEntryPath }),
+    runCommand: macUpdateRunCommand({
+      panRepoPath,
+      nodePath,
+      panEntryPath,
+      runnerEntryPath,
+    }),
     plist: infoPlist({
       name: "Update Pan",
       identifier: "com.amoebachant.pan.update",
@@ -304,7 +309,20 @@ function macRunCommand(domainPath, command) {
   ].join("\n");
 }
 
-function macUpdateRunCommand({ panRepoPath, nodePath, panEntryPath }) {
+function macUpdateRunCommand({ panRepoPath, nodePath, panEntryPath, runnerEntryPath }) {
+  // core.fileMode=false lets the fast-forward proceed past a local mode-only
+  // change, but when the pull updates a tracked launcher it rewrites that file
+  // with upstream's (non-executable) mode, dropping any pre-existing executable
+  // bit. core.fileMode=false alone does NOT preserve modes: snapshot each
+  // launcher's mode before the pull and restore it afterward.
+  const preserved = [panEntryPath, runnerEntryPath];
+  const snapshots = preserved.map(
+    (file, index) =>
+      `mode_${index}="$(stat -f %Lp ${shellQuote(file)})" || exit 1`,
+  );
+  const restores = preserved.map(
+    (file, index) => `chmod "$mode_${index}" ${shellQuote(file)} || exit 1`,
+  );
   return [
     "#!/bin/bash",
     `cd ${shellQuote(panRepoPath)} || exit 1`,
@@ -313,7 +331,9 @@ function macUpdateRunCommand({ panRepoPath, nodePath, panEntryPath }) {
     `  echo "Update Pan requires the main branch, but this Pan checkout is on '$branch'." >&2`,
     "  exit 1",
     "fi",
+    ...snapshots,
     "git -c core.fileMode=false pull --ff-only origin main || exit 1",
+    ...restores,
     `exec ${shellQuote(nodePath)} ${shellQuote(panEntryPath)} assets repair`,
     "",
   ].join("\n");
@@ -681,6 +701,8 @@ function powershellQuote(value) {
  * The PowerShell steps the Update Pan shortcut runs: move to this Pan checkout,
  * confirm it is on main, fast-forward main, and only then repair the installed
  * Copilot assets. Any failing step stops before `pan assets repair` runs.
+ * Windows does not track POSIX executable bits on these launchers, so no mode
+ * snapshot/restore is needed here (unlike the macOS run.command).
  */
 function panUpdatePowershellScript({ panRepoPath, nodePath, panEntryPath }) {
   return [

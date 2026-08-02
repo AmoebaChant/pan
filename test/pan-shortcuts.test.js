@@ -178,6 +178,34 @@ test("creates macOS chat and runner app bundles", async () => {
     assert.ok(pullIndex > -1, "update pulls main");
     assert.ok(repairIndex > -1, "update repairs assets");
     assert.ok(pullIndex < repairIndex, "pull runs before repair");
+    // core.fileMode=false is not enough: the launcher modes are snapshotted
+    // before the pull and restored afterward so pre-existing executable bits
+    // survive an upstream content update.
+    const panSnapIndex = updateCommand.indexOf(`stat -f %Lp ${sh(ctx.panEntry)}`);
+    const runnerSnapIndex = updateCommand.indexOf(
+      `stat -f %Lp ${sh(ctx.runnerEntry)}`,
+    );
+    assert.ok(panSnapIndex > -1 && runnerSnapIndex > -1, "snapshots launcher modes");
+    assert.ok(
+      panSnapIndex < pullIndex && runnerSnapIndex < pullIndex,
+      "snapshots modes before the pull",
+    );
+    const panRestore = updateCommand.match(
+      new RegExp(`chmod "\\$mode_\\d+" ${escapeRegExp(sh(ctx.panEntry))}`),
+    );
+    const runnerRestore = updateCommand.match(
+      new RegExp(`chmod "\\$mode_\\d+" ${escapeRegExp(sh(ctx.runnerEntry))}`),
+    );
+    assert.ok(panRestore, "restores the pan.js mode");
+    assert.ok(runnerRestore, "restores the pan-runner.js mode");
+    assert.ok(
+      panRestore.index > pullIndex && panRestore.index < repairIndex,
+      "restores pan.js mode after pull and before repair",
+    );
+    assert.ok(
+      runnerRestore.index > pullIndex && runnerRestore.index < repairIndex,
+      "restores pan-runner.js mode after pull and before repair",
+    );
     const updatePlist = await readFile(
       path.join(updateBundle, "Contents", "Info.plist"),
       "utf8",
