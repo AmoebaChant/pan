@@ -417,27 +417,34 @@ async function planProjectFields({
     ),
   );
   const fields = await listProjectFields({ gh, projectId });
-  const status = fields.find((field) => field.name === "Status");
   const missing = [];
+  let updateStatus;
   for (const field of manifest.fields) {
     const existing = fields.find(
       (candidate) =>
         typeof candidate?.name === "string" &&
         candidate.name.toLowerCase() === field.name.toLowerCase(),
     );
-    if (existing && !(field.name === "Status" && replaceDefaultStatus)) {
+    if (field.name === "Status" && replaceDefaultStatus) {
+      // GitHub's built-in Status field cannot be deleted, so replace its
+      // options in place rather than dropping and recreating it.
+      if (existing) {
+        if (!existing.id) {
+          throw new Error("The new Project Status field did not include an ID");
+        }
+        updateStatus = { fieldId: existing.id, options: field.options };
+      } else {
+        missing.push(field);
+      }
+      continue;
+    }
+    if (existing) {
       validateExistingProjectField(existing, field);
       continue;
     }
     missing.push(field);
   }
-  if (status && replaceDefaultStatus && !status.id) {
-    throw new Error("The new Project Status field did not include an ID");
-  }
-  return {
-    deleteStatusId: status && replaceDefaultStatus ? status.id : undefined,
-    missing,
-  };
+  return { updateStatus, missing };
 }
 
 async function listProjectFields({ gh, projectId }) {
@@ -483,8 +490,12 @@ async function applyProjectFieldPlan({
   projectNumber,
   plan,
 }) {
-  if (plan.deleteStatusId) {
-    await gh.run(["project", "field-delete", "--id", plan.deleteStatusId]);
+  if (plan.updateStatus) {
+    await updateSingleSelectFieldOptions(
+      gh,
+      plan.updateStatus.fieldId,
+      plan.updateStatus.options,
+    );
   }
   for (const field of plan.missing) {
     const args = [
@@ -503,6 +514,17 @@ async function applyProjectFieldPlan({
     }
     await gh.run(args);
   }
+}
+
+async function updateSingleSelectFieldOptions(gh, fieldId, options) {
+  const optionLiterals = options
+    .map((name) => `{name: ${JSON.stringify(name)}, color: GRAY, description: ""}`)
+    .join(", ");
+  const mutation =
+    `mutation { updateProjectV2Field(input: {fieldId: ${JSON.stringify(fieldId)}, ` +
+    `singleSelectOptions: [${optionLiterals}]}) ` +
+    `{ projectV2Field { ... on ProjectV2SingleSelectField { id } } } }`;
+  await gh.run(["api", "graphql", "-f", `query=${mutation}`]);
 }
 
 function domainConfig({
