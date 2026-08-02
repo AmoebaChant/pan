@@ -37,7 +37,9 @@ dumping the full questionnaire or command sequence on the user:
 4. The runner's Copilot approval mode: `prompt` by default, or `allow-all` only
    after the user explicitly confirms that machine-local trust choice.
 5. On Windows or macOS, whether to create desktop shortcuts for Pan Chat, the
-   runner, or both.
+   runner, or both. An **Update Pan** shortcut, which fast-forwards this Pan
+   checkout's `main` and then repairs its Copilot assets, is always created
+   alongside whichever of those the user picks.
 
 Use Pan commands behind the conversation for every setup mutation. Never ask
 the user to hand-edit JSON, runner profiles, agent files, skills, or Project

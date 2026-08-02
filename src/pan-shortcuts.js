@@ -127,7 +127,7 @@ async function createWindowsShortcuts({
       shortcutPath,
       targetPath: terminal,
       argumentsValue: definition.arguments,
-      workingDirectory: domainPath,
+      workingDirectory: definition.workingDirectory ?? domainPath,
       iconPath,
       description: definition.description,
       env,
@@ -157,6 +157,7 @@ async function createMacShortcuts({
   nodePath,
   panEntryPath,
   runnerEntryPath,
+  panRepoPath,
 }) {
   const definitions = macShortcutDefinitions({
     configPath,
@@ -167,6 +168,7 @@ async function createMacShortcuts({
     nodePath,
     panEntryPath,
     runnerEntryPath,
+    panRepoPath,
   });
   const workDir = await mkdtemp(path.join(os.tmpdir(), "pan-icns-"));
   try {
@@ -182,6 +184,11 @@ async function createMacShortcuts({
     // returns only the selected definitions and each removes only its own name.
     for (const definition of definitions) {
       const bundlePath = path.join(desktop, definition.name);
+      await Promise.all(
+        (definition.legacyNames ?? []).map((name) =>
+          rm(path.join(desktop, name), { recursive: true, force: true }),
+        ),
+      );
       await rm(bundlePath, { recursive: true, force: true });
       const contents = path.join(bundlePath, "Contents");
       const macOsDir = path.join(contents, "MacOS");
@@ -226,6 +233,7 @@ function macShortcutDefinitions({
   nodePath,
   panEntryPath,
   runnerEntryPath,
+  panRepoPath,
 }) {
   const definitions = [];
   if (selection === "chat" || selection === "both") {
@@ -240,11 +248,12 @@ function macShortcutDefinitions({
     ].join(" ");
     definitions.push({
       kind: "chat",
-      name: "Start Pan Chat.app",
+      name: "Pan Chat.app",
+      legacyNames: ["Start Pan Chat.app", "Start PAN Chat.app"],
       command,
       runCommand: macRunCommand(domainPath, command),
       plist: infoPlist({
-        name: "Start Pan Chat",
+        name: "Pan Chat",
         identifier: "com.amoebachant.pan.chat",
       }),
     });
@@ -259,15 +268,30 @@ function macShortcutDefinitions({
     ].join(" ");
     definitions.push({
       kind: "runner",
-      name: "Start Pan Runner.app",
+      name: "Pan Runner.app",
+      legacyNames: ["Start Pan Runner.app", "Start PAN Runner.app"],
       command,
       runCommand: macRunCommand(domainPath, command),
       plist: infoPlist({
-        name: "Start Pan Runner",
+        name: "Pan Runner",
         identifier: "com.amoebachant.pan.runner",
       }),
     });
   }
+  // Update Pan is always offered whenever shortcuts are created, independent of
+  // the chat/runner selection. It updates this Pan checkout, then repairs the
+  // installed Copilot assets.
+  definitions.push({
+    kind: "update",
+    name: "Update Pan.app",
+    legacyNames: [],
+    command: macUpdateCommandSummary({ nodePath, panEntryPath }),
+    runCommand: macUpdateRunCommand({ panRepoPath, nodePath, panEntryPath }),
+    plist: infoPlist({
+      name: "Update Pan",
+      identifier: "com.amoebachant.pan.update",
+    }),
+  });
   return definitions;
 }
 
@@ -278,6 +302,25 @@ function macRunCommand(domainPath, command) {
     command,
     "",
   ].join("\n");
+}
+
+function macUpdateRunCommand({ panRepoPath, nodePath, panEntryPath }) {
+  return [
+    "#!/bin/bash",
+    `cd ${shellQuote(panRepoPath)} || exit 1`,
+    'branch="$(git rev-parse --abbrev-ref HEAD)" || exit 1',
+    'if [ "$branch" != "main" ]; then',
+    `  echo "Update Pan requires the main branch, but this Pan checkout is on '$branch'." >&2`,
+    "  exit 1",
+    "fi",
+    "git -c core.fileMode=false pull --ff-only origin main || exit 1",
+    `exec ${shellQuote(nodePath)} ${shellQuote(panEntryPath)} assets repair`,
+    "",
+  ].join("\n");
+}
+
+function macUpdateCommandSummary({ nodePath, panEntryPath }) {
+  return `git -c core.fileMode=false pull --ff-only origin main && exec ${shellQuote(nodePath)} ${shellQuote(panEntryPath)} assets repair`;
 }
 
 function infoPlist({ name, identifier }) {
@@ -395,14 +438,15 @@ function shortcutDefinitions({
   nodePath,
   panEntryPath,
   runnerEntryPath,
+  panRepoPath,
   launchCommands,
 }) {
   const definitions = [];
   if (selection === "chat" || selection === "both") {
     definitions.push({
       kind: "chat",
-      name: "Start Pan Chat.lnk",
-      legacyNames: ["Start PAN Chat.lnk"],
+      name: "Pan Chat.lnk",
+      legacyNames: ["Start Pan Chat.lnk", "Start PAN Chat.lnk"],
       description: "Start an interactive Pan session",
       arguments: [
         "new-tab",
@@ -424,8 +468,8 @@ function shortcutDefinitions({
   if (selection === "runner" || selection === "both") {
     definitions.push({
       kind: "runner",
-      name: "Start Pan Runner.lnk",
-      legacyNames: ["Start PAN Runner.lnk"],
+      name: "Pan Runner.lnk",
+      legacyNames: ["Start Pan Runner.lnk", "Start PAN Runner.lnk"],
       description: "Start the Pan runner",
       arguments: [
         "new-tab",
@@ -442,6 +486,31 @@ function shortcutDefinitions({
       command: launchCommands.runner,
     });
   }
+  // Update Pan is always offered whenever shortcuts are created, independent of
+  // the chat/runner selection. It updates this Pan checkout, then repairs the
+  // installed Copilot assets.
+  definitions.push({
+    kind: "update",
+    name: "Update Pan.lnk",
+    legacyNames: [],
+    description: "Update this Pan checkout and repair its Copilot assets",
+    workingDirectory: panRepoPath,
+    arguments: [
+      "new-tab",
+      "-d",
+      quote(panRepoPath),
+      "--title",
+      quote("Update Pan"),
+      "--suppressApplicationTitle",
+      "powershell.exe",
+      "-NoLogo",
+      "-NoProfile",
+      "-NoExit",
+      "-EncodedCommand",
+      windowsUpdateEncodedCommand({ panRepoPath, nodePath, panEntryPath }),
+    ].join(" "),
+    command: windowsUpdateCommandSummary({ nodePath, panEntryPath }),
+  });
   return definitions;
 }
 
@@ -474,6 +543,7 @@ export function buildPanLaunchers({
     nodePath,
     panEntryPath,
     runnerEntryPath,
+    panRepoPath: moduleRoot,
     launchCommands: {
       chat: powershellCommand(nodePath, chatArgs),
       runner: powershellCommand(nodePath, [
@@ -605,4 +675,35 @@ function powershellCommand(executable, args) {
 
 function powershellQuote(value) {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+/**
+ * The PowerShell steps the Update Pan shortcut runs: move to this Pan checkout,
+ * confirm it is on main, fast-forward main, and only then repair the installed
+ * Copilot assets. Any failing step stops before `pan assets repair` runs.
+ */
+function panUpdatePowershellScript({ panRepoPath, nodePath, panEntryPath }) {
+  return [
+    `Set-Location -LiteralPath ${powershellQuote(panRepoPath)}`,
+    "$branch = & git rev-parse --abbrev-ref HEAD",
+    "if ($LASTEXITCODE -ne 0) { exit 1 }",
+    `if ($branch -ne 'main') { Write-Error "Update Pan requires the main branch, but this Pan checkout is on '$branch'."; exit 1 }`,
+    "& git -c core.fileMode=false pull --ff-only origin main",
+    "if ($LASTEXITCODE -ne 0) { exit 1 }",
+    `& ${powershellQuote(nodePath)} ${powershellQuote(panEntryPath)} assets repair`,
+  ].join("\n");
+}
+
+// PowerShell -EncodedCommand takes a base64 of a UTF-16LE string. Encoding the
+// whole update script avoids fragile quoting and Windows Terminal's use of `;`
+// and `"` as argument delimiters.
+function windowsUpdateEncodedCommand(args) {
+  return Buffer.from(panUpdatePowershellScript(args), "utf16le").toString("base64");
+}
+
+function windowsUpdateCommandSummary({ nodePath, panEntryPath }) {
+  return `git -c core.fileMode=false pull --ff-only origin main; ${powershellCommand(
+    nodePath,
+    [panEntryPath, "assets", "repair"],
+  )}`;
 }

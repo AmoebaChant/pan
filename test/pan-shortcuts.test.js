@@ -75,6 +75,10 @@ function sh(value) {
   return `'${String(value).replaceAll("'", `'\\''`)}'`;
 }
 
+function escapeRegExp(value) {
+  return value.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 test("creates macOS chat and runner app bundles", async () => {
   const ctx = await setupMacDomain();
   try {
@@ -97,16 +101,17 @@ test("creates macOS chat and runner app bundles", async () => {
     assert.equal(result.desktopPath, ctx.desktop);
     assert.deepEqual(
       result.shortcuts.map(({ kind }) => kind),
-      ["chat", "runner"],
+      ["chat", "runner", "update"],
     );
     assert.deepEqual(
       result.shortcuts.map(({ path: bundlePath }) => path.basename(bundlePath)),
-      ["Start Pan Chat.app", "Start Pan Runner.app"],
+      ["Pan Chat.app", "Pan Runner.app", "Update Pan.app"],
     );
 
-    const chatBundle = path.join(ctx.desktop, "Start Pan Chat.app");
-    const runnerBundle = path.join(ctx.desktop, "Start Pan Runner.app");
-    for (const bundle of [chatBundle, runnerBundle]) {
+    const chatBundle = path.join(ctx.desktop, "Pan Chat.app");
+    const runnerBundle = path.join(ctx.desktop, "Pan Runner.app");
+    const updateBundle = path.join(ctx.desktop, "Update Pan.app");
+    for (const bundle of [chatBundle, runnerBundle, updateBundle]) {
       await access(path.join(bundle, "Contents", "Info.plist"));
       await access(path.join(bundle, "Contents", "MacOS", "launch"));
       await access(path.join(bundle, "Contents", "Resources", "run.command"));
@@ -153,6 +158,35 @@ test("creates macOS chat and runner app bundles", async () => {
     );
     assert.ok(!runnerCommand.includes("--allow-all-tools"));
 
+    const updateCommand = await readFile(
+      path.join(updateBundle, "Contents", "Resources", "run.command"),
+      "utf8",
+    );
+    // Update Pan moves to this Pan checkout, requires main, fast-forwards, then
+    // repairs assets. The pull must appear before `assets repair`, and the pull
+    // must short-circuit so a failed update never reaches repair.
+    assert.match(updateCommand, /^#!\/bin\/bash/);
+    assert.ok(updateCommand.includes(`cd ${sh(ctx.moduleRoot)} || exit 1`));
+    assert.ok(updateCommand.includes('branch="$(git rev-parse --abbrev-ref HEAD)"'));
+    assert.ok(updateCommand.includes('if [ "$branch" != "main" ]; then'));
+    const pullIndex = updateCommand.indexOf(
+      "git -c core.fileMode=false pull --ff-only origin main || exit 1",
+    );
+    const repairIndex = updateCommand.indexOf(
+      `exec ${sh(ctx.nodePath)} ${sh(ctx.panEntry)} assets repair`,
+    );
+    assert.ok(pullIndex > -1, "update pulls main");
+    assert.ok(repairIndex > -1, "update repairs assets");
+    assert.ok(pullIndex < repairIndex, "pull runs before repair");
+    const updatePlist = await readFile(
+      path.join(updateBundle, "Contents", "Info.plist"),
+      "utf8",
+    );
+    assert.match(
+      updatePlist,
+      /<key>CFBundleName<\/key>\s*<string>Update Pan<\/string>/,
+    );
+
     const launch = await readFile(
       path.join(chatBundle, "Contents", "MacOS", "launch"),
       "utf8",
@@ -184,7 +218,7 @@ test("omits --allow-all-tools for the macOS chat bundle under prompt mode", asyn
       commands: ctx.commands,
     });
     const chatCommand = await readFile(
-      path.join(ctx.desktop, "Start Pan Chat.app", "Contents", "Resources", "run.command"),
+      path.join(ctx.desktop, "Pan Chat.app", "Contents", "Resources", "run.command"),
       "utf8",
     );
     assert.ok(!chatCommand.includes("--allow-all-tools"));
@@ -211,11 +245,12 @@ test("creates only the selected macOS bundle", async () => {
     });
     assert.deepEqual(
       chatResult.shortcuts.map(({ kind }) => kind),
-      ["chat"],
+      ["chat", "update"],
     );
-    await access(path.join(chatCtx.desktop, "Start Pan Chat.app"));
+    await access(path.join(chatCtx.desktop, "Pan Chat.app"));
+    await access(path.join(chatCtx.desktop, "Update Pan.app"));
     await assert.rejects(
-      access(path.join(chatCtx.desktop, "Start Pan Runner.app")),
+      access(path.join(chatCtx.desktop, "Pan Runner.app")),
       { code: "ENOENT" },
     );
   } finally {
@@ -239,11 +274,12 @@ test("creates only the selected macOS bundle", async () => {
     });
     assert.deepEqual(
       runnerResult.shortcuts.map(({ kind }) => kind),
-      ["runner"],
+      ["runner", "update"],
     );
-    await access(path.join(runnerCtx.desktop, "Start Pan Runner.app"));
+    await access(path.join(runnerCtx.desktop, "Pan Runner.app"));
+    await access(path.join(runnerCtx.desktop, "Update Pan.app"));
     await assert.rejects(
-      access(path.join(runnerCtx.desktop, "Start Pan Chat.app")),
+      access(path.join(runnerCtx.desktop, "Pan Chat.app")),
       { code: "ENOENT" },
     );
   } finally {
@@ -300,11 +336,15 @@ test("single-quotes shell-unsafe characters in the macOS run.command", async () 
     });
 
     const chatCommand = await readFile(
-      path.join(desktop, "Start Pan Chat.app", "Contents", "Resources", "run.command"),
+      path.join(desktop, "Pan Chat.app", "Contents", "Resources", "run.command"),
       "utf8",
     );
     const runnerCommand = await readFile(
-      path.join(desktop, "Start Pan Runner.app", "Contents", "Resources", "run.command"),
+      path.join(desktop, "Pan Runner.app", "Contents", "Resources", "run.command"),
+      "utf8",
+    );
+    const updateCommand = await readFile(
+      path.join(desktop, "Update Pan.app", "Contents", "Resources", "run.command"),
       "utf8",
     );
 
@@ -319,8 +359,12 @@ test("single-quotes shell-unsafe characters in the macOS run.command", async () 
         `exec ${sh(nodePath)} ${sh(runnerEntry)} --profile ${sh(runnerProfilePath)}`,
       ),
     );
+    assert.ok(updateCommand.includes(`cd ${sh(moduleRoot)} || exit 1`));
+    assert.ok(
+      updateCommand.includes(`exec ${sh(nodePath)} ${sh(panEntry)} assets repair`),
+    );
 
-    for (const command of [chatCommand, runnerCommand]) {
+    for (const command of [chatCommand, runnerCommand, updateCommand]) {
       // The spicy string survives verbatim (inside single quotes).
       assert.ok(command.includes(spicy));
       // No unescaped $ or backtick can leak outside single quotes.
@@ -360,6 +404,7 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
   const panEntry = path.join(moduleRoot, "bin", "pan.js");
   const runnerEntry = path.join(moduleRoot, "bin", "pan-runner.js");
   const legacyChatShortcut = path.join(desktop, "Start PAN Chat.lnk");
+  const legacyChatShortcutMixed = path.join(desktop, "Start Pan Chat.lnk");
   const calls = [];
   let legacyExistsWhenChatWritten;
   await mkdir(desktop, { recursive: true });
@@ -371,6 +416,7 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
     writeFile(panEntry, ""),
     writeFile(runnerEntry, ""),
     writeFile(legacyChatShortcut, "legacy"),
+    writeFile(legacyChatShortcutMixed, "legacy"),
   ]);
 
   try {
@@ -393,11 +439,15 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
           calls.push({ executable, args, options });
           if (
             executable === "powershell.exe" &&
-            path.basename(options.env.PAN_SHORTCUT_PATH) === "Start Pan Chat.lnk"
+            path.basename(options.env.PAN_SHORTCUT_PATH) === "Pan Chat.lnk"
           ) {
-            legacyExistsWhenChatWritten = await access(legacyChatShortcut)
-              .then(() => true)
-              .catch(() => false);
+            legacyExistsWhenChatWritten =
+              (await access(legacyChatShortcut)
+                .then(() => true)
+                .catch(() => false)) ||
+              (await access(legacyChatShortcutMixed)
+                .then(() => true)
+                .catch(() => false));
           }
           return "";
         },
@@ -407,13 +457,13 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
     assert.equal(result.status, "created");
     assert.deepEqual(
       result.shortcuts.map(({ kind }) => kind),
-      ["chat", "runner"],
+      ["chat", "runner", "update"],
     );
     assert.deepEqual(
       result.shortcuts.map(({ path: shortcutPath }) => path.basename(shortcutPath)),
-      ["Start Pan Chat.lnk", "Start Pan Runner.lnk"],
+      ["Pan Chat.lnk", "Pan Runner.lnk", "Update Pan.lnk"],
     );
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5);
     assert.equal(calls[0].executable, process.execPath);
     assert.deepEqual(calls[0].args, [
       panEntry,
@@ -472,8 +522,45 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
     assert.match(result.shortcuts[0].command, /pan\.js' 'session' '--config'/);
     assert.match(result.shortcuts[0].command, /'--allow-all-tools'$/);
     assert.match(result.shortcuts[1].command, /pan-runner\.js' '--profile'/);
+
+    // Update Pan launches PowerShell with a base64-encoded script under Windows
+    // Terminal, opened in this Pan checkout, so quoting and `;`/`"` cannot break
+    // Windows Terminal argument parsing.
+    const updateArgs = shortcutCalls[2].options.env.PAN_SHORTCUT_ARGUMENTS;
+    assert.match(updateArgs, /^new-tab /);
+    assert.match(updateArgs, new RegExp(`-d "${escapeRegExp(moduleRoot)}"`));
+    assert.match(updateArgs, /--title "Update Pan"/);
+    assert.match(
+      updateArgs,
+      /powershell\.exe -NoLogo -NoProfile -NoExit -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+    );
+    assert.equal(
+      shortcutCalls[2].options.env.PAN_SHORTCUT_WORKING_DIRECTORY,
+      moduleRoot,
+    );
+    const encoded = updateArgs.match(/-EncodedCommand ([A-Za-z0-9+/=]+)$/)[1];
+    const script = Buffer.from(encoded, "base64").toString("utf16le");
+    assert.ok(script.includes("rev-parse --abbrev-ref HEAD"));
+    assert.ok(script.includes("$branch -ne 'main'"));
+    const pullIndex = script.indexOf(
+      "git -c core.fileMode=false pull --ff-only origin main",
+    );
+    const repairIndex = script.indexOf("assets repair");
+    assert.ok(pullIndex > -1 && repairIndex > -1);
+    assert.ok(pullIndex < repairIndex, "pull runs before repair");
+    // The last guard before repair short-circuits a failed pull.
+    assert.ok(
+      script.indexOf("if ($LASTEXITCODE -ne 0) { exit 1 }", pullIndex) <
+        repairIndex,
+    );
+    assert.match(result.shortcuts[2].command, /pull --ff-only origin main/);
+    assert.match(result.shortcuts[2].command, /pan\.js' 'assets' 'repair'/);
+
     assert.equal(legacyExistsWhenChatWritten, false);
     await assert.rejects(access(legacyChatShortcut), {
+      code: "ENOENT",
+    });
+    await assert.rejects(access(legacyChatShortcutMixed), {
       code: "ENOENT",
     });
   } finally {

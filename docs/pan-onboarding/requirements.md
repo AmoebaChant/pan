@@ -14,7 +14,9 @@
    the Pan agent and Pan skills, create or connect the domain repository and GitHub
    Project, configure the local Pan session and runner, add a default Pan
    self-repair playbook that delivers through a pull request, and verify that
-   setup works. It should offer to create desktop shortcuts for the Pan chat and the runner.
+   setup works. It should offer to create desktop shortcuts for the Pan chat and
+   the runner, and always add an Update Pan shortcut that fast-forwards this Pan
+   checkout and repairs its Copilot assets.
 4. The setup agent should use Pan's deterministic commands for setup mechanics
    rather than asking the user to manually write configuration files.
 5. When setup finishes, the agent should tell the user how to start Pan and the

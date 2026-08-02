@@ -38,7 +38,8 @@ schema, then collect only this machine's local
 settings. Preserve compatible shared configuration and local runner settings.
 Default Copilot tool approvals to `prompt`; require explicit confirmation before
 using `allow-all`. On Windows or macOS, offer Pan Chat and runner desktop
-shortcuts.
+shortcuts; an Update Pan shortcut that fast-forwards this checkout's `main` and
+repairs its Copilot assets is always created alongside them.
 
 Keep confirmed answers after a recoverable command failure. Explain the
 diagnostic, ask only for the corrected or missing choice, and resume the failed
