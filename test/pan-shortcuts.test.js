@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
@@ -774,6 +775,75 @@ test("preserves legacy and current macOS bundles when the rebuild fails", async 
     assert.ok(
       !entries.some((name) => name.includes("pan-staging")),
       "no staging directory remains",
+    );
+  } finally {
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("restores the current macOS bundle when the swap rename fails after backup", async () => {
+  const ctx = await setupMacDomain();
+  try {
+    const legacy = path.join(ctx.desktop, "Start Pan Chat.app");
+    const current = path.join(ctx.desktop, "Pan Chat.app");
+    await mkdir(path.join(legacy, "Contents"), { recursive: true });
+    await writeFile(path.join(legacy, "Contents", "marker"), "legacy");
+    await mkdir(path.join(current, "Contents"), { recursive: true });
+    await writeFile(path.join(current, "Contents", "marker"), "current");
+
+    // Fail only the staging -> destination rename, which happens after the
+    // existing bundle has already been moved aside to its backup. All other
+    // renames (existing -> backup, backup -> restore) delegate to the real
+    // implementation so the rollback path is exercised end to end.
+    let failedOnce = false;
+    const renameFile = async (from, to) => {
+      if (!failedOnce && from.includes("pan-staging")) {
+        failedOnce = true;
+        throw Object.assign(new Error("simulated swap failure"), {
+          code: "EIO",
+        });
+      }
+      return rename(from, to);
+    };
+
+    await assert.rejects(
+      createPanDesktopShortcuts({
+        configPath: ctx.configPath,
+        runnerProfilePath: ctx.runnerProfilePath,
+        domainPath: ctx.domainPath,
+        selection: "chat",
+        desktopPath: ctx.desktop,
+        iconPath: ctx.icon,
+        env: {},
+        platform: "darwin",
+        moduleRoot: ctx.moduleRoot,
+        nodePath: ctx.nodePath,
+        commands: ctx.commands,
+        renameFile,
+      }),
+      { code: "EIO" },
+    );
+
+    assert.ok(failedOnce, "the staging swap rename was attempted");
+
+    // The original bundle is restored from its backup, the legacy bundle is
+    // untouched, and neither the staging directory nor the backup remains.
+    assert.equal(
+      await readFile(path.join(current, "Contents", "marker"), "utf8"),
+      "current",
+    );
+    assert.equal(
+      await readFile(path.join(legacy, "Contents", "marker"), "utf8"),
+      "legacy",
+    );
+    const swapEntries = await readdir(ctx.desktop);
+    assert.ok(
+      !swapEntries.some((name) => name.includes("pan-staging")),
+      "no staging directory remains",
+    );
+    assert.ok(
+      !swapEntries.some((name) => name.includes("pan-backup")),
+      "no backup directory remains",
     );
   } finally {
     await rm(ctx.root, { recursive: true, force: true });

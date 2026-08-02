@@ -25,6 +25,7 @@ export async function createPanDesktopShortcuts({
   moduleRoot = MODULE_ROOT,
   nodePath = process.execPath,
   iconConverter,
+  renameFile = rename,
 } = {}) {
   if (platform !== "win32" && platform !== "darwin") {
     throw new Error(
@@ -77,6 +78,7 @@ export async function createPanDesktopShortcuts({
           env,
           commands,
           iconConverter,
+          renameFile,
           ...launchers,
         })
       : await createWindowsShortcuts({
@@ -160,6 +162,7 @@ async function createMacShortcuts({
   panEntryPath,
   runnerEntryPath,
   panRepoPath,
+  renameFile = rename,
 }) {
   const definitions = macShortcutDefinitions({
     configPath,
@@ -186,15 +189,20 @@ async function createMacShortcuts({
     // returns only the selected definitions and each removes only its own name.
     for (const [index, definition] of definitions.entries()) {
       const bundlePath = path.join(desktop, definition.name);
-      // Build the new bundle beside the target and swap it in only once it is
-      // complete, then remove legacy names. A failure mid-build leaves both the
-      // existing same-named bundle and any legacy bundles untouched, so the user
-      // is never left without a working shortcut.
+      // Build the new bundle in a staging directory, then swap it in with
+      // rollback (see swapBundleIntoPlace) and only then remove legacy names.
+      // Any failure leaves the existing same-named bundle and all legacy
+      // bundles intact, so the user is never left without a working shortcut.
       const stagingPath = path.join(
         desktop,
         `.${definition.name}.pan-staging-${process.pid}-${index}`,
       );
+      const backupPath = path.join(
+        desktop,
+        `.${definition.name}.pan-backup-${process.pid}-${index}`,
+      );
       await rm(stagingPath, { recursive: true, force: true });
+      await rm(backupPath, { recursive: true, force: true });
       try {
         const contents = path.join(stagingPath, "Contents");
         const macOsDir = path.join(contents, "MacOS");
@@ -210,8 +218,12 @@ async function createMacShortcuts({
         await copyFile(icnsSource, stagedIcon);
         await chmod(launchPath, 0o755);
         await chmod(commandPath, 0o755);
-        await rm(bundlePath, { recursive: true, force: true });
-        await rename(stagingPath, bundlePath);
+        await swapBundleIntoPlace({
+          stagingPath,
+          bundlePath,
+          backupPath,
+          renameFile,
+        });
       } catch (error) {
         await rm(stagingPath, { recursive: true, force: true });
         throw error;
@@ -231,6 +243,46 @@ async function createMacShortcuts({
     return shortcuts;
   } finally {
     await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Atomically replaces an existing bundle with a fully-built staging bundle.
+ * The existing bundle is first moved to a same-filesystem backup so it can be
+ * restored if the swap fails partway; the backup is deleted only after the new
+ * bundle is in place. On any failure the caller's staging cleanup runs and the
+ * original bundle is left intact.
+ */
+async function swapBundleIntoPlace({
+  stagingPath,
+  bundlePath,
+  backupPath,
+  renameFile = rename,
+}) {
+  let backedUp = false;
+  try {
+    await renameFile(bundlePath, backupPath);
+    backedUp = true;
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  try {
+    await renameFile(stagingPath, bundlePath);
+  } catch (error) {
+    if (backedUp) {
+      // Best-effort restore of the original bundle; surface the original error.
+      try {
+        await renameFile(backupPath, bundlePath);
+      } catch {
+        // Leave the backup in place rather than deleting the only copy.
+      }
+    }
+    throw error;
+  }
+  if (backedUp) {
+    await rm(backupPath, { recursive: true, force: true });
   }
 }
 
