@@ -350,7 +350,10 @@ test("returns the macOS Desktop path from the home directory", async () => {
   );
 });
 
-test("creates chat and runner shortcuts with the packaged Pan icon", async () => {
+test(
+  "creates chat and runner shortcuts with the packaged Pan icon",
+  { skip: process.platform !== "win32" },
+  async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pan-shortcuts-"));
   const desktop = path.join(root, "OneDrive", "Desktop");
   const localAppData = path.join(root, "Local");

@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { DomainIdentity } from "../src/index.js";
+
+const DOMAIN_PATH = path.resolve("domains", "example");
 
 test("validates the configured domain, GitHub identity, and Project schema", async () => {
   const commands = {
     async run(executable, args) {
       assert.equal(executable, "git");
       if (args.includes("rev-parse")) {
-        return "C:\\domains\\example";
+        return DOMAIN_PATH;
       }
       if (args.includes("remote")) {
         return "git@github.com:example/domain.git";
@@ -57,7 +60,7 @@ test("rejects a clone whose origin identifies another GitHub repository", async 
     commands: {
       async run(_executable, args) {
         if (args.includes("rev-parse")) {
-          return "C:\\domains\\example";
+          return DOMAIN_PATH;
         }
         return "https://github.com/example/other.git";
       },
@@ -75,7 +78,7 @@ test("rejects a remote whose advertised default branch conflicts with GitHub", a
     commands: {
       async run(_executable, args) {
         if (args.includes("rev-parse")) {
-          return "C:\\domains\\example";
+          return DOMAIN_PATH;
         }
         if (args.includes("remote")) {
           return "git@github.com:example/domain.git";
@@ -102,7 +105,7 @@ function config() {
       repository: "example/domain",
       projectOwner: "example",
       projectNumber: 12,
-      path: "C:\\domains\\example",
+      path: DOMAIN_PATH,
     },
     session: {
       agent: { name: "pan", executable: "copilot" },
