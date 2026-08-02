@@ -856,10 +856,7 @@ test("recovers a leftover backup on retry after a failed restore, then replaces 
     const current = path.join(ctx.desktop, "Pan Chat.app");
     await mkdir(path.join(current, "Contents"), { recursive: true });
     await writeFile(path.join(current, "Contents", "marker"), "current");
-    const backupPath = path.join(
-      ctx.desktop,
-      `.Pan Chat.app.pan-backup-${process.pid}-0`,
-    );
+    const backupPath = path.join(ctx.desktop, ".Pan Chat.app.pan-backup");
 
     // First run: the staging swap fails AND restoring the backup fails, so the
     // original bundle is left only as its backup (the destination is gone).
@@ -928,18 +925,22 @@ test("recovers a leftover backup on retry after a failed restore, then replaces 
   }
 });
 
-test("restores a crash-left backup to the destination before cleanup", async () => {
+test("restores a crash-left backup from a different launch across process ids and selection order", async () => {
   const ctx = await setupMacDomain();
   try {
     const current = path.join(ctx.desktop, "Pan Chat.app");
-    const backupPath = path.join(
+    // Simulate a crash in an EARLIER launch: a legacy PID- and selection-order
+    // keyed backup that the current process (different PID, different order)
+    // must still discover. Only the backup survives; the destination is gone.
+    const legacyBackupPath = path.join(
       ctx.desktop,
-      `.Pan Chat.app.pan-backup-${process.pid}-0`,
+      ".Pan Chat.app.pan-backup-999999-3",
     );
-    // Simulate a crash between destination->backup and staging->destination:
-    // only the backup survives and the destination is missing.
-    await mkdir(path.join(backupPath, "Contents"), { recursive: true });
-    await writeFile(path.join(backupPath, "Contents", "marker"), "crashed");
+    await mkdir(path.join(legacyBackupPath, "Contents"), { recursive: true });
+    await writeFile(
+      path.join(legacyBackupPath, "Contents", "marker"),
+      "crashed",
+    );
 
     // Force the rebuild to fail after recovery has already run, proving the
     // backup was restored to the destination rather than deleted.
@@ -970,6 +971,116 @@ test("restores a crash-left backup to the destination before cleanup", async () 
     assert.ok(
       !entries.some((name) => name.includes("pan-backup")),
       "no backup directory remains",
+    );
+    assert.ok(
+      !entries.some((name) => name.includes("pan-staging")),
+      "no staging directory remains",
+    );
+  } finally {
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("reconciles duplicate backups without accumulation and prefers the canonical copy", async () => {
+  const ctx = await setupMacDomain();
+  try {
+    const current = path.join(ctx.desktop, "Pan Chat.app");
+    // Destination is missing but two candidate backups survive from different
+    // launches: the canonical deterministic name and a legacy PID-keyed one.
+    const canonicalBackup = path.join(ctx.desktop, ".Pan Chat.app.pan-backup");
+    const legacyBackup = path.join(
+      ctx.desktop,
+      ".Pan Chat.app.pan-backup-123456-9",
+    );
+    for (const [backup, marker] of [
+      [canonicalBackup, "canonical"],
+      [legacyBackup, "legacy"],
+    ]) {
+      await mkdir(path.join(backup, "Contents"), { recursive: true });
+      await writeFile(path.join(backup, "Contents", "marker"), marker);
+    }
+
+    // Fail the new swap so recovery's restored copy remains the visible state.
+    const failingRename = async (from, to) => {
+      if (from.includes("pan-staging")) {
+        throw Object.assign(new Error("simulated failure"), { code: "EIO" });
+      }
+      return rename(from, to);
+    };
+    await assert.rejects(
+      createPanDesktopShortcuts({
+        configPath: ctx.configPath,
+        runnerProfilePath: ctx.runnerProfilePath,
+        domainPath: ctx.domainPath,
+        selection: "chat",
+        desktopPath: ctx.desktop,
+        iconPath: ctx.icon,
+        env: {},
+        platform: "darwin",
+        moduleRoot: ctx.moduleRoot,
+        nodePath: ctx.nodePath,
+        commands: ctx.commands,
+        renameFile: failingRename,
+      }),
+      { code: "EIO" },
+    );
+
+    // The canonical backup was restored to the destination; the duplicate was
+    // reconciled away and no backups accumulate.
+    assert.equal(
+      await readFile(path.join(current, "Contents", "marker"), "utf8"),
+      "canonical",
+    );
+    const entries = await readdir(ctx.desktop);
+    assert.ok(
+      !entries.some((name) => name.includes("pan-backup")),
+      "no backup directories remain",
+    );
+    assert.ok(
+      !entries.some((name) => name.includes("pan-staging")),
+      "no staging directory remains",
+    );
+  } finally {
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("removes stale backups from earlier launches when the destination is valid", async () => {
+  const ctx = await setupMacDomain();
+  try {
+    const current = path.join(ctx.desktop, "Pan Chat.app");
+    await mkdir(path.join(current, "Contents"), { recursive: true });
+    await writeFile(path.join(current, "Contents", "marker"), "valid");
+    // A valid destination plus stale backups left by earlier launches.
+    for (const name of [
+      ".Pan Chat.app.pan-backup",
+      ".Pan Chat.app.pan-backup-42-0",
+    ]) {
+      const backup = path.join(ctx.desktop, name);
+      await mkdir(path.join(backup, "Contents"), { recursive: true });
+      await writeFile(path.join(backup, "Contents", "marker"), "stale");
+    }
+
+    const result = await createPanDesktopShortcuts({
+      configPath: ctx.configPath,
+      runnerProfilePath: ctx.runnerProfilePath,
+      domainPath: ctx.domainPath,
+      selection: "chat",
+      desktopPath: ctx.desktop,
+      iconPath: ctx.icon,
+      env: {},
+      platform: "darwin",
+      moduleRoot: ctx.moduleRoot,
+      nodePath: ctx.nodePath,
+      commands: ctx.commands,
+    });
+    assert.equal(result.status, "created");
+
+    await access(path.join(current, "Contents", "Info.plist"));
+    const entries = await readdir(ctx.desktop);
+    assert.ok(
+      !entries.some((name) => name.includes("pan-backup")),
+      "stale backups are removed beside a valid destination",
     );
     assert.ok(
       !entries.some((name) => name.includes("pan-staging")),

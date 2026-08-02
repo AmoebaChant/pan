@@ -1,4 +1,4 @@
-import { access, chmod, copyFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -197,16 +197,21 @@ async function createMacShortcuts({
         desktop,
         `.${definition.name}.pan-staging-${process.pid}-${index}`,
       );
-      const backupPath = path.join(
-        desktop,
-        `.${definition.name}.pan-backup-${process.pid}-${index}`,
-      );
+      // The backup name is deterministic per destination and independent of the
+      // process id and selection order, so a later launch (with any PID or
+      // selection) can discover a backup a crashed run left behind.
+      const backupPath = path.join(desktop, `.${definition.name}.pan-backup`);
       await rm(stagingPath, { recursive: true, force: true });
       // Recover from a swap that a previous run left interrupted before doing
       // anything destructive. If a backup survives, it may be the only working
       // copy (Update Pan has no legacy fallback), so restore it to the
       // destination instead of deleting it.
-      await recoverInterruptedSwap({ bundlePath, backupPath, renameFile });
+      await recoverInterruptedSwap({
+        desktop,
+        definitionName: definition.name,
+        bundlePath,
+        renameFile,
+      });
       try {
         const contents = path.join(stagingPath, "Contents");
         const macOsDir = path.join(contents, "MacOS");
@@ -252,30 +257,68 @@ async function createMacShortcuts({
 
 /**
  * Recovers from a swap that a previous run (or a crash) left interrupted, before
- * any destructive cleanup runs. States handled:
+ * any destructive cleanup runs. All backups for the destination are discovered
+ * regardless of which process or selection created them, so a fresh launch can
+ * reconcile a backup an earlier crashed process left behind. States handled:
  *
- * - backup absent: nothing to do.
- * - backup present, destination absent: the swap was interrupted after the
+ * - no backups: nothing to do.
+ * - backups present, destination absent: the swap was interrupted after the
  *   original bundle was moved to its backup but before the replacement landed,
- *   so the backup is the only working copy. Restore it to the destination.
- * - backup present, destination present: the backup is a stale leftover beside a
- *   valid destination, so it is safe to remove.
+ *   so a backup is the only working copy. Restore one to the destination, then
+ *   remove any remaining duplicates so backups never accumulate.
+ * - backups present, destination present: they are stale leftovers beside a
+ *   valid destination, so they are safe to remove.
  *
  * A backup is never removed unless a valid destination is already present.
  */
 async function recoverInterruptedSwap({
+  desktop,
+  definitionName,
   bundlePath,
-  backupPath,
   renameFile = rename,
 }) {
-  if (!(await pathExists(backupPath))) {
+  const backups = await findDestinationBackups(desktop, definitionName);
+  if (backups.length === 0) {
     return;
   }
   if (await pathExists(bundlePath)) {
-    await rm(backupPath, { recursive: true, force: true });
+    await Promise.all(
+      backups.map((backup) => rm(backup, { recursive: true, force: true })),
+    );
     return;
   }
-  await renameFile(backupPath, bundlePath);
+  const [restore, ...duplicates] = backups;
+  await renameFile(restore, bundlePath);
+  await Promise.all(
+    duplicates.map((backup) => rm(backup, { recursive: true, force: true })),
+  );
+}
+
+/**
+ * Lists every backup that could belong to the destination, including the
+ * deterministic name and any legacy `<name>-<pid>-<index>` backups older
+ * launches may have written. The canonical deterministic backup is ordered
+ * first so it is preferred when a copy must be restored.
+ */
+async function findDestinationBackups(desktop, definitionName) {
+  const canonical = `.${definitionName}.pan-backup`;
+  let entries;
+  try {
+    entries = await readdir(desktop);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  return entries
+    .filter((name) => name === canonical || name.startsWith(`${canonical}-`))
+    .sort((a, b) => {
+      if (a === canonical) return -1;
+      if (b === canonical) return 1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    })
+    .map((name) => path.join(desktop, name));
 }
 
 async function pathExists(target) {
