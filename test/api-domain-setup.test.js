@@ -83,6 +83,67 @@ test("sets up a domain through GitHub APIs without cloning it", async (t) => {
   );
 });
 
+test("treats gh GraphQL 'Could not resolve' as repository-not-found and creates it", async (t) => {
+  const root = path.resolve(`.api-domain-notfound-${Date.now()}`);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gh = new SetupGh();
+  // Real gh emits this for a missing repo instead of an HTTP 404 string.
+  gh.repoNotFoundError =
+    "GraphQL: Could not resolve to a Repository with the name 'example/domain'. (repository)";
+
+  await setupPanDomain(
+    {
+      repository: "example/domain",
+      projectOwner: "example",
+      localConfigPath: path.join(root, "pan-local.json"),
+      approvalMode: "prompt",
+    },
+    { gh, hostname: "Machine A", env: { LOCALAPPDATA: path.join(root, "local") } },
+  );
+
+  assert.ok(
+    gh.calls.some(
+      (args) =>
+        args[0] === "repo" && args[1] === "create" && args.includes("--private"),
+    ),
+    "expected the repository to be created after a GraphQL not-found",
+  );
+});
+
+test("replaces the built-in Status field options instead of deleting it", async (t) => {
+  const root = path.resolve(`.api-domain-status-${Date.now()}`);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gh = new SetupGh();
+
+  await setupPanDomain(
+    {
+      repository: "example/domain",
+      projectOwner: "example",
+      localConfigPath: path.join(root, "pan-local.json"),
+      approvalMode: "prompt",
+    },
+    { gh, hostname: "Machine A", env: { LOCALAPPDATA: path.join(root, "local") } },
+  );
+
+  // The built-in Status field cannot be deleted; it must be updated in place.
+  assert.equal(
+    gh.calls.some((args) => args[0] === "project" && args[1] === "field-delete"),
+    false,
+    "must not attempt to delete the built-in Status field",
+  );
+  assert.ok(
+    gh.calls.some(
+      (args) =>
+        args[0] === "api" &&
+        args[1] === "graphql" &&
+        args.some(
+          (arg) => typeof arg === "string" && arg.includes("updateProjectV2Field"),
+        ),
+    ),
+    "expected an updateProjectV2Field mutation to replace the Status options",
+  );
+});
+
 test("rejects a shared config for a different repository before mutation", async () => {
   const gh = new SetupGh();
   gh.repositoryExists = true;
@@ -181,7 +242,7 @@ class SetupGh {
     this.calls.push(args);
     if (args[0] === "repo" && args[1] === "view") {
       if (!this.repositoryExists) {
-        throw new Error("HTTP 404: not found");
+        throw new Error(this.repoNotFoundError ?? "HTTP 404: not found");
       }
       return { nameWithOwner: "example/domain", isPrivate: true };
     }

@@ -42,16 +42,27 @@ test("creates and bootstraps a private Pan domain with safe approvals", async ()
     assert.ok(
       gh.calls.some(
         (args) =>
-          args[0] === "project" &&
-          args[1] === "field-delete" &&
-          args.includes("status-id"),
+          args[0] === "api" &&
+          args[1] === "graphql" &&
+          args.some(
+            (arg) =>
+              typeof arg === "string" &&
+              arg.includes("updateProjectV2Field") &&
+              arg.includes("status-id"),
+          ),
       ),
+    );
+    assert.equal(
+      gh.calls.some(
+        (args) => args[0] === "project" && args[1] === "field-delete",
+      ),
+      false,
     );
     assert.equal(
       gh.calls.filter(
         (args) => args[0] === "project" && args[1] === "field-create",
       ).length,
-      8,
+      7,
     );
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
