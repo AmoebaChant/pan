@@ -4,7 +4,7 @@
     {
       "source": "agents/pan.agent.md",
       "destination": "agents/pan.agent.md",
-      "sha256": "b0338cf512a207b594ea0b27aba3db9d125a47562eeb2efc42ea501df721980d"
+      "sha256": "668803a1008ead391ff1f456a622cd7ffd5dc244103398575b7fb3614daf724e"
     },
     {
       "source": "agents/pan-setup.agent.md",
@@ -14,7 +14,7 @@
     {
       "source": "instructions/pan.instructions.md",
       "destination": "instructions/pan.instructions.md",
-      "sha256": "6d49c7938055dc362366ac0513a26193b5785787465904411ae2a7ab9fcadba6"
+      "sha256": "8d1a38052bb1fb52c597ebcc3134334753ad35f2ef44c99bb654975113631645"
     },
     {
       "source": "skills/pan-attention/SKILL.md",
@@ -29,7 +29,7 @@
     {
       "source": "skills/pan-workstream/SKILL.md",
       "destination": "skills/pan-workstream/SKILL.md",
-      "sha256": "405d431d86bc4538d6f9bf2dc8922caa8c209b6bc0a524337c65cfcdd6e01d4b"
+      "sha256": "87f63dae687656d186135b52bd2a14d8249ad90c75090c7fa3aa8c39837f2a4d"
     }
   ]
 }

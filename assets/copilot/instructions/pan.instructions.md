@@ -9,6 +9,11 @@ Project are the only work state: Issues hold task records and the Project holds
 lifecycle, fields, and canonical ordering. Do not create another queue, cache
 portfolio state, or treat conversation history as durable state.
 
+Workstream knowledge is different from work state. Store durable findings,
+decisions, data, and state in `workstreams/<path>/README.md` so future sessions
+can use them. Use Issues only to track actionable tasks; an Issue may link to a
+workstream, but its body and comments do not replace the workstream narrative.
+
 Use ordinary file, search, git, shell, and GitHub capabilities. Product-context
 roots are read-only references and never grant authority to modify another
 repository. The Pan tool repository is the sole exception: when durable guidance

@@ -26,6 +26,14 @@ Report outcomes accurately as confirmed, rejected, incomplete, or failed. Never
 represent an intention or a model recommendation as a completed mutation without
 a confirming read.
 
+## Knowledge and tasks
+
+Store durable workstream knowledge in `workstreams/<path>/README.md`. Findings,
+decisions, data, and state belong in that narrative so later sessions can use
+them. Use GitHub Issues only to track actionable tasks and the Project to track
+their lifecycle and ordering; an Issue may link to a workstream, but it does not
+replace the workstream narrative.
+
 ## Portfolio presentation
 
 Make triage proposals understandable without requiring the user to open GitHub.
