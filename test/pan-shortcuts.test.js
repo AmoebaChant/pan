@@ -350,10 +350,7 @@ test("returns the macOS Desktop path from the home directory", async () => {
   );
 });
 
-test(
-  "creates chat and runner shortcuts with the packaged Pan icon",
-  { skip: process.platform !== "win32" },
-  async () => {
+test("creates chat and runner shortcuts with the packaged Pan icon", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pan-shortcuts-"));
   const desktop = path.join(root, "OneDrive", "Desktop");
   const localAppData = path.join(root, "Local");
@@ -442,13 +439,21 @@ test(
         ({ options }) => options.env.PAN_SHORTCUT_ICON === `${icon},0`,
       ),
     );
-    assert.match(
-      shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS,
-      /^new-tab .*node\.exe" ".*\\pan\.js" session --config/,
+    // The node executable name and path separators are host-specific
+    // (node.exe and backslashes on Windows, node and forward slashes
+    // elsewhere). Assert the portable command structure using the actual
+    // executable and entry paths so this coverage runs on every host.
+    assert.match(shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS, /^new-tab /);
+    assert.ok(
+      shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS.includes(
+        `"${process.execPath}" "${panEntry}" session --config `,
+      ),
     );
-    assert.match(
-      shortcutCalls[1].options.env.PAN_SHORTCUT_ARGUMENTS,
-      /^new-tab .*node\.exe" ".*\\pan-runner\.js" --profile/,
+    assert.match(shortcutCalls[1].options.env.PAN_SHORTCUT_ARGUMENTS, /^new-tab /);
+    assert.ok(
+      shortcutCalls[1].options.env.PAN_SHORTCUT_ARGUMENTS.includes(
+        `"${process.execPath}" "${runnerEntry}" --profile `,
+      ),
     );
     assert.doesNotMatch(shortcutCalls[0].options.env.PAN_SHORTCUT_ARGUMENTS, /npx/);
     assert.doesNotMatch(shortcutCalls[1].options.env.PAN_SHORTCUT_ARGUMENTS, /npx/);
