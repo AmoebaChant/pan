@@ -22,6 +22,8 @@ test("defines one user-scoped hostless Pan identity", async () => {
   assert.match(body, /ordinary file, search, git, shell, and GitHub/i);
   assert.match(body, /use `gh` directly/i);
   assert.match(body, /Re-read targets before writes/i);
+  assert.match(body, /Store durable workstream knowledge in `workstreams\/<path>\/README\.md`/i);
+  assert.match(body, /Use GitHub Issues only to track actionable tasks/i);
 });
 
 test("packages a conversational setup agent that delegates mechanics to Pan commands", async () => {
@@ -91,6 +93,8 @@ test("shares direct GitHub triage and scheduling instructions", async () => {
     assert.match(source, new RegExp(`^${escapeRegex(heading)}$`, "m"));
   }
   assert.match(source, /GitHub Issues and the configured\s+Project are the only work state/i);
+  assert.match(source, /Workstream knowledge is different from work state/i);
+  assert.match(source, /Use Issues only to track actionable tasks/i);
   assert.match(source, /Use `gh` directly/i);
   assert.match(source, /PAN_PROJECT_SCHEMA/);
   assert.match(source, /Automatically add every missing\s+Issue, open or closed/i);

@@ -5,9 +5,11 @@ description: Edit and publish repository-backed Pan workstreams through the GitH
 
 # Pan workstream delivery
 
-A workstream is `workstreams/<path>/README.md` on the default branch of
+A workstream is the durable knowledge for an area, stored at
+`workstreams/<path>/README.md` on the default branch of
 `PAN_DOMAIN_REPOSITORY`. Folder nesting is the hierarchy. The Project
-`workstream` field stores `<path>`, relative to `workstreams/`.
+`workstream` field stores `<path>`, relative to `workstreams/`. GitHub Issues
+track actionable tasks; they do not replace the workstream narrative.
 
 1. Read repository guidance, the workstream README, its parent and child
    READMEs, and directly associated live task items through GitHub APIs.
