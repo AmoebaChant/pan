@@ -10,6 +10,13 @@ const DEFAULTS = {
   approvalMode: "prompt",
 };
 
+export function terminalForPlatform(platform = process.platform) {
+  if (platform === "darwin") {
+    return { type: "terminal-app" };
+  }
+  return { type: "windows-terminal" };
+}
+
 export async function loadRunnerProfile(profilePath) {
   if (!profilePath) {
     throw new TypeError("profilePath is required");
@@ -52,17 +59,33 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
   requireAbsolutePath(profile.stateDirectory, "stateDirectory");
 
   const terminal = profile.terminal ?? {};
-  if (terminal.type !== "windows-terminal") {
-    throw new TypeError('terminal.type must be "windows-terminal"');
+  if (
+    terminal.type !== "windows-terminal" &&
+    terminal.type !== "terminal-app"
+  ) {
+    throw new TypeError(
+      'terminal.type must be "windows-terminal" or "terminal-app"',
+    );
   }
   if (terminal.executable !== undefined) {
     requireString(terminal.executable, "terminal.executable");
   }
-  if (terminal.window !== undefined) {
-    requireString(terminal.window, "terminal.window");
-  }
-  if (terminal.profile !== undefined) {
-    requireString(terminal.profile, "terminal.profile");
+  if (terminal.type === "windows-terminal") {
+    if (terminal.window !== undefined) {
+      requireString(terminal.window, "terminal.window");
+    }
+    if (terminal.profile !== undefined) {
+      requireString(terminal.profile, "terminal.profile");
+    }
+  } else {
+    if (terminal.window !== undefined) {
+      throw new TypeError('terminal.window is only valid for "windows-terminal"');
+    }
+    if (terminal.profile !== undefined) {
+      throw new TypeError(
+        'terminal.profile is only valid for "windows-terminal"',
+      );
+    }
   }
 
   if (profile.githubAssignee !== undefined) {
@@ -126,12 +149,18 @@ export function validateRunnerProfile(profile, { profilePath } = {}) {
         "taskBudget.maxAutopilotContinues",
       ),
     },
-    terminal: {
-      type: terminal.type,
-      executable: terminal.executable ?? "wt",
-      window: terminal.window ?? "0",
-      profile: terminal.profile,
-    },
+    terminal:
+      terminal.type === "windows-terminal"
+        ? {
+            type: terminal.type,
+            executable: terminal.executable ?? "wt",
+            window: terminal.window ?? "0",
+            profile: terminal.profile,
+          }
+        : {
+            type: terminal.type,
+            executable: terminal.executable ?? "Terminal",
+          },
     copilot: {
       executable: profile.copilot?.executable ?? "copilot",
       model: profile.copilot?.model,

@@ -7,7 +7,10 @@ import { validateDomainConfig } from "./domain-config.js";
 import { setupApiPanDomain } from "./api-domain-setup.js";
 import { PanAssetService } from "./pan-assets.js";
 import { ProcessClient } from "./process-client.js";
-import { validateRunnerProfile } from "./runner-profile.js";
+import {
+  validateRunnerProfile,
+  terminalForPlatform,
+} from "./runner-profile.js";
 import { normalizeGitHubRepositoryUrl } from "./github-repository.js";
 import { samePath } from "./path-identity.js";
 
@@ -64,6 +67,7 @@ export async function setupPanDomain(
     output = process.stdout,
     ask,
     assetServiceFactory = (options) => new PanAssetService(options),
+    platform = process.platform,
   } = {},
 ) {
   if (!gh?.run || !gh?.runJson) {
@@ -75,6 +79,7 @@ export async function setupPanDomain(
       env,
       hostname,
       assetServiceFactory,
+      platform,
     });
   }
 
@@ -224,6 +229,7 @@ export async function setupPanDomain(
       directory,
       env,
       selfRepair,
+      platform,
     });
     const config = configSetup.document;
     const runner = runnerSetup.document;
@@ -560,6 +566,7 @@ function starterRunnerProfile({
   directory,
   env,
   selfRepair,
+  platform,
 }) {
   const localAppData =
     env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
@@ -580,9 +587,7 @@ function starterRunnerProfile({
     repositories: {},
     workspaceRoot: path.join(machineRoot, "worktrees"),
     stateDirectory: path.join(machineRoot, "runner-state"),
-    terminal: {
-      type: "windows-terminal",
-    },
+    terminal: terminalForPlatform(platform),
     copilot: {
       approvalMode,
     },
@@ -792,6 +797,7 @@ async function existingOrStarterRunner({
   directory,
   env,
   selfRepair,
+  platform,
 }) {
   const existing = await readJsonIfExists(runnerPath, "Pan runner profile");
   if (existing === undefined) {
@@ -804,6 +810,7 @@ async function existingOrStarterRunner({
       directory,
       env,
       selfRepair,
+      platform,
     });
     document.domainConfigPath = configPath;
     return { document, content: json(document), write: true };

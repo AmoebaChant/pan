@@ -1,9 +1,63 @@
 import assert from "node:assert/strict";
-import { readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
 import { setupPanDomain } from "../src/index.js";
+
+async function readWrittenRunnerProfile(root) {
+  const runnersDirectory = path.join(root, "runners");
+  const [entry] = await readdir(runnersDirectory);
+  return JSON.parse(
+    await readFile(path.join(runnersDirectory, entry), "utf8"),
+  );
+}
+
+test("writes a macOS terminal-app runner profile on darwin", async (t) => {
+  const root = path.resolve(`.api-domain-darwin-${Date.now()}`);
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  await setupPanDomain(
+    {
+      repository: "example/domain",
+      projectOwner: "example",
+      localConfigPath: path.join(root, "pan-local.json"),
+      approvalMode: "prompt",
+    },
+    {
+      gh: new SetupGh(),
+      hostname: "Machine A",
+      env: { LOCALAPPDATA: path.join(root, "local") },
+      platform: "darwin",
+    },
+  );
+
+  const runner = await readWrittenRunnerProfile(root);
+  assert.equal(runner.terminal.type, "terminal-app");
+});
+
+test("writes a Windows Terminal runner profile on win32", async (t) => {
+  const root = path.resolve(`.api-domain-win32-${Date.now()}`);
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  await setupPanDomain(
+    {
+      repository: "example/domain",
+      projectOwner: "example",
+      localConfigPath: path.join(root, "pan-local.json"),
+      approvalMode: "prompt",
+    },
+    {
+      gh: new SetupGh(),
+      hostname: "Machine A",
+      env: { LOCALAPPDATA: path.join(root, "local") },
+      platform: "win32",
+    },
+  );
+
+  const runner = await readWrittenRunnerProfile(root);
+  assert.equal(runner.terminal.type, "windows-terminal");
+});
 
 test("sets up a domain through GitHub APIs without cloning it", async (t) => {
   const root = path.resolve(`.api-domain-setup-${Date.now()}`);

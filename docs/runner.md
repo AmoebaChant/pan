@@ -12,6 +12,12 @@ Runner profiles are private domain data, normally
 capabilities, global capacity, repositories, and playbooks. The public shape is
 in [`schema/runner-profile.json`](../schema/runner-profile.json).
 
+`terminal.type` selects how each worker gets its own visible window: use
+`"windows-terminal"` on Windows (Windows Terminal, with optional `window` and
+`profile`) and `"terminal-app"` on macOS (Terminal.app, with an optional
+`executable` naming the app to open, default `Terminal`). `pan setup` writes the
+type that matches the current platform.
+
 ```powershell
 pan-runner --profile C:\domains\personal-domain\runners\machine-a.json --validate-profile
 pan-runner --profile C:\domains\personal-domain\runners\machine-a.json --once

@@ -627,6 +627,41 @@ test("reports asset installation failure after preserving the bootstrapped domai
   }
 });
 
+test("writes a platform-appropriate terminal type for a starter runner", async () => {
+  for (const [platform, expected] of [
+    ["darwin", "terminal-app"],
+    ["win32", "windows-terminal"],
+  ]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pan-setup-terminal-"));
+    try {
+      const result = await setupPanDomain(
+        {
+          repository: "example/domain",
+          path: path.join(root, "domain"),
+          projectOwner: "example",
+          projectTitle: "Personal Pan",
+          approvalMode: "prompt",
+        },
+        {
+          gh: new FakeGh(),
+          commands: new FakeCommands(),
+          hostname: "Machine A",
+          env: { LOCALAPPDATA: path.join(root, "local") },
+          ask: assert.fail,
+          platform,
+        },
+      );
+
+      const runner = JSON.parse(
+        await readFile(result.runnerProfilePath, "utf8"),
+      );
+      assert.equal(runner.terminal.type, expected);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
 class FakeGh {
   constructor() {
     this.calls = [];
