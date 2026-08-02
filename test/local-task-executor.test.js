@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -113,6 +114,85 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
         windowsHide: true,
       });
     }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("launches a visible macOS terminal with an injection-safe worker script", async () => {
+  const fixture = await createFixture();
+  const spicy = "st a $(touch PWNED) `id` it's";
+  fixture.profile.stateDirectory = path.join(fixture.root, spicy, "state");
+  fixture.profile.workspaceRoot = path.join(fixture.root, spicy, "worktrees");
+  fixture.profile.terminal = { type: "terminal-app", executable: "Terminal" };
+  const commands = new FakeCommands();
+  const terminalLaunches = [];
+  const executor = new LocalTaskExecutor({
+    profile: fixture.profile,
+    commands,
+    spawnProcess: (...args) => {
+      terminalLaunches.push(args);
+      return successfulSpawn();
+    },
+    randomId: () => "macos-launch",
+  });
+
+  try {
+    const handle = await executor.start(makeStartOptions(1));
+
+    assert.equal(terminalLaunches.length, 1);
+    const [executable, args, options] = terminalLaunches[0];
+    assert.equal(executable, "open");
+    assert.equal(args[0], "-a");
+    assert.equal(args[1], "Terminal");
+    const scriptPath = args[2];
+    assert.equal(path.dirname(scriptPath), handle.statePath);
+    assert.match(path.basename(scriptPath), /^launcher-.*\.sh$/);
+    assert.deepEqual(options, { detached: true, stdio: "ignore" });
+
+    const script = await readFile(scriptPath, "utf8");
+
+    assert.match(script, /^#!\/bin\/bash\n/);
+    const quote = (value) =>
+      `'${String(value).replaceAll("'", `'\\''`)}'`;
+
+    // The worker command matches the Windows argv, fully single-quoted.
+    const execLine = script
+      .split("\n")
+      .find((line) => line.startsWith("exec "));
+    assert.ok(execLine, "generated script must exec the worker");
+    assert.ok(execLine.includes(quote(process.execPath)));
+    assert.ok(/--context '/.test(execLine));
+
+    // The spicy state directory flows into the context path unescaped by us.
+    assert.ok(
+      execLine.includes(quote(handle.statePath).slice(0, -1)),
+      "context path must be single-quoted from the state directory",
+    );
+
+    // Injection scan: every $ and backtick must sit inside single quotes.
+    let inSingle = false;
+    for (let i = 0; i < script.length; i += 1) {
+      const character = script[i];
+      if (!inSingle && character === "\\") {
+        i += 1;
+        continue;
+      }
+      if (character === "'") {
+        inSingle = !inSingle;
+        continue;
+      }
+      if (!inSingle && (character === "$" || character === "`")) {
+        assert.fail(
+          `unquoted shell metacharacter "${character}" at index ${i}`,
+        );
+      }
+    }
+
+    // bash accepts the generated launcher and nothing executed while writing it.
+    const syntax = spawnSync("bash", ["-n", scriptPath]);
+    assert.equal(syntax.status, 0, syntax.stderr?.toString());
+    await assert.rejects(readFile(path.join(fixture.root, "PWNED")));
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

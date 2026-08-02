@@ -78,6 +78,47 @@ test("preserves a configured Windows Terminal profile", () => {
   assert.equal(validateRunnerProfile(source).terminal.profile, "Pan Work");
 });
 
+test("accepts a macOS terminal-app profile and applies its default app", () => {
+  const source = makeProfile(path.resolve("runner-root"));
+  source.terminal = { type: "terminal-app" };
+
+  const normalized = validateRunnerProfile(source);
+  assert.equal(normalized.terminal.type, "terminal-app");
+  assert.equal(normalized.terminal.executable, "Terminal");
+  assert.equal(normalized.terminal.window, undefined);
+  assert.equal(normalized.terminal.profile, undefined);
+});
+
+test("accepts an explicit terminal-app executable", () => {
+  const source = makeProfile(path.resolve("runner-root"));
+  source.terminal = { type: "terminal-app", executable: "iTerm" };
+
+  assert.equal(
+    validateRunnerProfile(source).terminal.executable,
+    "iTerm",
+  );
+});
+
+test("rejects Windows-only terminal fields on a terminal-app profile", () => {
+  const source = makeProfile(path.resolve("runner-root"));
+  source.terminal = { type: "terminal-app", window: "0" };
+
+  assert.throws(
+    () => validateRunnerProfile(source),
+    /terminal\.window is only valid for "windows-terminal"/,
+  );
+});
+
+test("rejects an unknown terminal type", () => {
+  const source = makeProfile(path.resolve("runner-root"));
+  source.terminal = { type: "kitty" };
+
+  assert.throws(
+    () => validateRunnerProfile(source),
+    /terminal\.type must be "windows-terminal" or "terminal-app"/,
+  );
+});
+
 test("requires explicit opt-in for all-tools Copilot approval", () => {
   const source = makeProfile(path.resolve("runner-root"));
   source.copilot = { approvalMode: "allow-all" };

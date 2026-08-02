@@ -12,7 +12,10 @@ import {
   writeMachineDomainConfig,
 } from "./github-domain-config.js";
 import { GhCommandError } from "./gh-client.js";
-import { validateRunnerProfile } from "./runner-profile.js";
+import {
+  validateRunnerProfile,
+  terminalForPlatform,
+} from "./runner-profile.js";
 
 const PROJECT_FIELD_PAGE_SIZE = 100;
 const PROJECT_FIELD_SAFETY_LIMIT = 1_000;
@@ -40,6 +43,7 @@ export async function setupApiPanDomain(
     env = process.env,
     hostname = os.hostname(),
     assetServiceFactory,
+    platform = process.platform,
   } = {},
 ) {
   if (!gh?.run || !gh?.runJson) {
@@ -184,6 +188,7 @@ export async function setupApiPanDomain(
     localRoot,
     env,
     selfRepair: resolveSelfRepairOptions(options),
+    platform,
   });
   await mkdir(path.dirname(runnerProfilePath), { recursive: true });
   await writeFile(
@@ -477,6 +482,7 @@ async function existingOrStarterRunner({
   localRoot,
   env,
   selfRepair,
+  platform,
 }) {
   const existing = await readJsonIfExists(runnerProfilePath);
   if (existing) {
@@ -529,7 +535,7 @@ async function existingOrStarterRunner({
       repositories: {},
       workspaceRoot: path.join(machineRoot, "worktrees"),
       stateDirectory: path.join(machineRoot, "runner-state"),
-      terminal: { type: "windows-terminal" },
+      terminal: terminalForPlatform(platform),
       copilot: { approvalMode },
       domainConfigPath: configPath,
     },

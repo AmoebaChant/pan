@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmod,
   mkdir,
   readdir,
   readFile,
@@ -235,9 +236,8 @@ export class LocalTaskExecutor {
         resumed: false,
       });
       await launchTerminal({
-        executable: this.profile.terminal.executable,
-        window: this.profile.terminal.window,
-        profile: this.profile.terminal.profile,
+        terminal: this.profile.terminal,
+        statePath,
         title,
         workerPath: WORKER_PATH,
         contextPath,
@@ -516,9 +516,8 @@ export class LocalTaskExecutor {
       resumed: true,
     });
     await launchTerminal({
-      executable: this.profile.terminal.executable,
-      window: this.profile.terminal.window,
-      profile: this.profile.terminal.profile,
+      terminal: this.profile.terminal,
+      statePath,
       title,
       workerPath: WORKER_PATH,
       contextPath,
@@ -1186,6 +1185,36 @@ class LocalTaskHandle {
 }
 
 async function launchTerminal({
+  terminal,
+  statePath,
+  title,
+  workerPath,
+  contextPath,
+  spawnProcess,
+}) {
+  if (terminal.type === "terminal-app") {
+    await launchTerminalApp({
+      executable: terminal.executable ?? "Terminal",
+      statePath,
+      title,
+      workerPath,
+      contextPath,
+      spawnProcess,
+    });
+    return;
+  }
+  await launchWindowsTerminal({
+    executable: terminal.executable,
+    window: terminal.window,
+    profile: terminal.profile,
+    title,
+    workerPath,
+    contextPath,
+    spawnProcess,
+  });
+}
+
+async function launchWindowsTerminal({
   executable,
   window,
   profile,
@@ -1213,6 +1242,45 @@ async function launchTerminal({
       detached: true,
       stdio: "ignore",
       windowsHide: true,
+    },
+  );
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  child.unref();
+}
+
+function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", `'\\''`)}'`;
+}
+
+async function launchTerminalApp({
+  executable,
+  statePath,
+  title,
+  workerPath,
+  contextPath,
+  spawnProcess,
+}) {
+  const scriptPath = path.join(statePath, `launcher-${randomUUID()}.sh`);
+  const script = [
+    "#!/bin/bash",
+    `printf '\\033]0;%s\\007' ${shellSingleQuote(title)}`,
+    `exec ${shellSingleQuote(process.execPath)} ${shellSingleQuote(
+      workerPath,
+    )} --context ${shellSingleQuote(contextPath)}`,
+    "",
+  ].join("\n");
+  await writeFile(scriptPath, script);
+  await chmod(scriptPath, 0o755);
+
+  const child = spawnProcess(
+    "open",
+    ["-a", executable, scriptPath],
+    {
+      detached: true,
+      stdio: "ignore",
     },
   );
   await new Promise((resolve, reject) => {
