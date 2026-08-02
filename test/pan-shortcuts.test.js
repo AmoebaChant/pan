@@ -3,6 +3,7 @@ import {
   access,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   stat,
@@ -206,6 +207,11 @@ test("creates macOS chat and runner app bundles", async () => {
       runnerRestore.index > pullIndex && runnerRestore.index < repairIndex,
       "restores pan-runner.js mode after pull and before repair",
     );
+    // The returned command metadata is exactly the run.command that executes,
+    // so it faithfully includes the checkout, branch, and mode-preservation
+    // steps and cannot drift from execution.
+    const updateShortcut = result.shortcuts.find(({ kind }) => kind === "update");
+    assert.equal(updateShortcut.command, updateCommand);
     const updatePlist = await readFile(
       path.join(updateBundle, "Contents", "Info.plist"),
       "utf8",
@@ -586,6 +592,21 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
     const script = Buffer.from(encoded, "base64").toString("utf16le");
     assert.ok(script.includes("rev-parse --abbrev-ref HEAD"));
     assert.ok(script.includes("$branch -ne 'main'"));
+    // A missing/renamed checkout must terminate before git runs, so it can
+    // never fast-forward or repair the wrong directory.
+    assert.match(
+      script,
+      new RegExp(
+        `^Set-Location -LiteralPath '${escapeRegExp(moduleRoot)}' -ErrorAction Stop$`,
+        "m",
+      ),
+    );
+    const setLocationIndex = script.indexOf("Set-Location");
+    const revParseIndex = script.indexOf("rev-parse");
+    assert.ok(
+      setLocationIndex > -1 && setLocationIndex < revParseIndex,
+      "checkout is entered before any git command",
+    );
     const pullIndex = script.indexOf(
       "git -c core.fileMode=false pull --ff-only origin main",
     );
@@ -597,8 +618,13 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
       script.indexOf("if ($LASTEXITCODE -ne 0) { exit 1 }", pullIndex) <
         repairIndex,
     );
+    // The returned command is exactly the encoded script, so reported metadata
+    // cannot drift from what executes, and it never uses `;` to run repair after
+    // a failed pull.
+    assert.equal(result.shortcuts[2].command, script);
+    assert.doesNotMatch(result.shortcuts[2].command, /origin main; /);
     assert.match(result.shortcuts[2].command, /pull --ff-only origin main/);
-    assert.match(result.shortcuts[2].command, /pan\.js' 'assets' 'repair'/);
+    assert.match(result.shortcuts[2].command, /pan\.js' assets repair$/);
 
     // Update Pan uses the same packaged Pan icon as chat and runner.
     assert.equal(
@@ -607,7 +633,9 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
     );
     assert.ok(result.shortcuts.every(({ iconPath }) => iconPath === icon));
 
-    assert.equal(legacyExistsWhenChatWritten, false);
+    // Legacy names are removed only after the replacement is written, so a
+    // failed write can never leave the desktop without a working shortcut.
+    assert.equal(legacyExistsWhenChatWritten, true);
     await assert.rejects(access(legacyChatShortcut), {
       code: "ENOENT",
     });
@@ -641,5 +669,113 @@ test("uses the Windows Desktop known-folder path", async () => {
     assert.match(calls[0].args.at(-1), /DesktopDirectory/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preserves legacy Windows shortcuts when the replacement write fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pan-win-fail-"));
+  const desktop = path.join(root, "Desktop");
+  const localAppData = path.join(root, "Local");
+  const terminal = path.join(localAppData, "Microsoft", "WindowsApps", "wt.exe");
+  const icon = path.join(root, "pan.ico");
+  const moduleRoot = path.join(root, "package");
+  const panEntry = path.join(moduleRoot, "bin", "pan.js");
+  const runnerEntry = path.join(moduleRoot, "bin", "pan-runner.js");
+  const legacy = path.join(desktop, "Start Pan Chat.lnk");
+  await mkdir(desktop, { recursive: true });
+  await mkdir(path.dirname(terminal), { recursive: true });
+  await mkdir(path.dirname(panEntry), { recursive: true });
+  await Promise.all([
+    writeFile(terminal, ""),
+    writeFile(icon, "icon"),
+    writeFile(panEntry, ""),
+    writeFile(runnerEntry, ""),
+    writeFile(legacy, "legacy"),
+  ]);
+
+  try {
+    await assert.rejects(
+      createPanDesktopShortcuts({
+        configPath: path.join(root, "domain", "pan.json"),
+        runnerProfilePath: path.join(root, "domain", "runners", "machine.json"),
+        domainPath: path.join(root, "domain"),
+        selection: "chat",
+        desktopPath: desktop,
+        iconPath: icon,
+        env: { LOCALAPPDATA: localAppData },
+        platform: "win32",
+        moduleRoot,
+        commands: {
+          async run(executable, args, options) {
+            // Launcher validation (node) passes; writing the replacement fails.
+            if (executable !== "powershell.exe") return "";
+            if (options.env?.PAN_SHORTCUT_PATH?.endsWith("Pan Chat.lnk")) {
+              throw new Error("write failed");
+            }
+            return "";
+          },
+        },
+      }),
+      /write failed/,
+    );
+
+    // The replacement never succeeded, so the legacy shortcut is still present
+    // and no partial replacement was left behind.
+    await access(legacy);
+    await assert.rejects(access(path.join(desktop, "Pan Chat.lnk")), {
+      code: "ENOENT",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preserves legacy and current macOS bundles when the rebuild fails", async () => {
+  const ctx = await setupMacDomain();
+  try {
+    const legacy = path.join(ctx.desktop, "Start Pan Chat.app");
+    const current = path.join(ctx.desktop, "Pan Chat.app");
+    await mkdir(path.join(legacy, "Contents"), { recursive: true });
+    await writeFile(path.join(legacy, "Contents", "marker"), "legacy");
+    await mkdir(path.join(current, "Contents"), { recursive: true });
+    await writeFile(path.join(current, "Contents", "marker"), "current");
+
+    await assert.rejects(
+      createPanDesktopShortcuts({
+        configPath: ctx.configPath,
+        runnerProfilePath: ctx.runnerProfilePath,
+        domainPath: ctx.domainPath,
+        selection: "chat",
+        desktopPath: ctx.desktop,
+        iconPath: ctx.icon,
+        env: {},
+        platform: "darwin",
+        moduleRoot: ctx.moduleRoot,
+        nodePath: ctx.nodePath,
+        commands: ctx.commands,
+        // The converted icon points nowhere, so copying it into the staged
+        // bundle fails mid-build, before any swap or legacy removal.
+        iconConverter: async () => path.join(ctx.root, "missing.icns"),
+      }),
+      { code: "ENOENT" },
+    );
+
+    // Both the pre-existing replacement bundle and the legacy bundle survive,
+    // and no staging directory is left behind.
+    assert.equal(
+      await readFile(path.join(current, "Contents", "marker"), "utf8"),
+      "current",
+    );
+    assert.equal(
+      await readFile(path.join(legacy, "Contents", "marker"), "utf8"),
+      "legacy",
+    );
+    const entries = await readdir(ctx.desktop);
+    assert.ok(
+      !entries.some((name) => name.includes("pan-staging")),
+      "no staging directory remains",
+    );
+  } finally {
+    await rm(ctx.root, { recursive: true, force: true });
   }
 });

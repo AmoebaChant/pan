@@ -1,4 +1,4 @@
-import { access, chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -118,11 +118,8 @@ async function createWindowsShortcuts({
   const shortcuts = [];
   for (const definition of definitions) {
     const shortcutPath = path.join(desktop, definition.name);
-    await Promise.all(
-      (definition.legacyNames ?? []).map((name) =>
-        rm(path.join(desktop, name), { force: true }),
-      ),
-    );
+    // Write the replacement first; only remove legacy names once it succeeds so
+    // a failure never leaves the desktop without a working shortcut.
     await writeShortcut({
       shortcutPath,
       targetPath: terminal,
@@ -133,6 +130,11 @@ async function createWindowsShortcuts({
       env,
       commands,
     });
+    await Promise.all(
+      (definition.legacyNames ?? []).map((name) =>
+        rm(path.join(desktop, name), { force: true }),
+      ),
+    );
     shortcuts.push({
       kind: definition.kind,
       path: shortcutPath,
@@ -182,32 +184,47 @@ async function createMacShortcuts({
     // Only the selected shortcuts are managed here; unselected bundles are left
     // in place. This matches the Windows semantics, where shortcutDefinitions
     // returns only the selected definitions and each removes only its own name.
-    for (const definition of definitions) {
+    for (const [index, definition] of definitions.entries()) {
       const bundlePath = path.join(desktop, definition.name);
+      // Build the new bundle beside the target and swap it in only once it is
+      // complete, then remove legacy names. A failure mid-build leaves both the
+      // existing same-named bundle and any legacy bundles untouched, so the user
+      // is never left without a working shortcut.
+      const stagingPath = path.join(
+        desktop,
+        `.${definition.name}.pan-staging-${process.pid}-${index}`,
+      );
+      await rm(stagingPath, { recursive: true, force: true });
+      try {
+        const contents = path.join(stagingPath, "Contents");
+        const macOsDir = path.join(contents, "MacOS");
+        const resources = path.join(contents, "Resources");
+        await mkdir(macOsDir, { recursive: true });
+        await mkdir(resources, { recursive: true });
+        const launchPath = path.join(macOsDir, "launch");
+        const commandPath = path.join(resources, "run.command");
+        const stagedIcon = path.join(resources, "pan.icns");
+        await writeFile(path.join(contents, "Info.plist"), definition.plist);
+        await writeFile(launchPath, MAC_LAUNCH_SCRIPT);
+        await writeFile(commandPath, definition.runCommand);
+        await copyFile(icnsSource, stagedIcon);
+        await chmod(launchPath, 0o755);
+        await chmod(commandPath, 0o755);
+        await rm(bundlePath, { recursive: true, force: true });
+        await rename(stagingPath, bundlePath);
+      } catch (error) {
+        await rm(stagingPath, { recursive: true, force: true });
+        throw error;
+      }
       await Promise.all(
         (definition.legacyNames ?? []).map((name) =>
           rm(path.join(desktop, name), { recursive: true, force: true }),
         ),
       );
-      await rm(bundlePath, { recursive: true, force: true });
-      const contents = path.join(bundlePath, "Contents");
-      const macOsDir = path.join(contents, "MacOS");
-      const resources = path.join(contents, "Resources");
-      await mkdir(macOsDir, { recursive: true });
-      await mkdir(resources, { recursive: true });
-      const launchPath = path.join(macOsDir, "launch");
-      const commandPath = path.join(resources, "run.command");
-      const iconTarget = path.join(resources, "pan.icns");
-      await writeFile(path.join(contents, "Info.plist"), definition.plist);
-      await writeFile(launchPath, MAC_LAUNCH_SCRIPT);
-      await writeFile(commandPath, definition.runCommand);
-      await copyFile(icnsSource, iconTarget);
-      await chmod(launchPath, 0o755);
-      await chmod(commandPath, 0o755);
       shortcuts.push({
         kind: definition.kind,
         path: bundlePath,
-        iconPath: iconTarget,
+        iconPath: path.join(bundlePath, "Contents", "Resources", "pan.icns"),
         command: definition.command,
       });
     }
@@ -280,18 +297,20 @@ function macShortcutDefinitions({
   }
   // Update Pan is always offered whenever shortcuts are created, independent of
   // the chat/runner selection. It updates this Pan checkout, then repairs the
-  // installed Copilot assets.
+  // installed Copilot assets. `command` is the exact run.command body so the
+  // reported metadata cannot drift from what actually executes.
+  const updateRunCommand = macUpdateRunCommand({
+    panRepoPath,
+    nodePath,
+    panEntryPath,
+    runnerEntryPath,
+  });
   definitions.push({
     kind: "update",
     name: "Update Pan.app",
     legacyNames: [],
-    command: macUpdateCommandSummary({ nodePath, panEntryPath }),
-    runCommand: macUpdateRunCommand({
-      panRepoPath,
-      nodePath,
-      panEntryPath,
-      runnerEntryPath,
-    }),
+    command: updateRunCommand,
+    runCommand: updateRunCommand,
     plist: infoPlist({
       name: "Update Pan",
       identifier: "com.amoebachant.pan.update",
@@ -337,10 +356,6 @@ function macUpdateRunCommand({ panRepoPath, nodePath, panEntryPath, runnerEntryP
     `exec ${shellQuote(nodePath)} ${shellQuote(panEntryPath)} assets repair`,
     "",
   ].join("\n");
-}
-
-function macUpdateCommandSummary({ nodePath, panEntryPath }) {
-  return `git -c core.fileMode=false pull --ff-only origin main && exec ${shellQuote(nodePath)} ${shellQuote(panEntryPath)} assets repair`;
 }
 
 function infoPlist({ name, identifier }) {
@@ -508,7 +523,14 @@ function shortcutDefinitions({
   }
   // Update Pan is always offered whenever shortcuts are created, independent of
   // the chat/runner selection. It updates this Pan checkout, then repairs the
-  // installed Copilot assets.
+  // installed Copilot assets. The returned `command` is the exact PowerShell
+  // that runs; the launch arguments encode that same script, so metadata cannot
+  // drift from execution.
+  const updateScript = panUpdatePowershellScript({
+    panRepoPath,
+    nodePath,
+    panEntryPath,
+  });
   definitions.push({
     kind: "update",
     name: "Update Pan.lnk",
@@ -527,9 +549,9 @@ function shortcutDefinitions({
       "-NoProfile",
       "-NoExit",
       "-EncodedCommand",
-      windowsUpdateEncodedCommand({ panRepoPath, nodePath, panEntryPath }),
+      encodePowershellCommand(updateScript),
     ].join(" "),
-    command: windowsUpdateCommandSummary({ nodePath, panEntryPath }),
+    command: updateScript,
   });
   return definitions;
 }
@@ -698,15 +720,17 @@ function powershellQuote(value) {
 }
 
 /**
- * The PowerShell steps the Update Pan shortcut runs: move to this Pan checkout,
- * confirm it is on main, fast-forward main, and only then repair the installed
- * Copilot assets. Any failing step stops before `pan assets repair` runs.
+ * The PowerShell steps the Update Pan shortcut runs: move to this Pan checkout
+ * (a terminating failure so a missing/renamed checkout never lets git run in the
+ * wrong directory), confirm it is on main, fast-forward main, and only then
+ * repair the installed Copilot assets. Each native step is guarded by
+ * $LASTEXITCODE so a failure short-circuits before `pan assets repair` runs.
  * Windows does not track POSIX executable bits on these launchers, so no mode
  * snapshot/restore is needed here (unlike the macOS run.command).
  */
 function panUpdatePowershellScript({ panRepoPath, nodePath, panEntryPath }) {
   return [
-    `Set-Location -LiteralPath ${powershellQuote(panRepoPath)}`,
+    `Set-Location -LiteralPath ${powershellQuote(panRepoPath)} -ErrorAction Stop`,
     "$branch = & git rev-parse --abbrev-ref HEAD",
     "if ($LASTEXITCODE -ne 0) { exit 1 }",
     `if ($branch -ne 'main') { Write-Error "Update Pan requires the main branch, but this Pan checkout is on '$branch'."; exit 1 }`,
@@ -719,13 +743,6 @@ function panUpdatePowershellScript({ panRepoPath, nodePath, panEntryPath }) {
 // PowerShell -EncodedCommand takes a base64 of a UTF-16LE string. Encoding the
 // whole update script avoids fragile quoting and Windows Terminal's use of `;`
 // and `"` as argument delimiters.
-function windowsUpdateEncodedCommand(args) {
-  return Buffer.from(panUpdatePowershellScript(args), "utf16le").toString("base64");
-}
-
-function windowsUpdateCommandSummary({ nodePath, panEntryPath }) {
-  return `git -c core.fileMode=false pull --ff-only origin main; ${powershellCommand(
-    nodePath,
-    [panEntryPath, "assets", "repair"],
-  )}`;
+function encodePowershellCommand(script) {
+  return Buffer.from(script, "utf16le").toString("base64");
 }
