@@ -17,6 +17,7 @@ import {
   rateLimitBackoffSeconds,
   waitForNextPoll,
 } from "./polling.js";
+import { formatRunnerWindowTitle } from "./terminal-title.js";
 
 const OPERATIONAL_FAILURE_LIMIT = 3;
 const RUNNER_EVENT_MARKER = "<!-- pan:runner-event -->";
@@ -33,6 +34,7 @@ export class RunnerDaemon {
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
     logger = console,
+    setWindowTitle = () => {},
   }) {
     this.store = store;
     this.profile = profile.playbooks
@@ -47,8 +49,21 @@ export class RunnerDaemon {
     this.now = now;
     this.sleep = sleep;
     this.logger = logger;
+    this.setWindowTitle = setWindowTitle;
     this.active = new Map();
     this.escalatedRequirements = new Set();
+    this.#refreshWindowTitle();
+  }
+
+  #refreshWindowTitle() {
+    const taskNumbers = [...this.active.values()]
+      .map((entry) => entry.issueNumber)
+      .filter((value) => value !== undefined);
+    try {
+      this.setWindowTitle(formatRunnerWindowTitle(taskNumbers));
+    } catch (error) {
+      this.logger.warn?.("Unable to update terminal window title", error);
+    }
   }
 
   async runOnce({ signal } = {}) {
@@ -183,11 +198,18 @@ export class RunnerDaemon {
         })
         .finally(() => {
           this.active.delete(runner);
+          this.#refreshWindowTitle();
           this.logger.info?.(
             `Released local capacity for task #${item.number}; active=${this.active.size}.`,
           );
         });
-      this.active.set(runner, { playbookId: playbook.id, slot, promise });
+      this.active.set(runner, {
+        playbookId: playbook.id,
+        slot,
+        promise,
+        issueNumber: item.number,
+      });
+      this.#refreshWindowTitle();
       activeCounts.set(
         playbook.id,
         (activeCounts.get(playbook.id) ?? 0) + 1,
@@ -686,8 +708,10 @@ export class RunnerDaemon {
       playbookId: playbook.id,
       slot,
       promise: Promise.resolve(),
+      issueNumber: item.number,
     };
     this.active.set(task.runner, reserved);
+    this.#refreshWindowTitle();
     try {
       const claim = await this.store.claimWithLease({
         itemId: item.id,
@@ -712,6 +736,7 @@ export class RunnerDaemon {
         })
         .finally(() => {
           this.active.delete(task.runner);
+          this.#refreshWindowTitle();
           this.logger.info?.(
             `Released local capacity for adopted task #${item.number}; active=${this.active.size}.`,
           );
@@ -722,6 +747,7 @@ export class RunnerDaemon {
       );
     } catch (error) {
       this.active.delete(task.runner);
+      this.#refreshWindowTitle();
       throw error;
     }
   }
