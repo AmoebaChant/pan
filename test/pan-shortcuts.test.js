@@ -849,3 +849,133 @@ test("restores the current macOS bundle when the swap rename fails after backup"
     await rm(ctx.root, { recursive: true, force: true });
   }
 });
+
+test("recovers a leftover backup on retry after a failed restore, then replaces it", async () => {
+  const ctx = await setupMacDomain();
+  try {
+    const current = path.join(ctx.desktop, "Pan Chat.app");
+    await mkdir(path.join(current, "Contents"), { recursive: true });
+    await writeFile(path.join(current, "Contents", "marker"), "current");
+    const backupPath = path.join(
+      ctx.desktop,
+      `.Pan Chat.app.pan-backup-${process.pid}-0`,
+    );
+
+    // First run: the staging swap fails AND restoring the backup fails, so the
+    // original bundle is left only as its backup (the destination is gone).
+    const failingRename = async (from, to) => {
+      if (from.includes("pan-staging") || from.includes("pan-backup")) {
+        throw Object.assign(new Error("simulated failure"), { code: "EIO" });
+      }
+      return rename(from, to);
+    };
+    await assert.rejects(
+      createPanDesktopShortcuts({
+        configPath: ctx.configPath,
+        runnerProfilePath: ctx.runnerProfilePath,
+        domainPath: ctx.domainPath,
+        selection: "chat",
+        desktopPath: ctx.desktop,
+        iconPath: ctx.icon,
+        env: {},
+        platform: "darwin",
+        moduleRoot: ctx.moduleRoot,
+        nodePath: ctx.nodePath,
+        commands: ctx.commands,
+        renameFile: failingRename,
+      }),
+      { code: "EIO" },
+    );
+
+    // The only working copy now lives in the backup; the destination is absent.
+    assert.equal(
+      await readFile(path.join(backupPath, "Contents", "marker"), "utf8"),
+      "current",
+    );
+    await assert.rejects(access(current), { code: "ENOENT" });
+
+    // Retry with a working rename: recovery restores the backup, then the new
+    // bundle replaces it successfully and leaves nothing behind.
+    const result = await createPanDesktopShortcuts({
+      configPath: ctx.configPath,
+      runnerProfilePath: ctx.runnerProfilePath,
+      domainPath: ctx.domainPath,
+      selection: "chat",
+      desktopPath: ctx.desktop,
+      iconPath: ctx.icon,
+      env: {},
+      platform: "darwin",
+      moduleRoot: ctx.moduleRoot,
+      nodePath: ctx.nodePath,
+      commands: ctx.commands,
+    });
+    assert.equal(result.status, "created");
+
+    await access(path.join(current, "Contents", "Info.plist"));
+    await access(path.join(current, "Contents", "Resources", "pan.icns"));
+    await access(path.join(ctx.desktop, "Update Pan.app", "Contents", "Info.plist"));
+    const entries = await readdir(ctx.desktop);
+    assert.ok(
+      !entries.some((name) => name.includes("pan-backup")),
+      "no backup directory remains",
+    );
+    assert.ok(
+      !entries.some((name) => name.includes("pan-staging")),
+      "no staging directory remains",
+    );
+  } finally {
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("restores a crash-left backup to the destination before cleanup", async () => {
+  const ctx = await setupMacDomain();
+  try {
+    const current = path.join(ctx.desktop, "Pan Chat.app");
+    const backupPath = path.join(
+      ctx.desktop,
+      `.Pan Chat.app.pan-backup-${process.pid}-0`,
+    );
+    // Simulate a crash between destination->backup and staging->destination:
+    // only the backup survives and the destination is missing.
+    await mkdir(path.join(backupPath, "Contents"), { recursive: true });
+    await writeFile(path.join(backupPath, "Contents", "marker"), "crashed");
+
+    // Force the rebuild to fail after recovery has already run, proving the
+    // backup was restored to the destination rather than deleted.
+    await assert.rejects(
+      createPanDesktopShortcuts({
+        configPath: ctx.configPath,
+        runnerProfilePath: ctx.runnerProfilePath,
+        domainPath: ctx.domainPath,
+        selection: "chat",
+        desktopPath: ctx.desktop,
+        iconPath: ctx.icon,
+        env: {},
+        platform: "darwin",
+        moduleRoot: ctx.moduleRoot,
+        nodePath: ctx.nodePath,
+        commands: ctx.commands,
+        iconConverter: async () => path.join(ctx.root, "missing.icns"),
+      }),
+      { code: "ENOENT" },
+    );
+
+    // The crash-left backup was restored to the destination and never deleted.
+    assert.equal(
+      await readFile(path.join(current, "Contents", "marker"), "utf8"),
+      "crashed",
+    );
+    const entries = await readdir(ctx.desktop);
+    assert.ok(
+      !entries.some((name) => name.includes("pan-backup")),
+      "no backup directory remains",
+    );
+    assert.ok(
+      !entries.some((name) => name.includes("pan-staging")),
+      "no staging directory remains",
+    );
+  } finally {
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});

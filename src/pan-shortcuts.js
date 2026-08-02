@@ -202,7 +202,11 @@ async function createMacShortcuts({
         `.${definition.name}.pan-backup-${process.pid}-${index}`,
       );
       await rm(stagingPath, { recursive: true, force: true });
-      await rm(backupPath, { recursive: true, force: true });
+      // Recover from a swap that a previous run left interrupted before doing
+      // anything destructive. If a backup survives, it may be the only working
+      // copy (Update Pan has no legacy fallback), so restore it to the
+      // destination instead of deleting it.
+      await recoverInterruptedSwap({ bundlePath, backupPath, renameFile });
       try {
         const contents = path.join(stagingPath, "Contents");
         const macOsDir = path.join(contents, "MacOS");
@@ -247,11 +251,52 @@ async function createMacShortcuts({
 }
 
 /**
+ * Recovers from a swap that a previous run (or a crash) left interrupted, before
+ * any destructive cleanup runs. States handled:
+ *
+ * - backup absent: nothing to do.
+ * - backup present, destination absent: the swap was interrupted after the
+ *   original bundle was moved to its backup but before the replacement landed,
+ *   so the backup is the only working copy. Restore it to the destination.
+ * - backup present, destination present: the backup is a stale leftover beside a
+ *   valid destination, so it is safe to remove.
+ *
+ * A backup is never removed unless a valid destination is already present.
+ */
+async function recoverInterruptedSwap({
+  bundlePath,
+  backupPath,
+  renameFile = rename,
+}) {
+  if (!(await pathExists(backupPath))) {
+    return;
+  }
+  if (await pathExists(bundlePath)) {
+    await rm(backupPath, { recursive: true, force: true });
+    return;
+  }
+  await renameFile(backupPath, bundlePath);
+}
+
+async function pathExists(target) {
+  try {
+    await access(target);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
  * Atomically replaces an existing bundle with a fully-built staging bundle.
  * The existing bundle is first moved to a same-filesystem backup so it can be
  * restored if the swap fails partway; the backup is deleted only after the new
- * bundle is in place. On any failure the caller's staging cleanup runs and the
- * original bundle is left intact.
+ * bundle is successfully in place. On any failure the original bundle is
+ * restored (or, if even the restore fails, the backup is left as the only copy
+ * for recoverInterruptedSwap to reinstate on the next run).
  */
 async function swapBundleIntoPlace({
   stagingPath,
