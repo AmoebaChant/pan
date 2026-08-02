@@ -214,6 +214,22 @@ test("creates macOS chat and runner app bundles", async () => {
       updatePlist,
       /<key>CFBundleName<\/key>\s*<string>Update Pan<\/string>/,
     );
+    // Update Pan uses the same packaged Pan icon and shared conversion as the
+    // chat and runner bundles: the plist references pan.icns and the single
+    // ico->icns conversion output is copied into every bundle.
+    assert.match(
+      updatePlist,
+      /<key>CFBundleIconFile<\/key>\s*<string>pan<\/string>/,
+    );
+    for (const kind of ["chat", "runner", "update"]) {
+      const shortcut = result.shortcuts.find((entry) => entry.kind === kind);
+      assert.equal(path.basename(shortcut.iconPath), "pan.icns");
+    }
+    // A single shared conversion feeds all three bundles.
+    assert.equal(
+      ctx.calls.filter(({ executable }) => executable === "iconutil").length,
+      1,
+    );
 
     const launch = await readFile(
       path.join(chatBundle, "Contents", "MacOS", "launch"),
@@ -583,6 +599,13 @@ test("creates chat and runner shortcuts with the packaged Pan icon", async () =>
     );
     assert.match(result.shortcuts[2].command, /pull --ff-only origin main/);
     assert.match(result.shortcuts[2].command, /pan\.js' 'assets' 'repair'/);
+
+    // Update Pan uses the same packaged Pan icon as chat and runner.
+    assert.equal(
+      shortcutCalls[2].options.env.PAN_SHORTCUT_ICON,
+      `${icon},0`,
+    );
+    assert.ok(result.shortcuts.every(({ iconPath }) => iconPath === icon));
 
     assert.equal(legacyExistsWhenChatWritten, false);
     await assert.rejects(access(legacyChatShortcut), {
