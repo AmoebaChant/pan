@@ -99,13 +99,12 @@ test("rejects a runner that references another domain configuration file", () =>
 test("accepts a runner profile stored beside its domain configuration", () => {
   const profile = makeProfile();
   delete profile.domainConfigPath;
-  profile.profilePath = path.resolve(
-    "C:\\domains\\example\\runners\\machine.json",
-  );
+  const domainPath = path.resolve("C:\\domains\\example");
+  profile.profilePath = path.join(domainPath, "runners", "machine.json");
 
   assert.doesNotThrow(() =>
     assertMatchingDomain(makeConfig(), profile, {
-      configPath: "C:\\domains\\example\\pan.json",
+      configPath: path.join(domainPath, "pan.json"),
       requireConfigPath: true,
     }),
   );

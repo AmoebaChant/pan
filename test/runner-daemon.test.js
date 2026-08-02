@@ -75,6 +75,30 @@ test("claims and completes an eligible ready task that has no workstream", async
   ]);
 });
 
+test("sets a task-specific terminal title while working and reverts when done", async () => {
+  const item = makeItem({ number: 34 });
+  const store = new FakeStore([item]);
+  const handle = new FakeHandle({
+    status: "completed",
+    summary: "Done.",
+  });
+  const titles = [];
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(handle),
+    logger: silentLogger,
+    setWindowTitle: (title) => titles.push(title),
+  });
+
+  assert.equal(titles[0], "Pan Runner");
+
+  await daemon.runOnce();
+
+  assert.ok(titles.includes("Pan Runner: Task 34"));
+  assert.equal(titles.at(-1), "Pan Runner");
+});
+
 test("adopts a live worker before polling and prevents a double dispatch", async () => {
   const adopted = makeItem({
     id: "item-adopted",

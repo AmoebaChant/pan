@@ -10,6 +10,7 @@ import {
   RunnerDaemon,
   acquireRunnerLock,
   AttentionService,
+  createWindowTitleWriter,
   loadDomainConfig,
   loadRunnerProfile,
 } from "../src/index.js";
@@ -55,6 +56,7 @@ const daemon = new RunnerDaemon({
   executor,
   attention,
   logger,
+  setWindowTitle: createWindowTitleWriter(process.stdout),
 });
 const lock = await acquireRunnerLock(profile);
 const controller = new AbortController();
