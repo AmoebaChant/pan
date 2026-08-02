@@ -37,7 +37,8 @@ for a domain checkout path. Create or validate its shared `pan.json`, Project
 schema, then collect only this machine's local
 settings. Preserve compatible shared configuration and local runner settings.
 Default Copilot tool approvals to `prompt`; require explicit confirmation before
-using `allow-all`. On Windows, offer Pan Chat and runner desktop shortcuts.
+using `allow-all`. On Windows or macOS, offer Pan Chat and runner desktop
+shortcuts.
 
 Keep confirmed answers after a recoverable command failure. Explain the
 diagnostic, ask only for the corrected or missing choice, and resume the failed
