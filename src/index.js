@@ -124,4 +124,9 @@ export {
 } from "./workstream-store.js";
 export { LocalTaskExecutor } from "./local-task-executor.js";
 export { RunnerDaemon } from "./runner-daemon.js";
+export {
+  createWindowTitleWriter,
+  formatRunnerWindowTitle,
+  windowTitleSequence,
+} from "./terminal-title.js";
 export { acquireRunnerLock } from "./runner-lock.js";
