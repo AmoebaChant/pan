@@ -34,9 +34,6 @@ export function deriveTriage(item, comments = []) {
     workstream: directives.workstream ?? current.workstream,
   };
   const missing = [];
-  if (!fields.workstream) {
-    missing.push("a workstream path");
-  }
   if (owner === "agent" && repositoryRequirements.length !== 1) {
     missing.push("exactly one repo:<owner/name> requirement");
   }

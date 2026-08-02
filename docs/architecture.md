@@ -51,7 +51,7 @@ approval, or runner-owned execution fields.
 
 [`schema/project-fields.json`](../schema/project-fields.json) is the contract
 shared by setup, the Pan agent, and the runner. The agent sets triage fields:
-owner, status, priority, requirements, and the relative workstream path. The runner
+owner, status, priority, requirements, and an optional relative workstream path. The runner
 claims eligible `owner=agent`, `status=ready` work and owns its active
 `claimed-by` and `lease-until` fields. A worker that needs an answer sets
 `needs-human-since` and waits in its own terminal without giving up its lease.

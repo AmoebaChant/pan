@@ -135,6 +135,17 @@ test("requires a playbook that serves the task repository", () => {
   );
 });
 
+test("dispatches an agent item that has no workstream", () => {
+  const profile = validateRunnerProfile(makeProfile());
+  const item = {
+    fields: { owner: "agent", workstream: "" },
+    requirements: ["repo:example/tool", "env:local", "tool:node22"],
+  };
+
+  assert.equal(dispatchBlocker(item), undefined);
+  assert.equal(matchingPlaybook(item, profile).id, "pan-development");
+});
+
 test("names the field that makes a ready item undispatchable", () => {
   const runnable = {
     fields: { owner: "agent", workstream: "pan" },
@@ -149,8 +160,9 @@ test("names the field that makes a ready item undispatchable", () => {
     "owner-not-agent",
   );
   assert.equal(
-    dispatchBlocker(withFields({ owner: "agent", workstream: "  " })).code,
-    "workstream-missing",
+    dispatchBlocker(withFields({ owner: "agent", workstream: "" })),
+    undefined,
+    "an empty workstream must not block dispatch",
   );
   assert.equal(
     dispatchBlocker(withRequirements([])).code,

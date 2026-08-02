@@ -1,5 +1,16 @@
 export function buildTaskPrompt(taskContextPath, task) {
   const agentManaged = Boolean(task.target.workingDirectory);
+  const contextItems = [
+    "the Issue body",
+    "acceptance criteria",
+    "comments and answers",
+    agentManaged ? "target working directory" : "target worktree and branch",
+    ...(task.workstream ? ["workstream README"] : []),
+    "playbook guidance",
+  ];
+  const contextSentence = `It contains ${contextItems
+    .slice(0, -1)
+    .join(", ")}, and ${contextItems.at(-1)}.`;
   const playbookInstructions = task.playbook.instructions.length
     ? [
         "",
@@ -20,9 +31,7 @@ export function buildTaskPrompt(taskContextPath, task) {
     "You are a Pan worker daemon executing one GitHub Issue.",
     "",
     `Read the complete canonical task context from ${taskContextPath}.`,
-    agentManaged
-      ? "It contains the Issue body, acceptance criteria, comments and answers, target working directory, workstream README, and playbook guidance."
-      : "It contains the Issue body, acceptance criteria, comments and answers, target worktree and branch, workstream README, and playbook guidance.",
+    contextSentence,
     "",
     "The playbook below and the Issue itself define this task. Together they say what to do and how to deliver it. Follow both; where they conflict, the Issue is the more specific instruction and wins.",
     ...playbookInstructions,

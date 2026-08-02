@@ -3,6 +3,49 @@ import test from "node:test";
 
 import { deriveTriage, formatAnswer, matchingRunner } from "../src/index.js";
 
+test("triages a human-owned task without a workstream", () => {
+  const result = deriveTriage(
+    makeItem({
+      body: "Investigate the flaky login flow and summarize findings.",
+    }),
+  );
+
+  assert.equal(result.fields.owner, "human");
+  assert.equal(result.fields.workstream, "");
+  assert.equal(result.fields.status, "ready");
+  assert.deepEqual(result.missing, []);
+});
+
+test("readies an agent task with valid requirements and no workstream", () => {
+  const result = deriveTriage(
+    makeItem({
+      body: ["Implement the feature.", "repo:example/tool"].join("\n"),
+    }),
+  );
+
+  assert.equal(result.fields.owner, "agent");
+  assert.equal(result.fields.workstream, "");
+  assert.deepEqual(result.fields.requirements, ["repo:example/tool"]);
+  assert.equal(result.fields.status, "ready");
+  assert.deepEqual(result.missing, []);
+});
+
+test("still readies an agent task that names a workstream", () => {
+  const result = deriveTriage(
+    makeItem({
+      body: [
+        "Implement the feature.",
+        "workstream: orchestration/pan",
+        "repo:example/tool",
+      ].join("\n"),
+    }),
+  );
+
+  assert.equal(result.fields.workstream, "orchestration/pan");
+  assert.equal(result.fields.status, "ready");
+  assert.deepEqual(result.missing, []);
+});
+
 test("infers agent routing and fields from Issue directives", () => {
   const result = deriveTriage(
     makeItem({
