@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  clampRawInput,
   createWindowTitleWriter,
   formatChatSessionName,
   formatRunnerWindowTitle,
@@ -183,6 +184,34 @@ test("strips Unicode bidi and directional control characters", () => {
   assert.ok(!/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(name));
 });
 
+test("strips the Arabic letter mark (U+061C)", () => {
+  const name = formatTaskSessionName({
+    issueNumber: 123,
+    repository: "owner/repo",
+    title: "normal \u061C43# naP",
+  });
+  assert.ok(!/[\u061c]/.test(name));
+  assert.ok(!/\p{Bidi_Control}/u.test(name));
+});
+
+test("strips deprecated directional format characters (U+206A–U+206F)", () => {
+  const name = formatTaskSessionName({
+    issueNumber: 123,
+    repository: "owner/repo",
+    title: "start \u206a\u206b\u206c\u206d\u206e\u206f end",
+  });
+  assert.ok(!/[\u206a-\u206f]/.test(name));
+});
+
+test("does not over-strip ZWJ from a legitimate emoji sequence", () => {
+  const name = formatTaskSessionName({
+    issueNumber: 7,
+    repository: "owner/repo",
+    title: "team 👩‍💻 sync",
+  });
+  assert.ok(name.includes("👩\u200d💻"));
+});
+
 test("does not split a combining mark grapheme at the boundary", () => {
   // The first 59 clusters end with "é" (e + combining acute). truncate keeps
   // the first 59 clusters (MAX_TASK_TITLE_LENGTH - 1), so "é" is the last kept
@@ -264,4 +293,37 @@ test("caps code points even when combining marks collapse into one grapheme", ()
 
   const chatBomb = formatChatSessionName({ repository: "o/" + "\u0301".repeat(50000) });
   assert.ok(Array.from(chatBomb).length <= 256);
+});
+
+test("clampRawInput leaves short strings untouched (fast path)", () => {
+  assert.equal(clampRawInput("short", 1024), "short");
+  assert.equal(clampRawInput("", 1024), "");
+});
+
+test("clampRawInput passes through non-string values unchanged", () => {
+  assert.equal(clampRawInput(42, 1024), 42);
+  assert.equal(clampRawInput(undefined, 1024), undefined);
+});
+
+test("clampRawInput stops at the code-point ceiling for enormous input", () => {
+  const clamped = clampRawInput("a" + "\u0301".repeat(3_000_000), 1024);
+  assert.equal(Array.from(clamped).length, 1024);
+});
+
+test("clampRawInput stops at the ceiling across multi-code-point boundary", () => {
+  // Each 😀 is a single code point (surrogate pair in UTF-16); the iterator
+  // yields code points, so exactly `max` of them must be kept.
+  const clamped = clampRawInput("😀".repeat(2000), 10);
+  assert.equal(Array.from(clamped).length, 10);
+});
+
+test("pre-clamps a pathological combining-mark bomb without hanging", () => {
+  // The test completing at all proves segmentation did not walk the 3M-char
+  // input; the result is still correctly bounded.
+  const name = formatTaskSessionName({
+    issueNumber: 1,
+    repository: "o/r",
+    title: "a" + "\u0301".repeat(3_000_000),
+  });
+  assert.ok(Array.from(name).length <= 256);
 });

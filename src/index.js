@@ -125,6 +125,7 @@ export {
 export { LocalTaskExecutor } from "./local-task-executor.js";
 export { RunnerDaemon } from "./runner-daemon.js";
 export {
+  clampRawInput,
   createWindowTitleWriter,
   formatChatSessionName,
   formatRunnerWindowTitle,

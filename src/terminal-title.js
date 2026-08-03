@@ -3,21 +3,45 @@ const MAX_TASK_TITLE_LENGTH = 60;
 const MAX_REPO_LENGTH = 40;
 const MAX_SESSION_NAME_LENGTH = 120;
 const MAX_SESSION_NAME_CODE_POINTS = 256;
+// Bound raw input before any regex or segmentation work. This ceiling sits far
+// above every downstream cap (60/40 graphemes, 120 graphemes, 256 code points),
+// so the kept prefix always exceeds what could survive them — pre-clamping can
+// never alter the output for legitimate inputs, it only caps pathological work.
+const MAX_RAW_INPUT_CODE_POINTS = 1024;
 const TASK_PREFIX = "Pan";
 const CHAT_PREFIX = "Pan Chat";
 const ELLIPSIS = "…";
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
-const BIDI_CONTROLS = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+// \p{Bidi_Control} covers ALM, LRM/RLM, the embedding/override set, and the
+// isolate set; the explicit U+206A–U+206F range adds the deprecated directional
+// format chars (\p{Cf} but not \p{Bidi_Control}). We avoid stripping all \p{Cf}
+// so ZWJ (U+200D) survives for ZWJ-emoji grapheme handling.
+const BIDI_CONTROLS = /[\p{Bidi_Control}\u206a-\u206f]/gu;
 const WHITESPACE_RUNS = /\s+/g;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, {
   granularity: "grapheme",
 });
 
+// Truncate by code points with a bounded, early-stopping scan so an enormous
+// input is never fully traversed (Array.from would allocate the whole array).
+export function clampRawInput(value, maxCodePoints) {
+  if (typeof value !== "string") return value;
+  if (value.length <= maxCodePoints) return value;
+  let result = "";
+  let count = 0;
+  for (const codePoint of value) {
+    result += codePoint;
+    if (++count >= maxCodePoints) break;
+  }
+  return result;
+}
+
 function sanitizeText(value) {
   if (value === undefined || value === null) {
     return "";
   }
-  return String(value)
+  const clamped = clampRawInput(String(value), MAX_RAW_INPUT_CODE_POINTS);
+  return clamped
     .replace(CONTROL_CHARACTERS, "")
     .replace(BIDI_CONTROLS, "")
     .replace(WHITESPACE_RUNS, " ")
