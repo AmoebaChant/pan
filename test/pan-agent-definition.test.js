@@ -78,6 +78,10 @@ test("packages a conversational setup agent that delegates mechanics to Pan comm
   assert.match(body, /restart\s+it after any playbook change/i);
   assert.match(body, /exact `launchCommands`/i);
   assert.match(body, /returned `command`.*verified commands/is);
+  assert.match(
+    body,
+    /`Update Pan`[\s\S]*no\s+verified\s+`launchCommands`\s+entry[\s\S]*validate\s+it\s+against\s+that\s+returned\s+command/i,
+  );
   assert.doesNotMatch(body, /npx @amoebachant\/pan/);
 });
 

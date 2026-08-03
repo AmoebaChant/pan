@@ -1,4 +1,4 @@
-import { access, chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ export async function createPanDesktopShortcuts({
   moduleRoot = MODULE_ROOT,
   nodePath = process.execPath,
   iconConverter,
+  renameFile = rename,
 } = {}) {
   if (platform !== "win32" && platform !== "darwin") {
     throw new Error(
@@ -77,6 +78,7 @@ export async function createPanDesktopShortcuts({
           env,
           commands,
           iconConverter,
+          renameFile,
           ...launchers,
         })
       : await createWindowsShortcuts({
@@ -118,21 +120,23 @@ async function createWindowsShortcuts({
   const shortcuts = [];
   for (const definition of definitions) {
     const shortcutPath = path.join(desktop, definition.name);
-    await Promise.all(
-      (definition.legacyNames ?? []).map((name) =>
-        rm(path.join(desktop, name), { force: true }),
-      ),
-    );
+    // Write the replacement first; only remove legacy names once it succeeds so
+    // a failure never leaves the desktop without a working shortcut.
     await writeShortcut({
       shortcutPath,
       targetPath: terminal,
       argumentsValue: definition.arguments,
-      workingDirectory: domainPath,
+      workingDirectory: definition.workingDirectory ?? domainPath,
       iconPath,
       description: definition.description,
       env,
       commands,
     });
+    await Promise.all(
+      (definition.legacyNames ?? []).map((name) =>
+        rm(path.join(desktop, name), { force: true }),
+      ),
+    );
     shortcuts.push({
       kind: definition.kind,
       path: shortcutPath,
@@ -157,6 +161,8 @@ async function createMacShortcuts({
   nodePath,
   panEntryPath,
   runnerEntryPath,
+  panRepoPath,
+  renameFile = rename,
 }) {
   const definitions = macShortcutDefinitions({
     configPath,
@@ -167,6 +173,7 @@ async function createMacShortcuts({
     nodePath,
     panEntryPath,
     runnerEntryPath,
+    panRepoPath,
   });
   const workDir = await mkdtemp(path.join(os.tmpdir(), "pan-icns-"));
   try {
@@ -180,33 +187,190 @@ async function createMacShortcuts({
     // Only the selected shortcuts are managed here; unselected bundles are left
     // in place. This matches the Windows semantics, where shortcutDefinitions
     // returns only the selected definitions and each removes only its own name.
-    for (const definition of definitions) {
+    for (const [index, definition] of definitions.entries()) {
       const bundlePath = path.join(desktop, definition.name);
-      await rm(bundlePath, { recursive: true, force: true });
-      const contents = path.join(bundlePath, "Contents");
-      const macOsDir = path.join(contents, "MacOS");
-      const resources = path.join(contents, "Resources");
-      await mkdir(macOsDir, { recursive: true });
-      await mkdir(resources, { recursive: true });
-      const launchPath = path.join(macOsDir, "launch");
-      const commandPath = path.join(resources, "run.command");
-      const iconTarget = path.join(resources, "pan.icns");
-      await writeFile(path.join(contents, "Info.plist"), definition.plist);
-      await writeFile(launchPath, MAC_LAUNCH_SCRIPT);
-      await writeFile(commandPath, definition.runCommand);
-      await copyFile(icnsSource, iconTarget);
-      await chmod(launchPath, 0o755);
-      await chmod(commandPath, 0o755);
+      // Build the new bundle in a staging directory, then swap it in with
+      // rollback (see swapBundleIntoPlace) and only then remove legacy names.
+      // Any failure leaves the existing same-named bundle and all legacy
+      // bundles intact, so the user is never left without a working shortcut.
+      const stagingPath = path.join(
+        desktop,
+        `.${definition.name}.pan-staging-${process.pid}-${index}`,
+      );
+      // The backup name is deterministic per destination and independent of the
+      // process id and selection order, so a later launch (with any PID or
+      // selection) can discover a backup a crashed run left behind.
+      const backupPath = path.join(desktop, `.${definition.name}.pan-backup`);
+      await rm(stagingPath, { recursive: true, force: true });
+      // Recover from a swap that a previous run left interrupted before doing
+      // anything destructive. If a backup survives, it may be the only working
+      // copy (Update Pan has no legacy fallback), so restore it to the
+      // destination instead of deleting it.
+      await recoverInterruptedSwap({
+        desktop,
+        definitionName: definition.name,
+        bundlePath,
+        renameFile,
+      });
+      try {
+        const contents = path.join(stagingPath, "Contents");
+        const macOsDir = path.join(contents, "MacOS");
+        const resources = path.join(contents, "Resources");
+        await mkdir(macOsDir, { recursive: true });
+        await mkdir(resources, { recursive: true });
+        const launchPath = path.join(macOsDir, "launch");
+        const commandPath = path.join(resources, "run.command");
+        const stagedIcon = path.join(resources, "pan.icns");
+        await writeFile(path.join(contents, "Info.plist"), definition.plist);
+        await writeFile(launchPath, MAC_LAUNCH_SCRIPT);
+        await writeFile(commandPath, definition.runCommand);
+        await copyFile(icnsSource, stagedIcon);
+        await chmod(launchPath, 0o755);
+        await chmod(commandPath, 0o755);
+        await swapBundleIntoPlace({
+          stagingPath,
+          bundlePath,
+          backupPath,
+          renameFile,
+        });
+      } catch (error) {
+        await rm(stagingPath, { recursive: true, force: true });
+        throw error;
+      }
+      await Promise.all(
+        (definition.legacyNames ?? []).map((name) =>
+          rm(path.join(desktop, name), { recursive: true, force: true }),
+        ),
+      );
       shortcuts.push({
         kind: definition.kind,
         path: bundlePath,
-        iconPath: iconTarget,
+        iconPath: path.join(bundlePath, "Contents", "Resources", "pan.icns"),
         command: definition.command,
       });
     }
     return shortcuts;
   } finally {
     await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Recovers from a swap that a previous run (or a crash) left interrupted, before
+ * any destructive cleanup runs. All backups for the destination are discovered
+ * regardless of which process or selection created them, so a fresh launch can
+ * reconcile a backup an earlier crashed process left behind. States handled:
+ *
+ * - no backups: nothing to do.
+ * - backups present, destination absent: the swap was interrupted after the
+ *   original bundle was moved to its backup but before the replacement landed,
+ *   so a backup is the only working copy. Restore one to the destination, then
+ *   remove any remaining duplicates so backups never accumulate.
+ * - backups present, destination present: they are stale leftovers beside a
+ *   valid destination, so they are safe to remove.
+ *
+ * A backup is never removed unless a valid destination is already present.
+ */
+async function recoverInterruptedSwap({
+  desktop,
+  definitionName,
+  bundlePath,
+  renameFile = rename,
+}) {
+  const backups = await findDestinationBackups(desktop, definitionName);
+  if (backups.length === 0) {
+    return;
+  }
+  if (await pathExists(bundlePath)) {
+    await Promise.all(
+      backups.map((backup) => rm(backup, { recursive: true, force: true })),
+    );
+    return;
+  }
+  const [restore, ...duplicates] = backups;
+  await renameFile(restore, bundlePath);
+  await Promise.all(
+    duplicates.map((backup) => rm(backup, { recursive: true, force: true })),
+  );
+}
+
+/**
+ * Lists every backup that could belong to the destination, including the
+ * deterministic name and any legacy `<name>-<pid>-<index>` backups older
+ * launches may have written. The canonical deterministic backup is ordered
+ * first so it is preferred when a copy must be restored.
+ */
+async function findDestinationBackups(desktop, definitionName) {
+  const canonical = `.${definitionName}.pan-backup`;
+  let entries;
+  try {
+    entries = await readdir(desktop);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  return entries
+    .filter((name) => name === canonical || name.startsWith(`${canonical}-`))
+    .sort((a, b) => {
+      if (a === canonical) return -1;
+      if (b === canonical) return 1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    })
+    .map((name) => path.join(desktop, name));
+}
+
+async function pathExists(target) {
+  try {
+    await access(target);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Atomically replaces an existing bundle with a fully-built staging bundle.
+ * The existing bundle is first moved to a same-filesystem backup so it can be
+ * restored if the swap fails partway; the backup is deleted only after the new
+ * bundle is successfully in place. On any failure the original bundle is
+ * restored (or, if even the restore fails, the backup is left as the only copy
+ * for recoverInterruptedSwap to reinstate on the next run).
+ */
+async function swapBundleIntoPlace({
+  stagingPath,
+  bundlePath,
+  backupPath,
+  renameFile = rename,
+}) {
+  let backedUp = false;
+  try {
+    await renameFile(bundlePath, backupPath);
+    backedUp = true;
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  try {
+    await renameFile(stagingPath, bundlePath);
+  } catch (error) {
+    if (backedUp) {
+      // Best-effort restore of the original bundle; surface the original error.
+      try {
+        await renameFile(backupPath, bundlePath);
+      } catch {
+        // Leave the backup in place rather than deleting the only copy.
+      }
+    }
+    throw error;
+  }
+  if (backedUp) {
+    await rm(backupPath, { recursive: true, force: true });
   }
 }
 
@@ -226,6 +390,7 @@ function macShortcutDefinitions({
   nodePath,
   panEntryPath,
   runnerEntryPath,
+  panRepoPath,
 }) {
   const definitions = [];
   if (selection === "chat" || selection === "both") {
@@ -240,11 +405,12 @@ function macShortcutDefinitions({
     ].join(" ");
     definitions.push({
       kind: "chat",
-      name: "Start Pan Chat.app",
+      name: "Pan Chat.app",
+      legacyNames: ["Start Pan Chat.app", "Start PAN Chat.app"],
       command,
       runCommand: macRunCommand(domainPath, command),
       plist: infoPlist({
-        name: "Start Pan Chat",
+        name: "Pan Chat",
         identifier: "com.amoebachant.pan.chat",
       }),
     });
@@ -259,15 +425,37 @@ function macShortcutDefinitions({
     ].join(" ");
     definitions.push({
       kind: "runner",
-      name: "Start Pan Runner.app",
+      name: "Pan Runner.app",
+      legacyNames: ["Start Pan Runner.app", "Start PAN Runner.app"],
       command,
       runCommand: macRunCommand(domainPath, command),
       plist: infoPlist({
-        name: "Start Pan Runner",
+        name: "Pan Runner",
         identifier: "com.amoebachant.pan.runner",
       }),
     });
   }
+  // Update Pan is always offered whenever shortcuts are created, independent of
+  // the chat/runner selection. It updates this Pan checkout, then repairs the
+  // installed Copilot assets. `command` is the exact run.command body so the
+  // reported metadata cannot drift from what actually executes.
+  const updateRunCommand = macUpdateRunCommand({
+    panRepoPath,
+    nodePath,
+    panEntryPath,
+    runnerEntryPath,
+  });
+  definitions.push({
+    kind: "update",
+    name: "Update Pan.app",
+    legacyNames: [],
+    command: updateRunCommand,
+    runCommand: updateRunCommand,
+    plist: infoPlist({
+      name: "Update Pan",
+      identifier: "com.amoebachant.pan.update",
+    }),
+  });
   return definitions;
 }
 
@@ -276,6 +464,36 @@ function macRunCommand(domainPath, command) {
     "#!/bin/bash",
     `cd ${shellQuote(domainPath)} || exit 1`,
     command,
+    "",
+  ].join("\n");
+}
+
+function macUpdateRunCommand({ panRepoPath, nodePath, panEntryPath, runnerEntryPath }) {
+  // core.fileMode=false lets the fast-forward proceed past a local mode-only
+  // change, but when the pull updates a tracked launcher it rewrites that file
+  // with upstream's (non-executable) mode, dropping any pre-existing executable
+  // bit. core.fileMode=false alone does NOT preserve modes: snapshot each
+  // launcher's mode before the pull and restore it afterward.
+  const preserved = [panEntryPath, runnerEntryPath];
+  const snapshots = preserved.map(
+    (file, index) =>
+      `mode_${index}="$(stat -f %Lp ${shellQuote(file)})" || exit 1`,
+  );
+  const restores = preserved.map(
+    (file, index) => `chmod "$mode_${index}" ${shellQuote(file)} || exit 1`,
+  );
+  return [
+    "#!/bin/bash",
+    `cd ${shellQuote(panRepoPath)} || exit 1`,
+    'branch="$(git rev-parse --abbrev-ref HEAD)" || exit 1',
+    'if [ "$branch" != "main" ]; then',
+    `  echo "Update Pan requires the main branch, but this Pan checkout is on '$branch'." >&2`,
+    "  exit 1",
+    "fi",
+    ...snapshots,
+    "git -c core.fileMode=false pull --ff-only origin main || exit 1",
+    ...restores,
+    `exec ${shellQuote(nodePath)} ${shellQuote(panEntryPath)} assets repair`,
     "",
   ].join("\n");
 }
@@ -395,14 +613,15 @@ function shortcutDefinitions({
   nodePath,
   panEntryPath,
   runnerEntryPath,
+  panRepoPath,
   launchCommands,
 }) {
   const definitions = [];
   if (selection === "chat" || selection === "both") {
     definitions.push({
       kind: "chat",
-      name: "Start Pan Chat.lnk",
-      legacyNames: ["Start PAN Chat.lnk"],
+      name: "Pan Chat.lnk",
+      legacyNames: ["Start Pan Chat.lnk", "Start PAN Chat.lnk"],
       description: "Start an interactive Pan session",
       arguments: [
         "new-tab",
@@ -424,8 +643,8 @@ function shortcutDefinitions({
   if (selection === "runner" || selection === "both") {
     definitions.push({
       kind: "runner",
-      name: "Start Pan Runner.lnk",
-      legacyNames: ["Start PAN Runner.lnk"],
+      name: "Pan Runner.lnk",
+      legacyNames: ["Start Pan Runner.lnk", "Start PAN Runner.lnk"],
       description: "Start the Pan runner",
       arguments: [
         "new-tab",
@@ -442,6 +661,38 @@ function shortcutDefinitions({
       command: launchCommands.runner,
     });
   }
+  // Update Pan is always offered whenever shortcuts are created, independent of
+  // the chat/runner selection. It updates this Pan checkout, then repairs the
+  // installed Copilot assets. The returned `command` is the exact PowerShell
+  // that runs; the launch arguments encode that same script, so metadata cannot
+  // drift from execution.
+  const updateScript = panUpdatePowershellScript({
+    panRepoPath,
+    nodePath,
+    panEntryPath,
+  });
+  definitions.push({
+    kind: "update",
+    name: "Update Pan.lnk",
+    legacyNames: [],
+    description: "Update this Pan checkout and repair its Copilot assets",
+    workingDirectory: panRepoPath,
+    arguments: [
+      "new-tab",
+      "-d",
+      quote(panRepoPath),
+      "--title",
+      quote("Update Pan"),
+      "--suppressApplicationTitle",
+      "powershell.exe",
+      "-NoLogo",
+      "-NoProfile",
+      "-NoExit",
+      "-EncodedCommand",
+      encodePowershellCommand(updateScript),
+    ].join(" "),
+    command: updateScript,
+  });
   return definitions;
 }
 
@@ -474,6 +725,7 @@ export function buildPanLaunchers({
     nodePath,
     panEntryPath,
     runnerEntryPath,
+    panRepoPath: moduleRoot,
     launchCommands: {
       chat: powershellCommand(nodePath, chatArgs),
       runner: powershellCommand(nodePath, [
@@ -605,4 +857,32 @@ function powershellCommand(executable, args) {
 
 function powershellQuote(value) {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+/**
+ * The PowerShell steps the Update Pan shortcut runs: move to this Pan checkout
+ * (a terminating failure so a missing/renamed checkout never lets git run in the
+ * wrong directory), confirm it is on main, fast-forward main, and only then
+ * repair the installed Copilot assets. Each native step is guarded by
+ * $LASTEXITCODE so a failure short-circuits before `pan assets repair` runs.
+ * Windows does not track POSIX executable bits on these launchers, so no mode
+ * snapshot/restore is needed here (unlike the macOS run.command).
+ */
+function panUpdatePowershellScript({ panRepoPath, nodePath, panEntryPath }) {
+  return [
+    `Set-Location -LiteralPath ${powershellQuote(panRepoPath)} -ErrorAction Stop`,
+    "$branch = & git rev-parse --abbrev-ref HEAD",
+    "if ($LASTEXITCODE -ne 0) { exit 1 }",
+    `if ($branch -ne 'main') { Write-Error "Update Pan requires the main branch, but this Pan checkout is on '$branch'."; exit 1 }`,
+    "& git -c core.fileMode=false pull --ff-only origin main",
+    "if ($LASTEXITCODE -ne 0) { exit 1 }",
+    `& ${powershellQuote(nodePath)} ${powershellQuote(panEntryPath)} assets repair`,
+  ].join("\n");
+}
+
+// PowerShell -EncodedCommand takes a base64 of a UTF-16LE string. Encoding the
+// whole update script avoids fragile quoting and Windows Terminal's use of `;`
+// and `"` as argument delimiters.
+function encodePowershellCommand(script) {
+  return Buffer.from(script, "utf16le").toString("base64");
 }

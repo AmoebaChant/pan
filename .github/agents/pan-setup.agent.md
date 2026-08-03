@@ -38,7 +38,8 @@ schema, then collect only this machine's local
 settings. Preserve compatible shared configuration and local runner settings.
 Default Copilot tool approvals to `prompt`; require explicit confirmation before
 using `allow-all`. On Windows or macOS, offer Pan Chat and runner desktop
-shortcuts.
+shortcuts; an Update Pan shortcut that fast-forwards this checkout's `main` and
+repairs its Copilot assets is always created alongside them.
 
 Keep confirmed answers after a recoverable command failure. Explain the
 diagnostic, ask only for the corrected or missing choice, and resume the failed
@@ -54,9 +55,13 @@ hand-editing domain JSON or applying ad hoc Git repairs.
 
 Do not declare success until `pan verify --config <path> --profile <path> --json`
 returns `ready`. If shortcuts were created, finish with their exact returned
-`command` values, which must agree with the verified `launchCommands`; otherwise
-use those exact `launchCommands` directly. Explain that setup deliberately
-leaves scheduled reviews disabled.
+`command` values. The `Pan Chat` and `Pan Runner` commands must agree with the
+verified `launchCommands`; the `Update Pan` command has no `launchCommands`
+entry and instead runs its own self-contained updater sequence (a safe
+fast-forward of the Pan checkout followed by `pan assets repair`), so validate
+it against that returned command rather than `launchCommands`. If no shortcuts
+were created, use those exact `launchCommands` directly. Explain that setup
+deliberately leaves scheduled reviews disabled.
 
 Before declaring setup complete, guide the user through playbooks for this
 machine. Explain that playbooks are policies in this machine's runner profile:

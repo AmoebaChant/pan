@@ -37,7 +37,9 @@ dumping the full questionnaire or command sequence on the user:
 4. The runner's Copilot approval mode: `prompt` by default, or `allow-all` only
    after the user explicitly confirms that machine-local trust choice.
 5. On Windows or macOS, whether to create desktop shortcuts for Pan Chat, the
-   runner, or both.
+   runner, or both. An **Update Pan** shortcut, which fast-forwards this Pan
+   checkout's `main` and then repairs its Copilot assets, is always created
+   alongside whichever of those the user picks.
 
 Use Pan commands behind the conversation for every setup mutation. Never ask
 the user to hand-edit JSON, runner profiles, agent files, skills, or Project
@@ -142,5 +144,9 @@ Report `runnerOnline` as profile eligibility without claiming that a runner
 process is currently alive. If it is false, explain that the profile must be
 configured and enabled before it can accept work. Then celebrate that setup is
 complete and give the exact `launchCommands` returned by verification. If
-shortcuts were created, their returned `command` values must agree with those
-verified commands.
+shortcuts were created, the `Pan Chat` and `Pan Runner` returned `command`
+values must agree with those verified commands; the `Update Pan` command has no
+verified `launchCommands` entry and instead runs its own self-contained updater
+sequence (a safe fast-forward of the Pan checkout followed by `pan assets
+repair`), so validate it against that returned command rather than
+`launchCommands`.
