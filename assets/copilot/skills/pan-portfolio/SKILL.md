@@ -16,9 +16,11 @@ ordering, or completion checks.
 3. Join Issue state to Project items by Issue URL. Automatically add every
    missing Issue, including closed Issues, with Project Status `untriaged`.
    Do not edit or reopen the Issue or rewrite an existing Project item.
-4. Classify every item, including done, blocked, leased, in-progress, in-review,
-   ready, needs-detail, and untriaged work. Preserve Project order as human
-   precedence within the same priority.
+4. Classify every open item, including done, blocked, leased, in-progress,
+   in-review, ready, needs-detail, and untriaged work. Preserve Project order as
+   human precedence within the same priority. Routine triage ignores closed
+   Issues: leave their registered Project item untouched unless the user
+   explicitly asks to reconcile or modify a specific closed Issue.
 5. State recommendations with Issue URLs and current fields. Ask one focused
    question when the live data is insufficient.
 6. For changes not explicitly requested, show proposed updates and get approval.
@@ -31,7 +33,8 @@ ordering, or completion checks.
    `gh issue edit`, or `gh issue comment` operation. Re-read the target and
    report only confirmed effects.
 
-Closed Issues are registered without changing their closed state or history.
+Closed Issues are registered without changing their closed state or history, and
+routine triage does not reclassify or edit them.
 
 ## Scheduled review
 

@@ -159,7 +159,7 @@
             "triageAuthority": {
               "enum": ["report", "triage-fields"],
               "default": "report",
-              "description": "Standing mutation policy for scheduled reviews. \"report\" keeps them read-only. \"triage-fields\" lets a scheduled review set owner, Status, priority, and workstream on untriaged items without asking."
+              "description": "Standing mutation policy for scheduled reviews. \"report\" keeps them read-only. \"triage-fields\" lets a scheduled review set owner, Status, priority, and workstream on open untriaged Issues without asking. Closed Issues are still registered as untriaged but stay historical records a scheduled review never reclassifies or edits."
             }
           }
         },
@@ -222,7 +222,8 @@
           "properties": {
             "triageAuthority": {
               "enum": ["report", "triage-fields"],
-              "default": "report"
+              "default": "report",
+              "description": "Standing mutation policy for scheduled reviews. \"report\" keeps them read-only. \"triage-fields\" lets a scheduled review set owner, Status, priority, and workstream on open untriaged Issues without asking. Closed Issues are still registered as untriaged but stay historical records a scheduled review never reclassifies or edits."
             }
           }
         }

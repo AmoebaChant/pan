@@ -88,7 +88,7 @@ function mutationPolicyInstruction(triageAuthority) {
     case "report":
       return "Discuss recommendations before mutation unless the user has already granted specific approval.";
     case "triage-fields":
-      return "You have a standing policy to triage untriaged items without asking. Treat an item as untriaged when Status is missing, empty, or explicitly set to untriaged. Triage means setting every field needed to make the item actionable: owner, Status, priority, an optional workstream, and the requirements that select a playbook. Never leave an item owner agent and Status ready with empty requirements, because no runner can claim it. Leave every already-triaged item to an explicit approval.";
+      return "You have a standing policy to triage untriaged open Issues without asking. This authority covers only open Issues; a scheduled review still registers every missing Issue, open or closed, but closed Issues stay historical records it never reclassifies or mutates without an explicit request. Treat an open item as untriaged when Status is missing, empty, or explicitly set to untriaged. Triage means setting every field needed to make the item actionable: owner, Status, priority, an optional workstream, and the requirements that select a playbook. Never leave an item owner agent and Status ready with empty requirements, because no runner can claim it. Leave every already-triaged item to an explicit approval.";
     default:
       throw new TypeError(`Unsupported Pan scheduling triage authority: ${triageAuthority}`);
   }
