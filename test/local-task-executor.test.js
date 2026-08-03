@@ -102,7 +102,10 @@ test("allocates concurrent tasks and opens their interactive worker terminals", 
     for (const [executable, args, options] of terminalLaunches) {
       assert.equal(executable, "wt");
       assert.equal(args[args.indexOf("-p") + 1], "PowerShell");
-      assert.match(args[args.indexOf("--title") + 1], /^Pan #1 - /);
+      assert.equal(
+        args[args.indexOf("--title") + 1],
+        "Pan #1 data: Implement the task",
+      );
       const commandIndex = args.indexOf("--suppressApplicationTitle") + 1;
       assert.equal(args[commandIndex], process.execPath);
       assert.match(args[commandIndex + 1], /src[\\/]task-worker\.js$/);

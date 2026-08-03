@@ -173,3 +173,95 @@ test("never throws on a null argument", () => {
   assert.equal(formatTaskSessionName(null), "Pan: Task");
   assert.equal(formatChatSessionName(null), "Pan Chat");
 });
+
+test("strips Unicode bidi and directional control characters", () => {
+  const name = formatTaskSessionName({
+    issueNumber: 123,
+    repository: "owner/repo",
+    title: "normal \u202E43# naP",
+  });
+  assert.ok(!/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(name));
+});
+
+test("does not split a combining mark grapheme at the boundary", () => {
+  // The first 59 clusters end with "é" (e + combining acute). truncate keeps
+  // the first 59 clusters (MAX_TASK_TITLE_LENGTH - 1), so "é" is the last kept
+  // cluster and must survive intact immediately before the ellipsis.
+  const title = "A".repeat(58) + "e\u0301" + "Z".repeat(5);
+  const name = formatTaskSessionName({
+    issueNumber: 34,
+    repository: "amoebachant/pan-life",
+    title,
+  });
+  assert.ok(name.endsWith("…"));
+  assert.ok(name.includes("e\u0301…"));
+});
+
+test("does not split a ZWJ emoji sequence at the boundary", () => {
+  const title = "A".repeat(58) + "👩‍💻" + "Z".repeat(5);
+  const name = formatTaskSessionName({
+    issueNumber: 34,
+    repository: "amoebachant/pan-life",
+    title,
+  });
+  assert.ok(name.endsWith("…"));
+  assert.ok(!/👩(?!\u200d💻)/u.test(name));
+  assert.ok(!name.endsWith("\u200d"));
+});
+
+test("bounds an overlong repository segment", () => {
+  const name = formatTaskSessionName({
+    issueNumber: 34,
+    repository: "owner/" + "a".repeat(200),
+    title: "Hi",
+  });
+  const beforeColon = name.slice(0, name.indexOf(": "));
+  const repoSegment = beforeColon.slice(beforeColon.indexOf("#34 ") + 4);
+  assert.ok(Array.from(repoSegment).length <= 40);
+});
+
+test("bounds the final task session name length", () => {
+  // A 15-digit issue number inflates the prefix to "Pan #999999999999999"
+  // (20 chars). Combined with a repository at the 40-cap and a title at the
+  // 60-cap, the pre-backstop composed string is 20 + 1 + 40 + 2 + 60 = 123,
+  // so the 120 final backstop must truncate it (leaving a trailing ellipsis).
+  const name = formatTaskSessionName({
+    issueNumber: 999999999999999,
+    repository: "owner/" + "a".repeat(200),
+    title: "b".repeat(200),
+  });
+  assert.ok(Array.from(name).length <= 120);
+  assert.ok(name.endsWith("…"));
+});
+
+test("bounds the final chat session name length", () => {
+  // A chat name is at most "Pan Chat: " (10) + a 40-cap repository = 50 chars,
+  // so it can never reach the 120 backstop; this only exercises the bound.
+  const name = formatChatSessionName({
+    repository: "owner/" + "c".repeat(300),
+  });
+  assert.ok(Array.from(name).length <= 120);
+});
+
+test("strips bidi control characters from the repository segment", () => {
+  const name = formatTaskSessionName({
+    issueNumber: 123,
+    repository: "owner/re\u202Epo",
+    title: "Hi",
+  });
+  assert.ok(!/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(name));
+});
+
+test("bounds an overlong chat repository segment", () => {
+  const name = formatChatSessionName({ repository: "o".repeat(200) });
+  const repoPortion = name.slice("Pan Chat: ".length);
+  assert.ok(Array.from(repoPortion).length <= 40);
+});
+
+test("caps code points even when combining marks collapse into one grapheme", () => {
+  const bomb = formatTaskSessionName({ issueNumber: 1, repository: "o/r", title: "a" + "\u0301".repeat(50000) });
+  assert.ok(Array.from(bomb).length <= 256);
+
+  const chatBomb = formatChatSessionName({ repository: "o/" + "\u0301".repeat(50000) });
+  assert.ok(Array.from(chatBomb).length <= 256);
+});

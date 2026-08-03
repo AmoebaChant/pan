@@ -26,6 +26,7 @@ import {
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,
 } from "./workstream-store.js";
+import { formatTaskSessionName } from "./terminal-title.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./task-worker.js", import.meta.url));
 const RESULT_POLL_MS = 1_000;
@@ -222,7 +223,11 @@ export class LocalTaskExecutor {
         savedAt: this.now().toISOString(),
       });
 
-      const title = terminalTitle(item);
+      const title = formatTaskSessionName({
+        issueNumber: item.number,
+        repository: item.repository,
+        title: item.title,
+      });
       await onResume?.({
         event: "started",
         runner,
@@ -500,7 +505,11 @@ export class LocalTaskExecutor {
       savedAt: this.now().toISOString(),
     });
 
-    const title = terminalTitle(item);
+    const title = formatTaskSessionName({
+      issueNumber: item.number,
+      repository: item.repository,
+      title: item.title,
+    });
     await onResume?.({
       event: "started",
       runner,
@@ -721,7 +730,11 @@ export class LocalTaskExecutor {
           },
       target: context.target,
       baseCommit: context.target.baseCommit,
-      title: terminalTitle(item),
+      title: formatTaskSessionName({
+        issueNumber: item.number,
+        repository: item.repository,
+        title: item.title,
+      }),
       branch: context.target.branch,
       worktreePath:
         context.target.workingDirectory ?? context.target.worktreePath,
@@ -1481,10 +1494,6 @@ function normalizeOutcome(result) {
   };
 }
 
-function terminalTitle(item) {
-  return truncate(`Pan #${item.number} - ${item.title}`, 80);
-}
-
 function isAbsoluteUrl(value) {
   if (typeof value !== "string") {
     return false;
@@ -1511,10 +1520,6 @@ function allocationToken(value) {
     throw new TypeError("task allocation ID must contain letters or numbers");
   }
   return token;
-}
-
-function truncate(value, length) {
-  return value.length > length ? `${value.slice(0, length - 3)}...` : value;
 }
 
 function remainingMilliseconds(deadline, now = Date.now) {
