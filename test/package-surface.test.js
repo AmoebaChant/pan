@@ -120,3 +120,27 @@ test("routes onboarding requests to Pan's guided setup for agents", async () => 
   assert.match(agents, /before\s+this repository is cloned/i);
   assert.doesNotMatch(agents, /npx @amoebachant\/pan/);
 });
+
+test("schema scopes triage-fields standing authority to open untriaged Issues", async () => {
+  const schema = JSON.parse(
+    await readFile(path.resolve("schema", "domain-config.json"), "utf8"),
+  );
+  const canonical =
+    schema.$defs.version3.properties.policy.properties.triageAuthority
+      .description;
+  assert.match(canonical, /open untriaged Issues without asking/i);
+  assert.match(
+    canonical,
+    /Closed Issues are still registered as untriaged but stay historical records a scheduled review never reclassifies or edits/i,
+  );
+  assert.doesNotMatch(canonical, /on untriaged items without asking/i);
+
+  const legacy =
+    schema.$defs.version2.properties.scheduling.properties.triageAuthority
+      .description;
+  assert.match(legacy, /open untriaged Issues without asking/i);
+  assert.match(
+    legacy,
+    /Closed Issues are still registered as untriaged but stay historical records a scheduled review never reclassifies or edits/i,
+  );
+});

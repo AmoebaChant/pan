@@ -19,7 +19,10 @@ Do not rewrite existing Project items or runner-owned fields.
 Pan discusses priority, ownership, requirements, and workstream with
 the user, then writes approved values with `gh project item-edit`. It re-reads
 each Issue and Project item immediately before mutation and verifies the result
-afterward. Active runner status and lease fields are left untouched.
+afterward. Active runner status and lease fields are left untouched. Routine
+triage ignores closed Issues; once registered they are historical records that
+Pan does not reclassify or edit unless the user explicitly asks to reconcile or
+modify a specific closed Issue.
 
 The `workstream` field is an optional canonical path relative to `workstreams/`.
 A task may have no workstream. When one is set, validate it by reading the
@@ -35,8 +38,11 @@ runner names the missing field for each skipped item in its poll log.
 capabilities a runner advertises. How the work should be delivered belongs in
 the Issue text and the playbook instructions.
 
-Pan has no automatic missing-Issue reconciliation. Creating or triaging one
-open Issue may add that Issue to the Project; unrelated Issues are unchanged.
+Missing-Issue registration is Pan's only automatic reconciliation: it adds
+every missing repository Issue, open or closed, to the Project with
+`Status=untriaged`, without editing or reopening it. Pan performs no other
+automatic reconciliation. It does not reclassify, reopen, or edit existing
+items or runner-owned fields on its own.
 
 ## Attention
 

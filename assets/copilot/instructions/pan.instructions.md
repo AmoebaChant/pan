@@ -34,9 +34,12 @@ Issue, open or closed, with Project Status `untriaged`. This registration does
 not require approval, must not edit or reopen the Issue, and must not change
 fields on items already in the Project.
 
-Classify the complete Project, preserve Project order as the user's precedence
-within the same priority, and ask one focused question when live data cannot
-support a safe decision.
+Classify open work across the Project, preserve Project order as the user's
+precedence within the same priority, and ask one focused question when live data
+cannot support a safe decision. Routine triage ignores closed Issues: once
+registered they are historical records, so exclude them from classification
+recommendations and field mutations unless the user explicitly asks to reconcile
+or modify a specific closed Issue.
 
 Before changing an item, read that Issue and Project item again. Never reopen
 closed work or change `in-progress`,

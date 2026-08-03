@@ -14,7 +14,7 @@
     {
       "source": "instructions/pan.instructions.md",
       "destination": "instructions/pan.instructions.md",
-      "sha256": "2f4c7a7d53ee7e4aa3e20a998df109474df3d6ead2de7b974dc91d5ac3f6cb5f"
+      "sha256": "6f573af1c286da560090c625efc1f1cc29254e5a6e649ae9bc1430a567b8f5cb"
     },
     {
       "source": "skills/pan-attention/SKILL.md",
@@ -24,7 +24,7 @@
     {
       "source": "skills/pan-portfolio/SKILL.md",
       "destination": "skills/pan-portfolio/SKILL.md",
-      "sha256": "6fed17823e578e2a84e44aad0c588b14dd24d0e6cb093675af9652fae0d1d92d"
+      "sha256": "255f10f0d224d81aa716f8eda3bddb4311a00ad78e8be5fd8a4d9b8f34219834"
     },
     {
       "source": "skills/pan-workstream/SKILL.md",
