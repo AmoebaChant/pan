@@ -1,3 +1,5 @@
+import { formatTaskSessionName } from "./terminal-title.js";
+
 /**
  * The directory a task actually runs in, whichever target shape it uses.
  */
@@ -35,6 +37,16 @@ export function buildTaskCopilotArgs(task, taskPrompt) {
   ];
   if (task.copilot.approvalMode === "allow-all") {
     args.splice(2, 0, "--allow-all-tools");
+  }
+  if (!task.copilot.resume) {
+    args.push(
+      "--name",
+      formatTaskSessionName({
+        issueNumber: task.issue?.number,
+        repository: task.issue?.repository,
+        title: task.issue?.title,
+      }),
+    );
   }
   if (task.copilot.maxAiCredits !== undefined) {
     args.push(

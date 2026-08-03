@@ -33,6 +33,10 @@ test("opens an interactive Copilot shell with the initial task", () => {
     args[args.indexOf("--session-id") + 1],
     "00000000-0000-4000-8000-000000000001",
   );
+  assert.equal(
+    args[args.indexOf("--name") + 1],
+    "Pan #34 pan-life: Fix the bird.txt typo",
+  );
   assert.deepEqual(args.slice(-4), [
     "--model",
     "gpt-5.6-sol",
@@ -59,6 +63,7 @@ test("resumes an interrupted task's Copilot session", () => {
     args.includes("--resume=00000000-0000-4000-8000-000000000001"),
   );
   assert.ok(!args.includes("--session-id"));
+  assert.ok(!args.includes("--name"));
 });
 
 test("preserves supported optional task limits without enabling autopilot", () => {
@@ -112,6 +117,11 @@ function makeTask() {
   return {
     target: { worktreePath: "C:\\worktree" },
     paths: { statePath: "C:\\state" },
+    issue: {
+      number: 34,
+      title: "Fix the bird.txt typo",
+      repository: "amoebachant/pan-life",
+    },
     copilot: {
       model: "gpt-5.6-sol",
       sessionId: "00000000-0000-4000-8000-000000000001",
