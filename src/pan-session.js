@@ -14,6 +14,7 @@ import {
 import { ProcessClient } from "./process-client.js";
 import { terminateProcessTree } from "./process-tree.js";
 import { createSessionDueState } from "./session-due-state.js";
+import { formatChatSessionName } from "./terminal-title.js";
 
 /**
  * Launches a foreground Copilot session after validating its one configured domain.
@@ -139,6 +140,8 @@ export function buildSessionCopilotArgs({
     "--agent",
     config.session.agent.name,
     "--no-auto-update",
+    "--name",
+    formatChatSessionName({ repository: config?.domain?.repository }),
     ...(allowAllTools ? ["--allow-all-tools"] : []),
     ...(model ? ["--model", model] : []),
     ...config.session.productContextRoots.flatMap((root) => [
