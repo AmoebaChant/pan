@@ -34,9 +34,34 @@ Issue, open or closed, with Project Status `untriaged`. This registration does
 not require approval, must not edit or reopen the Issue, and must not change
 fields on items already in the Project.
 
-Classify the complete Project, preserve Project order as the user's precedence
-within the same priority, and ask one focused question when live data cannot
-support a safe decision.
+A workstream README may declare external backlog repositories under a
+`## Backlog repositories` heading, one `owner/repository` per list entry. During
+reconciliation, read the configured domain's workstreams, collect those
+declarations, and fetch the complete Issue set from each declared repository as
+well as `PAN_DOMAIN_REPOSITORY`. Join every Issue to the Project by URL and add
+the missing external ones as `untriaged`, recording the declaring workstream in
+the `workstream` field. The external Issue stays the task record: comments,
+closure, linked pull requests, and every other mutation target its owning
+repository, and Pan never creates proxy Issues in the domain repository.
+Declarations are domain-local, and one external repository maps to a single
+workstream. If two workstreams declare the same repository, stop for that
+repository and report the conflict without writing. If the workstream listing is
+incomplete or any declared workstream README cannot be read, fail closed: report
+the incomplete discovery and register no external repositories, because an
+undiscovered duplicate declaration could make a conflicting repository look
+uniquely owned. Preserve existing Project
+items; surface a conflicting existing `workstream` value for review instead of
+overwriting it. Only `PAN_DOMAIN_REPOSITORY` and explicitly declared backlog
+repositories are in scope; an unrelated Issue that merely appears in the Project
+grants no authority.
+
+Classify open work across the Project, preserve Project order as the user's
+precedence within the same priority, and ask one focused question when live data
+cannot support a safe decision. Routine triage ignores closed Issues, including
+external backlog Issues: once registered they are historical records, so exclude
+them from classification recommendations and field mutations unless the user
+explicitly asks to reconcile or modify a specific closed Issue. Never reopen or
+retriage a closed Issue on your own.
 
 Before changing an item, read that Issue and Project item again. Never reopen
 closed work or change `in-progress`,
@@ -76,7 +101,10 @@ the readiness together and get approval for both.
 `requirements` exists only to select a playbook, so it holds one `repo:` entry
 and the capabilities a runner advertises. How the work should be delivered
 belongs in the Issue text and the playbook instructions, never in
-`requirements`.
+`requirements`. Backlog ownership is separate from execution routing: declaring
+a repository in a workstream registers its Issues, but agent-ready work still
+requires a runner-advertised `repo:<owner>/<repository>` selector in
+`requirements` to be claimed.
 
 `requirements` is a closed vocabulary, not a description of the work. Copy each
 token from a runner profile's advertised capabilities; never derive one from the

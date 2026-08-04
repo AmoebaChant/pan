@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { GitHubWorkstreamStore } from "./github-workstream-store.js";
+import { parseBacklogRepositories } from "./workstream-store.js";
 
 const DEFAULT_PROJECT_ITEM_SAFETY_LIMIT = 1_000;
 const PROJECT_PAGE_SIZE = 20;
@@ -206,15 +207,46 @@ export class PanStore {
     if (!itemId) {
       throw new TypeError("itemId is required");
     }
+    const item = await this.getItem(itemId, { signal });
+    return this.#applyFields(itemId, values, {
+      signal,
+      beforeWrite,
+      repository: item?.repository,
+    });
+  }
 
+  async #writeFieldsForItem(item, values, { signal, beforeWrite } = {}) {
+    return this.#applyFields(item.id, values, {
+      signal,
+      beforeWrite,
+      repository: item?.repository,
+    });
+  }
+
+  async #applyFields(itemId, values, { signal, beforeWrite, repository, expectedWorkstream } = {}) {
     const schema = await this.getSchema();
     validateFieldValues(values, schema);
     if (values.workstream) {
       await this.workstreamStore.validate(values.workstream, { signal });
     }
-    for (const [key, value] of Object.entries(values)) {
+    const entries = Object.entries(values);
+    if (entries.length === 0) {
+      return;
+    }
+    signal?.throwIfAborted();
+    // Each field edit is an independent Project mutation, so the pre-write hook
+    // and the scope authorization run per mutation — immediately before the
+    // individual gh.run below — rather than once for the whole batch. Domain
+    // scope is re-read live on every #authorizeItemWrite (resolveDomainScope
+    // lists the workstream declarations fresh), so re-authorizing per field
+    // closes the stale-scope window between mutations: if the hook (or the live
+    // declarations it reflects) revokes this repository after an earlier field
+    // was written, every subsequent field edit is refused. Already-written
+    // fields may remain, but no further mutation runs on a stale authorization.
+    // The hook and authorization must not be shared across two mutations, and
+    // beforeWrite must not run twice for a single mutation.
+    for (const [key, value] of entries) {
       signal?.throwIfAborted();
-      await beforeWrite?.();
       const field = schema.fields[key];
 
       const args = [
@@ -239,6 +271,21 @@ export class PanStore {
       } else {
         args.push("--text", serializeTextField(key, value));
       }
+      await beforeWrite?.();
+      const authorizedScope = await this.#authorizeItemWrite(repository, {
+        signal,
+      });
+      if (key === "workstream" && expectedWorkstream !== undefined) {
+        // Guard the workstream field assignment itself: the declaration must
+        // still map this external repository uniquely to the expected workstream
+        // at write time, or the registration fails without writing stale
+        // ownership.
+        this.#assertWorkstreamMappingUnchanged(
+          repository,
+          expectedWorkstream,
+          authorizedScope,
+        );
+      }
       try {
         await this.gh.run(args, { signal });
       } catch (error) {
@@ -258,10 +305,10 @@ export class PanStore {
     return this.#listItems();
   }
 
-  async listRepositoryIssues({ state = "all", signal } = {}) {
+  async listRepositoryIssues({ state = "all", repository = this.repository, signal } = {}) {
     if (this.gh.paginateRestJson) {
       const issues = await this.gh.paginateRestJson(
-        `repos/${this.repository}/issues?state=${encodeURIComponent(state)}`,
+        `repos/${repository}/issues?state=${encodeURIComponent(state)}`,
         { safetyLimit: this.projectItemSafetyLimit, signal },
       );
       return issues
@@ -272,22 +319,29 @@ export class PanStore {
           body: issue.body ?? "",
           url: issue.html_url,
           state: issue.state,
+          repository,
           labels: issue.labels ?? [],
           createdAt: issue.created_at,
           updatedAt: issue.updated_at,
           closedAt: issue.closed_at,
         }));
     }
+    // No pagination support: request with a bounded cap and treat reaching that
+    // cap as possible truncation. The fallback request limit is 1000, but a
+    // lower configured safety limit must lower the effective cap too, so use the
+    // minimum of the two. Reaching the cap means the list may be truncated and
+    // completeness cannot be proven, so fail closed.
+    const cap = Math.min(1000, this.projectItemSafetyLimit);
     const issues = await this.gh.runJson(
       [
         "issue",
         "list",
         "--repo",
-        this.repository,
+        repository,
         "--state",
         state,
         "--limit",
-        "1000",
+        String(cap),
         "--json",
         "number,title,body,url,state,labels,createdAt,updatedAt,closedAt",
       ],
@@ -296,71 +350,340 @@ export class PanStore {
     if (!Array.isArray(issues)) {
       throw new Error("GitHub returned an invalid repository Issue list");
     }
-    if (issues.length >= this.projectItemSafetyLimit) {
+    if (issues.length >= cap) {
       throw new Error(
-        `Repository Issue inventory reached the ${this.projectItemSafetyLimit}-entry safety limit without pagination support`,
+        `Repository Issue inventory reached the ${cap}-entry safety limit without pagination support; completeness cannot be proven`,
       );
     }
-    return issues;
+    return issues.map((issue) => ({ ...issue, repository }));
+  }
+
+  async resolveDomainScope({ signal } = {}) {
+    const domainKey = this.repository.toLowerCase();
+    const empty = () => ({
+      domainRepository: this.repository,
+      allowed: new Set([domainKey]),
+      declarations: new Map(),
+      conflicts: [],
+      diagnostics: [],
+      complete: true,
+    });
+    if (typeof this.workstreamStore?.list !== "function") {
+      return empty();
+    }
+    const diagnostics = [];
+    let listing;
+    try {
+      listing = await this.workstreamStore.list({ signal });
+    } catch (error) {
+      diagnostics.push({
+        source: "workstreams",
+        code: "workstream-discovery-failed",
+        message: `Unable to list workstreams for backlog discovery: ${error.message}`,
+      });
+      const scope = empty();
+      scope.diagnostics = diagnostics;
+      scope.complete = false;
+      return scope;
+    }
+    if (listing.complete === false) {
+      for (const item of listing.errors ?? []) {
+        diagnostics.push({
+          source: `workstream:${item.path ?? "?"}`,
+          code: "workstream-discovery-incomplete",
+          message:
+            item.reason ??
+            "Workstream discovery reported an incomplete listing",
+        });
+      }
+      if (diagnostics.length === 0) {
+        diagnostics.push({
+          source: "workstreams",
+          code: "workstream-discovery-incomplete",
+          message: "Workstream discovery reported an incomplete listing",
+        });
+      }
+    }
+
+    const domainRepositoryEntry = { repository: this.repository };
+    const byRepository = new Map();
+    for (const entry of listing.workstreams ?? []) {
+      let content;
+      try {
+        ({ content } = await this.workstreamStore.read(entry.path, { signal }));
+      } catch (error) {
+        diagnostics.push({
+          source: `workstream:${entry.path}`,
+          code: "workstream-readme-unreadable",
+          message: `Unable to read workstream ${entry.path} for backlog discovery: ${error.message}`,
+        });
+        continue;
+      }
+      for (const repository of parseBacklogRepositories(content)) {
+        const key = repository.toLowerCase();
+        if (key === domainKey) {
+          continue;
+        }
+        let record = byRepository.get(key);
+        if (!record) {
+          record = { repository, workstreams: new Set() };
+          byRepository.set(key, record);
+        }
+        record.workstreams.add(entry.path);
+      }
+    }
+
+    const declarations = new Map();
+    const conflicts = [];
+    for (const [key, record] of byRepository) {
+      const workstreams = [...record.workstreams].sort();
+      if (workstreams.length > 1) {
+        conflicts.push({
+          repository: record.repository,
+          workstreams,
+          reason: "declared-by-multiple-workstreams",
+        });
+        continue;
+      }
+      declarations.set(key, {
+        repository: record.repository,
+        workstream: workstreams[0],
+      });
+    }
+
+    const complete = diagnostics.length === 0;
+    if (!complete) {
+      // Discovery is incomplete or a README was unreadable: a repository that
+      // is actually declared twice can look unique here, so refuse every
+      // external write and surface the diagnostics instead of registering.
+      const scope = empty();
+      scope.conflicts = conflicts;
+      scope.diagnostics = diagnostics;
+      scope.complete = false;
+      return scope;
+    }
+
+    const allowed = new Set([domainKey]);
+    for (const key of declarations.keys()) {
+      allowed.add(key);
+    }
+    return {
+      domainRepository: domainRepositoryEntry.repository,
+      allowed,
+      declarations,
+      conflicts,
+      diagnostics,
+      complete: true,
+    };
+  }
+
+  #assertRepositoryInScope(repository, scope) {
+    const key = (repository ?? "").toLowerCase();
+    if (!key) {
+      throw new TypeError("a repository is required to authorize the write");
+    }
+    if (key === this.repository.toLowerCase()) {
+      return;
+    }
+    if (!scope.allowed.has(key)) {
+      throw new Error(
+        `Refusing to mutate ${repository}: it is not the configured domain repository or a declared backlog repository in scope`,
+      );
+    }
+  }
+
+  async #authorizeItemWrite(repository, { signal } = {}) {
+    const key = (repository ?? "").toLowerCase();
+    if (!key) {
+      throw new TypeError("a repository is required to authorize the write");
+    }
+    if (key === this.repository.toLowerCase()) {
+      return undefined;
+    }
+    const scope = await this.resolveDomainScope({ signal });
+    this.#assertRepositoryInScope(repository, scope);
+    return scope;
+  }
+
+  #assertWorkstreamMappingUnchanged(repository, expectedWorkstream, scope) {
+    // Only external registrations that carry a declaring workstream are guarded.
+    // The domain repository and workstream-less sources are unaffected.
+    if (!expectedWorkstream) {
+      return;
+    }
+    const key = (repository ?? "").toLowerCase();
+    if (key === this.repository.toLowerCase()) {
+      return;
+    }
+    // Fail closed: an incomplete or missing live scope cannot prove the mapping
+    // is still unique.
+    if (!scope || scope.complete === false) {
+      throw new Error(
+        `Refusing to register ${repository} under workstream ${expectedWorkstream}: backlog scope is incomplete, so its workstream mapping cannot be reconfirmed`,
+      );
+    }
+    // A repository declared by multiple workstreams is a conflict and is absent
+    // from declarations, so this also fails closed on ambiguity.
+    const declaration = scope.declarations.get(key);
+    if (!declaration || declaration.workstream !== expectedWorkstream) {
+      throw new Error(
+        `Refusing to register ${repository} under workstream ${expectedWorkstream}: it no longer maps uniquely to that workstream in the live backlog scope`,
+      );
+    }
   }
 
   async classify({ signal, beforeWrite } = {}) {
-    await this.registerMissingIssues({ signal, beforeWrite });
-    const [issues, items] = await Promise.all([
-      this.listRepositoryIssues({ signal }),
+    const registration = await this.registerMissingIssues({
+      signal,
+      beforeWrite,
+    });
+    const scope = await this.resolveDomainScope({ signal });
+    const repositories = [
+      this.repository,
+      ...[...scope.declarations.values()].map((entry) => entry.repository),
+    ];
+    const [issueLists, items] = await Promise.all([
+      Promise.all(
+        repositories.map((repository) =>
+          this.listRepositoryIssues({ repository, signal }),
+        ),
+      ),
       this.listItems(),
     ]);
-    return classifyDomainIssues(issues, items);
+    const issues = issueLists.flat();
+    const classification = classifyDomainIssues(issues, items, {
+      allowedRepositories: scope.allowed,
+    });
+    return attachReconciliationDiagnostics(classification, {
+      conflicts: [...registration.conflicts, ...scope.conflicts].filter(
+        (value, index, all) =>
+          all.findIndex(
+            (other) => other.repository === value.repository,
+          ) === index,
+      ),
+      workstreamConflicts: registration.workstreamConflicts,
+      diagnostics: [...registration.diagnostics, ...scope.diagnostics],
+    });
   }
 
   async registerMissingIssues({ signal, beforeWrite } = {}) {
-    const [issues, items] = await Promise.all([
-      this.listRepositoryIssues({ signal }),
-      this.listItems(),
-    ]);
-    const projectIssueUrls = new Set(
-      items
-        .filter((item) => item.contentClassification === "domain-issue")
-        .map((item) => item.url),
-    );
-    const registered = [];
-    for (const issue of issues) {
-      if (projectIssueUrls.has(issue.url)) {
-        continue;
+    const scope = await this.resolveDomainScope({ signal });
+    const items = await this.listItems();
+    const projectItemsByUrl = new Map();
+    for (const item of items) {
+      if (item.url) {
+        projectItemsByUrl.set(item.url, item);
       }
-      registered.push(
-        await this.addIssueToProject(issue, {
+    }
+    const registered = [];
+    const workstreamConflicts = [];
+
+    const sources = [
+      { repository: this.repository, workstream: undefined },
+      ...scope.declarations.values(),
+    ];
+    // Inventory every authorized repository completely before writing anything.
+    // listRepositoryIssues throws on truncation, an invalid response, or a fetch
+    // error, so any incomplete read aborts here with zero registration writes
+    // (fail closed) rather than leaving some repositories partially registered.
+    const inventories = [];
+    for (const source of sources) {
+      const issues = await this.listRepositoryIssues({
+        repository: source.repository,
+        signal,
+      });
+      inventories.push({ source, issues });
+    }
+    // Every inventory succeeded: now register the missing Issues.
+    for (const { source, issues } of inventories) {
+      for (const issue of issues) {
+        const existing = projectItemsByUrl.get(issue.url);
+        if (existing) {
+          if (
+            source.workstream &&
+            existing.fields?.workstream &&
+            existing.fields.workstream !== source.workstream
+          ) {
+            workstreamConflicts.push({
+              url: issue.url,
+              repository: source.repository,
+              expected: source.workstream,
+              actual: existing.fields.workstream,
+            });
+          }
+          continue;
+        }
+        const item = await this.#addIssueWithScope(issue, {
           allowClosed: true,
-          fields: { status: "untriaged" },
+          scope,
+          fields: {
+            status: "untriaged",
+            ...(source.workstream ? { workstream: source.workstream } : {}),
+          },
           signal,
           beforeWrite,
-        }),
-      );
-      projectIssueUrls.add(issue.url);
+        });
+        projectItemsByUrl.set(issue.url, item);
+        registered.push(item);
+      }
     }
-    return registered;
+    return attachReconciliationDiagnostics(registered, {
+      conflicts: scope.conflicts,
+      workstreamConflicts,
+      diagnostics: scope.diagnostics,
+    });
   }
 
-  async addIssueToProject(
+  async addIssueToProject(issue, { allowClosed = false, fields = {}, signal, beforeWrite } = {}) {
+    const scope = await this.resolveDomainScope({ signal });
+    return this.#addIssueWithScope(issue, {
+      allowClosed,
+      scope,
+      fields,
+      signal,
+      beforeWrite,
+    });
+  }
+
+  async #addIssueWithScope(
     issue,
-    { allowClosed = false, fields = {}, signal, beforeWrite } = {},
+    { allowClosed = false, scope, fields = {}, signal, beforeWrite } = {},
   ) {
-    const issueRepository =
-      issue?.repository ??
+    const urlRepository =
       /^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/\d+\/?$/.exec(
         issue?.url ?? "",
       )?.[1];
-    if (
-      !issue?.url ||
-      issueRepository?.toLowerCase() !== this.repository.toLowerCase()
-    ) {
-      throw new TypeError("a configured-domain Issue is required");
+    if (!issue?.url || !urlRepository) {
+      throw new TypeError(
+        "a configured-domain or declared backlog Issue is required",
+      );
     }
+    if (
+      issue.repository &&
+      issue.repository.toLowerCase() !== urlRepository.toLowerCase()
+    ) {
+      throw new Error(
+        `Issue repository ${issue.repository} does not match its URL ${issue.url}`,
+      );
+    }
+    this.#assertRepositoryInScope(urlRepository, scope);
     if (issue.state?.toLowerCase() === "closed" && !allowClosed) {
       throw new Error("Closed Issues cannot be added to the backlog Project");
     }
     signal?.throwIfAborted();
     await beforeWrite?.();
+    // Re-check scope immediately before the add, after beforeWrite. The scope
+    // passed in was resolved before the hook ran, so a hook that revokes this
+    // repository's declaration must abort the add here rather than mutate the
+    // Project on a stale authorization. Also require the repository still map
+    // uniquely to the expected workstream so a moved declaration never causes a
+    // partial add under stale ownership.
+    const liveScope = await this.#authorizeItemWrite(urlRepository, { signal });
+    this.#assertWorkstreamMappingUnchanged(
+      urlRepository,
+      fields.workstream,
+      liveScope,
+    );
     const added = await this.gh.runJson(
       [
         "project",
@@ -385,14 +708,37 @@ export class PanStore {
       priority: "normal",
       ...fields,
     };
-    await this.setFields(itemId, initialized, { signal, beforeWrite });
+    await this.#applyFields(itemId, initialized, {
+      signal,
+      beforeWrite,
+      repository: urlRepository,
+      expectedWorkstream: fields.workstream,
+    });
     return this.getItem(itemId, { signal });
   }
 
   async removeItem(itemId, { signal, beforeWrite } = {}) {
     const schema = await this.getSchema();
+    const item = await this.getItem(itemId, { signal });
+    // Fail closed: only an Issue that authorization can vouch for may be
+    // deleted. Non-Issue content (draft issues, pull requests) and unreadable
+    // items normalize with an undefined repository, so an unconditional
+    // authorize would silently skip them and allow their removal. Reject them
+    // outright before authorizing the surviving Issue case.
+    if (
+      item?.contentType !== "Issue" ||
+      typeof item.repository !== "string" ||
+      !item.repository
+    ) {
+      throw new Error(
+        `Refusing to remove Project item ${itemId}: only a configured-domain or declared backlog Issue item can be removed`,
+      );
+    }
     signal?.throwIfAborted();
     await beforeWrite?.();
+    // Authorize after beforeWrite and immediately before the delete so a hook
+    // that revokes this repository's declaration cannot delete on a stale scope.
+    await this.#authorizeItemWrite(item.repository, { signal });
     await this.gh.run(
       [
         "project",
@@ -433,6 +779,10 @@ export class PanStore {
     }
     signal?.throwIfAborted();
     await beforeWrite?.();
+    // Authorize after beforeWrite and immediately before the comment write so a
+    // hook that revokes this repository's declaration cannot comment on a stale
+    // scope.
+    await this.#authorizeItemWrite(item.repository, { signal });
     return this.gh.run([
       "issue",
       "comment",
@@ -475,9 +825,13 @@ export class PanStore {
     leaseUntil,
     assignee,
     status = "in-progress",
+    beforeWrite,
   }) {
     validateRunnerAndLease(runner, leaseUntil, this.now());
     const current = await this.#requireItem(itemId);
+    if (current.state?.toLowerCase() === "closed") {
+      return { claimed: false, reason: "issue-closed", item: current };
+    }
     const holder = current.fields.claimedBy;
     const leaseIsActive =
       holder &&
@@ -490,11 +844,11 @@ export class PanStore {
       return { claimed: false, reason: "leased", item: current };
     }
 
-    await this.setFields(itemId, {
+    await this.#writeFieldsForItem(current, {
       claimedBy: runner,
       leaseUntil,
       status,
-    });
+    }, { beforeWrite });
 
     const confirmed = await this.#confirmFields(itemId, {
       claimedBy: runner,
@@ -510,7 +864,9 @@ export class PanStore {
     }
     if (assignee) {
       try {
-        await this.#editAssignee(confirmed, "--add-assignee", assignee);
+        await this.#editAssignee(confirmed, "--add-assignee", assignee, {
+          beforeWrite,
+        });
       } catch (error) {
         let rollback;
         try {
@@ -518,6 +874,7 @@ export class PanStore {
             itemId,
             runner,
             status: "ready",
+            beforeWrite,
           });
         } catch (rollbackError) {
           throw new AggregateError(
@@ -547,7 +904,7 @@ export class PanStore {
       return { renewed: false, reason: "lease-expired", item: current };
     }
 
-    await this.setFields(itemId, { leaseUntil });
+    await this.#writeFieldsForItem(current, { leaseUntil });
     const confirmed = await this.#confirmFields(itemId, {
       claimedBy: runner,
       leaseUntil,
@@ -570,6 +927,7 @@ export class PanStore {
     force = false,
     allowExpired = false,
     resumeAffinity,
+    beforeWrite,
   }) {
     if (!runner && !force) {
       throw new TypeError("runner is required unless force is true");
@@ -593,13 +951,15 @@ export class PanStore {
     const closesIssue = status === "done" && current.state !== "closed";
     let assigneeRemoved = false;
     try {
-      await this.setFields(itemId, {
+      await this.#writeFieldsForItem(current, {
         claimedBy: resumeAffinity ?? null,
         leaseUntil: null,
         ...(status ? { status } : {}),
-      });
+      }, { beforeWrite });
       if (assignee) {
-        await this.#editAssignee(current, "--remove-assignee", assignee);
+        await this.#editAssignee(current, "--remove-assignee", assignee, {
+          beforeWrite,
+        });
         assigneeRemoved = true;
       }
 
@@ -617,7 +977,7 @@ export class PanStore {
         };
       }
       if (closesIssue) {
-        await this.#closeIssue(confirmed);
+        await this.#closeIssue(confirmed, { beforeWrite });
         confirmed.state = "closed";
       }
       return { released: true, item: confirmed };
@@ -626,13 +986,15 @@ export class PanStore {
         throw error;
       }
       try {
-        await this.setFields(itemId, {
+        await this.#writeFieldsForItem(current, {
           claimedBy: current.fields.claimedBy,
           leaseUntil: current.fields.leaseUntil,
           status: current.fields.status,
-        });
+        }, { beforeWrite });
         if (assigneeRemoved) {
-          await this.#editAssignee(current, "--add-assignee", assignee);
+          await this.#editAssignee(current, "--add-assignee", assignee, {
+            beforeWrite,
+          });
         }
         const restored = await this.#confirmFields(itemId, {
           claimedBy: current.fields.claimedBy,
@@ -663,7 +1025,7 @@ export class PanStore {
       return { requested: false, reason: "not-owner", item: current };
     }
     const since = new Date(this.now()).toISOString();
-    await this.setFields(itemId, { needsHumanSince: since });
+    await this.#writeFieldsForItem(current, { needsHumanSince: since });
     const confirmed = await this.#confirmFields(itemId, {
       needsHumanSince: since,
     });
@@ -681,7 +1043,7 @@ export class PanStore {
     if (runner && current.fields.claimedBy !== runner) {
       return { resolved: false, reason: "not-owner", item: current };
     }
-    await this.setFields(itemId, { needsHumanSince: null });
+    await this.#writeFieldsForItem(current, { needsHumanSince: null });
     const confirmed = await this.#confirmFields(itemId, {
       needsHumanSince: "",
     });
@@ -933,10 +1295,17 @@ export class PanStore {
     return undefined;
   }
 
-  async #editAssignee(item, flag, assignee) {
+  async #editAssignee(item, flag, assignee, { signal, beforeWrite } = {}) {
     if (!item.number) {
       throw new Error(`Project item ${item.id} is not an Issue`);
     }
+    // Run the caller's pre-write hook and reauthorize immediately before this
+    // independent Issue write. Scope is derived from live workstream
+    // declarations, which can change between the field write that preceded this
+    // call and this assignee edit, so a stale authorization must not carry over
+    // to a separate mutation.
+    await beforeWrite?.();
+    await this.#authorizeItemWrite(item.repository, { signal });
     await this.gh.run([
       "issue",
       "edit",
@@ -945,13 +1314,19 @@ export class PanStore {
       item.repository || this.repository,
       flag,
       assignee,
-    ]);
+    ], { signal });
   }
 
-  async #closeIssue(item, { signal } = {}) {
+  async #closeIssue(item, { signal, beforeWrite } = {}) {
     if (!item.number) {
       throw new Error(`Project item ${item.id} is not an Issue`);
     }
+    // Run the caller's pre-write hook and reauthorize immediately before closing
+    // the Issue: closure is a distinct mutation from the preceding field/assignee
+    // writes, so re-check scope in case live workstream declarations changed
+    // mid-operation.
+    await beforeWrite?.();
+    await this.#authorizeItemWrite(item.repository, { signal });
     await this.gh.run([
       "issue",
       "close",
@@ -1243,38 +1618,83 @@ function serializeTextField(key, value) {
   return value;
 }
 
-export function classifyDomainIssues(issues, projectItems) {
+export function classifyDomainIssues(
+  issues,
+  projectItems,
+  { allowedRepositories } = {},
+) {
+  const allowed = allowedRepositories
+    ? new Set([...allowedRepositories].map((entry) => entry.toLowerCase()))
+    : undefined;
+  const inScope = (item) => {
+    if (item.contentClassification === "domain-issue") {
+      return true;
+    }
+    return (
+      item.contentClassification === "cross-domain-issue" &&
+      Boolean(allowed) &&
+      typeof item.repository === "string" &&
+      allowed.has(item.repository.toLowerCase())
+    );
+  };
   const projectIssueUrls = new Set(
-    projectItems
-      .filter((item) => item.contentClassification === "domain-issue")
-      .map((item) => item.url),
+    projectItems.filter(inScope).map((item) => item.url),
   );
   const byUrl = new Map(issues.map((issue) => [issue.url, issue]));
-  const results = issues.map((issue) => ({
-    issue,
-    type: "task",
-    valid: projectIssueUrls.has(issue.url),
-    ...(!projectIssueUrls.has(issue.url)
-      ? {
-          code: "issue-outside-project",
-          proposal: "register-untriaged",
-        }
-      : {}),
-  }));
+  const results = issues.map((issue) => {
+    if (issue.state?.toLowerCase() === "closed") {
+      return {
+        issue,
+        type: "closed",
+        valid: false,
+        code: "closed-issue-non-actionable",
+      };
+    }
+    return {
+      issue,
+      type: "task",
+      valid: projectIssueUrls.has(issue.url),
+      ...(!projectIssueUrls.has(issue.url)
+        ? {
+            code: "issue-outside-project",
+            proposal: "register-untriaged",
+          }
+        : {}),
+    };
+  });
   for (const item of projectItems) {
-    if (
-      item.contentClassification === "domain-issue" &&
-      !byUrl.has(item.url)
-    ) {
+    if (inScope(item) && !byUrl.has(item.url)) {
       results.push({
         issue: item,
         type: "task",
         valid: false,
         code: "project-issue-missing-from-repository-read",
       });
+    } else if (
+      item.contentClassification === "cross-domain-issue" &&
+      !inScope(item)
+    ) {
+      results.push({
+        issue: item,
+        type: "undeclared",
+        valid: false,
+        code: "undeclared-project-item",
+      });
     }
   }
   return results;
+}
+
+function attachReconciliationDiagnostics(
+  result,
+  { conflicts = [], workstreamConflicts = [], diagnostics = [] } = {},
+) {
+  Object.defineProperties(result, {
+    conflicts: { value: conflicts, enumerable: false },
+    workstreamConflicts: { value: workstreamConflicts, enumerable: false },
+    diagnostics: { value: diagnostics, enumerable: false },
+  });
+  return result;
 }
 
 function validateFieldValues(values, schema) {

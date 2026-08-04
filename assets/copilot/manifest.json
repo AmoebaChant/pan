@@ -14,22 +14,22 @@
     {
       "source": "instructions/pan.instructions.md",
       "destination": "instructions/pan.instructions.md",
-      "sha256": "2f4c7a7d53ee7e4aa3e20a998df109474df3d6ead2de7b974dc91d5ac3f6cb5f"
+      "sha256": "28dc4a96533bd2e745fe91d321fe34888837ae74c2f4889e7fa2cdaf428eb7b6"
     },
     {
       "source": "skills/pan-attention/SKILL.md",
       "destination": "skills/pan-attention/SKILL.md",
-      "sha256": "175f2eff4066b13ba43a3889803e13ca88e03de2505a3ecdee422a31d0870ef4"
+      "sha256": "273012b16b04b1a6fa893cd01bbe24e01aec308b9294cc711a522d5fe90b99cf"
     },
     {
       "source": "skills/pan-portfolio/SKILL.md",
       "destination": "skills/pan-portfolio/SKILL.md",
-      "sha256": "6fed17823e578e2a84e44aad0c588b14dd24d0e6cb093675af9652fae0d1d92d"
+      "sha256": "69884fcdcc4d1d5228be5beee5bce54709dc249749fda358d7a19436492dda39"
     },
     {
       "source": "skills/pan-workstream/SKILL.md",
       "destination": "skills/pan-workstream/SKILL.md",
-      "sha256": "87f63dae687656d186135b52bd2a14d8249ad90c75090c7fa3aa8c39837f2a4d"
+      "sha256": "28fd0f763bd43b4788a7343b6add0ed15e12ef13935a1b401d790c42d007e009"
     }
   ]
 }

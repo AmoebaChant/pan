@@ -172,6 +172,15 @@ test("names the field that makes a ready item undispatchable", () => {
     dispatchBlocker(withRequirements(["repo:a/b", "repo:c/d"])).code,
     "repository-requirement-ambiguous",
   );
+  assert.equal(
+    dispatchBlocker({ ...runnable, state: "closed" }).code,
+    "issue-closed",
+  );
+  assert.equal(
+    dispatchBlocker(runnable),
+    undefined,
+    "the same runnable item without a closed state must remain dispatchable",
+  );
 });
 
 test("names the playbook constraint that rejects a dispatchable item", () => {
