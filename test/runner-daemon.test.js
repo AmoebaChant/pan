@@ -977,6 +977,58 @@ test("legacy runner-stopped recovery query filters to open items so closed Issue
   );
 });
 
+test("discards a resume task whose Project item is closed without adopting or dispatching it", async () => {
+  const item = makeItem();
+  item.state = "closed";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  const store = new FakeStore([item]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
+  assert.ok(executor.discarded, "the closed resume task must be discarded");
+  assert.equal(executor.discarded.task, task);
+  assert.equal(executor.started, undefined);
+  assert.equal(store.claims.length, 0);
+  assert.equal(store.releases.length, 0);
+});
+
+class ClosedResumeExecutor {
+  constructor(tasks, handle) {
+    this.tasks = tasks;
+    this.handle = handle;
+  }
+
+  async start(context) {
+    this.started = context;
+    return this.handle;
+  }
+
+  async listResumeTasks() {
+    const tasks = this.tasks;
+    this.tasks = [];
+    return tasks;
+  }
+
+  async discardResumeTask(task, reason) {
+    this.discarded = { task, reason };
+  }
+}
+
 class FakeStore {
   constructor(
     items,

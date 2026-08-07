@@ -606,6 +606,141 @@ test("releases the claim without touching the assignee when the Issue closes at 
   );
 });
 
+test("does not write status:in-progress when the Issue closes before the status write", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.equal(result.claimed, false);
+  assert.equal(result.reason, "issue-closed");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "in-progress",
+    ),
+    [],
+    "the phase-1 gate must abort before any status:in-progress write",
+  );
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+  );
+});
+
+test("releases the claim when confirmation succeeds but the Issue is already closed", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeKeepingFieldsOnStatusWrite: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.equal(result.claimed, false);
+  assert.equal(result.reason, "issue-closed");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+  );
+});
+
+test("does not add an assignee when the Issue closes before the assignee write", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeBeforeAssign: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.equal(result.claimed, false);
+  assert.equal(result.reason, "issue-closed");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+    "the pre-add gate must abort before any --add-assignee write",
+  );
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+});
+
+test("clears the just-written claim during a closed rollback even after the lease expires", async () => {
+  let calls = 0;
+  const now = () => {
+    calls += 1;
+    return calls === 1 ? NOW : new Date(NOW.getTime() + 3600_000);
+  };
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+    now,
+  });
+
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    });
+  });
+
+  assert.equal(result.reason, "issue-closed");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "in-progress",
+    ),
+    [],
+  );
+});
+
 test("rolls back a claim when Issue assignment fails", async () => {
   const { store } = fixture({
     items: [makeItem({ status: "ready" })],
@@ -984,6 +1119,9 @@ function fixture({
   closeOnAssign = false,
   stealClaimOnClose = false,
   failReleaseConfirmOnClose = false,
+  closeKeepingFieldsOnStatusWrite = false,
+  closeBeforeAssign = false,
+  now = () => NOW,
 } = {}) {
   const gh = new FakeGh(items, {
     failAssignee,
@@ -1002,6 +1140,8 @@ function fixture({
     closeOnAssign,
     stealClaimOnClose,
     failReleaseConfirmOnClose,
+    closeKeepingFieldsOnStatusWrite,
+    closeBeforeAssign,
   });
   return {
     gh,
@@ -1012,7 +1152,7 @@ function fixture({
       gh,
       manifest: MANIFEST,
       projectItemSafetyLimit,
-      now: () => NOW,
+      now,
       sleep: async () => {},
       workstreamStore,
     }),
@@ -1039,6 +1179,8 @@ class FakeGh {
       closeOnAssign = false,
       stealClaimOnClose = false,
       failReleaseConfirmOnClose = false,
+      closeKeepingFieldsOnStatusWrite = false,
+      closeBeforeAssign = false,
     } = {},
   ) {
     this.items = structuredClone(items);
@@ -1058,6 +1200,9 @@ class FakeGh {
     this.closeOnAssign = closeOnAssign;
     this.stealClaimOnClose = stealClaimOnClose;
     this.failReleaseConfirmOnClose = failReleaseConfirmOnClose;
+    this.closeKeepingFieldsOnStatusWrite = closeKeepingFieldsOnStatusWrite;
+    this.closeBeforeAssign = closeBeforeAssign;
+    this.sawInProgressRead = false;
     this.issueCreates = [];
     this.issueEdits = [];
     this.issueStateEdits = [];
@@ -1142,6 +1287,18 @@ class FakeGh {
           if (edited.content) {
             edited.content.state = "CLOSED";
           }
+        }
+      }
+      if (this.closeKeepingFieldsOnStatusWrite) {
+        // Close the Issue exactly when the Status field reaches "in-progress"
+        // (the phase-2 write) but LEAVE Status = "in-progress" so #confirmFields
+        // still matches every expected field and returns a confirmed item whose
+        // .state is closed -- exercising the confirmed-but-closed guard.
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited?.Status === "in-progress" && edited.content) {
+          edited.content.state = "CLOSED";
         }
       }
       return "";
@@ -1325,6 +1482,22 @@ class FakeGh {
       const item = this.items.find(
         (candidate) => candidate.id === valueAfterAssignment(args, "itemId"),
       );
+      if (
+        this.closeBeforeAssign &&
+        item &&
+        item.Status === "in-progress" &&
+        item["claimed-by"] &&
+        this.issueEdits.every((edit) => edit.flag !== "--add-assignee")
+      ) {
+        // Let the phase-2 confirmation read observe the item OPEN, then close it
+        // on the NEXT read of that item (the pre-add #requireItem), before any
+        // --add-assignee write is recorded. This exercises the pre-add gate.
+        if (!this.sawInProgressRead) {
+          this.sawInProgressRead = true;
+        } else if (item.content) {
+          item.content.state = "CLOSED";
+        }
+      }
       return {
         data: {
           node: item ? this.#graphQlItem(item) : null,

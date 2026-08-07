@@ -493,9 +493,51 @@ export class PanStore {
       return { claimed: false, reason: "leased", item: current };
     }
 
+    // Phase 1: write only the runner-owned fields (claimedBy/leaseUntil). We
+    // deliberately do NOT write the Status lifecycle field yet, so that a
+    // status:in-progress value can never land on an Issue that closed before we
+    // re-check its state below.
     await this.setFields(itemId, {
       claimedBy: runner,
       leaseUntil,
+    });
+
+    // Closed gate: re-read the Issue after the runner-owned write and before the
+    // Status write. If the Issue closed during phase 1, abort here so the
+    // status:in-progress write below is never issued against a closed Issue.
+    const afterClaim = await this.#requireItem(itemId);
+    if (afterClaim.state?.toLowerCase() === "closed") {
+      // Quiet, runner-owned-only rollback: clear the just-written
+      // claimedBy/leaseUntil without any Status-field or assignee write on the
+      // closed Issue. allowExpired:true is REQUIRED here: a short lease can
+      // expire during the round trips above, and without it the rollback would
+      // return lease-expired and strand the runner's own just-written claim on
+      // the closed Issue.
+      const rollback = await this.release({
+        itemId,
+        runner,
+        status: "",
+        allowExpired: true,
+      });
+      if (!rollback.released && rollback.reason !== "not-owner") {
+        throw new Error(
+          `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+        );
+      }
+      return { claimed: false, reason: "issue-closed", item: afterClaim };
+    }
+
+    // Phase 2: the single meaningful lifecycle write. After the phase-split and
+    // the closed gate above, the ONLY remaining window is the irreducible
+    // sub-millisecond network window in which the Issue closes DURING this
+    // single unavoidable status write itself. In that window status:in-progress
+    // may briefly land on the closed Issue, but the item is already excluded
+    // from every dispatch/claim path by the `open` filter, dispatchBlocker, and
+    // the pre-write aborts, so it is never executed, and the runner-owned fields
+    // are still cleared by the post-write closed guards below. This is not
+    // "nothing is written" -- it is a stray Status value on an item no runner
+    // will ever act on, reconciled by recovery.
+    await this.setFields(itemId, {
       status,
     });
 
@@ -510,12 +552,14 @@ export class PanStore {
         // Quiet, runner-owned-only rollback: never write the Status field or an
         // assignee on a closed Issue. status:"" still clears the runner-owned
         // claimedBy/leaseUntil (a runner-owned write) without any Status-field
-        // or assignee write. The lease was written fresh immediately above, so
-        // it is never expired here and allowExpired is unnecessary.
+        // or assignee write. allowExpired:true is REQUIRED so the runner can
+        // clear its own just-written claim even if the lease expired during
+        // confirmation.
         const rollback = await this.release({
           itemId,
           runner,
           status: "",
+          allowExpired: true,
         });
         if (!rollback.released && rollback.reason !== "not-owner") {
           throw new Error(
@@ -529,10 +573,13 @@ export class PanStore {
     if (confirmed.state?.toLowerCase() === "closed") {
       // Closure observed in the confirmed read; quietly release the just-written
       // claim without any status or assignee write on the now-closed Issue.
+      // allowExpired:true is REQUIRED so the runner can clear its own
+      // just-written claim even if the lease expired during confirmation.
       const rollback = await this.release({
         itemId,
         runner,
         status: "",
+        allowExpired: true,
       });
       if (!rollback.released && rollback.reason !== "not-owner") {
         throw new Error(
@@ -542,7 +589,30 @@ export class PanStore {
       return { claimed: false, reason: "issue-closed", item: confirmed };
     }
     if (assignee) {
-      // The confirmed read immediately above returned open, so closure detected
+      // DEFECT 3: re-read the Issue immediately before the assignee add and skip
+      // the add if it closed. The confirmed read above returned open, but the
+      // Issue may have closed since; this gate ensures no --add-assignee write
+      // is issued once closure is observable.
+      const beforeAssign = await this.#requireItem(itemId);
+      if (beforeAssign.state?.toLowerCase() === "closed") {
+        // Quiet, runner-owned-only rollback: clear the just-written claim
+        // without any Status or --remove-assignee write on the closed Issue.
+        // allowExpired:true is REQUIRED so the runner can clear its own claim
+        // even if the lease expired during confirmation.
+        const rollback = await this.release({
+          itemId,
+          runner,
+          status: "",
+          allowExpired: true,
+        });
+        if (!rollback.released && rollback.reason !== "not-owner") {
+          throw new Error(
+            `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+          );
+        }
+        return { claimed: false, reason: "issue-closed", item: beforeAssign };
+      }
+      // The pre-add read immediately above returned open, so closure detected
       // up to this point already skipped the add. The residual sub-millisecond
       // network window on the `gh issue edit --add-assignee` call itself cannot
       // be eliminated; if the Issue closes exactly during this call the stray
@@ -588,11 +658,14 @@ export class PanStore {
       // write against the now-closed Issue. Separately, an Issue can still close
       // on GitHub strictly AFTER this read returns open -- an irreducible
       // network TOCTOU, genuinely mid-execution -- caught by next-poll dispatch
-      // guards and recovery paths.
+      // guards and recovery paths. allowExpired:true is REQUIRED so the runner
+      // can clear its own just-written claim even if the lease expired during
+      // confirmation.
       const rollback = await this.release({
         itemId,
         runner,
         status: "",
+        allowExpired: true,
       });
       if (!rollback.released && rollback.reason !== "not-owner") {
         throw new Error(
