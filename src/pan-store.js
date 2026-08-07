@@ -490,7 +490,8 @@ export class PanStore {
     // excluded from every dispatch/claim/recovery path (the `open` filter on
     // tick and on both recovery passes), so nothing ever acts on it; and the
     // real-world resume-pointer variant is reconciled by #recoverResumeTasks
-    // via a force-based release. This rare residual is accepted and documented
+    // via a compare-and-clear release (runner = the observed claimedBy, no
+    // force). This rare residual is accepted and documented
     // rather than papered over with more machinery.
     return this.release({ itemId, runner, status: "", allowExpired: true });
   }

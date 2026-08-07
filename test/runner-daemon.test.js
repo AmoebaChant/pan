@@ -1450,6 +1450,45 @@ test("R2: preserves the pointer via the not-owner guard when the claim changed t
   );
 });
 
+test("discards a closed resume task with an empty claim without attempting a release", async () => {
+  // The empty-claim guard: when the observed claimedBy is empty there is nothing
+  // to clear, so #recoverResumeTasks must SKIP release() entirely (production
+  // release() would throw for a missing runner, which would preserve+retry the
+  // pointer every poll) and discard the resume pointer directly. Mutating
+  // `if (observedClaimedBy)` to unconditional execution makes this test fail:
+  // release() is attempted with an empty runner, the FakeStore throws (mirroring
+  // production), the pointer is preserved instead of discarded, and no discard
+  // occurs.
+  const item = makeItem();
+  item.state = "closed";
+  item.fields.claimedBy = "";
+  item.fields.leaseUntil = "";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  const store = new FakeStore([item]);
+  const warns = [];
+  const logger = { warn: (m) => warns.push(m), info() {}, error() {} };
+  const daemon = new RunnerDaemon({ store, profile: makeProfile(), executor, logger });
+
+  await daemon.tick();
+
+  assert.equal(store.releases.length, 0, "an empty claim must not attempt a release");
+  assert.ok(executor.discarded, "the pointer must be discarded directly");
+  assert.equal(executor.discarded.task, task);
+  assert.ok(
+    !warns.some((m) => /Could not reconcile runner-owned fields/i.test(m)),
+    "no reconciliation-failure warning may be logged for the empty-claim path",
+  );
+});
+
 class ClosedResumeExecutor {
   constructor(tasks, handle) {
     this.tasks = tasks;
@@ -1581,6 +1620,11 @@ class FakeStore {
   }
 
   async release(release) {
+    // Mirror PanStore.release's guard: a runner is required unless force is
+    // set. Production throws BEFORE any write, so record nothing here either.
+    if (!release.runner && !release.force) {
+      throw new TypeError("runner is required unless force is true");
+    }
     this.releases.push(release);
     if ((this.releaseFailures[release.status] ?? 0) > 0) {
       this.releaseFailures[release.status] -= 1;
