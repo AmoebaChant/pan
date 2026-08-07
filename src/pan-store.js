@@ -469,6 +469,33 @@ export class PanStore {
     }));
   }
 
+  async #quietClaimRollback(itemId, runner) {
+    // A closed-mid-claim rollback: quietly clear ONLY the runner-owned fields
+    // (status:"" writes no lifecycle Status) on a CLOSED Issue -- no comment,
+    // no assignee change, no reopen. allowExpired:true is REQUIRED because a
+    // short lease can expire during the claim round-trips; without it this
+    // release would return lease-expired and strand the runner's own
+    // just-written claim.
+    //
+    // release() writes claimedBy BEFORE leaseUntil, and phase-1 always wrote a
+    // real FUTURE lease, so a partial/failed rollback leaves EITHER
+    // claimedBy="" (claimable) OR claimedBy=runner-a with a real future lease
+    // that expires normally -- never an immortal claim.
+    //
+    // The ONLY residual is a pathological partial GitHub write in which the
+    // claimedBy clear silently no-ops while the leaseUntil clear succeeds,
+    // leaving claimedBy=runner-a, leaseUntil="" on a CLOSED item. Under
+    // main semantics isExpired("") is false, so that is a stranded,
+    // non-claimable claim -- but it is harmless debris: a closed item is
+    // excluded from every dispatch/claim/recovery path (the `open` filter on
+    // tick and on both recovery passes), so nothing ever acts on it; and the
+    // real-world resume-pointer variant is reconciled by #recoverResumeTasks
+    // via a compare-and-clear release (runner = the observed claimedBy, no
+    // force). This rare residual is accepted and documented
+    // rather than papered over with more machinery.
+    return this.release({ itemId, runner, status: "", allowExpired: true });
+  }
+
   async claimWithLease({
     itemId,
     runner,
@@ -478,6 +505,9 @@ export class PanStore {
   }) {
     validateRunnerAndLease(runner, leaseUntil, this.now());
     const current = await this.#requireItem(itemId);
+    if (current.state?.toLowerCase() === "closed") {
+      return { claimed: false, reason: "issue-closed", item: current };
+    }
     const holder = current.fields.claimedBy;
     const leaseIsActive =
       holder &&
@@ -490,9 +520,68 @@ export class PanStore {
       return { claimed: false, reason: "leased", item: current };
     }
 
+    // Phase 1: write only the runner-owned fields (claimedBy/leaseUntil). We
+    // deliberately do NOT write the Status lifecycle field yet, so that a
+    // status:in-progress value can never land on an Issue that closed before we
+    // re-check its state below.
     await this.setFields(itemId, {
       claimedBy: runner,
       leaseUntil,
+    });
+
+    // Closed gate: re-read the Issue after the runner-owned write and before the
+    // Status write. If the Issue closed during phase 1, abort here so the
+    // status:in-progress write below is never issued against a closed Issue.
+    const afterClaim = await this.#requireItem(itemId);
+    if (afterClaim.state?.toLowerCase() === "closed") {
+      // Quiet, runner-owned-only rollback: clear the just-written
+      // claimedBy/leaseUntil without any Status-field or assignee write on the
+      // closed Issue. allowExpired:true is REQUIRED here: a short lease can
+      // expire during the round trips above, and without it the rollback would
+      // return lease-expired and strand the runner's own just-written claim on
+      // the closed Issue.
+      const rollback = await this.#quietClaimRollback(itemId, runner);
+      if (!rollback.released && rollback.reason !== "not-owner") {
+        throw new Error(
+          `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+        );
+      }
+      return { claimed: false, reason: "issue-closed", item: afterClaim };
+    }
+
+    // Phase 2: the single meaningful lifecycle write. After the phase-split and
+    // the closed gate above, the remaining window is the irreducible
+    // sub-millisecond network window in which the Issue closes DURING this
+    // single unavoidable status write itself. In that window status:in-progress
+    // may briefly land on the closed Issue, but the item is already excluded
+    // from every dispatch/claim path by the `open` filter, dispatchBlocker, and
+    // the pre-write aborts, so it is never executed, and the runner-owned fields
+    // are still cleared by the post-write closed guards below. This is not
+    // "nothing is written" -- it is a stray Status value on an item no runner
+    // will ever act on. Note this is NOT the only possible residual write:
+    // symmetrically, an `--add-assignee` can land in its own irreducible
+    // sub-millisecond window at the assignee-add call below (see the pre-assign
+    // gate and final-read guard). Both stray writes are inert because the item
+    // is excluded everywhere by the `open` filter. On the normal path the
+    // runner-owned CLAIM fields (claimedBy/leaseUntil) are cleared inline by the
+    // post-write closed guards; if a guard's own rollback release fails they
+    // remain as harmless debris on the closed item -- closed items are excluded
+    // from the #recoverResumeTasks/#recoverLegacyRunnerStops passes (open:true)
+    // and a mid-claim failure leaves no resume pointer, so recovery does NOT
+    // reconcile them. Because release() clears claimedBy before leaseUntil and
+    // phase-1 wrote a real future lease, the usual failure leaves either
+    // claimedBy="" (claimable) or a real future lease that expires normally. The
+    // one exception is a pathological partial write in which the claimedBy clear
+    // silently no-ops while the leaseUntil clear lands, leaving claimedBy=runner
+    // with a BLANK lease: under main isExpired semantics a blank lease is NOT
+    // expired, so this residual is a stranded, non-claimable claim rather than a
+    // self-healing one. It is inert while the Issue stays closed (excluded from
+    // every dispatch/claim/recovery path), but if the Issue is ever REOPENED it
+    // is a stuck claim a human may need to clear. We accept this rare, documented
+    // residual rather than adding more machinery, and we deliberately do not
+    // write status:ready or a --remove-assignee against a closed Issue to scrub
+    // these cosmetic residuals.
+    await this.setFields(itemId, {
       status,
     });
 
@@ -502,16 +591,92 @@ export class PanStore {
       status,
     });
     if (!confirmed) {
-      return {
-        claimed: false,
-        reason: "claim-not-confirmed",
-        item: await this.#requireItem(itemId),
-      };
+      const item = await this.#requireItem(itemId);
+      if (item.state?.toLowerCase() === "closed") {
+        // Quiet, runner-owned-only rollback: never write the Status field or an
+        // assignee on a closed Issue. status:"" still clears the runner-owned
+        // claimedBy/leaseUntil (a runner-owned write) without any Status-field
+        // or assignee write. allowExpired:true is REQUIRED so the runner can
+        // clear its own just-written claim even if the lease expired during
+        // confirmation.
+        const rollback = await this.#quietClaimRollback(itemId, runner);
+        if (!rollback.released && rollback.reason !== "not-owner") {
+          throw new Error(
+            `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+          );
+        }
+        return { claimed: false, reason: "issue-closed", item };
+      }
+      return { claimed: false, reason: "claim-not-confirmed", item };
+    }
+    if (confirmed.state?.toLowerCase() === "closed") {
+      // Closure observed in the confirmed read; quietly release the just-written
+      // claim without any status or assignee write on the now-closed Issue.
+      // allowExpired:true is REQUIRED so the runner can clear its own
+      // just-written claim even if the lease expired during confirmation.
+      const rollback = await this.#quietClaimRollback(itemId, runner);
+      if (!rollback.released && rollback.reason !== "not-owner") {
+        throw new Error(
+          `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+        );
+      }
+      return { claimed: false, reason: "issue-closed", item: confirmed };
     }
     if (assignee) {
+      // DEFECT 3: re-read the Issue immediately before the assignee add and skip
+      // the add if it closed. The confirmed read above returned open, but the
+      // Issue may have closed since; this gate ensures no --add-assignee write
+      // is issued once closure is observable.
+      const beforeAssign = await this.#requireItem(itemId);
+      if (beforeAssign.state?.toLowerCase() === "closed") {
+        // Quiet, runner-owned-only rollback: clear the just-written claim
+        // without any Status or --remove-assignee write on the closed Issue.
+        // allowExpired:true is REQUIRED so the runner can clear its own claim
+        // even if the lease expired during confirmation.
+        const rollback = await this.#quietClaimRollback(itemId, runner);
+        if (!rollback.released && rollback.reason !== "not-owner") {
+          throw new Error(
+            `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+          );
+        }
+        return { claimed: false, reason: "issue-closed", item: beforeAssign };
+      }
+      // The pre-add read immediately above returned open, so closure detected
+      // up to this point already skipped the add. The residual sub-millisecond
+      // network window on the `gh issue edit --add-assignee` call itself cannot
+      // be eliminated; if the Issue closes exactly during this call the stray
+      // assignee is left in place deliberately -- no status write and no
+      // remove-assignee write ever hit the closed Issue, and closed-item
+      // recovery removes no assignee, so it stays put. It is inert because the
+      // closed item is excluded from every dispatch/claim path by the `open`
+      // filter.
       try {
         await this.#editAssignee(confirmed, "--add-assignee", assignee);
       } catch (error) {
+        // Split the rollback on Issue closure. If the Issue closed during the
+        // assignment attempt we do the QUIET runner-owned clear (status:"" ->
+        // only claimedBy/leaseUntil, never a Status write against a closed
+        // Issue). If the Issue is still open we keep the original behavior and
+        // return the item to the pool with status:"ready".
+        const afterAssignFailure = await this.#requireItem(itemId);
+        if (afterAssignFailure.state?.toLowerCase() === "closed") {
+          let rollback;
+          try {
+            rollback = await this.#quietClaimRollback(itemId, runner);
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              "Issue assignment failed and the claim rollback errored",
+            );
+          }
+          if (!rollback.released && rollback.reason !== "not-owner") {
+            throw new AggregateError(
+              [error, new Error(`Claim rollback failed: ${rollback.reason}`)],
+              "Issue assignment failed after claiming the item",
+            );
+          }
+          throw error;
+        }
         let rollback;
         try {
           rollback = await this.release({
@@ -533,6 +698,34 @@ export class PanStore {
         }
         throw error;
       }
+    }
+    const finalItem = await this.#requireItem(itemId);
+    if (finalItem.state?.toLowerCase() === "closed") {
+      // Final authoritative gate. On this closed path we quietly release the
+      // just-written claim with status:"" -- this clears only the runner-owned
+      // fields (claimedBy/leaseUntil) and issues NO Status-field write and NO
+      // remove-assignee write against the closed Issue -- and return
+      // claimed:false so the runner never executes. The ONLY irreducible
+      // residual is that an assignee ADD may already have landed on the Issue
+      // during the sub-millisecond network window of the
+      // `gh issue edit --add-assignee` call BEFORE closure was observed at this
+      // final read; that stray assignee is left in place DELIBERATELY -- we
+      // intentionally do NOT issue a remove-assignee write against the now-closed
+      // Issue, and the closed-item recovery pass passes no assignee and performs
+      // no assignee removal, so nothing scrubs it. It is inert because the item
+      // is excluded from every dispatch/claim path by the `open` filter.
+      // Separately, an Issue can still close on GitHub strictly AFTER this read
+      // returns open -- an irreducible network TOCTOU, genuinely mid-execution --
+      // caught by next-poll dispatch guards. allowExpired:true is REQUIRED so the
+      // runner can clear its own just-written claim even if the lease expired
+      // during confirmation.
+      const rollback = await this.#quietClaimRollback(itemId, runner);
+      if (!rollback.released && rollback.reason !== "not-owner") {
+        throw new Error(
+          `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+        );
+      }
+      return { claimed: false, reason: "issue-closed", item: finalItem };
     }
     return { claimed: true, item: confirmed };
   }
@@ -1210,6 +1403,11 @@ function matchesFilters(item, filters, now) {
         isResumeAffinity(item.fields.claimedBy) ||
         isExpired(item.fields.leaseUntil, now);
       if (Boolean(expected) !== claimable) {
+        return false;
+      }
+    } else if (key === "open") {
+      const isClosed = String(item.state ?? "").toLowerCase() === "closed";
+      if (Boolean(expected) === isClosed) {
         return false;
       }
     } else if (key in item.fields) {
