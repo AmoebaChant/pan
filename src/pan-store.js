@@ -471,18 +471,27 @@ export class PanStore {
 
   async #quietClaimRollback(itemId, runner) {
     // A closed-mid-claim rollback: quietly clear ONLY the runner-owned fields
-    // (status:"" writes no lifecycle Status). allowExpired:true is still required
-    // for the short-lease-expired-during-claim case. release() writes claimedBy
-    // BEFORE leaseUntil, so if this write fails partway the item is left with
-    // stranded runner-owned fields on a CLOSED Issue. That is harmless debris,
-    // not a recoverable live claim: a closed item is excluded from every
-    // dispatch/claim/recovery path by the `open` filter (tick and both recovery
-    // passes read open:true), and a mid-claim failure leaves no resume pointer,
-    // so nothing reconciles it while the Issue stays closed -- but nothing acts
-    // on it either. And because the lease is left blank or expired (isExpired
-    // treats a blank lease as expired), if the Issue is ever reopened the item
-    // is immediately claimable rather than an immortal claim. No dead-lease
-    // bookkeeping is needed.
+    // (status:"" writes no lifecycle Status) on a CLOSED Issue -- no comment,
+    // no assignee change, no reopen. allowExpired:true is REQUIRED because a
+    // short lease can expire during the claim round-trips; without it this
+    // release would return lease-expired and strand the runner's own
+    // just-written claim.
+    //
+    // release() writes claimedBy BEFORE leaseUntil, and phase-1 always wrote a
+    // real FUTURE lease, so a partial/failed rollback leaves EITHER
+    // claimedBy="" (claimable) OR claimedBy=runner-a with a real future lease
+    // that expires normally -- never an immortal claim.
+    //
+    // The ONLY residual is a pathological partial GitHub write in which the
+    // claimedBy clear silently no-ops while the leaseUntil clear succeeds,
+    // leaving claimedBy=runner-a, leaseUntil="" on a CLOSED item. Under
+    // main semantics isExpired("") is false, so that is a stranded,
+    // non-claimable claim -- but it is harmless debris: a closed item is
+    // excluded from every dispatch/claim/recovery path (the `open` filter on
+    // tick and on both recovery passes), so nothing ever acts on it; and the
+    // real-world resume-pointer variant is reconciled by #recoverResumeTasks
+    // via a force-based release. This rare residual is accepted and documented
+    // rather than papered over with more machinery.
     return this.release({ itemId, runner, status: "", allowExpired: true });
   }
 
@@ -558,10 +567,19 @@ export class PanStore {
     // remain as harmless debris on the closed item -- closed items are excluded
     // from the #recoverResumeTasks/#recoverLegacyRunnerStops passes (open:true)
     // and a mid-claim failure leaves no resume pointer, so recovery does NOT
-    // reconcile them, but the blank/expired lease keeps the item claimable (not
-    // an immortal claim) if it is ever reopened. We deliberately do not write
-    // status:ready or a --remove-assignee against a closed Issue to scrub these
-    // cosmetic residuals.
+    // reconcile them. Because release() clears claimedBy before leaseUntil and
+    // phase-1 wrote a real future lease, the usual failure leaves either
+    // claimedBy="" (claimable) or a real future lease that expires normally. The
+    // one exception is a pathological partial write in which the claimedBy clear
+    // silently no-ops while the leaseUntil clear lands, leaving claimedBy=runner
+    // with a BLANK lease: under main isExpired semantics a blank lease is NOT
+    // expired, so this residual is a stranded, non-claimable claim rather than a
+    // self-healing one. It is inert while the Issue stays closed (excluded from
+    // every dispatch/claim/recovery path), but if the Issue is ever REOPENED it
+    // is a stuck claim a human may need to clear. We accept this rare, documented
+    // residual rather than adding more machinery, and we deliberately do not
+    // write status:ready or a --remove-assignee against a closed Issue to scrub
+    // these cosmetic residuals.
     await this.setFields(itemId, {
       status,
     });
@@ -1497,11 +1515,8 @@ function validateRunnerAndLease(runner, leaseUntil, now) {
 }
 
 function isExpired(leaseUntil, now) {
-  // Invariant: every legitimate live claim always carries a future lease.
-  // A claim with no lease is debris, not a live claim, so treat a blank/
-  // missing lease as expired -> claimable/reconcilable (self-healing).
   if (!leaseUntil) {
-    return true;
+    return false;
   }
   const parsed = Date.parse(leaseUntil);
   return !Number.isFinite(parsed) || parsed <= now.getTime();

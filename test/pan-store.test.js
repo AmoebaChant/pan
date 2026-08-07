@@ -600,19 +600,19 @@ test("throws when the closed rollback release cannot be confirmed", async () => 
   );
 });
 
-test("a mid-claim closed rollback whose release cannot be confirmed leaves a claimable (self-healing) blank-lease claim", async () => {
+test("a mid-claim closed rollback whose release cannot be confirmed leaves a stranded (non-claimable) blank-lease claim on the closed Issue", async () => {
   // failReleaseConfirmOnClose makes the rollback release's claimed-by clear a
   // silent no-op (claimed-by stays runner-a) while its lease-until clear
   // succeeds (lease-until -> ""), and closes the Issue. release() then reports
   // release-not-confirmed, which #quietClaimRollback surfaces as a thrown
   // "Claim rollback failed". The resulting end-state is claimed-by=runner-a
-  // with a BLANK lease. There is no dead-lease bookkeeping any more: a blank
-  // lease is now treated as expired, so the stranded claim is never an immortal
-  // live claim. On this CLOSED item the stranded runner-owned fields are
-  // harmless debris -- the item is excluded from every dispatch/claim/recovery
-  // path by the open filter and has no resume pointer, so no runner ever acts
-  // on it; and because the lease is expired it is immediately claimable should
-  // the Issue ever be reopened.
+  // with a BLANK lease on a CLOSED item. Under main semantics isExpired("") is
+  // false, so this is NOT claimable -- it is a stranded runner-owned residual.
+  // That is harmless debris rather than a live claim: a closed item is excluded
+  // from every dispatch/claim/recovery path by the open filter and a mid-claim
+  // failure leaves no resume pointer, so nothing ever acts on it while the
+  // Issue stays closed; the real-world resume-pointer variant is reconciled by
+  // the force-based closed reconciliation in #recoverResumeTasks.
   const { store } = fixture({
     items: [makeItem({ status: "ready" })],
     failReleaseConfirmOnClose: true,
@@ -629,18 +629,18 @@ test("a mid-claim closed rollback whose release cannot be confirmed leaves a cla
   const item = await store.getItem("item-1");
   assert.equal(item.fields.claimedBy, "runner-a");
   assert.equal(item.fields.leaseUntil, "");
-  // The blank-lease claim is claimable (self-healing). The Issue is closed, so
-  // we prove this through the claimable filter (which keys off the lease, not
-  // the Issue state) rather than a fresh claimWithLease.
+  // Documented residual: the stranded blank-lease claim is NOT claimable under
+  // main semantics. We prove that through the claimable filter, which no longer
+  // treats a blank lease as expired.
   assert.ok(
-    (await store.listByFilter({ claimable: true }))
+    !(await store.listByFilter({ claimable: true }))
       .map((entry) => entry.id)
       .includes("item-1"),
-    "a claimed item with a blank lease must be claimable (self-healing)",
+    "a stranded blank-lease claim on a closed Issue must not be claimable",
   );
 });
 
-test("a mid-claim closed rollback whose release THROWS leaves a claimable (self-healing) item, not an immortal claim", async () => {
+test("a mid-claim closed rollback whose release THROWS leaves an unclaimed (claimable) item, not an immortal claim", async () => {
   // GAP 1: the reviewer required the mid-claim-closed rollback-semantics test to
   // cover BOTH failure modes. The failReleaseConfirmOnClose tests above cover
   // mode (a) -- release returns {released:false, reason:"release-not-confirmed"}.
@@ -648,10 +648,11 @@ test("a mid-claim closed rollback whose release THROWS leaves a claimable (self-
   // closes the Issue on the phase-1 write (via closeOnFieldEdit) and then makes
   // the rollback release's lease-until clear throw. Because release() writes
   // claimed-by BEFORE lease-until, the claimed-by clear has already landed when
-  // the throw fires, so the end state is claimed-by="" (unclaimed => claimable),
-  // never an immortal claimed-by-set-with-live-lease. The post-phase-1 site has
-  // no try/catch around #quietClaimRollback, so the throw propagates and the
-  // claim call rejects.
+  // the throw fires, so the end state is claimed-by="" (UNCLAIMED). It is
+  // claimable because it is unclaimed (the !claimedBy short-circuit in the
+  // claimable filter), never an immortal claimed-by-set-with-live-lease. The
+  // post-phase-1 site has no try/catch around #quietClaimRollback, so the throw
+  // propagates and the claim call rejects.
   const { store } = fixture({
     items: [makeItem({ status: "ready" })],
     closeOnFieldEdit: true,
@@ -668,13 +669,14 @@ test("a mid-claim closed rollback whose release THROWS leaves a claimable (self-
   );
   const item = await store.getItem("item-1");
   // The end state is NOT an immortal claim: claimed-by was cleared before the
-  // throw, so it is unclaimed and therefore claimable/self-healing.
+  // throw, so the item is UNCLAIMED and therefore claimable via the !claimedBy
+  // short-circuit -- not because a blank lease is treated as expired.
   assert.equal(item.fields.claimedBy, "");
   assert.ok(
     (await store.listByFilter({ claimable: true }))
       .map((entry) => entry.id)
       .includes("item-1"),
-    "an item left unclaimed by a thrown rollback must be claimable (self-healing)",
+    "an item left unclaimed by a thrown rollback must be claimable",
   );
 });
 
@@ -858,24 +860,12 @@ test("site6 final-read-closed guard propagates a thrown rollback release", async
   );
 });
 
-test("a claimed item with a blank lease is not an immortal live claim (reverting isExpired blank=>true reintroduces the immortal claim)", async () => {
-  // Mutation guard: with isExpired's blank branch reverted to `return false`,
-  // a blank lease would look active, claimWithLease would return
-  // {claimed:false, reason:"leased"}, and this assertion would fail.
-  const { store } = fixture({
-    items: [
-      makeItem({ id: "item-1", number: 1, claimedBy: "runner-a", leaseUntil: "" }),
-    ],
-  });
-  const result = await store.claimWithLease({
-    itemId: "item-1",
-    runner: "runner-b",
-    leaseUntil: FUTURE,
-  });
-  assert.equal(result.claimed, true);
-});
-
-test("a claimed item with a blank lease is reclaimable by a new runner while a claimed item with a future lease stays leased", async () => {
+test("a claimed item with any lease (blank or future) stays leased against a different runner", async () => {
+  // Under main semantics isExpired("") is false, so a claimed item with a
+  // blank lease is treated as LEASED, exactly like one with a future lease: a
+  // DIFFERENT runner is blocked on both. This is the behavior that closes the
+  // duplicate-claim window during the transient claimed-by=runner-a,
+  // leaseUntil="" state of a healthy phase-1 claim.
   const { store } = fixture({
     items: [
       makeItem({ id: "blank", number: 1, claimedBy: "runner-a", leaseUntil: "" }),
@@ -892,7 +882,10 @@ test("a claimed item with a blank lease is reclaimable by a new runner while a c
     runner: "runner-b",
     leaseUntil: FUTURE,
   });
-  assert.equal(blankResult.claimed, true);
+  assert.deepEqual(
+    { claimed: blankResult.claimed, reason: blankResult.reason },
+    { claimed: false, reason: "leased" },
+  );
   const futureResult = await store.claimWithLease({
     itemId: "future",
     runner: "runner-b",
@@ -904,7 +897,54 @@ test("a claimed item with a blank lease is reclaimable by a new runner while a c
   );
 });
 
-test("release on a claimed blank-lease item is lease-expired without allowExpired but releases with allowExpired", async () => {
+test("two runners cannot both claim an OPEN task when the first has written claimedBy but not yet leaseUntil (duplicate-claim guard)", async () => {
+  // T1 -- the mutation guard for reverting isExpired's blank branch. setFields
+  // writes fields sequentially, claimedBy BEFORE leaseUntil (see
+  // src/pan-store.js setFields / claimWithLease phase-1), so a healthy claim
+  // passes through a transient claimed-by=runner-a, leaseUntil="" window on an
+  // OPEN item. The onClaimedByWrite hook fires exactly in that window and drives
+  // runner-b's claim attempt before runner-a's leaseUntil write lands. Under
+  // main semantics isExpired("") is false, so runner-b sees the half-written
+  // claim as LEASED and is blocked; exactly one runner ends up holding the
+  // claim. If isExpired's blank branch is mutated back to `return true`,
+  // runner-b would treat the transient state as claimable and BOTH runners
+  // could return {claimed:true} -- duplicate execution. This test fails under
+  // that mutation.
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+  });
+  let runnerBResult;
+  gh.onClaimedByWrite = async (id) => {
+    if (id !== "item-1") {
+      return;
+    }
+    runnerBResult = await store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-b",
+      assignee: "octocat",
+      leaseUntil: LATER,
+    });
+  };
+  const runnerAResult = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.equal(runnerAResult.claimed, true);
+  assert.deepEqual(
+    { claimed: runnerBResult.claimed, reason: runnerBResult.reason },
+    { claimed: false, reason: "leased" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "runner-a");
+  assert.equal(item.fields.leaseUntil, FUTURE);
+});
+
+test("release on a claimed blank-lease item succeeds under the owner check because a blank lease is not expired", async () => {
+  // Under main semantics isExpired("") is false, so release() on a claimed item
+  // whose claimed-by matches the caller passes the not-owner check and is NOT
+  // treated as expired -> the guarded release succeeds without allowExpired.
   const { store } = fixture({
     items: [
       makeItem({
@@ -917,19 +957,41 @@ test("release on a claimed blank-lease item is lease-expired without allowExpire
     ],
   });
   const guarded = await store.release({ itemId: "item-1", runner: "runner-a" });
-  assert.deepEqual(
-    { released: guarded.released, reason: guarded.reason },
-    { released: false, reason: "lease-expired" },
-  );
-  const forced = await store.release({
-    itemId: "item-1",
-    runner: "runner-a",
-    allowExpired: true,
-  });
-  assert.equal(forced.released, true);
+  assert.equal(guarded.released, true);
 });
 
-test("the claimable filter treats an unclaimed or blank-lease claim as claimable but not a future-lease claim", async () => {
+test("release's ownership check-then-act is inherited unchanged from origin/main (documentation)", async () => {
+  // T2 -- documentation/pin test, no new production code. release() reads the
+  // item, checks ownership, then acts. This behavior is byte-identical to
+  // origin/main and is intentionally NOT changed by this branch. Here the
+  // stealClaimOnClose hook flips ownership to runner-thief during runner-a's
+  // phase-1 write; the subsequent #quietClaimRollback release() reads the
+  // stolen item and hits its not-owner guard, leaving the thief's live claim
+  // completely untouched. The purpose is only to pin that inherited behavior so
+  // a reviewer can see it is unchanged from main; the check-then-act race in
+  // release() is out of scope and deliberately not "fixed" here.
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    stealClaimOnClose: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "runner-thief");
+  assert.equal(item.fields.leaseUntil, THIEF_LEASE);
+});
+
+test("the claimable filter treats only an unclaimed item as claimable, not a blank-lease or future-lease claim", async () => {
+  // Under main semantics a claim with any lease (blank or future) is NOT
+  // claimable; only a genuinely unclaimed item (claimed-by="") is.
   const { store } = fixture({
     items: [
       makeItem({ id: "unclaimed", number: 1, owner: "agent", claimedBy: "" }),
@@ -951,7 +1013,7 @@ test("the claimable filter treats an unclaimed or blank-lease claim as claimable
   });
   assert.deepEqual(
     (await store.listByFilter({ claimable: true })).map((entry) => entry.id),
-    ["unclaimed", "blank"],
+    ["unclaimed"],
   );
 });
 
@@ -1935,6 +1997,21 @@ class FakeGh {
       }
       this.projectEdits += 1;
       this.#editProjectItem(args);
+      if (
+        this.onClaimedByWrite &&
+        !isClear &&
+        targetField?.key === "claimedBy"
+      ) {
+        // Interleaving hook for the duplicate-claim guard (T1): fire exactly
+        // when runner-a's phase-1 claimed-by write has landed but its
+        // lease-until write has NOT yet (setFields writes claimedBy before
+        // leaseUntil, so the store is observably claimed-by=runner-a,
+        // lease-until="" at this instant). The test drives runner-b's claim
+        // from inside this callback to model the true race.
+        const hook = this.onClaimedByWrite;
+        this.onClaimedByWrite = null;
+        await hook(valueAfter(args, "--id"));
+      }
       if (this.closeOnFieldEdit) {
         const edited = this.items.find(
           (candidate) => candidate.id === valueAfter(args, "--id"),
