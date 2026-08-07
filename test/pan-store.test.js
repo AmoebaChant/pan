@@ -958,6 +958,33 @@ test("quietly clears runner-owned fields when assignment fails on a now-closed I
   );
 });
 
+test("clears the just-written claim when assignment fails on a closed Issue even after the lease expires", async () => {
+  let calls = 0;
+  const now = () => {
+    calls += 1;
+    return calls === 1 ? NOW : new Date(NOW.getTime() + 3600_000);
+  };
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeAndFailAssign: true,
+    now,
+  });
+
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /assignment failed/,
+  );
+
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+});
+
 test("allows an expired lease to be reclaimed", async () => {
   const { store } = fixture({
     items: [

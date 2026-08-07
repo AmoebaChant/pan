@@ -641,33 +641,42 @@ export class RunnerDaemon {
           );
           continue;
         }
-        if (
-          item.state?.toLowerCase() === "closed" ||
-          item.fields.status === "done"
-        ) {
-          // Self-healing reconciliation: a closed resume item may still carry
-          // stale runner-owned claim fields (claimedBy/leaseUntil), possibly a
-          // resume-affinity holder not equal to task.runner. force:true bypasses
-          // owner/expiry so we can clear it; status:"" writes ONLY
-          // claimedBy/leaseUntil (no Status write, no comment, no reopen). On
-          // failure we warn and continue so recovery never wedges the tick.
-          try {
-            const reconciled = await this.store.release({
-              itemId: task.itemId,
-              runner: task.runner,
-              status: "",
-              allowExpired: true,
-              force: true,
-            });
-            if (!reconciled?.released) {
-              this.logger.warn?.(
-                `Could not reconcile runner-owned fields on closed task #${item.number}: ${reconciled?.reason ?? "release not confirmed"}`,
-              );
+        const isClosed = item.state?.toLowerCase() === "closed";
+        // END-STATE MATRIX:
+        // - Closed item: reconcile FIRST, writing ONLY a quiet runner-owned
+        //   claim-field clear (status:"" => claimedBy/leaseUntil only; no
+        //   Status write, no comment, no assignee, no reopen). Success -> the
+        //   resume pointer is discarded. Failure (thrown OR not-confirmed) ->
+        //   the pointer is PRESERVED for a later retry; claim fields may remain
+        //   stale until a later successful tick, and are never dispatchable
+        //   meanwhile because the item is closed and excluded everywhere.
+        // - Open item Status "done": reconciliation writes NOTHING (no
+        //   store.release call, no field write); the origin/main discard
+        //   proceeds directly.
+        // - Open item any other Status: not in this branch.
+        if (isClosed || item.fields.status === "done") {
+          if (isClosed) {
+            let failureReason;
+            try {
+              const reconciled = await this.store.release({
+                itemId: task.itemId,
+                runner: task.runner,
+                status: "",
+                allowExpired: true,
+                force: true,
+              });
+              if (!reconciled?.released) {
+                failureReason = reconciled?.reason ?? "release not confirmed";
+              }
+            } catch (error) {
+              failureReason = error?.message ?? String(error);
             }
-          } catch (error) {
-            this.logger.warn?.(
-              `Could not reconcile runner-owned fields on closed task #${item.number}: ${error?.message ?? error}`,
-            );
+            if (failureReason) {
+              this.logger.warn?.(
+                `Could not reconcile runner-owned fields on closed task #${item.number}: ${failureReason}; preserving the resume pointer for a later retry.`,
+              );
+              continue;
+            }
           }
           await this.executor.discardResumeTask?.(
             task,

@@ -1111,16 +1111,153 @@ test("logs a warning when reconciling a closed resume task's release is not conf
 
   assert.ok(
     warns.some((message) =>
-      /Could not reconcile runner-owned fields on closed task #.*release-not-confirmed/.test(
+      /Could not reconcile runner-owned fields on closed task #.*release-not-confirmed.*preserving/i.test(
         message,
       ),
     ),
-    "a non-confirmed release must log a reconciliation warning",
+    "a non-confirmed release must log a reconciliation warning that preserves the pointer for retry",
   );
+  // On a non-confirmed reconciliation the pointer is PRESERVED for a later
+  // retry: discardResumeTask must NOT run, and the stale runner-owned fields
+  // must be left behind (never cleared) because the release was not confirmed.
+  assert.ok(
+    !executor.discarded,
+    "the resume pointer must be preserved (not discarded) when reconciliation is not confirmed",
+  );
+  assert.equal(item.fields.claimedBy, "resume:machine-a");
+  assert.equal(item.fields.leaseUntil, "2026-07-17T19:59:00Z");
+});
+
+test("preserves a closed resume task's pointer when reconciling release THROWS", async () => {
+  const item = makeItem();
+  item.state = "closed";
+  item.fields.claimedBy = "resume:machine-a";
+  item.fields.leaseUntil = "2026-07-17T19:59:00Z";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  // The reconciliation release uses status:"" (a quiet runner-owned clear), so
+  // key the throwing failure on the empty status string to force store.release
+  // to THROW during reconciliation.
+  const store = new FakeStore([item], {
+    releaseFailures: { "": 1 },
+  });
+  const warns = [];
+  const logger = {
+    warn: (message) => warns.push(message),
+    info() {},
+    error() {},
+  };
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger,
+  });
+
+  await daemon.tick();
+
+  // The thrown error's message must be surfaced in the preserve/retry warning,
+  // proving the catch branch (not the not-confirmed branch) preserved the
+  // pointer.
+  assert.ok(
+    warns.some((message) =>
+      /Could not reconcile runner-owned fields on closed task #.*Issue closure failed.*preserving.*retry/i.test(
+        message,
+      ),
+    ),
+    "a thrown reconciliation error must log a warning that preserves the pointer for retry",
+  );
+  // On a thrown reconciliation the pointer is PRESERVED for a later retry:
+  // discardResumeTask must NOT run.
+  assert.ok(
+    !executor.discarded,
+    "the resume pointer must be preserved (not discarded) when reconciliation throws",
+  );
+  // The FakeStore throws BEFORE clearing any fields, so the stale runner-owned
+  // claim fields must be left behind untouched.
+  assert.equal(item.fields.claimedBy, "resume:machine-a");
+  assert.equal(item.fields.leaseUntil, "2026-07-17T19:59:00Z");
+});
+
+test("discards a closed resume task's pointer only after a successful reconciliation clear", async () => {
+  const item = makeItem();
+  item.state = "closed";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  const store = new FakeStore([item]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
   assert.ok(
     executor.discarded,
-    "the closed resume task must still be discarded even when reconciliation is not confirmed",
+    "a successful reconciliation must discard the resume pointer",
   );
+  assert.equal(executor.discarded.task, task);
+  assert.equal(store.releases.length, 1);
+  assert.deepEqual(
+    {
+      status: store.releases[0].status,
+      force: store.releases[0].force,
+      allowExpired: store.releases[0].allowExpired,
+    },
+    { status: "", force: true, allowExpired: true },
+  );
+});
+
+test("discards an open done resume task without any reconciliation release", async () => {
+  const item = makeItem();
+  item.state = "open";
+  item.fields.status = "done";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  const store = new FakeStore([item]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
+  // An open item with Status "done" must take the origin/main discard path
+  // WITHOUT any reconciliation release write.
+  assert.equal(
+    store.releases.length,
+    0,
+    "an open done resume task must never trigger a reconciliation release",
+  );
+  assert.ok(executor.discarded, "the open done resume task must be discarded");
   assert.equal(executor.discarded.task, task);
 });
 
@@ -1226,9 +1363,19 @@ class FakeStore {
 
   async release(release) {
     this.releases.push(release);
+    if ((this.releaseFailures[release.status] ?? 0) > 0) {
+      this.releaseFailures[release.status] -= 1;
+      throw new Error("Issue closure failed");
+    }
+    if (this.releaseReleasedFalse) {
+      // Non-throwing release failure: report not-confirmed WITHOUT clearing any
+      // fields, so tests can prove stale runner-owned fields are left behind.
+      return { released: false, reason: this.releaseReleasedFalse.reason };
+    }
     if (release.status === "") {
-      // A quiet clear (status:"") writes ONLY the runner-owned fields; mirror
-      // that in the fake so tests can assert the claim fields end cleared.
+      // A genuinely successful quiet clear (status:"") writes ONLY the
+      // runner-owned fields; mirror that here so tests can assert the claim
+      // fields end cleared on the success path.
       const item = this.items.find(
         (candidate) => candidate.id === release.itemId,
       );
@@ -1236,15 +1383,6 @@ class FakeStore {
         item.fields.claimedBy = "";
         item.fields.leaseUntil = "";
       }
-    }
-    if ((this.releaseFailures[release.status] ?? 0) > 0) {
-      this.releaseFailures[release.status] -= 1;
-      throw new Error("Issue closure failed");
-    }
-    if (this.releaseReleasedFalse) {
-      // Simulate a non-throwing release failure: the side effects above still
-      // ran, but the store reports the release was not confirmed.
-      return { released: false, reason: this.releaseReleasedFalse.reason };
     }
     return { released: true };
   }
