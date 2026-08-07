@@ -1004,7 +1004,124 @@ test("discards a resume task whose Project item is closed without adopting or di
   assert.equal(executor.discarded.task, task);
   assert.equal(executor.started, undefined);
   assert.equal(store.claims.length, 0);
-  assert.equal(store.releases.length, 0);
+  // Reconciliation now quietly clears any stale runner-owned fields on the
+  // closed item before discarding: exactly one release, a quiet forced clear.
+  assert.equal(store.releases.length, 1);
+  assert.deepEqual(
+    {
+      status: store.releases[0].status,
+      force: store.releases[0].force,
+      allowExpired: store.releases[0].allowExpired,
+    },
+    { status: "", force: true, allowExpired: true },
+  );
+});
+
+test("clears stale runner-owned fields on a closed resume task before discarding it", async () => {
+  const item = makeItem();
+  item.state = "closed";
+  item.fields.claimedBy = "resume:machine-a";
+  item.fields.leaseUntil = "2026-07-17T19:59:00Z";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  const store = new FakeStore([item]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
+  const reconciliation = store.releases.find(
+    (release) => release.itemId === item.id && release.status === "",
+  );
+  assert.ok(
+    reconciliation,
+    "a quiet reconciliation release must clear the runner-owned fields",
+  );
+  assert.equal(reconciliation.force, true);
+  assert.equal(reconciliation.allowExpired, true);
+  assert.equal(reconciliation.runner, task.runner);
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  // Reconciliation must never comment on or write a lifecycle status to the
+  // closed Issue. Reopen is impossible on this path because the ONLY store
+  // write is the quiet status:"" release, which clears runner-owned fields and
+  // cannot reopen the Issue.
+  assert.equal(store.comments.length, 0, "no comment may be written on the closed Issue");
+  assert.ok(
+    store.releases
+      .filter((r) => r.itemId === item.id)
+      .every((r) => r.status === ""),
+    "every release on the closed item must be a quiet status:'' clear",
+  );
+  assert.deepEqual(
+    store.releases.filter(
+      (release) => release.itemId === item.id && release.status,
+    ),
+    [],
+    "no release may write a truthy status on the closed Issue",
+  );
+  assert.ok(executor.discarded, "the closed resume task must still be discarded");
+  assert.equal(executor.discarded.task, task);
+});
+
+test("logs a warning when reconciling a closed resume task's release is not confirmed", async () => {
+  const item = makeItem();
+  item.state = "closed";
+  item.fields.claimedBy = "resume:machine-a";
+  item.fields.leaseUntil = "2026-07-17T19:59:00Z";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  const store = new FakeStore([item], {
+    releaseReleasedFalse: { reason: "release-not-confirmed" },
+  });
+  const warns = [];
+  const logger = {
+    warn: (message) => warns.push(message),
+    info() {},
+    error() {},
+  };
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger,
+  });
+
+  await daemon.tick();
+
+  assert.ok(
+    warns.some((message) =>
+      /Could not reconcile runner-owned fields on closed task #.*release-not-confirmed/.test(
+        message,
+      ),
+    ),
+    "a non-confirmed release must log a reconciliation warning",
+  );
+  assert.ok(
+    executor.discarded,
+    "the closed resume task must still be discarded even when reconciliation is not confirmed",
+  );
+  assert.equal(executor.discarded.task, task);
 });
 
 class ClosedResumeExecutor {
@@ -1039,8 +1156,10 @@ class FakeStore {
       claimFailure,
       releaseFailures = {},
       claimResults = [],
+      releaseReleasedFalse,
     } = {},
   ) {
+    this.releaseReleasedFalse = releaseReleasedFalse;
     this.items = items;
     this.attentionRequests = [];
     this.attentionResolutions = [];
@@ -1107,9 +1226,25 @@ class FakeStore {
 
   async release(release) {
     this.releases.push(release);
+    if (release.status === "") {
+      // A quiet clear (status:"") writes ONLY the runner-owned fields; mirror
+      // that in the fake so tests can assert the claim fields end cleared.
+      const item = this.items.find(
+        (candidate) => candidate.id === release.itemId,
+      );
+      if (item) {
+        item.fields.claimedBy = "";
+        item.fields.leaseUntil = "";
+      }
+    }
     if ((this.releaseFailures[release.status] ?? 0) > 0) {
       this.releaseFailures[release.status] -= 1;
       throw new Error("Issue closure failed");
+    }
+    if (this.releaseReleasedFalse) {
+      // Simulate a non-throwing release failure: the side effects above still
+      // ran, but the store reports the release was not confirmed.
+      return { released: false, reason: this.releaseReleasedFalse.reason };
     }
     return { released: true };
   }

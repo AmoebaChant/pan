@@ -528,7 +528,7 @@ export class PanStore {
     }
 
     // Phase 2: the single meaningful lifecycle write. After the phase-split and
-    // the closed gate above, the ONLY remaining window is the irreducible
+    // the closed gate above, the remaining window is the irreducible
     // sub-millisecond network window in which the Issue closes DURING this
     // single unavoidable status write itself. In that window status:in-progress
     // may briefly land on the closed Issue, but the item is already excluded
@@ -536,7 +536,15 @@ export class PanStore {
     // the pre-write aborts, so it is never executed, and the runner-owned fields
     // are still cleared by the post-write closed guards below. This is not
     // "nothing is written" -- it is a stray Status value on an item no runner
-    // will ever act on, reconciled by recovery.
+    // will ever act on, reconciled by recovery. Note this is NOT the only
+    // possible residual write: symmetrically, an `--add-assignee` can land in
+    // its own irreducible sub-millisecond window at the assignee-add call below
+    // (see the pre-assign gate and final-read guard). Both stray writes are
+    // inert -- the item is excluded everywhere and its runner-owned CLAIM fields
+    // (claimedBy/leaseUntil) are always cleared inline and by the
+    // #recoverResumeTasks reconciliation, so the item is never resurrectable; we
+    // deliberately do not write status:ready or a --remove-assignee against a
+    // closed Issue to scrub these cosmetic residuals.
     await this.setFields(itemId, {
       status,
     });
@@ -621,6 +629,35 @@ export class PanStore {
       try {
         await this.#editAssignee(confirmed, "--add-assignee", assignee);
       } catch (error) {
+        // Split the rollback on Issue closure. If the Issue closed during the
+        // assignment attempt we do the QUIET runner-owned clear (status:"" ->
+        // only claimedBy/leaseUntil, never a Status write against a closed
+        // Issue). If the Issue is still open we keep the original behavior and
+        // return the item to the pool with status:"ready".
+        const afterAssignFailure = await this.#requireItem(itemId);
+        if (afterAssignFailure.state?.toLowerCase() === "closed") {
+          let rollback;
+          try {
+            rollback = await this.release({
+              itemId,
+              runner,
+              status: "",
+              allowExpired: true,
+            });
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              "Issue assignment failed and the claim rollback errored",
+            );
+          }
+          if (!rollback.released && rollback.reason !== "not-owner") {
+            throw new AggregateError(
+              [error, new Error(`Claim rollback failed: ${rollback.reason}`)],
+              "Issue assignment failed after claiming the item",
+            );
+          }
+          throw error;
+        }
         let rollback;
         try {
           rollback = await this.release({

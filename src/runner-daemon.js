@@ -645,6 +645,30 @@ export class RunnerDaemon {
           item.state?.toLowerCase() === "closed" ||
           item.fields.status === "done"
         ) {
+          // Self-healing reconciliation: a closed resume item may still carry
+          // stale runner-owned claim fields (claimedBy/leaseUntil), possibly a
+          // resume-affinity holder not equal to task.runner. force:true bypasses
+          // owner/expiry so we can clear it; status:"" writes ONLY
+          // claimedBy/leaseUntil (no Status write, no comment, no reopen). On
+          // failure we warn and continue so recovery never wedges the tick.
+          try {
+            const reconciled = await this.store.release({
+              itemId: task.itemId,
+              runner: task.runner,
+              status: "",
+              allowExpired: true,
+              force: true,
+            });
+            if (!reconciled?.released) {
+              this.logger.warn?.(
+                `Could not reconcile runner-owned fields on closed task #${item.number}: ${reconciled?.reason ?? "release not confirmed"}`,
+              );
+            }
+          } catch (error) {
+            this.logger.warn?.(
+              `Could not reconcile runner-owned fields on closed task #${item.number}: ${error?.message ?? error}`,
+            );
+          }
           await this.executor.discardResumeTask?.(
             task,
             "The Issue was closed while its runner was offline.",
