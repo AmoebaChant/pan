@@ -643,39 +643,84 @@ export class RunnerDaemon {
         }
         const isClosed = item.state?.toLowerCase() === "closed";
         // END-STATE MATRIX:
-        // - Closed item: reconcile FIRST, writing ONLY a quiet runner-owned
-        //   claim-field clear (status:"" => claimedBy/leaseUntil only; no
-        //   Status write, no comment, no assignee, no reopen). Success -> the
-        //   resume pointer is discarded. Failure (thrown OR not-confirmed) ->
-        //   the pointer is PRESERVED for a later retry; claim fields may remain
+        // - Closed item, reopened before the write: a re-read immediately
+        //   before reconciliation observes the item as no longer closed
+        //   (a deliberate un-cancel). Abort reconciliation, write NOTHING, and
+        //   PRESERVE the resume pointer so the reopened work resumes via normal
+        //   recovery on a later tick. This closes the stale-snapshot window in
+        //   which a reopen+reclaim between the closed read and the release
+        //   would otherwise clobber the new runner's live claim.
+        // - Closed item, still closed with the SAME claim we observed:
+        //   compare-and-clear. Release with runner === the observed claimedBy
+        //   and NO force, so release()'s own not-owner guard makes the clear a
+        //   no-op if the claim changed underneath us. Success -> the resume
+        //   pointer is discarded. Failure (thrown OR not-confirmed) -> the
+        //   pointer is PRESERVED for a later retry; claim fields may remain
         //   stale until a later successful tick, and are never dispatchable
         //   meanwhile because the item is closed and excluded everywhere.
+        // - Closed item, still closed but the claim CHANGED to another runner:
+        //   release returns not-owner (no force), no fields are cleared, and
+        //   the pointer is PRESERVED. We never clobber a foreign claim.
+        // - Closed item with NO claim to clear: skip the release entirely and
+        //   discard the pointer directly.
         // - Open item Status "done": reconciliation writes NOTHING (no
         //   store.release call, no field write); the origin/main discard
         //   proceeds directly.
         // - Open item any other Status: not in this branch.
         if (isClosed || item.fields.status === "done") {
           if (isClosed) {
-            let failureReason;
-            try {
-              const reconciled = await this.store.release({
-                itemId: task.itemId,
-                runner: task.runner,
-                status: "",
-                allowExpired: true,
-                force: true,
-              });
-              if (!reconciled?.released) {
-                failureReason = reconciled?.reason ?? "release not confirmed";
-              }
-            } catch (error) {
-              failureReason = error?.message ?? String(error);
-            }
-            if (failureReason) {
+            // Capture the EXACT claim value we observed on the closed read.
+            const observedClaimedBy = item.fields.claimedBy;
+
+            // Re-read immediately before any write. A reopened Issue is a
+            // deliberate un-cancel: if the item is no longer closed, abort
+            // reconciliation and PRESERVE the resume pointer so its legitimate
+            // work resumes on a later tick via normal recovery. This closes the
+            // stale-snapshot window where a reopen+reclaim between the closed
+            // read and the release would otherwise be clobbered.
+            const fresh = await this.store.getItem(task.itemId, { signal });
+            if (!fresh || fresh.state?.toLowerCase() !== "closed") {
               this.logger.warn?.(
-                `Could not reconcile runner-owned fields on closed task #${item.number}: ${failureReason}; preserving the resume pointer for a later retry.`,
+                `Resume task #${item.number} was reopened during reconciliation; preserving the resume pointer and leaving its fields untouched.`,
               );
               continue;
+            }
+
+            // Compare-and-clear. Only clear the runner-owned fields, and only
+            // if the claim STILL holds the exact stale value we observed. We
+            // pass that value as `runner` and DROP force:true, so release()'s
+            // own not-owner guard makes this a no-op if another runner has
+            // claimed the item in the meantime -- we can never clobber a live
+            // claim. If there is no claim to clear, skip the write entirely and
+            // proceed to discard. The residual window (between release()'s
+            // internal read and its write) is exactly the pre-existing,
+            // out-of-scope release() check-then-act race that is byte-identical
+            // on origin/main.
+            if (observedClaimedBy) {
+              let failureReason;
+              try {
+                const reconciled = await this.store.release({
+                  itemId: task.itemId,
+                  runner: observedClaimedBy,
+                  status: "",
+                  allowExpired: true,
+                });
+                if (!reconciled?.released) {
+                  failureReason = reconciled?.reason ?? "release not confirmed";
+                }
+              } catch (error) {
+                failureReason = error?.message ?? String(error);
+              }
+              if (failureReason) {
+                // Includes not-owner (the claim changed to another value while
+                // the Issue stayed closed -- pathological) and any write
+                // failure: leave the fields alone and PRESERVE the pointer for
+                // a later retry.
+                this.logger.warn?.(
+                  `Could not reconcile runner-owned fields on closed task #${item.number}: ${failureReason}; preserving the resume pointer for a later retry.`,
+                );
+                continue;
+              }
             }
           }
           await this.executor.discardResumeTask?.(

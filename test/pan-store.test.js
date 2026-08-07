@@ -960,16 +960,19 @@ test("release on a claimed blank-lease item succeeds under the owner check becau
   assert.equal(guarded.released, true);
 });
 
-test("release's ownership check-then-act is inherited unchanged from origin/main (documentation)", async () => {
-  // T2 -- documentation/pin test, no new production code. release() reads the
-  // item, checks ownership, then acts. This behavior is byte-identical to
-  // origin/main and is intentionally NOT changed by this branch. Here the
-  // stealClaimOnClose hook flips ownership to runner-thief during runner-a's
-  // phase-1 write; the subsequent #quietClaimRollback release() reads the
-  // stolen item and hits its not-owner guard, leaving the thief's live claim
-  // completely untouched. The purpose is only to pin that inherited behavior so
-  // a reviewer can see it is unchanged from main; the check-then-act race in
-  // release() is out of scope and deliberately not "fixed" here.
+test("release()'s not-owner guard leaves a foreign claim untouched when ownership changed BEFORE release's read (pre-read steal)", async () => {
+  // Documentation/pin test, no new production code. This covers ONLY the
+  // PRE-READ steal: the stealClaimOnClose hook flips ownership to runner-thief
+  // during runner-a's phase-1 write, i.e. BEFORE the subsequent
+  // #quietClaimRollback release() reads the item. release() then reads the
+  // already-stolen item and its not-owner guard fires, leaving the thief's live
+  // claim completely untouched. This is byte-identical to origin/main.
+  //
+  // The POST-READ window -- ownership changing AFTER release() reads the item
+  // but BEFORE it writes -- is the irreducible, pre-existing check-then-act
+  // race inside release(). That race is byte-identical to origin/main and is
+  // OUT OF SCOPE for this branch: this test does NOT exercise or fix it, and
+  // must not be read as claiming to.
   const { store } = fixture({
     items: [makeItem({ status: "ready" })],
     stealClaimOnClose: true,

@@ -1018,6 +1018,10 @@ test("legacy runner-stopped recovery query filters to open items so closed Issue
 test("discards a resume task whose Project item is closed without adopting or dispatching it", async () => {
   const item = makeItem();
   item.state = "closed";
+  // Give the closed item a real claim so reconciliation exercises the
+  // meaningful compare-and-clear path (an empty claim would skip the release).
+  item.fields.claimedBy = "resume:machine-a";
+  item.fields.leaseUntil = "2026-07-17T19:59:00Z";
   const task = {
     itemId: item.id,
     issueNumber: item.number,
@@ -1043,15 +1047,21 @@ test("discards a resume task whose Project item is closed without adopting or di
   assert.equal(executor.started, undefined);
   assert.equal(store.claims.length, 0);
   // Reconciliation now quietly clears any stale runner-owned fields on the
-  // closed item before discarding: exactly one release, a quiet forced clear.
+  // closed item before discarding via a compare-and-clear: exactly one release,
+  // a quiet clear with NO force, targeting the OBSERVED claimedBy.
   assert.equal(store.releases.length, 1);
   assert.deepEqual(
     {
       status: store.releases[0].status,
-      force: store.releases[0].force,
       allowExpired: store.releases[0].allowExpired,
     },
-    { status: "", force: true, allowExpired: true },
+    { status: "", allowExpired: true },
+  );
+  assert.ok(!store.releases[0].force, "the clear must NOT force");
+  assert.equal(
+    store.releases[0].runner,
+    "resume:machine-a",
+    "the clear must target the observed claimedBy, not task.runner",
   );
 });
 
@@ -1087,9 +1097,9 @@ test("clears stale runner-owned fields on a closed resume task before discarding
     reconciliation,
     "a quiet reconciliation release must clear the runner-owned fields",
   );
-  assert.equal(reconciliation.force, true);
+  assert.ok(!reconciliation.force, "the clear must NOT force");
   assert.equal(reconciliation.allowExpired, true);
-  assert.equal(reconciliation.runner, task.runner);
+  assert.equal(reconciliation.runner, "resume:machine-a");
   assert.equal(item.fields.claimedBy, "");
   assert.equal(item.fields.leaseUntil, "");
   // Reconciliation must never comment on or write a lifecycle status to the
@@ -1228,6 +1238,9 @@ test("preserves a closed resume task's pointer when reconciling release THROWS",
 test("discards a closed resume task's pointer only after a successful reconciliation clear", async () => {
   const item = makeItem();
   item.state = "closed";
+  // A real claim makes reconciliation perform the compare-and-clear release.
+  item.fields.claimedBy = "resume:machine-a";
+  item.fields.leaseUntil = "2026-07-17T19:59:00Z";
   const task = {
     itemId: item.id,
     issueNumber: item.number,
@@ -1257,11 +1270,11 @@ test("discards a closed resume task's pointer only after a successful reconcilia
   assert.deepEqual(
     {
       status: store.releases[0].status,
-      force: store.releases[0].force,
       allowExpired: store.releases[0].allowExpired,
     },
-    { status: "", force: true, allowExpired: true },
+    { status: "", allowExpired: true },
   );
+  assert.ok(!store.releases[0].force, "the clear must NOT force");
 });
 
 test("discards an open done resume task without any reconciliation release", async () => {
@@ -1299,6 +1312,144 @@ test("discards an open done resume task without any reconciliation release", asy
   assert.equal(executor.discarded.task, task);
 });
 
+test("R1: preserves the pointer and writes nothing when the Issue is reopened between the closed read and the release", async () => {
+  // A closed resume task observed with a stale claim. Between the closed read
+  // and the reconciliation write, another runner reopens (un-cancels) the Issue
+  // and reclaims it. The re-read inside #recoverResumeTasks must observe the
+  // item as OPEN and abort: no release write, pointer preserved, foreign claim
+  // untouched. This is the reviewer's required regression against clobbering an
+  // actively-executing OPEN task (duplicate execution).
+  const item = makeItem();
+  item.state = "closed";
+  item.fields.claimedBy = "resume:machine-a";
+  item.fields.leaseUntil = "2026-07-17T19:59:00Z";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  const store = new FakeStore([item], {
+    // The re-read flips the item to open and claimed by machine-b with a live
+    // future lease -- a deliberate reopen+reclaim by another runner.
+    reopenOnReRead: {
+      claimedBy: "machine-b/slot-1",
+      leaseUntil: "2099-01-01T00:00:00Z",
+    },
+  });
+  const warns = [];
+  const logger = {
+    warn: (message) => warns.push(message),
+    info() {},
+    error() {},
+  };
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger,
+  });
+
+  await daemon.tick();
+
+  assert.equal(
+    store.releases.length,
+    0,
+    "no release may be written once the Issue is observed reopened",
+  );
+  assert.ok(
+    !executor.discarded,
+    "the resume pointer must be preserved when the Issue was reopened",
+  );
+  const reopened = store.reopenedItems.get(item.id);
+  assert.ok(reopened, "the re-read must have returned the reopened item");
+  assert.equal(reopened.state, "open");
+  assert.equal(
+    reopened.fields.claimedBy,
+    "machine-b/slot-1",
+    "the new runner's claim must survive untouched",
+  );
+  assert.equal(reopened.fields.leaseUntil, "2099-01-01T00:00:00Z");
+  assert.ok(
+    warns.some((message) => /reopened during reconciliation.*preserving/i.test(message)),
+    "a warning must note the reopen and the preserved pointer",
+  );
+});
+
+test("R2: preserves the pointer via the not-owner guard when the claim changed to another runner while the Issue stayed closed", async () => {
+  // The item stays CLOSED on the re-read (so the closed check passes), but its
+  // current claim has changed to a DIFFERENT runner than the one we observed.
+  // The compare-and-clear release (runner = observed claimedBy, no force) must
+  // hit release()'s not-owner guard: no fields cleared, foreign claim survives,
+  // pointer preserved.
+  const item = makeItem();
+  item.state = "closed";
+  // Observed claim value at the closed read.
+  item.fields.claimedBy = "resume:machine-a";
+  item.fields.leaseUntil = "2026-07-17T19:59:00Z";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: "machine-a/pan-development/slot-1",
+    playbookId: "pan-development",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: true,
+  };
+  const executor = new ClosedResumeExecutor([task], new FakeHandle());
+  const store = new FakeStore([item]);
+  const warns = [];
+  const logger = {
+    warn: (message) => warns.push(message),
+    info() {},
+    error() {},
+  };
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger,
+  });
+
+  // Between the observed read and the reconciliation write, the claim flips to
+  // another runner while the Issue stays closed. The re-read returns the same
+  // still-closed item object, so we mutate its current claim just before the
+  // release call fires.
+  const originalRelease = store.release.bind(store);
+  store.release = async (release) => {
+    item.fields.claimedBy = "machine-b/slot-1";
+    return originalRelease(release);
+  };
+
+  await daemon.tick();
+
+  assert.equal(
+    store.releases.length,
+    1,
+    "the compare-and-clear release must be attempted",
+  );
+  assert.equal(store.releases[0].runner, "resume:machine-a");
+  assert.ok(!store.releases[0].force, "the clear must NOT force");
+  // The not-owner guard fired: the foreign claim survives untouched.
+  assert.equal(item.fields.claimedBy, "machine-b/slot-1");
+  assert.ok(
+    !executor.discarded,
+    "the resume pointer must be preserved when the claim changed to another runner",
+  );
+  assert.ok(
+    warns.some((message) =>
+      /Could not reconcile runner-owned fields on closed task #.*not-owner.*preserving.*retry/i.test(
+        message,
+      ),
+    ),
+    "a not-owner reconciliation must log a warning that preserves the pointer for retry",
+  );
+});
+
 class ClosedResumeExecutor {
   constructor(tasks, handle) {
     this.tasks = tasks;
@@ -1332,9 +1483,17 @@ class FakeStore {
       releaseFailures = {},
       claimResults = [],
       releaseReleasedFalse,
+      reopenOnReRead,
     } = {},
   ) {
     this.releaseReleasedFalse = releaseReleasedFalse;
+    // When set to { claimedBy, leaseUntil }, the SECOND+ getItem of the target
+    // item returns a shallow-cloned item flipped to state:"open" with the given
+    // runner-owned fields -- modeling a reopen+reclaim by another runner that
+    // lands between the closed read and the re-read inside #recoverResumeTasks.
+    this.reopenOnReRead = reopenOnReRead;
+    this.getItemCalls = new Map();
+    this.reopenedItems = new Map();
     this.items = items;
     this.attentionRequests = [];
     this.attentionResolutions = [];
@@ -1360,7 +1519,29 @@ class FakeStore {
   }
 
   async getItem(itemId) {
-    return this.items.find((item) => item.id === itemId);
+    const previous = this.getItemCalls.get(itemId) ?? 0;
+    const callIndex = previous + 1;
+    this.getItemCalls.set(itemId, callIndex);
+    const base = this.items.find((item) => item.id === itemId);
+    // reopenOnReRead models a reopen+reclaim by another runner that lands
+    // between the closed read (call 1) and the re-read (call 2+) inside
+    // #recoverResumeTasks. The first read returns the original closed item; the
+    // second+ read returns a DISTINCT clone flipped to open with the new
+    // runner's live claim, so the test can prove that claim survives untouched.
+    if (this.reopenOnReRead && base && base.id === itemId && callIndex >= 2) {
+      const reopened = {
+        ...base,
+        state: "open",
+        fields: {
+          ...base.fields,
+          claimedBy: this.reopenOnReRead.claimedBy,
+          leaseUntil: this.reopenOnReRead.leaseUntil,
+        },
+      };
+      this.reopenedItems.set(itemId, reopened);
+      return reopened;
+    }
+    return base;
   }
 
   async claimWithLease(claim) {
@@ -1411,15 +1592,28 @@ class FakeStore {
       return { released: false, reason: this.releaseReleasedFalse.reason };
     }
     if (release.status === "") {
+      // Model release()'s not-owner guard on the quiet clear path. Without
+      // force, a clear only succeeds when the runner we pass STILL holds the
+      // claim. If another runner has reclaimed the (still-closed) item since we
+      // observed it, the current claimedBy differs from release.runner and the
+      // guard fires: return not-owner WITHOUT clearing, so the foreign claim
+      // survives exactly as production's compare-and-clear guarantees.
+      const target = this.items.find(
+        (candidate) => candidate.id === release.itemId,
+      );
+      if (
+        !release.force &&
+        target &&
+        target.fields.claimedBy !== release.runner
+      ) {
+        return { released: false, reason: "not-owner" };
+      }
       // A genuinely successful quiet clear (status:"") writes ONLY the
       // runner-owned fields; mirror that here so tests can assert the claim
       // fields end cleared on the success path.
-      const item = this.items.find(
-        (candidate) => candidate.id === release.itemId,
-      );
-      if (item) {
-        item.fields.claimedBy = "";
-        item.fields.leaseUntil = "";
+      if (target) {
+        target.fields.claimedBy = "";
+        target.fields.leaseUntil = "";
       }
     }
     return { released: true };
