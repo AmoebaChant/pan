@@ -5,7 +5,6 @@ const DEFAULT_PROJECT_ITEM_SAFETY_LIMIT = 1_000;
 const PROJECT_PAGE_SIZE = 20;
 const CONFIRM_ATTEMPTS = 3;
 const CONFIRM_DELAY_MS = 250;
-const DEAD_LEASE = "1970-01-01T00:00:00Z"; // valid RFC3339 UTC timestamp firmly in the past
 const PROJECT_ITEM_SELECTION = `
   id
   fieldValues(first: 20) {
@@ -471,52 +470,20 @@ export class PanStore {
   }
 
   async #quietClaimRollback(itemId, runner) {
-    // Invariant: after this returns the item is either UNCLAIMED, or holds an
-    // EXPIRED lease under OUR runner -- never claimedBy-set-with-an-empty/
-    // immortal lease, and never with another runner's live lease disturbed.
-    //
-    // PRE-write the dead lease FIRST so that if release()'s setFields THROWS
-    // partway (claimedBy-clear is written before its leaseUntil-clear), the
-    // leaseUntil-clear never runs and the item degrades to an EXPIRED lease
-    // rather than keeping its live phase-1 lease. Gate it on a fresh
-    // ownership read so we never stomp a lease another runner acquired after
-    // ours expired (release() itself only writes when it still owns the
-    // claim; we mirror that here for the PRE-write).
-    try {
-      const current = await this.#requireItem(itemId);
-      if (current.fields.claimedBy === runner) {
-        await this.setFields(itemId, { leaseUntil: DEAD_LEASE });
-      }
-    } catch {
-      // Best-effort; the claim's own short future lease still expires.
-    }
-    const result = await this.release({
-      itemId,
-      runner,
-      status: "",
-      allowExpired: true,
-    });
-    // Post-release net: if release could not confirm the clear and the claim
-    // is still OURS, release()'s leaseUntil-clear may have SUCCEEDED (setting
-    // leaseUntil="" -- immortal) even though its claimedBy-clear silently
-    // no-op'd. Re-assert the dead lease so the stranded claim is EXPIRED
-    // (reclaimable by expiry-based recovery), never immortal. The guard is
-    // tightened to reason !== "not-owner" AND claimedBy === runner so we never
-    // re-assert a lease onto a claim a different runner already stole. This is
-    // a runner-owned field only: no lifecycle Status write and no assignee
-    // write on the (closed) Issue.
-    if (
-      !result.released &&
-      result.reason !== "not-owner" &&
-      result.item?.fields?.claimedBy === runner
-    ) {
-      try {
-        await this.setFields(itemId, { leaseUntil: DEAD_LEASE });
-      } catch {
-        // Best-effort.
-      }
-    }
-    return result;
+    // A closed-mid-claim rollback: quietly clear ONLY the runner-owned fields
+    // (status:"" writes no lifecycle Status). allowExpired:true is still required
+    // for the short-lease-expired-during-claim case. release() writes claimedBy
+    // BEFORE leaseUntil, so if this write fails partway the item is left with
+    // stranded runner-owned fields on a CLOSED Issue. That is harmless debris,
+    // not a recoverable live claim: a closed item is excluded from every
+    // dispatch/claim/recovery path by the `open` filter (tick and both recovery
+    // passes read open:true), and a mid-claim failure leaves no resume pointer,
+    // so nothing reconciles it while the Issue stays closed -- but nothing acts
+    // on it either. And because the lease is left blank or expired (isExpired
+    // treats a blank lease as expired), if the Issue is ever reopened the item
+    // is immediately claimable rather than an immortal claim. No dead-lease
+    // bookkeeping is needed.
+    return this.release({ itemId, runner, status: "", allowExpired: true });
   }
 
   async claimWithLease({
@@ -581,15 +548,20 @@ export class PanStore {
     // the pre-write aborts, so it is never executed, and the runner-owned fields
     // are still cleared by the post-write closed guards below. This is not
     // "nothing is written" -- it is a stray Status value on an item no runner
-    // will ever act on, reconciled by recovery. Note this is NOT the only
-    // possible residual write: symmetrically, an `--add-assignee` can land in
-    // its own irreducible sub-millisecond window at the assignee-add call below
-    // (see the pre-assign gate and final-read guard). Both stray writes are
-    // inert -- the item is excluded everywhere and its runner-owned CLAIM fields
-    // (claimedBy/leaseUntil) are always cleared inline and by the
-    // #recoverResumeTasks reconciliation, so the item is never resurrectable; we
-    // deliberately do not write status:ready or a --remove-assignee against a
-    // closed Issue to scrub these cosmetic residuals.
+    // will ever act on. Note this is NOT the only possible residual write:
+    // symmetrically, an `--add-assignee` can land in its own irreducible
+    // sub-millisecond window at the assignee-add call below (see the pre-assign
+    // gate and final-read guard). Both stray writes are inert because the item
+    // is excluded everywhere by the `open` filter. On the normal path the
+    // runner-owned CLAIM fields (claimedBy/leaseUntil) are cleared inline by the
+    // post-write closed guards; if a guard's own rollback release fails they
+    // remain as harmless debris on the closed item -- closed items are excluded
+    // from the #recoverResumeTasks/#recoverLegacyRunnerStops passes (open:true)
+    // and a mid-claim failure leaves no resume pointer, so recovery does NOT
+    // reconcile them, but the blank/expired lease keeps the item claimable (not
+    // an immortal claim) if it is ever reopened. We deliberately do not write
+    // status:ready or a --remove-assignee against a closed Issue to scrub these
+    // cosmetic residuals.
     await this.setFields(itemId, {
       status,
     });
@@ -654,8 +626,11 @@ export class PanStore {
       // up to this point already skipped the add. The residual sub-millisecond
       // network window on the `gh issue edit --add-assignee` call itself cannot
       // be eliminated; if the Issue closes exactly during this call the stray
-      // assignee is left for the recovery paths to correct -- no status write
-      // and no remove-assignee write ever hit the closed Issue.
+      // assignee is left in place deliberately -- no status write and no
+      // remove-assignee write ever hit the closed Issue, and closed-item
+      // recovery removes no assignee, so it stays put. It is inert because the
+      // closed item is excluded from every dispatch/claim path by the `open`
+      // filter.
       try {
         await this.#editAssignee(confirmed, "--add-assignee", assignee);
       } catch (error) {
@@ -715,14 +690,16 @@ export class PanStore {
       // residual is that an assignee ADD may already have landed on the Issue
       // during the sub-millisecond network window of the
       // `gh issue edit --add-assignee` call BEFORE closure was observed at this
-      // final read; that stray assignee is deliberately left for the recovery
-      // paths to reconcile, and we intentionally do NOT issue a remove-assignee
-      // write against the now-closed Issue. Separately, an Issue can still close
-      // on GitHub strictly AFTER this read returns open -- an irreducible
-      // network TOCTOU, genuinely mid-execution -- caught by next-poll dispatch
-      // guards and recovery paths. allowExpired:true is REQUIRED so the runner
-      // can clear its own just-written claim even if the lease expired during
-      // confirmation.
+      // final read; that stray assignee is left in place DELIBERATELY -- we
+      // intentionally do NOT issue a remove-assignee write against the now-closed
+      // Issue, and the closed-item recovery pass passes no assignee and performs
+      // no assignee removal, so nothing scrubs it. It is inert because the item
+      // is excluded from every dispatch/claim path by the `open` filter.
+      // Separately, an Issue can still close on GitHub strictly AFTER this read
+      // returns open -- an irreducible network TOCTOU, genuinely mid-execution --
+      // caught by next-poll dispatch guards. allowExpired:true is REQUIRED so the
+      // runner can clear its own just-written claim even if the lease expired
+      // during confirmation.
       const rollback = await this.#quietClaimRollback(itemId, runner);
       if (!rollback.released && rollback.reason !== "not-owner") {
         throw new Error(
@@ -1520,8 +1497,11 @@ function validateRunnerAndLease(runner, leaseUntil, now) {
 }
 
 function isExpired(leaseUntil, now) {
+  // Invariant: every legitimate live claim always carries a future lease.
+  // A claim with no lease is debris, not a live claim, so treat a blank/
+  // missing lease as expired -> claimable/reconcilable (self-healing).
   if (!leaseUntil) {
-    return false;
+    return true;
   }
   const parsed = Date.parse(leaseUntil);
   return !Number.isFinite(parsed) || parsed <= now.getTime();
