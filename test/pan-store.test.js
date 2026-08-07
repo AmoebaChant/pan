@@ -207,6 +207,56 @@ test("filters canonical items by fields, requirements, and lease state", async (
   );
 });
 
+test("excludes closed Issue-backed items when filtering by open", async () => {
+  const { store } = fixture({
+    items: [
+      makeItem({
+        id: "open-ready",
+        owner: "agent",
+        status: "ready",
+        state: "OPEN",
+      }),
+      makeItem({
+        id: "undefined-ready",
+        owner: "agent",
+        status: "ready",
+        state: undefined,
+      }),
+      makeItem({
+        id: "empty-ready",
+        owner: "agent",
+        status: "ready",
+        state: "",
+      }),
+      makeItem({
+        id: "closed-ready",
+        owner: "agent",
+        status: "ready",
+        state: "CLOSED",
+      }),
+      makeItem({
+        id: "mixedcase-closed-ready",
+        owner: "agent",
+        status: "ready",
+        state: "Closed",
+      }),
+      makeItem({
+        id: "lower-closed-ready",
+        owner: "agent",
+        status: "ready",
+        state: "closed",
+      }),
+    ],
+  });
+
+  assert.deepEqual(
+    (await store.listByFilter({ owner: "agent", open: true })).map(
+      (item) => item.id,
+    ),
+    ["open-ready", "undefined-ready", "empty-ready"],
+  );
+});
+
 test("bounds board reads and fetches individual items directly", async () => {
   const { store, gh } = fixture();
 
@@ -393,6 +443,167 @@ test("does not steal an active lease from another runner", async () => {
     { claimed: false, reason: "leased" },
   );
   assert.equal(result.item.fields.claimedBy, "runner-a");
+});
+
+test("aborts a claim on a closed Issue without writing any field or assignment", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready", state: "CLOSED" })],
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.status, "ready");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(gh.issueEdits, []);
+  assert.equal(gh.projectEdits, 0);
+});
+
+test("releases the claim when the Issue closes between the claim write and its confirmation", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  // Runner-owned fields are cleared, but the quiet rollback must not write the
+  // status field on the now-closed Issue.
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+  );
+  assert.deepEqual(gh.issueComments, []);
+});
+
+test("releases the claim and reports issue-closed when confirmation fails on a now-closed Issue", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    mismatchAndCloseOnFieldEdit: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+  );
+  assert.deepEqual(gh.issueComments, []);
+});
+
+test("tolerates a not-owner release during a closed rollback without throwing", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    stealClaimOnClose: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+});
+
+test("throws when the closed rollback release cannot be confirmed", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    failReleaseConfirmOnClose: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /Claim rollback failed/,
+  );
+});
+
+test("releases the claim without touching the assignee when the Issue closes at the assignee write", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnAssign: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.notEqual(result.claimed, true);
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  // The final-read closed path must NOT write status and must NOT remove the
+  // assignee on the closed Issue; the stray assignee is left for recovery.
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  const assigneeEdits = gh.issueEdits.filter((e) => e.assignee === "octocat");
+  assert.deepEqual(
+    assigneeEdits.map((e) => e.flag),
+    ["--add-assignee"],
+    "no remove-assignee write may land on the closed Issue",
+  );
 });
 
 test("rolls back a claim when Issue assignment fails", async () => {
@@ -768,6 +979,11 @@ function fixture({
   projectPageSize,
   projectItemSafetyLimit,
   workstreamStore,
+  closeOnFieldEdit = false,
+  mismatchAndCloseOnFieldEdit = false,
+  closeOnAssign = false,
+  stealClaimOnClose = false,
+  failReleaseConfirmOnClose = false,
 } = {}) {
   const gh = new FakeGh(items, {
     failAssignee,
@@ -781,6 +997,11 @@ function fixture({
     failProjectRead,
     failIssueClose,
     projectPageSize,
+    closeOnFieldEdit,
+    mismatchAndCloseOnFieldEdit,
+    closeOnAssign,
+    stealClaimOnClose,
+    failReleaseConfirmOnClose,
   });
   return {
     gh,
@@ -813,6 +1034,11 @@ class FakeGh {
       failProjectRead = false,
       projectPageSize,
       failIssueClose = false,
+      closeOnFieldEdit = false,
+      mismatchAndCloseOnFieldEdit = false,
+      closeOnAssign = false,
+      stealClaimOnClose = false,
+      failReleaseConfirmOnClose = false,
     } = {},
   ) {
     this.items = structuredClone(items);
@@ -827,10 +1053,16 @@ class FakeGh {
     this.failProjectRead = failProjectRead;
     this.projectPageSize = projectPageSize;
     this.failIssueClose = failIssueClose;
+    this.closeOnFieldEdit = closeOnFieldEdit;
+    this.mismatchAndCloseOnFieldEdit = mismatchAndCloseOnFieldEdit;
+    this.closeOnAssign = closeOnAssign;
+    this.stealClaimOnClose = stealClaimOnClose;
+    this.failReleaseConfirmOnClose = failReleaseConfirmOnClose;
     this.issueCreates = [];
     this.issueEdits = [];
     this.issueStateEdits = [];
     this.issueComments = [];
+    this.projectFieldEdits = [];
     this.commentsByIssue = new Map();
     this.projectOrders = [];
     this.deletedIssues = [];
@@ -854,8 +1086,64 @@ class FakeGh {
       if (this.failProjectEdit) {
         throw new Error("project edit failed");
       }
+      const isClear = args.includes("--clear");
+      const fieldId = valueAfter(args, "--field-id");
+      const targetField = MANIFEST.fields.find(
+        (candidate) => `field-${candidate.key}` === fieldId,
+      );
+      if (
+        this.failReleaseConfirmOnClose &&
+        isClear &&
+        targetField?.key === "claimedBy"
+      ) {
+        // Sabotage ONLY the rollback release's clear of the runner-owned
+        // claimed-by field: skip the actual clear so the value stays "runner-a"
+        // and the release's own confirmation mismatches, yielding
+        // release-not-confirmed (a non-not-owner failure the quiet rollback
+        // must surface by throwing).
+        this.projectEdits += 1;
+        return "";
+      }
       this.projectEdits += 1;
       this.#editProjectItem(args);
+      if (this.closeOnFieldEdit) {
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited?.content) {
+          edited.content.state = "CLOSED";
+        }
+      }
+      if (this.failReleaseConfirmOnClose) {
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited?.content) {
+          edited.content.state = "CLOSED";
+        }
+      }
+      if (this.stealClaimOnClose) {
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited) {
+          edited["claimed-by"] = "runner-thief";
+          if (edited.content) {
+            edited.content.state = "CLOSED";
+          }
+        }
+      }
+      if (this.mismatchAndCloseOnFieldEdit) {
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited?.Status === "in-progress") {
+          edited.Status = "blocked";
+          if (edited.content) {
+            edited.content.state = "CLOSED";
+          }
+        }
+      }
       return "";
     }
     if (args[0] === "issue" && args[1] === "edit") {
@@ -886,6 +1174,14 @@ class FakeGh {
           item.assignees = item.assignees.filter(
             (candidate) => candidate !== assignee,
           );
+        }
+      }
+      if (this.closeOnAssign && flag === "--add-assignee") {
+        const closing = this.items.find(
+          (candidate) => candidate.content?.number === Number(args[2]),
+        );
+        if (closing?.content) {
+          closing.content.state = "CLOSED";
         }
       }
       return "";
@@ -1046,18 +1342,42 @@ class FakeGh {
     const field = MANIFEST.fields.find(
       (candidate) => `field-${candidate.key}` === fieldId,
     );
+    // Record every field write together with whether the Issue was already
+    // closed at the moment of the write, so tests can assert that no status (or
+    // other) field write ever lands on a closed Issue during a rollback.
+    const closedAtEdit = item.content?.state === "CLOSED";
     if (args.includes("--clear")) {
+      this.projectFieldEdits.push({
+        id: item.id,
+        field: field.key,
+        value: "",
+        closedAtEdit,
+      });
       item[field.name] = "";
       return;
     }
     if (field.type === "single_select") {
       const optionId = valueAfter(args, "--single-select-option-id");
-      item[field.name] = field.options.find(
+      const value = field.options.find(
         (option) => `${field.key}-${option}` === optionId,
       );
+      this.projectFieldEdits.push({
+        id: item.id,
+        field: field.key,
+        value,
+        closedAtEdit,
+      });
+      item[field.name] = value;
       return;
     }
-    item[field.name] = valueAfter(args, "--text");
+    const value = valueAfter(args, "--text");
+    this.projectFieldEdits.push({
+      id: item.id,
+      field: field.key,
+      value,
+      closedAtEdit,
+    });
+    item[field.name] = value;
   }
 
   #graphQlItem(item) {

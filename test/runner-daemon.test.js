@@ -782,6 +782,201 @@ test("treats the pan-work#9 terminal shutdown false positive as operational", as
   assert.match(store.comments.at(-1), /Agent stopped/i);
 });
 
+test("never claims or writes to a closed Issue whose Project fields still look ready", async () => {
+  const item = makeItem();
+  item.state = "closed";
+  const store = new FakeStore([item]);
+  const executor = new FakeExecutor(new FakeHandle());
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.claims.length, 0);
+  assert.equal(executor.started, undefined);
+  assert.equal(store.comments.length, 0);
+  assert.equal(store.attentionRequests.length, 0);
+  assert.equal(store.releases.length, 0);
+});
+
+test("aborts the claim when an Issue closes between poll and claim without any GitHub write", async () => {
+  // Under test: the DAEMON's reaction to a not-claimed (issue-closed) claim
+  // result. The item is OPEN during selection (so it passes the open filter and
+  // dispatchBlocker and claimWithLease is actually reached), and the store
+  // returns an injected issue-closed result. The daemon must abort cleanly
+  // without starting execution, commenting, requesting attention, or releasing.
+  const item = makeItem();
+  item.state = "open";
+  const store = new FakeStore([item], {
+    claimResults: [{ claimed: false, reason: "issue-closed", item }],
+  });
+  const executor = new FakeExecutor(new FakeHandle());
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.claims.length, 0);
+  assert.equal(executor.started, undefined);
+  assert.equal(store.comments.length, 0);
+  assert.equal(store.attentionRequests.length, 0);
+  assert.equal(store.releases.length, 0);
+});
+
+test("still selects an open Issue with the same ready fields", async () => {
+  const item = makeItem();
+  item.state = "open";
+  const store = new FakeStore([item]);
+  const executor = new FakeExecutor(new FakeHandle());
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.runOnce();
+
+  assert.equal(store.claims.length, 1);
+  assert.equal(executor.started.item.number, 1);
+  assert.equal(store.releases.at(-1).status, "in-review");
+});
+
+test("logs a closed-Issue skip at most once across repeated polls", async () => {
+  const item = makeItem();
+  item.state = "closed";
+  const store = new FakeStore([item]);
+  const messages = [];
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(new FakeHandle()),
+    logger: {
+      ...silentLogger,
+      info: (message) => messages.push(message),
+    },
+  });
+
+  await daemon.tick();
+  await daemon.tick();
+  await daemon.tick();
+
+  const closedSkips = messages.filter((message) =>
+    /Skipping task #1: its Issue is closed\./.test(message),
+  );
+  assert.equal(closedSkips.length, 1);
+});
+
+test("skips legacy runner-stopped recovery for a closed Issue without any GitHub write", async () => {
+  const item = makeItem();
+  item.state = "closed";
+  item.fields.status = "blocked";
+  const store = new FakeStore([item], {
+    issueComments: [
+      {
+        body: formatNeedsHuman({
+          kind: "approval",
+          prompt: "Runner failure: Runner stopped",
+        }),
+      },
+    ],
+  });
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(new FakeHandle()),
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
+  assert.equal(store.claims.length, 0);
+  assert.equal(store.releases.length, 0);
+  assert.equal(store.comments.length, 0);
+  assert.equal(store.attentionResolutions.length, 0);
+  assert.equal(
+    store.listCommentsCalls.length,
+    0,
+    "legacy recovery must short-circuit on the closed Issue before reading its comments",
+  );
+});
+
+test("tick poll query filters to open items so closed Issues are excluded before dispatch", async () => {
+  const item = makeItem();
+  const store = new FakeStore([item]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(new FakeHandle()),
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
+  const tickQuery = store.filterCalls.find(
+    (filters) => filters.owner === "agent" && filters.status === "ready",
+  );
+  assert.ok(tickQuery, "tick must issue a ready-work poll query");
+  assert.deepEqual(tickQuery, {
+    owner: "agent",
+    status: "ready",
+    claimable: true,
+    open: true,
+  });
+  assert.equal(
+    tickQuery.open,
+    true,
+    "tick poll query must include open:true so closed Issues are never fetched for dispatch",
+  );
+});
+
+test("legacy runner-stopped recovery query filters to open items so closed Issues are excluded", async () => {
+  const item = makeItem();
+  item.fields.status = "blocked";
+  const store = new FakeStore([item], {
+    issueComments: [
+      {
+        body: formatNeedsHuman({
+          kind: "approval",
+          prompt: "Runner failure: Runner stopped",
+        }),
+      },
+    ],
+  });
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor: new FakeExecutor(new FakeHandle()),
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
+  const legacyQuery = store.filterCalls.find(
+    (filters) => filters.owner === "agent" && filters.status === "blocked",
+  );
+  assert.ok(legacyQuery, "legacy recovery must issue a blocked-work query");
+  assert.deepEqual(legacyQuery, {
+    owner: "agent",
+    status: "blocked",
+    unclaimed: true,
+    open: true,
+  });
+  assert.equal(
+    legacyQuery.open,
+    true,
+    "legacy recovery query must include open:true so closed Issues are never recovered",
+  );
+});
+
 class FakeStore {
   constructor(
     items,
@@ -791,6 +986,7 @@ class FakeStore {
       issueComments = [],
       claimFailure,
       releaseFailures = {},
+      claimResults = [],
     } = {},
   ) {
     this.items = items;
@@ -803,13 +999,17 @@ class FakeStore {
     this.issueComments = issueComments;
     this.claimFailure = claimFailure;
     this.releaseFailures = { ...releaseFailures };
+    this.claimResults = Array.isArray(claimResults) ? [...claimResults] : [];
     this.claims = [];
     this.comments = [];
     this.releases = [];
     this.heartbeats = [];
+    this.listCommentsCalls = [];
+    this.filterCalls = [];
   }
 
-  async listByFilter() {
+  async listByFilter(filters = {}) {
+    this.filterCalls.push(filters);
     return this.items;
   }
 
@@ -818,13 +1018,24 @@ class FakeStore {
   }
 
   async claimWithLease(claim) {
+    const current = this.items.find((item) => item.id === claim.itemId);
+    if (this.claimResults.length > 0) {
+      const forced = this.claimResults.shift();
+      if (!forced.claimed) {
+        // An injected non-claimed result short-circuits before recording a
+        // claim, so store.claims stays empty exactly as production aborts.
+        return forced;
+      }
+      this.claims.push(claim);
+      return forced;
+    }
     this.claims.push(claim);
     if (this.claimFailure) {
       throw this.claimFailure;
     }
     return {
       claimed: true,
-      item: this.items.find((item) => item.id === claim.itemId),
+      item: current,
     };
   }
 
@@ -837,7 +1048,8 @@ class FakeStore {
     this.issueComments.push({ body });
   }
 
-  async listComments() {
+  async listComments(item) {
+    this.listCommentsCalls.push(item);
     return this.issueComments;
   }
 

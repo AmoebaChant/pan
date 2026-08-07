@@ -52,6 +52,7 @@ export class RunnerDaemon {
     this.setWindowTitle = setWindowTitle;
     this.active = new Map();
     this.escalatedRequirements = new Set();
+    this.loggedClosedSkips = new Set();
     this.#refreshWindowTitle();
   }
 
@@ -122,14 +123,19 @@ export class RunnerDaemon {
       owner: "agent",
       status: "ready",
       claimable: true,
+      open: true,
     });
     const candidates = [];
     for (const item of items) {
       const blocker = dispatchBlocker(item);
       if (blocker) {
-        this.logger.info?.(
-          `Skipping task #${item.number}: ${blocker.message}.`,
-        );
+        if (blocker.code === "issue-closed") {
+          this.#logClosedSkip(item);
+        } else {
+          this.logger.info?.(
+            `Skipping task #${item.number}: ${blocker.message}.`,
+          );
+        }
         continue;
       }
       candidates.push(item);
@@ -609,6 +615,19 @@ export class RunnerDaemon {
     ).toISOString();
   }
 
+  #logClosedSkip(item) {
+    if (this.loggedClosedSkips.has(item.number)) {
+      return;
+    }
+    this.loggedClosedSkips.add(item.number);
+    const message = `Skipping task #${item.number}: its Issue is closed.`;
+    if (this.logger.debug) {
+      this.logger.debug(message);
+    } else {
+      this.logger.info?.(message);
+    }
+  }
+
   async #recoverResumeTasks(signal) {
     const tasks = this.executor.listResumeTasks
       ? await this.executor.listResumeTasks()
@@ -757,8 +776,12 @@ export class RunnerDaemon {
       owner: "agent",
       status: "blocked",
       unclaimed: true,
+      open: true,
     });
     for (const item of blocked) {
+      if (item.state?.toLowerCase() === "closed") {
+        continue;
+      }
       const comments = await this.store.listComments(item);
       const pending = latestNeedsHuman(comments);
       if (!/^Runner failure: Runner stopped(?:$|:)/i.test(pending?.prompt ?? "")) {

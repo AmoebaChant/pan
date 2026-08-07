@@ -141,6 +141,12 @@ export function unsatisfiableRequirements(item, profile) {
 }
 
 export function dispatchBlocker(item) {
+  if (item.state?.toLowerCase() === "closed") {
+    return {
+      code: "issue-closed",
+      message: "its Issue is closed",
+    };
+  }
   if (item.fields?.owner !== "agent") {
     return {
       code: "owner-not-agent",

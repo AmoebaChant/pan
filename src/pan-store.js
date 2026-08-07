@@ -478,6 +478,9 @@ export class PanStore {
   }) {
     validateRunnerAndLease(runner, leaseUntil, this.now());
     const current = await this.#requireItem(itemId);
+    if (current.state?.toLowerCase() === "closed") {
+      return { claimed: false, reason: "issue-closed", item: current };
+    }
     const holder = current.fields.claimedBy;
     const leaseIsActive =
       holder &&
@@ -502,13 +505,49 @@ export class PanStore {
       status,
     });
     if (!confirmed) {
-      return {
-        claimed: false,
-        reason: "claim-not-confirmed",
-        item: await this.#requireItem(itemId),
-      };
+      const item = await this.#requireItem(itemId);
+      if (item.state?.toLowerCase() === "closed") {
+        // Quiet, runner-owned-only rollback: never write the Status field or an
+        // assignee on a closed Issue. status:"" still clears the runner-owned
+        // claimedBy/leaseUntil (a runner-owned write) without any Status-field
+        // or assignee write. The lease was written fresh immediately above, so
+        // it is never expired here and allowExpired is unnecessary.
+        const rollback = await this.release({
+          itemId,
+          runner,
+          status: "",
+        });
+        if (!rollback.released && rollback.reason !== "not-owner") {
+          throw new Error(
+            `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+          );
+        }
+        return { claimed: false, reason: "issue-closed", item };
+      }
+      return { claimed: false, reason: "claim-not-confirmed", item };
+    }
+    if (confirmed.state?.toLowerCase() === "closed") {
+      // Closure observed in the confirmed read; quietly release the just-written
+      // claim without any status or assignee write on the now-closed Issue.
+      const rollback = await this.release({
+        itemId,
+        runner,
+        status: "",
+      });
+      if (!rollback.released && rollback.reason !== "not-owner") {
+        throw new Error(
+          `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+        );
+      }
+      return { claimed: false, reason: "issue-closed", item: confirmed };
     }
     if (assignee) {
+      // The confirmed read immediately above returned open, so closure detected
+      // up to this point already skipped the add. The residual sub-millisecond
+      // network window on the `gh issue edit --add-assignee` call itself cannot
+      // be eliminated; if the Issue closes exactly during this call the stray
+      // assignee is left for the recovery paths to correct -- no status write
+      // and no remove-assignee write ever hit the closed Issue.
       try {
         await this.#editAssignee(confirmed, "--add-assignee", assignee);
       } catch (error) {
@@ -533,6 +572,34 @@ export class PanStore {
         }
         throw error;
       }
+    }
+    const finalItem = await this.#requireItem(itemId);
+    if (finalItem.state?.toLowerCase() === "closed") {
+      // Final authoritative gate. On this closed path we quietly release the
+      // just-written claim with status:"" -- this clears only the runner-owned
+      // fields (claimedBy/leaseUntil) and issues NO Status-field write and NO
+      // remove-assignee write against the closed Issue -- and return
+      // claimed:false so the runner never executes. The ONLY irreducible
+      // residual is that an assignee ADD may already have landed on the Issue
+      // during the sub-millisecond network window of the
+      // `gh issue edit --add-assignee` call BEFORE closure was observed at this
+      // final read; that stray assignee is deliberately left for the recovery
+      // paths to reconcile, and we intentionally do NOT issue a remove-assignee
+      // write against the now-closed Issue. Separately, an Issue can still close
+      // on GitHub strictly AFTER this read returns open -- an irreducible
+      // network TOCTOU, genuinely mid-execution -- caught by next-poll dispatch
+      // guards and recovery paths.
+      const rollback = await this.release({
+        itemId,
+        runner,
+        status: "",
+      });
+      if (!rollback.released && rollback.reason !== "not-owner") {
+        throw new Error(
+          `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
+        );
+      }
+      return { claimed: false, reason: "issue-closed", item: finalItem };
     }
     return { claimed: true, item: confirmed };
   }
@@ -1210,6 +1277,11 @@ function matchesFilters(item, filters, now) {
         isResumeAffinity(item.fields.claimedBy) ||
         isExpired(item.fields.leaseUntil, now);
       if (Boolean(expected) !== claimable) {
+        return false;
+      }
+    } else if (key === "open") {
+      const isClosed = String(item.state ?? "").toLowerCase() === "closed";
+      if (Boolean(expected) === isClosed) {
         return false;
       }
     } else if (key in item.fields) {

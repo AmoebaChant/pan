@@ -146,6 +146,30 @@ test("dispatches an agent item that has no workstream", () => {
   assert.equal(matchingPlaybook(item, profile).id, "pan-development");
 });
 
+test("refuses to dispatch a closed Issue before any other check", () => {
+  const runnable = {
+    state: "closed",
+    fields: { owner: "someone-else", workstream: "pan" },
+    requirements: [],
+  };
+
+  assert.equal(
+    dispatchBlocker(runnable).code,
+    "issue-closed",
+    "the closed check must precede the owner and requirement checks",
+  );
+  assert.equal(
+    dispatchBlocker({
+      ...runnable,
+      state: "open",
+      fields: { owner: "agent", workstream: "pan" },
+      requirements: ["repo:example/tool", "env:local", "tool:node22"],
+    }),
+    undefined,
+    "an open Issue with valid fields must dispatch",
+  );
+});
+
 test("names the field that makes a ready item undispatchable", () => {
   const runnable = {
     fields: { owner: "agent", workstream: "pan" },
