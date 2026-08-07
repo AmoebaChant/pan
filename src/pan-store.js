@@ -5,6 +5,7 @@ const DEFAULT_PROJECT_ITEM_SAFETY_LIMIT = 1_000;
 const PROJECT_PAGE_SIZE = 20;
 const CONFIRM_ATTEMPTS = 3;
 const CONFIRM_DELAY_MS = 250;
+const DEAD_LEASE = "1970-01-01T00:00:00Z"; // valid RFC3339 UTC timestamp firmly in the past
 const PROJECT_ITEM_SELECTION = `
   id
   fieldValues(first: 20) {
@@ -469,6 +470,55 @@ export class PanStore {
     }));
   }
 
+  async #quietClaimRollback(itemId, runner) {
+    // Invariant: after this returns the item is either UNCLAIMED, or holds an
+    // EXPIRED lease under OUR runner -- never claimedBy-set-with-an-empty/
+    // immortal lease, and never with another runner's live lease disturbed.
+    //
+    // PRE-write the dead lease FIRST so that if release()'s setFields THROWS
+    // partway (claimedBy-clear is written before its leaseUntil-clear), the
+    // leaseUntil-clear never runs and the item degrades to an EXPIRED lease
+    // rather than keeping its live phase-1 lease. Gate it on a fresh
+    // ownership read so we never stomp a lease another runner acquired after
+    // ours expired (release() itself only writes when it still owns the
+    // claim; we mirror that here for the PRE-write).
+    try {
+      const current = await this.#requireItem(itemId);
+      if (current.fields.claimedBy === runner) {
+        await this.setFields(itemId, { leaseUntil: DEAD_LEASE });
+      }
+    } catch {
+      // Best-effort; the claim's own short future lease still expires.
+    }
+    const result = await this.release({
+      itemId,
+      runner,
+      status: "",
+      allowExpired: true,
+    });
+    // Post-release net: if release could not confirm the clear and the claim
+    // is still OURS, release()'s leaseUntil-clear may have SUCCEEDED (setting
+    // leaseUntil="" -- immortal) even though its claimedBy-clear silently
+    // no-op'd. Re-assert the dead lease so the stranded claim is EXPIRED
+    // (reclaimable by expiry-based recovery), never immortal. The guard is
+    // tightened to reason !== "not-owner" AND claimedBy === runner so we never
+    // re-assert a lease onto a claim a different runner already stole. This is
+    // a runner-owned field only: no lifecycle Status write and no assignee
+    // write on the (closed) Issue.
+    if (
+      !result.released &&
+      result.reason !== "not-owner" &&
+      result.item?.fields?.claimedBy === runner
+    ) {
+      try {
+        await this.setFields(itemId, { leaseUntil: DEAD_LEASE });
+      } catch {
+        // Best-effort.
+      }
+    }
+    return result;
+  }
+
   async claimWithLease({
     itemId,
     runner,
@@ -513,12 +563,7 @@ export class PanStore {
       // expire during the round trips above, and without it the rollback would
       // return lease-expired and strand the runner's own just-written claim on
       // the closed Issue.
-      const rollback = await this.release({
-        itemId,
-        runner,
-        status: "",
-        allowExpired: true,
-      });
+      const rollback = await this.#quietClaimRollback(itemId, runner);
       if (!rollback.released && rollback.reason !== "not-owner") {
         throw new Error(
           `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
@@ -563,12 +608,7 @@ export class PanStore {
         // or assignee write. allowExpired:true is REQUIRED so the runner can
         // clear its own just-written claim even if the lease expired during
         // confirmation.
-        const rollback = await this.release({
-          itemId,
-          runner,
-          status: "",
-          allowExpired: true,
-        });
+        const rollback = await this.#quietClaimRollback(itemId, runner);
         if (!rollback.released && rollback.reason !== "not-owner") {
           throw new Error(
             `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
@@ -583,12 +623,7 @@ export class PanStore {
       // claim without any status or assignee write on the now-closed Issue.
       // allowExpired:true is REQUIRED so the runner can clear its own
       // just-written claim even if the lease expired during confirmation.
-      const rollback = await this.release({
-        itemId,
-        runner,
-        status: "",
-        allowExpired: true,
-      });
+      const rollback = await this.#quietClaimRollback(itemId, runner);
       if (!rollback.released && rollback.reason !== "not-owner") {
         throw new Error(
           `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
@@ -607,12 +642,7 @@ export class PanStore {
         // without any Status or --remove-assignee write on the closed Issue.
         // allowExpired:true is REQUIRED so the runner can clear its own claim
         // even if the lease expired during confirmation.
-        const rollback = await this.release({
-          itemId,
-          runner,
-          status: "",
-          allowExpired: true,
-        });
+        const rollback = await this.#quietClaimRollback(itemId, runner);
         if (!rollback.released && rollback.reason !== "not-owner") {
           throw new Error(
             `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,
@@ -638,12 +668,7 @@ export class PanStore {
         if (afterAssignFailure.state?.toLowerCase() === "closed") {
           let rollback;
           try {
-            rollback = await this.release({
-              itemId,
-              runner,
-              status: "",
-              allowExpired: true,
-            });
+            rollback = await this.#quietClaimRollback(itemId, runner);
           } catch (rollbackError) {
             throw new AggregateError(
               [error, rollbackError],
@@ -698,12 +723,7 @@ export class PanStore {
       // guards and recovery paths. allowExpired:true is REQUIRED so the runner
       // can clear its own just-written claim even if the lease expired during
       // confirmation.
-      const rollback = await this.release({
-        itemId,
-        runner,
-        status: "",
-        allowExpired: true,
-      });
+      const rollback = await this.#quietClaimRollback(itemId, runner);
       if (!rollback.released && rollback.reason !== "not-owner") {
         throw new Error(
           `Claim rollback failed after Issue closed mid-claim: ${rollback.reason}`,

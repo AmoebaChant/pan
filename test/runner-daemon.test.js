@@ -180,6 +180,44 @@ test("reconciles a dead worker to resumable ready state", async () => {
   assert.equal(executor.requeued, task);
 });
 
+test("a preserved resume pointer for a reopened (now-open) Issue requeues through the normal recovery path", async () => {
+  const item = makeItem({ number: 71 });
+  // The Issue was reopened after its runner went offline: it is now OPEN with a
+  // preserved in-progress claim and a valid resume affinity.
+  item.state = "open";
+  item.fields.status = "in-progress";
+  item.fields.claimedBy = "machine-a/slot-1";
+  const task = {
+    itemId: item.id,
+    issueNumber: item.number,
+    runner: item.fields.claimedBy,
+    playbookId: "legacy",
+    resumeAffinity: "resume:machine-a",
+    workerState: "gone",
+    requeue: false,
+  };
+  const executor = new StartupRecoveryExecutor([task], new FakeHandle());
+  const store = new RecoveryStore([item]);
+  const daemon = new RunnerDaemon({
+    store,
+    profile: makeProfile(),
+    executor,
+    logger: silentLogger,
+  });
+
+  await daemon.tick();
+
+  // The reopen-requeue path is the ordinary un-cancel: a status:ready release
+  // carrying the resume affinity, followed by markInterruptedRequeued.
+  const readyRelease = store.releases.find(
+    (release) => release.status === "ready",
+  );
+  assert.ok(readyRelease, "a status:ready release must be issued");
+  assert.equal(readyRelease.resumeAffinity, "resume:machine-a");
+  assert.equal(readyRelease.allowExpired, true);
+  assert.equal(executor.requeued, task);
+});
+
 test("marks agent-reported done work done and records its delivery", async () => {
   const store = new FakeStore([makeItem()]);
   const handle = new FakeHandle(undefined, {

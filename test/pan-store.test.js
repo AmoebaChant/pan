@@ -5,6 +5,7 @@ import { PanStore } from "../src/index.js";
 
 const NOW = new Date("2026-07-17T20:00:00Z");
 const FUTURE = "2026-07-17T20:10:00Z";
+const THIEF_LEASE = "2099-12-31T23:59:59Z";
 const LATER = "2026-07-17T20:12:00Z";
 const PAST = "2026-07-17T19:59:00Z";
 const MANIFEST = {
@@ -554,6 +555,35 @@ test("tolerates a not-owner release during a closed rollback without throwing", 
   );
 });
 
+test("a closed rollback does not disturb a lease another runner legitimately holds", async () => {
+  // The steal fires during runner-a's phase-1 runner-owned write: it flips
+  // claimed-by to runner-thief, installs the thief's LIVE future lease, and
+  // closes the Issue -- all BEFORE claimWithLease re-reads the Issue and drives
+  // #quietClaimRollback. By the time the rollback's PRE-write ownership read
+  // runs, the item is owned by runner-thief, so the gated PRE-write must be
+  // skipped and release() (not-owner) must leave the thief's fields untouched.
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    stealClaimOnClose: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  // not-owner is tolerated exactly as before -- no throw.
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  // The thief's live claim is completely undisturbed by our rollback.
+  assert.equal(item.fields.claimedBy, "runner-thief");
+  assert.equal(item.fields.leaseUntil, THIEF_LEASE);
+  assert.notEqual(item.fields.leaseUntil, "1970-01-01T00:00:00Z");
+});
+
 test("throws when the closed rollback release cannot be confirmed", async () => {
   const { store } = fixture({
     items: [makeItem({ status: "ready" })],
@@ -567,6 +597,61 @@ test("throws when the closed rollback release cannot be confirmed", async () => 
       leaseUntil: FUTURE,
     }),
     /Claim rollback failed/,
+  );
+});
+
+test("a mid-claim closed rollback whose claimedBy-clear throws leaves an expired (recoverable) lease, never immortal", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+    throwOnRollbackClaimClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      leaseUntil: FUTURE,
+    }),
+    /simulated claimed-by clear failure during rollback release/,
+  );
+  const item = await store.getItem("item-1");
+  // The dead-lease pre-write survives because the release's setFields aborted
+  // on the claimed-by clear before it could clear lease-until.
+  assert.equal(item.fields.leaseUntil, "1970-01-01T00:00:00Z");
+  // Never the immortal combination (claimedBy set AND lease-until empty).
+  assert.ok(
+    !(item.fields.claimedBy && item.fields.leaseUntil === ""),
+    "item must not be left claimed with an empty (immortal) lease",
+  );
+});
+
+test("a mid-claim closed rollback that silently misses the claimedBy clear leaves an expired (recoverable) lease, never immortal", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+    silentMissClaimClearOnRollback: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      leaseUntil: FUTURE,
+    }),
+    /Claim rollback failed/,
+  );
+  const item = await store.getItem("item-1");
+  // Faithful immortal sequence: the rollback release's claimed-by clear
+  // silently no-ops (claimed-by stays runner-a) while its lease-until clear
+  // succeeds, overwriting the dead-lease pre-write with "". release() cannot
+  // confirm (claimed-by still set) -> release-not-confirmed, so the
+  // post-release net re-asserts DEAD_LEASE, leaving an EXPIRED (recoverable)
+  // lease rather than the immortal claimed-by-set + empty-lease combination.
+  assert.equal(item.fields.claimedBy, "runner-a");
+  assert.equal(item.fields.leaseUntil, "1970-01-01T00:00:00Z");
+  // Never the immortal combination (claimedBy set AND lease-until empty).
+  assert.ok(
+    !(item.fields.claimedBy && item.fields.leaseUntil === ""),
+    "item must not be left claimed with an empty (immortal) lease",
   );
 });
 
@@ -1341,6 +1426,8 @@ function fixture({
   closeOnAssign = false,
   stealClaimOnClose = false,
   failReleaseConfirmOnClose = false,
+  throwOnRollbackClaimClear = false,
+  silentMissClaimClearOnRollback = false,
   closeKeepingFieldsOnStatusWrite = false,
   closeBeforeAssign = false,
   closeOnlyAtConfirm = false,
@@ -1364,6 +1451,8 @@ function fixture({
     closeOnAssign,
     stealClaimOnClose,
     failReleaseConfirmOnClose,
+    throwOnRollbackClaimClear,
+    silentMissClaimClearOnRollback,
     closeKeepingFieldsOnStatusWrite,
     closeBeforeAssign,
     closeOnlyAtConfirm,
@@ -1405,6 +1494,8 @@ class FakeGh {
       closeOnAssign = false,
       stealClaimOnClose = false,
       failReleaseConfirmOnClose = false,
+      throwOnRollbackClaimClear = false,
+      silentMissClaimClearOnRollback = false,
       closeKeepingFieldsOnStatusWrite = false,
       closeBeforeAssign = false,
       closeOnlyAtConfirm = false,
@@ -1428,6 +1519,8 @@ class FakeGh {
     this.closeOnAssign = closeOnAssign;
     this.stealClaimOnClose = stealClaimOnClose;
     this.failReleaseConfirmOnClose = failReleaseConfirmOnClose;
+    this.throwOnRollbackClaimClear = throwOnRollbackClaimClear;
+    this.silentMissClaimClearOnRollback = silentMissClaimClearOnRollback;
     this.closeKeepingFieldsOnStatusWrite = closeKeepingFieldsOnStatusWrite;
     this.closeBeforeAssign = closeBeforeAssign;
     this.closeOnlyAtConfirm = closeOnlyAtConfirm;
@@ -1480,6 +1573,47 @@ class FakeGh {
         this.projectEdits += 1;
         return "";
       }
+      const rollbackTarget = this.items.find(
+        (candidate) => candidate.id === valueAfter(args, "--id"),
+      );
+      const rollbackTargetClosed =
+        rollbackTarget?.content?.state === "CLOSED";
+      if (
+        this.throwOnRollbackClaimClear &&
+        isClear &&
+        targetField?.key === "claimedBy" &&
+        rollbackTargetClosed
+      ) {
+        // Sabotage ONLY the rollback release's claimed-by clear on the
+        // already-closed Issue: throw so the release's setFields aborts BEFORE
+        // it clears lease-until. Because #quietClaimRollback pre-writes the
+        // dead lease first, the item is left with claimed-by=runner-a AND
+        // lease-until=DEAD_LEASE (an EXPIRED, recoverable lease), never the
+        // immortal claimed-by-set + empty-lease combination.
+        throw new Error(
+          "simulated claimed-by clear failure during rollback release",
+        );
+      }
+      if (
+        this.silentMissClaimClearOnRollback &&
+        isClear &&
+        targetField?.key === "claimedBy" &&
+        rollbackTargetClosed
+      ) {
+        // Faithful immortal-sequence injection: during the rollback release on
+        // the already-closed Issue, SILENTLY no-op ONLY the claimed-by clear
+        // (return success without clearing, so claimed-by stays runner-a) while
+        // the lease-until clear that follows in the same release proceeds
+        // normally (clearing lease-until to "" and OVERWRITING the dead-lease
+        // pre-write). Because release()'s setFields does NOT throw here, it
+        // continues to the lease-until clear, then #confirmFields mismatches
+        // (claimed-by still runner-a) -> release-not-confirmed. Without the
+        // post-release net this would leave the immortal combination
+        // (claimed-by set + empty lease); the net re-asserts DEAD_LEASE so the
+        // stranded claim is EXPIRED (recoverable) instead.
+        this.projectEdits += 1;
+        return "";
+      }
       this.projectEdits += 1;
       this.#editProjectItem(args);
       if (this.closeOnFieldEdit) {
@@ -1502,8 +1636,23 @@ class FakeGh {
         const edited = this.items.find(
           (candidate) => candidate.id === valueAfter(args, "--id"),
         );
-        if (edited) {
+        // One-shot: steal + close only on the phase-1 lease-until write while
+        // the Issue is still open. Firing on the lease-until write (which runs
+        // AFTER #editProjectItem set lease-until to runner-a's value) lets the
+        // thief's own distinct live lease survive phase-1. Guarding on "still
+        // open" means later edits (e.g. the rollback's own writes) never
+        // re-establish the thief, so a stomp of the thief's lease during
+        // rollback stays observable instead of being masked by a re-steal.
+        if (
+          edited &&
+          targetField?.key === "leaseUntil" &&
+          edited.content?.state !== "CLOSED"
+        ) {
           edited["claimed-by"] = "runner-thief";
+          // The thief holds a concrete LIVE (future) lease, distinct from
+          // runner-a's phase-1 lease value, so a rollback that wrongly stomps
+          // DEAD_LEASE onto it is observable in tests.
+          edited["lease-until"] = THIEF_LEASE;
           if (edited.content) {
             edited.content.state = "CLOSED";
           }
