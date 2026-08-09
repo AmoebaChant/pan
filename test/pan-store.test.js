@@ -1458,6 +1458,348 @@ test("clears the just-written claim when assignment fails on a closed Issue even
   assert.equal(item.fields.leaseUntil, "");
 });
 
+test("runs beforeWrite and reauthorizes during the claim's assignee-failure rollback", async () => {
+  // The rollback that a failed assignee edit triggers performs its own
+  // independent Project field mutations, so it must forward the caller's
+  // beforeWrite hook and reauthorize per field like any other mutation.
+  // beforeWrite fires three times for the claim field writes and once for the
+  // assignee edit (four calls), then again for the rollback field writes.
+  // Revoking the declaration on the fifth call — the rollback's first field
+  // write — proves the rollback both ran beforeWrite and reauthorized: the
+  // refusal aborts the rollback, so the item stays claimed. Without the hook
+  // forwarded, beforeWrite would never reach a fifth call, the rollback would
+  // proceed on stale authorization, and the failure would surface as the bare
+  // assignment error instead.
+  const workstreamStore = revocableWorkstreamStore();
+  let beforeWriteCalls = 0;
+  const beforeWrite = () => {
+    beforeWriteCalls += 1;
+    if (beforeWriteCalls === 5) {
+      workstreamStore.revoke();
+    }
+  };
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+        status: "ready",
+      }),
+    ],
+    failAssignee: true,
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-Wirder-10",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+      beforeWrite,
+    }),
+    /rollback/,
+  );
+
+  // The hook reached the rollback field writes (a fifth invocation), proving it
+  // was forwarded into release.
+  assert.equal(beforeWriteCalls, 5);
+  // The three claim field writes reached the Project, but the rollback's first
+  // field write was refused by the reauthorization and never did.
+  assert.equal(gh.projectEdits, 3);
+  // Because the rollback was refused, the item stays claimed rather than reset.
+  const item = await store.getItem("item-Wirder-10");
+  assert.equal(item.fields.claimedBy, "runner-a");
+  assert.equal(item.fields.leaseUntil, FUTURE);
+});
+
+test("reauthorizes before assigning an external Issue when scope changes mid-claim", async () => {
+  // Scope is derived from live workstream declarations. It authorizes the field
+  // write, but a workstream change then revokes the declaration before the
+  // separate assignee edit. That edit must reauthorize and be refused, so it
+  // never reaches the external repository.
+  const workstreamStore = scopeRevokingWorkstreamStore();
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+        status: "ready",
+      }),
+    ],
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-Wirder-10",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /Refusing to mutate|rollback/,
+  );
+
+  assert.equal(gh.issueEdits.length, 0);
+});
+
+test("reauthorizes before closing an external Issue when scope changes mid-release", async () => {
+  // Closure is a distinct mutation from the field write that precedes it. If the
+  // workstream declaration is revoked in between, the closure must reauthorize
+  // and be refused, so the external Issue is never closed.
+  const workstreamStore = scopeRevokingWorkstreamStore();
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+        status: "in-progress",
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+      }),
+    ],
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.release({
+      itemId: "item-Wirder-10",
+      runner: "runner-a",
+      status: "done",
+    }),
+    /Refusing to mutate|could not be restored/,
+  );
+
+  assert.equal(gh.issueStateEdits.length, 0);
+});
+
+test("refuses a field write when beforeWrite revokes the declaration", async () => {
+  // Scope is resolved immediately before the write, after beforeWrite runs. A
+  // hook that drops the workstream declaration must therefore abort the field
+  // edit before any Project mutation.
+  const workstreamStore = revocableWorkstreamStore();
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+        status: "ready",
+      }),
+    ],
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.setFields(
+      "item-Wirder-10",
+      { status: "in-progress" },
+      { beforeWrite: () => workstreamStore.revoke() },
+    ),
+    /Refusing to mutate/,
+  );
+
+  assert.equal(gh.projectEdits, 0);
+});
+
+test("authorizes each field write independently when scope is revoked mid-batch", async () => {
+  // A multi-field write performs one Project mutation per field, and scope is
+  // re-read live before each one. scopeRevokingWorkstreamStore declares WIRDER
+  // on the first list() call (the first field's authorization) and nothing
+  // afterward (the second field's authorization), so the first field is written
+  // but the second must be refused rather than proceeding on the now-stale
+  // authorization.
+  const workstreamStore = scopeRevokingWorkstreamStore();
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+        status: "untriaged",
+        priority: "normal",
+      }),
+    ],
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.setFields("item-Wirder-10", { status: "ready", priority: "high" }),
+    /Refusing to mutate/,
+  );
+
+  // Exactly the first field was written; the second was refused after scope was
+  // revoked, proving per-write authorization rather than one batch-wide check.
+  assert.equal(gh.projectEdits, 1);
+});
+
+test("reauthorizes after beforeWrite before the assignee edit in a claim", async () => {
+  // #editAssignee is a distinct mutation from the preceding field writes and
+  // must run beforeWrite and reauthorize itself. beforeWrite fires once per
+  // mutation: three times for the field writes, then a fourth time for the
+  // assignee edit. Revoking the declaration on that fourth call leaves the field
+  // writes authorized but forces the assignee edit to be refused, proving the
+  // edit honored beforeWrite and re-checked scope.
+  const workstreamStore = revocableWorkstreamStore();
+  let beforeWriteCalls = 0;
+  const beforeWrite = () => {
+    beforeWriteCalls += 1;
+    if (beforeWriteCalls === 4) {
+      workstreamStore.revoke();
+    }
+  };
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+        status: "ready",
+      }),
+    ],
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-Wirder-10",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+      beforeWrite,
+    }),
+    /Refusing to mutate|rollback/,
+  );
+
+  // The three claim field writes succeeded, but the assignee edit never reached
+  // the external repository.
+  assert.equal(gh.projectEdits, 3);
+  assert.equal(gh.issueEdits.length, 0);
+});
+
+test("reauthorizes after beforeWrite before closing the Issue in a release", async () => {
+  // #closeIssue is a distinct mutation from the release field writes and must run
+  // beforeWrite and reauthorize itself. beforeWrite fires three times for the
+  // field writes, then a fourth time for the closure; revoking on that fourth
+  // call leaves the fields written but forces the closure to be refused, so the
+  // external Issue is never closed.
+  const workstreamStore = revocableWorkstreamStore();
+  let beforeWriteCalls = 0;
+  const beforeWrite = () => {
+    beforeWriteCalls += 1;
+    if (beforeWriteCalls === 4) {
+      workstreamStore.revoke();
+    }
+  };
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+        status: "in-progress",
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+      }),
+    ],
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.release({
+      itemId: "item-Wirder-10",
+      runner: "runner-a",
+      status: "done",
+      beforeWrite,
+    }),
+    /Refusing to mutate|could not be restored/,
+  );
+
+  assert.equal(gh.issueStateEdits.length, 0);
+});
+
+test("refuses a comment when beforeWrite revokes the declaration", async () => {
+  const workstreamStore = revocableWorkstreamStore();
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+      }),
+    ],
+    workstreamStore,
+  });
+  const item = await store.getItem("item-Wirder-10");
+
+  await assert.rejects(
+    store.addComment(item, "External update", {
+      beforeWrite: () => workstreamStore.revoke(),
+    }),
+    /Refusing to mutate/,
+  );
+
+  assert.equal(gh.issueComments.length, 0);
+});
+
+test("refuses to add an Issue when beforeWrite revokes the declaration", async () => {
+  const workstreamStore = revocableWorkstreamStore();
+  const { store, gh } = fixture({
+    items: [],
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.addIssueToProject(externalIssue(WIRDER, 10, "open"), {
+      beforeWrite: () => workstreamStore.revoke(),
+    }),
+    /Refusing to mutate/,
+  );
+
+  assert.equal(gh.projectEdits, 0);
+  assert.equal(
+    gh.jsonCalls.some(
+      (args) => args[0] === "project" && args[1] === "item-add",
+    ),
+    false,
+  );
+});
+
+test("refuses to remove an Issue when beforeWrite revokes the declaration", async () => {
+  const workstreamStore = revocableWorkstreamStore();
+  const { store, gh } = fixture({
+    items: [
+      makeItem({
+        id: "item-Wirder-10",
+        number: 10,
+        repository: WIRDER,
+        workstream: "wirder",
+      }),
+    ],
+    workstreamStore,
+  });
+
+  await assert.rejects(
+    store.removeItem("item-Wirder-10", {
+      beforeWrite: () => workstreamStore.revoke(),
+    }),
+    /Refusing to mutate/,
+  );
+
+  assert.ok(gh.items.some((item) => item.id === "item-Wirder-10"));
+});
+
 test("allows an expired lease to be reclaimed", async () => {
   const { store } = fixture({
     items: [
@@ -1782,7 +2124,7 @@ test("live classification registers every missing Issue without reopening closed
     [
       { number: 1, type: "task", valid: true },
       { number: 2, type: "task", valid: true },
-      { number: 3, type: "task", valid: true },
+      { number: 3, type: "closed", valid: false },
     ],
   );
   assert.equal((await store.getItem("item-2")).fields.status, "untriaged");
@@ -1794,11 +2136,585 @@ test("live classification registers every missing Issue without reopening closed
   assert.deepEqual(gh.issueStateEdits, []);
 });
 
+const WIRDER = "AmoebaChant/Wirder";
+const BACKLOG_README = `# Wirder\n\n## Backlog repositories\n\n- ${WIRDER}\n`;
+
+test("registers missing external backlog Issues as untriaged with the declaring workstream", async () => {
+  const { store } = fixture({
+    items: [],
+    openIssues: [],
+    workstreams: { wirder: BACKLOG_README },
+    externalIssues: {
+      [WIRDER]: [externalIssue(WIRDER, 10, "open"), externalIssue(WIRDER, 11, "closed")],
+    },
+  });
+
+  const result = await store.registerMissingIssues();
+
+  assert.deepEqual(
+    result.map((item) => ({
+      number: item.number,
+      repository: item.repository,
+      status: item.fields.status,
+      workstream: item.fields.workstream,
+    })),
+    [
+      { number: 10, repository: WIRDER, status: "untriaged", workstream: "wirder" },
+      { number: 11, repository: WIRDER, status: "untriaged", workstream: "wirder" },
+    ],
+  );
+  assert.deepEqual(result.conflicts, []);
+  assert.deepEqual(result.workstreamConflicts, []);
+});
+
+test("fails an external registration when its workstream declaration moves before the add", async () => {
+  // The declaring workstream is resolved up front, but a beforeWrite hook moves
+  // WIRDER from "wirder" to "gadgets" before the add. The live re-check must
+  // reject the registration rather than add the item under the stale "wirder"
+  // ownership: no Project item is added and no field is written.
+  const workstreamStore = movingWorkstreamStore();
+  const { store, gh } = fixture({
+    items: [],
+    workstreamStore,
+    externalIssues: { [WIRDER]: [externalIssue(WIRDER, 10, "open")] },
+  });
+
+  await assert.rejects(
+    store.registerMissingIssues({ beforeWrite: () => workstreamStore.move() }),
+    /no longer maps uniquely/,
+  );
+
+  assert.equal(gh.projectEdits, 0);
+  assert.equal(
+    gh.items.some((item) => item.repository === WIRDER),
+    false,
+  );
+  assert.equal(
+    gh.jsonCalls.some(
+      (args) => args[0] === "project" && args[1] === "item-add",
+    ),
+    false,
+  );
+});
+
+test("leaves existing external backlog Project items unchanged", async () => {
+  const existing = makeItem({
+    id: "item-Wirder-10",
+    number: 10,
+    repository: WIRDER,
+    workstream: "wirder",
+  });
+  const { store, gh } = fixture({
+    items: [existing],
+    workstreams: { wirder: BACKLOG_README },
+    externalIssues: { [WIRDER]: [externalIssue(WIRDER, 10, "open")] },
+  });
+
+  const result = await store.registerMissingIssues();
+
+  assert.deepEqual([...result], []);
+  assert.deepEqual(result.workstreamConflicts, []);
+  assert.equal(gh.projectEdits, 0);
+  assert.equal((await store.getItem("item-Wirder-10")).fields.workstream, "wirder");
+});
+
+test("reports a conflicting external workstream without reassigning it", async () => {
+  const existing = makeItem({
+    id: "item-Wirder-10",
+    number: 10,
+    repository: WIRDER,
+    workstream: "other-stream",
+  });
+  const { store, gh } = fixture({
+    items: [existing],
+    workstreams: { wirder: BACKLOG_README },
+    externalIssues: { [WIRDER]: [externalIssue(WIRDER, 10, "open")] },
+  });
+
+  const result = await store.registerMissingIssues();
+
+  assert.deepEqual([...result], []);
+  assert.deepEqual(result.workstreamConflicts, [
+    {
+      url: `https://github.com/${WIRDER}/issues/10`,
+      repository: WIRDER,
+      expected: "wirder",
+      actual: "other-stream",
+    },
+  ]);
+  assert.equal(gh.projectEdits, 0);
+  assert.equal(
+    (await store.getItem("item-Wirder-10")).fields.workstream,
+    "other-stream",
+  );
+});
+
+test("diagnoses duplicate declarations of one repository and writes nothing for it", async () => {
+  const { store, gh } = fixture({
+    items: [],
+    workstreams: {
+      wirder: BACKLOG_README,
+      gadgets: `# Gadgets\n\n## Backlog repositories\n\n- ${WIRDER}\n`,
+    },
+    externalIssues: { [WIRDER]: [externalIssue(WIRDER, 10, "open")] },
+  });
+
+  const result = await store.registerMissingIssues();
+
+  assert.deepEqual([...result], []);
+  assert.deepEqual(result.conflicts, [
+    {
+      repository: WIRDER,
+      workstreams: ["gadgets", "wirder"],
+      reason: "declared-by-multiple-workstreams",
+    },
+  ]);
+  assert.equal(gh.projectEdits, 0);
+});
+
+test("does not treat undeclared Project repositories as domain backlog", async () => {
+  const foreign = makeItem({
+    id: "item-foreign",
+    number: 7,
+    repository: "other/repo",
+    workstream: "",
+  });
+  const { store, gh } = fixture({
+    items: [foreign],
+    workstreams: { wirder: BACKLOG_README },
+    externalIssues: {
+      [WIRDER]: [externalIssue(WIRDER, 10, "open")],
+      "other/repo": [externalIssue("other/repo", 7, "open")],
+    },
+  });
+
+  const result = await store.registerMissingIssues();
+
+  assert.deepEqual(
+    result.map((item) => `${item.repository}#${item.number}`),
+    [`${WIRDER}#10`],
+  );
+  assert.equal(gh.issueLists.includes("other/repo"), false);
+  assert.equal((await store.getItem("item-foreign")).fields.workstream, "");
+});
+
+test("routes external backlog Issue mutations to the owning repository", async () => {
+  const existing = makeItem({
+    id: "item-Wirder-10",
+    number: 10,
+    repository: WIRDER,
+    workstream: "wirder",
+  });
+  const { store, gh } = fixture({
+    items: [existing],
+    workstreams: { wirder: BACKLOG_README },
+    externalIssues: { [WIRDER]: [externalIssue(WIRDER, 10, "open")] },
+  });
+
+  await store.addComment(await store.getItem("item-Wirder-10"), "External update");
+
+  assert.deepEqual(gh.issueComments, [
+    { number: 10, repository: WIRDER, body: "External update" },
+  ]);
+});
+
+test("fails closed with no writes when a later repository inventory truncates", async () => {
+  // The domain repository is inventoried before the declared external one. If
+  // the external fetch hits the truncation safety limit, registration must make
+  // zero writes rather than registering the domain Issues first and leaving the
+  // external repository partially reconciled.
+  const { store, gh } = fixture({
+    items: [],
+    openIssues: [repositoryIssue(3, "open")],
+    workstreams: { wirder: BACKLOG_README },
+    externalIssues: {
+      [WIRDER]: [
+        externalIssue(WIRDER, 10, "open"),
+        externalIssue(WIRDER, 11, "open"),
+      ],
+    },
+    projectItemSafetyLimit: 2,
+  });
+
+  await assert.rejects(store.registerMissingIssues(), /safety limit/);
+
+  assert.equal(gh.projectEdits, 0);
+  assert.equal(
+    gh.items.some((item) => item.id === "item-3"),
+    false,
+  );
+});
+
+test("fails closed when the no-pagination fallback reaches a safety cap below 1000", async () => {
+  // Without pagination support the fallback requests up to min(1000, safety
+  // limit) Issues. Reaching that cap means the list may be truncated, so it must
+  // fail closed. Here the safety limit (3) is the cap and the repository returns
+  // exactly 3 once the mock honors --limit.
+  const { store } = fixture({
+    items: [],
+    externalIssues: {
+      [WIRDER]: [
+        externalIssue(WIRDER, 10, "open"),
+        externalIssue(WIRDER, 11, "open"),
+        externalIssue(WIRDER, 12, "open"),
+        externalIssue(WIRDER, 13, "open"),
+      ],
+    },
+    projectItemSafetyLimit: 3,
+    respectIssueListLimit: true,
+  });
+
+  await assert.rejects(
+    store.listRepositoryIssues({ repository: WIRDER }),
+    /safety limit/,
+  );
+});
+
+test("succeeds when the no-pagination fallback stays below the safety cap", async () => {
+  const { store } = fixture({
+    items: [],
+    externalIssues: {
+      [WIRDER]: [
+        externalIssue(WIRDER, 10, "open"),
+        externalIssue(WIRDER, 11, "open"),
+      ],
+    },
+    projectItemSafetyLimit: 3,
+    respectIssueListLimit: true,
+  });
+
+  const issues = await store.listRepositoryIssues({ repository: WIRDER });
+
+  assert.deepEqual(
+    issues.map((issue) => issue.number),
+    [10, 11],
+  );
+});
+
+test("fails closed when the no-pagination fallback reaches the 1000-entry request cap", async () => {
+  // The core regression: with a safety limit above 1000 (2000) the fallback caps
+  // its request at 1000. A repository with more than 1000 Issues returns exactly
+  // 1000 (the request cap), which must be treated as possible truncation and
+  // fail closed even though 1000 is well below the 2000 safety limit.
+  const many = Array.from({ length: 1500 }, (_unused, index) =>
+    externalIssue(WIRDER, index + 1, "open"),
+  );
+  const { store } = fixture({
+    items: [],
+    externalIssues: { [WIRDER]: many },
+    projectItemSafetyLimit: 2000,
+    respectIssueListLimit: true,
+  });
+
+  await assert.rejects(
+    store.listRepositoryIssues({ repository: WIRDER }),
+    /safety limit/,
+  );
+});
+
+test("fails closed when a workstream README is unreadable during discovery", async () => {
+  const workstreamStore = {
+    async list() {
+      return {
+        revision: "rev",
+        complete: true,
+        workstreams: [
+          { path: "wirder", parent: undefined, children: [], sourcePath: "workstreams/wirder/README.md" },
+          { path: "gadgets", parent: undefined, children: [], sourcePath: "workstreams/gadgets/README.md" },
+        ],
+        errors: [],
+      };
+    },
+    async read(path) {
+      if (path === "wirder") {
+        return { path, content: BACKLOG_README };
+      }
+      throw new Error("network blip reading README");
+    },
+    async validate(path) {
+      return { path };
+    },
+  };
+  const { store, gh } = fixture({
+    items: [],
+    externalIssues: { [WIRDER]: [externalIssue(WIRDER, 10, "open")] },
+    workstreamStore,
+  });
+
+  const result = await store.registerMissingIssues();
+
+  assert.deepEqual([...result], []);
+  assert.equal(gh.projectEdits, 0);
+  assert.equal(gh.issueLists.includes(WIRDER), false);
+  assert.ok(
+    result.diagnostics.some((entry) => entry.code === "workstream-readme-unreadable"),
+  );
+});
+
+test("fails closed when workstream discovery is incomplete", async () => {
+  const workstreamStore = {
+    async list() {
+      return {
+        revision: "rev",
+        complete: false,
+        workstreams: [
+          { path: "wirder", parent: undefined, children: [], sourcePath: "workstreams/wirder/README.md" },
+        ],
+        errors: [{ path: "broken", reason: "Parent workstream broken has no README.md" }],
+      };
+    },
+    async read(path) {
+      return { path, content: BACKLOG_README };
+    },
+    async validate(path) {
+      return { path };
+    },
+  };
+  const { store, gh } = fixture({
+    items: [],
+    externalIssues: { [WIRDER]: [externalIssue(WIRDER, 10, "open")] },
+    workstreamStore,
+  });
+
+  const result = await store.registerMissingIssues();
+
+  assert.deepEqual([...result], []);
+  assert.equal(gh.projectEdits, 0);
+  assert.equal(gh.issueLists.includes(WIRDER), false);
+  assert.ok(
+    result.diagnostics.some((entry) => entry.code === "workstream-discovery-incomplete"),
+  );
+});
+
+test("refuses to triage an undeclared Project item", async () => {
+  const foreign = makeItem({
+    id: "item-foreign",
+    number: 7,
+    repository: "other/repo",
+    workstream: "",
+  });
+  const { store, gh } = fixture({
+    items: [foreign],
+    workstreams: { wirder: BACKLOG_README },
+  });
+
+  await assert.rejects(
+    store.setFields("item-foreign", { status: "ready" }),
+    /not the configured domain repository or a declared backlog repository/,
+  );
+  assert.equal(gh.projectEdits, 0);
+});
+
+test("refuses to claim an undeclared Project item", async () => {
+  const foreign = makeItem({
+    id: "item-foreign",
+    number: 7,
+    repository: "other/repo",
+    workstream: "",
+  });
+  const { store, gh } = fixture({
+    items: [foreign],
+    workstreams: { wirder: BACKLOG_README },
+  });
+
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-foreign",
+      runner: "runner-a",
+      leaseUntil: FUTURE,
+    }),
+    /not the configured domain repository or a declared backlog repository/,
+  );
+  assert.equal(gh.projectEdits, 0);
+});
+
+test("classifies declared external tasks and flags undeclared Project items", async () => {
+  const foreign = makeItem({
+    id: "item-foreign",
+    number: 7,
+    repository: "other/repo",
+    workstream: "",
+  });
+  const { store } = fixture({
+    items: [foreign],
+    workstreams: { wirder: BACKLOG_README },
+    externalIssues: { [WIRDER]: [externalIssue(WIRDER, 10, "open")] },
+  });
+
+  const classified = await store.classify();
+
+  const externalTask = classified.find(
+    (entry) => entry.issue.repository === WIRDER,
+  );
+  assert.ok(externalTask, "declared external Issue should classify as a task");
+  assert.equal(externalTask.type, "task");
+  assert.equal(externalTask.valid, true);
+
+  const undeclared = classified.find(
+    (entry) => entry.code === "undeclared-project-item",
+  );
+  assert.ok(undeclared, "undeclared Project item should surface as a diagnostic");
+  assert.equal(undeclared.valid, false);
+  assert.equal(undeclared.issue.repository, "other/repo");
+
+  assert.equal(
+    classified.some(
+      (entry) => entry.valid && entry.issue.repository === "other/repo",
+    ),
+    false,
+  );
+  assert.ok(Array.isArray(classified.diagnostics));
+});
+
+test("classifies a declared external closed Issue as non-actionable without reopening it", async () => {
+  const { store, gh } = fixture({
+    items: [],
+    workstreams: { wirder: BACKLOG_README },
+    externalIssues: {
+      [WIRDER]: [
+        externalIssue(WIRDER, 10, "open"),
+        externalIssue(WIRDER, 11, "closed"),
+      ],
+    },
+  });
+
+  const classified = await store.classify();
+
+  const openTask = classified.find(
+    (entry) => entry.issue.repository === WIRDER && entry.issue.number === 10,
+  );
+  assert.ok(openTask, "open external Issue should classify");
+  assert.equal(openTask.type, "task");
+  assert.equal(openTask.valid, true);
+
+  const closedTask = classified.find(
+    (entry) => entry.issue.repository === WIRDER && entry.issue.number === 11,
+  );
+  assert.ok(closedTask, "closed external Issue should classify");
+  assert.equal(closedTask.type, "closed");
+  assert.equal(closedTask.valid, false);
+
+  assert.deepEqual(gh.issueStateEdits, []);
+});
+
+test("refuses to register an Issue whose repository disagrees with its URL", async () => {
+  const { store, gh } = fixture({
+    items: [],
+    workstreams: { wirder: BACKLOG_README },
+  });
+
+  await assert.rejects(
+    store.addIssueToProject({
+      number: 5,
+      repository: WIRDER,
+      url: "https://github.com/other/repo/issues/5",
+      state: "open",
+    }),
+    /does not match its URL/,
+  );
+  assert.equal(gh.projectEdits, 0);
+});
+
+test("refuses to add an Issue outside the domain scope", async () => {
+  const { store, gh } = fixture({
+    items: [],
+    workstreams: { wirder: BACKLOG_README },
+  });
+
+  await assert.rejects(
+    store.addIssueToProject({
+      number: 5,
+      url: "https://github.com/other/repo/issues/5",
+      state: "open",
+    }),
+    /not the configured domain repository or a declared backlog repository/,
+  );
+  assert.equal(gh.projectEdits, 0);
+});
+
+test("refuses to remove an undeclared Project item", async () => {
+  const foreign = makeItem({
+    id: "item-foreign",
+    number: 7,
+    repository: "other/repo",
+    workstream: "",
+  });
+  const { store } = fixture({
+    items: [foreign],
+    workstreams: { wirder: BACKLOG_README },
+  });
+
+  await assert.rejects(
+    store.removeItem("item-foreign"),
+    /not the configured domain repository or a declared backlog repository/,
+  );
+});
+
+test("refuses to remove a DraftIssue Project item", async () => {
+  const draft = makeItem({
+    id: "draft-1",
+    contentType: "DraftIssue",
+    repository: "other/repo",
+  });
+  const { store, gh } = fixture({ items: [draft] });
+
+  await assert.rejects(
+    store.removeItem("draft-1"),
+    /only a configured-domain or declared backlog Issue item can be removed/,
+  );
+  assert.ok(gh.items.some((item) => item.id === "draft-1"));
+});
+
+test("refuses to remove a PullRequest Project item", async () => {
+  const pull = makeItem({
+    id: "pr-1",
+    contentType: "PullRequest",
+    repository: "other/repo",
+  });
+  const { store, gh } = fixture({ items: [pull] });
+
+  await assert.rejects(
+    store.removeItem("pr-1"),
+    /only a configured-domain or declared backlog Issue item can be removed/,
+  );
+  assert.ok(gh.items.some((item) => item.id === "pr-1"));
+});
+
+test("refuses to remove an unreadable Project item", async () => {
+  const unreadable = makeItem({ id: "opaque-1", contentType: null });
+  const { store, gh } = fixture({ items: [unreadable] });
+
+  await assert.rejects(
+    store.removeItem("opaque-1"),
+    /only a configured-domain or declared backlog Issue item can be removed/,
+  );
+  assert.ok(gh.items.some((item) => item.id === "opaque-1"));
+});
+
+test("removes a domain Issue Project item", async () => {
+  const domain = makeItem({ id: "item-domain", number: 12, workstream: "" });
+  const { store, gh } = fixture({ items: [domain] });
+
+  const result = await store.removeItem("item-domain");
+
+  assert.deepEqual(result, {
+    removed: true,
+    itemId: "item-domain",
+    projectId: "project-id",
+  });
+  assert.equal(
+    gh.items.some((item) => item.id === "item-domain"),
+    false,
+  );
+});
+
 function fixture({
   items = [makeItem()],
   failAssignee = false,
   failProjectEdit = false,
   openIssues = [],
+  externalIssues = {},
+  workstreams,
   truncatedFieldValues = false,
   truncatedAssignees = false,
   truncatedLabels = false,
@@ -1809,6 +2725,7 @@ function fixture({
   projectPageSize,
   projectItemSafetyLimit,
   workstreamStore,
+  respectIssueListLimit = false,
   closeOnFieldEdit = false,
   mismatchAndCloseOnFieldEdit = false,
   closeOnAssign = false,
@@ -1826,6 +2743,7 @@ function fixture({
     failAssignee,
     failProjectEdit,
     openIssues,
+    externalIssues,
     truncatedFieldValues,
     truncatedAssignees,
     truncatedLabels,
@@ -1834,6 +2752,7 @@ function fixture({
     failProjectRead,
     failIssueClose,
     projectPageSize,
+    respectIssueListLimit,
     closeOnFieldEdit,
     mismatchAndCloseOnFieldEdit,
     closeOnAssign,
@@ -1857,8 +2776,144 @@ function fixture({
       projectItemSafetyLimit,
       now,
       sleep: async () => {},
-      workstreamStore,
+      workstreamStore: workstreamStore ?? makeWorkstreamStore(workstreams ?? {}),
     }),
+  };
+}
+
+// A workstream store that declares WIRDER on the first discovery and nothing
+// afterward, so scope authorizes an initial write but is revoked before any
+// later independent mutation in the same operation.
+function scopeRevokingWorkstreamStore() {
+  let listCalls = 0;
+  return {
+    async list() {
+      listCalls += 1;
+      return {
+        revision: "rev",
+        complete: true,
+        workstreams:
+          listCalls === 1
+            ? [
+                {
+                  path: "wirder",
+                  parent: undefined,
+                  children: [],
+                  sourcePath: "workstreams/wirder/README.md",
+                },
+              ]
+            : [],
+        errors: [],
+      };
+    },
+    async read(path) {
+      return { path, content: BACKLOG_README };
+    },
+    async validate(path) {
+      return { path };
+    },
+  };
+}
+
+// A workstream store that declares WIRDER until revoke() is called, letting a
+// beforeWrite hook drop the declaration between the authorization that a caller
+// resolves up front and the actual GitHub/Project mutation.
+function revocableWorkstreamStore() {
+  let revoked = false;
+  return {
+    revoke() {
+      revoked = true;
+    },
+    async list() {
+      return {
+        revision: "rev",
+        complete: true,
+        workstreams: revoked
+          ? []
+          : [
+              {
+                path: "wirder",
+                parent: undefined,
+                children: [],
+                sourcePath: "workstreams/wirder/README.md",
+              },
+            ],
+        errors: [],
+      };
+    },
+    async read(path) {
+      return { path, content: BACKLOG_README };
+    },
+    async validate(path) {
+      return { path };
+    },
+  };
+}
+
+// A workstream store that declares WIRDER under "wirder" until move() is called,
+// after which it declares WIRDER under "gadgets" instead. The scope stays
+// complete throughout, so a failed registration is due to the mapping moving to
+// a different workstream, not to an incomplete read.
+function movingWorkstreamStore() {
+  let moved = false;
+  return {
+    move() {
+      moved = true;
+    },
+    async list() {
+      return {
+        revision: "rev",
+        complete: true,
+        workstreams: [
+          {
+            path: moved ? "gadgets" : "wirder",
+            parent: undefined,
+            children: [],
+            sourcePath: `workstreams/${moved ? "gadgets" : "wirder"}/README.md`,
+          },
+        ],
+        errors: [],
+      };
+    },
+    async read(path) {
+      return { path, content: BACKLOG_README };
+    },
+    async validate(path) {
+      return { path };
+    },
+  };
+}
+
+function makeWorkstreamStore(readmes) {  const entries = Object.entries(readmes);
+  return {
+    async list() {
+      return {
+        revision: "rev",
+        complete: true,
+        workstreams: entries.map(([path]) => ({
+          path,
+          parent: path.includes("/")
+            ? path.slice(0, path.lastIndexOf("/"))
+            : undefined,
+          children: [],
+          sourcePath: `workstreams/${path}/README.md`,
+        })),
+        errors: [],
+      };
+    },
+    async read(path) {
+      if (!(path in readmes)) {
+        throw new Error(`workstream ${path} not found`);
+      }
+      return {
+        path,
+        sourcePath: `workstreams/${path}/README.md`,
+        content: readmes[path],
+      };
+    },
+    async validate(path) {
+      return { path };
+    },
   };
 }
 
@@ -1869,6 +2924,7 @@ class FakeGh {
       failAssignee = false,
       failProjectEdit = false,
       openIssues = [],
+      externalIssues = {},
       truncatedFieldValues = false,
       truncatedAssignees = false,
       truncatedLabels = false,
@@ -1877,6 +2933,7 @@ class FakeGh {
       failProjectRead = false,
       projectPageSize,
       failIssueClose = false,
+      respectIssueListLimit = false,
       closeOnFieldEdit = false,
       mismatchAndCloseOnFieldEdit = false,
       closeOnAssign = false,
@@ -1894,6 +2951,7 @@ class FakeGh {
     this.failAssignee = failAssignee;
     this.failProjectEdit = failProjectEdit;
     this.openIssues = structuredClone(openIssues);
+    this.externalIssues = structuredClone(externalIssues);
     this.truncatedFieldValues = truncatedFieldValues;
     this.truncatedAssignees = truncatedAssignees;
     this.truncatedLabels = truncatedLabels;
@@ -1902,6 +2960,7 @@ class FakeGh {
     this.failProjectRead = failProjectRead;
     this.projectPageSize = projectPageSize;
     this.failIssueClose = failIssueClose;
+    this.respectIssueListLimit = respectIssueListLimit;
     this.closeOnFieldEdit = closeOnFieldEdit;
     this.mismatchAndCloseOnFieldEdit = mismatchAndCloseOnFieldEdit;
     this.closeOnAssign = closeOnAssign;
@@ -1917,6 +2976,7 @@ class FakeGh {
     this.sawInProgressRead = false;
     this.issueCreates = [];
     this.issueEdits = [];
+    this.issueLists = [];
     this.issueStateEdits = [];
     this.issueComments = [];
     this.projectFieldEdits = [];
@@ -2192,7 +3252,22 @@ class FakeGh {
       return { id: "project-id", number: 2 };
     }
     if (args[0] === "issue" && args[1] === "list") {
-      return structuredClone(this.openIssues);
+      const repository = valueAfter(args, "--repo");
+      this.issueLists.push(repository);
+      const all =
+        repository === "AmoebaChant/pan-work"
+          ? structuredClone(this.openIssues)
+          : structuredClone(this.externalIssues[repository] ?? []);
+      // Opt-in: emulate `gh issue list --limit N` truncating the result set, so
+      // tests can drive the no-pagination fallback to its request cap. Off by
+      // default so existing tests keep receiving the full array.
+      if (this.respectIssueListLimit) {
+        const limit = Number(valueAfter(args, "--limit"));
+        if (Number.isInteger(limit) && limit >= 0) {
+          return all.slice(0, limit);
+        }
+      }
+      return all;
     }
     if (args[0] === "issue" && args[1] === "view") {
       return {
@@ -2203,19 +3278,41 @@ class FakeGh {
     }
     if (args[0] === "project" && args[1] === "item-add") {
       const issueUrl = valueAfter(args, "--url");
-      const number = Number(issueUrl.match(/\/issues\/(\d+)$/)[1]);
-      const created = this.issueCreates.find(
-        (_issue, index) => index + 2 === number,
+      const match = issueUrl.match(
+        /github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/,
       );
-      const openIssue = this.openIssues.find((issue) => issue.number === number);
+      const repository = match[1];
+      const number = Number(match[2]);
+      if (repository === "AmoebaChant/pan-work") {
+        const created = this.issueCreates.find(
+          (_issue, index) => index + 2 === number,
+        );
+        const openIssue = this.openIssues.find(
+          (issue) => issue.number === number,
+        );
+        const item = makeItem({
+          id: `item-${number}`,
+          number,
+          title: created?.title ?? openIssue?.title,
+          body: created?.body ?? openIssue?.body,
+        });
+        this.items.push(item);
+        this.nextIssue = Math.max(this.nextIssue, number + 1);
+        return { id: item.id };
+      }
+      const externalIssue = (this.externalIssues[repository] ?? []).find(
+        (issue) => issue.number === number,
+      );
       const item = makeItem({
-        id: `item-${number}`,
+        id: `item-${repository.replace("/", "-")}-${number}`,
         number,
-        title: created?.title ?? openIssue?.title,
-        body: created?.body ?? openIssue?.body,
+        title: externalIssue?.title,
+        body: externalIssue?.body,
+        repository,
+        state: externalIssue?.state === "closed" ? "CLOSED" : "OPEN",
+        workstream: "",
       });
       this.items.push(item);
-      this.nextIssue = Math.max(this.nextIssue, number + 1);
       return { id: item.id };
     }
     if (args[0] === "api" && args[1] === "graphql") {
@@ -2474,6 +3571,20 @@ function repositoryIssue(number, state) {
     title: `Issue ${number}`,
     body: "",
     url: `https://github.com/AmoebaChant/pan-work/issues/${number}`,
+    state,
+    labels: [],
+    createdAt: "2026-07-17T18:00:00Z",
+    updatedAt: "2026-07-17T19:00:00Z",
+    closedAt: state === "closed" ? "2026-07-17T19:00:00Z" : null,
+  };
+}
+
+function externalIssue(repository, number, state) {
+  return {
+    number,
+    title: `Issue ${number}`,
+    body: "",
+    url: `https://github.com/${repository}/issues/${number}`,
     state,
     labels: [],
     createdAt: "2026-07-17T18:00:00Z",

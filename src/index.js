@@ -119,6 +119,7 @@ export {
   resolveNewConfinedWorkstreamReadme,
   resolveConfinedWorkstreamReadme,
   resolveWorkstreamReadme,
+  parseBacklogRepositories,
   validateWorkstreamPath,
   WorkstreamStore,
 } from "./workstream-store.js";

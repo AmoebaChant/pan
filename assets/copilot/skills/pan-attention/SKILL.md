@@ -5,7 +5,10 @@ description: List Pan attention, record durable answers, and create Issue-backed
 
 # Pan attention
 
-Read Project items with `gh project item-list`. An item whose
+Read the complete Project item set — not just the 30-item default — with
+`gh project item-list` passing a large `-L` (fail closed if the returned count
+equals `-L`) or GraphQL `items(first:100 after:$cursor)` cursor pagination, so
+waiting workers past the 30th item are never missed. An item whose
 `needs-human-since` is non-empty has a worker waiting for the user right now;
 that field is the signal, and its timestamp gives you staleness. Also inspect
 blocked, needs-detail, and in-review Issues with `gh issue view`. Unresolved
