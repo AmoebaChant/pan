@@ -54,7 +54,10 @@ ordering, or completion checks.
    human precedence within the same priority. Routine triage ignores closed
    Issues, including external backlog Issues: leave their registered Project
    item untouched and never reopen or retriage them unless the user explicitly
-   asks to reconcile or modify a specific closed Issue.
+   asks to reconcile or modify a specific closed Issue. When classifying a
+   backlog Issue, read and apply the owning workstream's `## Triage
+   instructions`; those instructions may direct Pan to recommend accept or
+   reject and defer the decision to the user rather than acting.
 5. State recommendations with Issue URLs and current fields. Ask one focused
    question when the live data is insufficient.
 6. For changes not explicitly requested, show proposed updates and get approval.

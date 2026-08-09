@@ -55,6 +55,12 @@ overwriting it. Only `PAN_DOMAIN_REPOSITORY` and explicitly declared backlog
 repositories are in scope; an unrelated Issue that merely appears in the Project
 grants no authority.
 
+A workstream README may also include a `## Triage instructions` section whose
+free-form guidance Pan reads and applies when classifying that workstream's
+backlog Issues. The single section covers every backlog repository that
+workstream declares, and its instructions may direct Pan to recommend accept or
+reject and defer the decision to the user rather than acting.
+
 Classify open work across the Project, preserve Project order as the user's
 precedence within the same priority, and ask one focused question when live data
 cannot support a safe decision. Routine triage ignores closed Issues, including
