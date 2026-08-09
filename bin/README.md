@@ -226,9 +226,13 @@ Project once via GraphQL and cached for the process lifetime; writes use
   liveness grace still recover a truly-gone worker.
 - **`copilot` invocation.** The worker is started as
   `<copilotBin> [copilotArgs...] <prompt>` by `.pan/launch.mjs`, passing the
-  prompt as a single positional argv element (never re-parsed by any shell). If
-  your `copilot` build seeds an interactive session differently, adjust
-  `copilotBin`/`copilotArgs` in the config.
+  prompt as a single positional argv element (never re-parsed by any shell).
+  Current `copilot` builds do **not** accept a bare positional prompt (they fail
+  with `too many arguments`); they seed an interactive session with
+  `-i/--interactive <prompt>`. So `copilotArgs` should end with `--interactive`
+  (e.g. `["--allow-all", "--interactive"]`) — the runner appends the prompt as
+  its value. Adjust `copilotBin`/`copilotArgs` if your build seeds a session
+  differently.
 - **Recorded answers.** `.pan/task.json` currently ships an empty `answers`
   array; there is no durable answer store yet, so answers arrive live in the
   worker's terminal.
