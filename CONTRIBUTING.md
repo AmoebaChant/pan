@@ -1,19 +1,20 @@
 # Contributing
 
-Development requires Node.js 22 or newer.
+Pan is defined in Markdown. The behavior and contracts live in
+[`system/`](system/overview.md); the only code is the runner under `bin/`.
+Correctness is defined by the clarity and consistency of the `system/`
+contracts, so when you change behavior, change the relevant `system/` document
+in the same commit. There are no tests.
 
-Run `npm test` before submitting changes. When a deliberate change invalidates
-an assertion, update that test in the same change so the suite always reflects
-current behavior. Add tests for contracts worth protecting: field and schema
-validation, task leases and claims, delivery validation, and path isolation.
-Prefer those over assertions on exact user-facing prose, which change often and
-catch little.
+Keep the design MD-first: do not push behavior that belongs in a contract into
+the runner. The runner should only find work, coordinate leases, launch worker
+sessions, and relay the file-based signals defined in
+[`system/runner.md`](system/runner.md).
 
-Make changes on a feature branch or in an isolated worktree. Never work directly
-on the default branch.
+Requirements: Node.js 22+ and the GitHub CLI (`gh`).
 
-This is a public tool repository. Do not add private workstreams, runner state,
-locators, leases, credentials, or user-specific paths.
+Make changes on a feature branch or an isolated worktree; never work directly on
+the default branch.
 
-The [onboarding requirements](docs/pan-onboarding/requirements.md) describe what
-setup must deliver.
+This is a public tool repository and holds no user data. Never add private
+workstreams, runner state, leases, credentials, or user-specific paths.

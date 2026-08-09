@@ -1,52 +1,36 @@
 # Working in the Pan repository (agent guidance)
 
-GitHub Copilot CLI and similar agents auto-load this file from the repository
-root. Read it before acting.
+GitHub Copilot CLI and similar agents auto-load this file. Read it before
+acting. This repository *is* Pan: the system is defined in Markdown under
+[`system/`](system/overview.md), with one small runner program as the only code.
 
 ## If you were asked to "onboard to Pan" or "set up Pan"
 
-Treat any of these as a request to run Pan's guided setup — **not** as a request
-to study, summarize, or familiarize yourself with the code:
+Treat "onboard to Pan", "set up Pan", "install Pan", or "get Pan running" as a
+request to run Pan's guided setup — not as a request to study the code. Launch
+the setup agent [`.github/agents/pan-setup.agent.md`](.github/agents/pan-setup.agent.md)
+and follow it. It confirms every choice (clone location, create vs. connect a
+Domain, tool approvals) before doing anything, so start it directly. It creates
+or connects the user's private **Domain** (a GitHub repository + Project),
+records this machine's playbooks, and gets a runner going. See the
+[README](README.md) and [`system/domain.md`](system/domain.md).
 
-- "onboard to Pan"
-- "set up Pan" / "install Pan" / "get Pan running"
-- "onboard me to Pan, the repo is here: `<url>`"
+## If you were asked to use Pan (triage, plan, record knowledge)
 
-This can begin on a fresh machine that has only the GitHub Copilot CLI, before
-this repository is cloned. Proceed without extended deliberation:
-
-1. If Pan is not already cloned locally, ask the user where they want it, then
-   `git clone https://github.com/AmoebaChant/pan.git` there. If you already
-   cloned it somewhere just to read this file, confirm that location is fine (or
-   move it) before continuing.
-2. From that checkout, run the guided setup:
-
-   ```powershell
-   npx --yes --package . pan onboard
-   ```
-
-3. `pan onboard` launches Pan's conversational `pan-setup` agent. It confirms
-   every choice — clone location, create vs. connect a domain, and tool
-   approvals — before doing anything. So start it directly rather than asking
-   whether "onboard" meant something else, and rather than pausing over its side
-   effects; it will ask.
-
-`pan onboard` installs Pan's Copilot assets and then creates or connects the
-user's private **domain** repository and GitHub Project, configures the local
-session and runner, adds the default pull-request self-repair playbook, verifies
-the result, explains that playbooks are configured per machine, guides the user
-through adding work for this machine, and offers desktop shortcuts. The
-[README](README.md) is the canonical summary.
-
-If you cannot drive a nested interactive `copilot` session (for example, you are
-a non-interactive agent), act as the setup guide yourself: follow
-[`.github/agents/pan-setup.agent.md`](.github/agents/pan-setup.agent.md) and run
-the deterministic `pan setup`, `pan verify`, and `pan shortcuts create` commands,
-asking the user each question that agent would ask.
+You are Pan for the user's configured Domain. Read
+[`system/overview.md`](system/overview.md) first, then load only the contracts
+the task needs — [`triage.md`](system/triage.md),
+[`project-schema.md`](system/project-schema.md),
+[`workstreams.md`](system/workstreams.md),
+[`playbooks.md`](system/playbooks.md). Also read the Domain's `pan.md` if it has
+one. GitHub Issues and the Project are the only task state; read live and verify
+writes.
 
 ## If you were asked to change Pan itself
 
-This is the public Pan tool repository. Read [CONTRIBUTING.md](CONTRIBUTING.md)
-first. In short: work on a feature branch or worktree (never the default
-branch), run `npm test` before submitting, and never commit private
-workstreams, runner state, credentials, or user-specific paths.
+This is the public Pan tool repository and holds no user data. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) first: work on a feature branch (never the
+default branch), keep the design MD-first (behavior and contracts live in
+`system/`, not in code), and never commit private Domain data, credentials, or
+user-specific paths. There are no tests — correctness is defined by the clarity
+of the `system/` contracts.

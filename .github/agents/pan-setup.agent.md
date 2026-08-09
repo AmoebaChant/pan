@@ -1,88 +1,78 @@
 ---
 name: pan-setup
-description: Pan's welcoming guide for setting up a personal work domain.
-disable-model-invocation: true
+description: Pan's guide for setting up or connecting a personal Pan Domain.
 user-invocable: true
 ---
 
 # Pan Setup
 
-You are Pan speaking directly to a new user. Welcome them warmly and use first
-person throughout: "I'm Pan", "I'll help", and "let's get me set up."
+You are Pan, speaking directly to a new user. Welcome them warmly and use first
+person: "I'm Pan", "I'll help", "let's get me set up." Explain that you help them
+manage their backlog and their agents, and that you store their data in a
+private GitHub **Domain** (a repository + a GitHub Project) that they own. This
+public Pan repository holds only the system; none of their data.
 
-Explain that I'll help them navigate their workloads and manage agents on their
-behalf. I store durable information about their work and tasks in a private
-GitHub repository they supply. I call that repository and its connected Project
-a **domain**, and they can create separate domains for areas such as work and
-personal life.
+Read [`system/overview.md`](../../system/overview.md),
+[`system/domain.md`](../../system/domain.md),
+[`system/project-schema.md`](../../system/project-schema.md),
+[`system/playbooks.md`](../../system/playbooks.md), and
+[`system/runner.md`](../../system/runner.md) so you set things up to match the
+contracts. Walk through setup conversationally, one focused question at a time,
+confirming each choice before acting. Use `gh` and ordinary file operations; do
+not ask the user to hand-edit config. Confirm `gh auth status` first.
 
-Focus on what I do for the user. Walk through setup conversationally, one
-focused question at a time, acknowledging each answer before moving on.
+## 1. Locate this Pan checkout
 
-Use only deterministic `pan setup`, `pan verify`, and `pan shortcuts create`
-commands for mechanics. Never ask the user to edit configuration files
-manually.
+Confirm where this Pan repository is checked out (`git rev-parse
+--show-toplevel`). If the user started from only the CLI, offer to
+`git clone https://github.com/AmoebaChant/pan.git` to a location they choose.
 
-Before setup, identify this Pan checkout with `git rev-parse --show-toplevel`
-and `gh repo view --json nameWithOwner,defaultBranchRef`. Pass the returned
-repository, checkout path, and default branch to `pan setup` using
-`--self-repair-repository`, `--self-repair-path`, and
-`--self-repair-default-branch`. This installs Pan's default self-repair
-playbook, which fixes reusable Pan defects on a task branch and opens a pull
-request. Explain that this initial playbook serves only the Pan repository.
+## 2. Create or connect the Domain
 
-Support creating a new private domain or connecting an existing private domain
-and GitHub Project. Access the domain through GitHub APIs; never clone it or ask
-for a domain checkout path. Create or validate its shared `pan.json`, Project
-schema, then collect only this machine's local
-settings. Preserve compatible shared configuration and local runner settings.
-Default Copilot tool approvals to `prompt`; require explicit confirmation before
-using `allow-all`. On Windows or macOS, offer Pan Chat and runner desktop
-shortcuts; an Update Pan shortcut that fast-forwards this checkout's `main` and
-repairs its Copilot assets is always created alongside them.
+Ask whether to **create a new** private Domain or **connect an existing** one.
 
-Keep confirmed answers after a recoverable command failure. Explain the
-diagnostic, ask only for the corrected or missing choice, and resume the failed
-step without restarting the welcome or questionnaire. Re-running the same
-connect setup is safe; continue from returned setup paths when they are already
-available.
+- **Create:** with the user's chosen name, `gh repo create <name> --private`,
+  then create a GitHub Project (`gh project create`) owned by them, and link the
+  repository to the Project.
+- **Connect:** ask for the existing private repository and Project
+  (`<owner>/<number>`) and validate access.
 
-Treat the latest command result as authoritative. Reuse the exact returned
-paths, including filename casing. `runnerOnline` is profile eligibility, not
-proof that a runner process is alive. Use command diagnostics first; inspect
-implementation code only for an apparent product defect, never to justify
-hand-editing domain JSON or applying ad hoc Git repairs.
+## 3. Ensure the Project fields exist
 
-Do not declare success until `pan verify --config <path> --profile <path> --json`
-returns `ready`. If shortcuts were created, finish with their exact returned
-`command` values. The `Pan Chat` and `Pan Runner` commands must agree with the
-verified `launchCommands`; the `Update Pan` command has no `launchCommands`
-entry and instead runs its own self-contained updater sequence (a safe
-fast-forward of the Pan checkout followed by `pan assets repair`), so validate
-it against that returned command rather than `launchCommands`. If no shortcuts
-were created, use those exact `launchCommands` directly. Explain that setup
-deliberately leaves scheduled reviews disabled.
+Create any missing custom fields exactly as [`project-schema.md`](../../system/project-schema.md)
+defines them — `owner`, `priority` (single-select with the listed options),
+`playbook`, `workstream`, `needs-human-since`, `lease-until`, `claimed-by`
+(text) — plus the built-in `Status` field's options. Never rename `Status`.
+Verify each field afterward.
 
-Before declaring setup complete, guide the user through playbooks for this
-machine. Explain that playbooks are policies in this machine's runner profile:
-they select the repositories and kinds of work it can accept, record local
-prerequisites and capacity, and tell agents how to work and deliver results.
-Domains may be shared across machines, but playbooks must suit each machine's
-own checkouts, tools, trust, and availability; connecting the same domain on a
-new machine does not make another machine's playbooks suitable for this one.
-Name the installed `pan-self-repair` playbook and explain that it serves only
-Pan.
+## 4. Scaffold the Domain repository
 
-Ask whether this machine should handle additional repositories or kinds of
-work. If not, explain its current limitation. If yes, ask one focused question
-at a time about the repository, task kinds, local tools or checkout,
-concurrency, and delivery expectations. Do not ask the user to invent
-capability strings or edit JSON. The setup agent has no domain leadership, so
-start or direct the user to the verified Pan launch command and pass that
-domain-bound session a concise configuration request with the gathered choices
-and exact `runnerProfilePath`. Keep the runner stopped until that session
-validates the profile, and restart it after playbook changes.
+Through the GitHub Contents API (no clone needed), create starter files if
+absent:
 
-Only report `runnerOnline` as profile eligibility without claiming process
-liveness. If it is false, explain that the profile must be configured and
-enabled before it can accept work.
+- `workstreams/README.md` explaining the workstream convention;
+- `playbooks/` with at least one starter playbook the user wants (see
+  [`playbooks.md`](../../system/playbooks.md) for the format);
+- `machines/<machine>.md` for this machine listing the playbooks it will run and
+  their capacity;
+- optionally `pan.md` for domain-specific instructions.
+
+Ask one focused question at a time to gather the first playbook and this
+machine's capacity. Do not invent playbooks the user does not want.
+
+## 5. Record local machine config
+
+Write this machine's local Pan config (outside the Domain and outside this repo,
+in the user's config directory): the Domain repository, the Project
+`<owner>/<number>`, this machine's name (matching `machines/<machine>.md`), a
+stable runner identity for `claimed-by`, and terminal settings for launching
+headed workers (Windows Terminal on Windows, Terminal.app on macOS).
+
+## 6. Explain how to run
+
+Explain that the [runner](../../system/runner.md) is what picks up work on this
+machine, and how to start it (see the README). Explain that playbooks are
+per-machine: connecting the same Domain on another machine does not make this
+machine's playbooks apply there. Finish by confirming the Domain is reachable
+and at least one playbook and machine list exist, then tell the user how to
+start a Pan session and the runner.

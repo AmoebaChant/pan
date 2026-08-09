@@ -1,24 +1,19 @@
 {
   "name": "@amoebachant/pan",
-  "version": "0.1.0",
-  "description": "Direct GitHub-backed personal-agent toolkit for Pan sessions and runners.",
+  "version": "0.2.0",
+  "description": "Markdown-defined personal chief-of-staff system with a small work runner.",
   "type": "module",
-  "exports": {
-    ".": "./src/index.js"
-  },
   "bin": {
-    "pan": "./bin/pan.js",
     "pan-runner": "./bin/pan-runner.js"
   },
   "files": [
-    "assets",
-    "bin",
-    "src",
-    "schema"
+    "AGENTS.md",
+    "README.md",
+    "system",
+    "skills",
+    ".github/agents",
+    "bin"
   ],
-  "scripts": {
-    "test": "node --test test/*.test.js"
-  },
   "engines": {
     "node": ">=22"
   }

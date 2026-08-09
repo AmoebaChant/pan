@@ -1,0 +1,14 @@
+{
+  "domainRepo": "AmoebaChant/pan-domain",
+  "project": "AmoebaChant/7",
+  "machine": "kevins-macbook",
+  "identity": "kevins-macbook-runner-1",
+  "panCheckout": "/Users/kevin.brown/Repos/pan",
+  "terminal": { "kind": "macos-terminal" },
+  "copilotBin": "copilot",
+  "copilotArgs": [],
+  "pollIntervalSeconds": 30,
+  "leaseMinutes": 15,
+  "maxConcurrent": null,
+  "workspaceRoot": "/tmp/pan-workspaces"
+}
