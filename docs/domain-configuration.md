@@ -83,9 +83,10 @@ one-hour triggers and launch-local due metadata; Pan does not create an
 external scheduler or catch up reviews after a session exits.
 
 `policy.triageAuthority` may be `report` or `triage-fields`. The latter permits
-a scheduled review to fill triage fields only for untriaged items. Already
-triaged items still require approval, and active runner-owned fields remain
-untouched.
+a scheduled review to fill triage fields only for open untriaged items. Closed
+Issues are still registered as `untriaged`, but a scheduled review leaves them as
+historical records it never reclassifies or edits. Already triaged items still
+require approval, and active runner-owned fields remain untouched.
 
 ## Legacy configuration
 

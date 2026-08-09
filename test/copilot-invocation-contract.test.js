@@ -76,7 +76,11 @@ test("grants a standing triage policy only when configured", () => {
 
   assert.match(reporting, /Discuss recommendations before mutation/i);
   assert.doesNotMatch(reporting, /standing policy/i);
-  assert.match(triaging, /standing policy to triage untriaged items without asking/i);
+  assert.match(triaging, /standing policy to triage untriaged open Issues without asking/i);
+  assert.match(
+    triaging,
+    /This authority covers only open Issues; a scheduled review still registers every missing Issue, open or closed, but closed Issues stay historical records it never reclassifies or mutates without an explicit request/i,
+  );
   assert.match(
     triaging,
     /Status is missing, empty, or explicitly set to untriaged/i,

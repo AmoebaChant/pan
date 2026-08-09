@@ -5,6 +5,7 @@ import { PanStore } from "../src/index.js";
 
 const NOW = new Date("2026-07-17T20:00:00Z");
 const FUTURE = "2026-07-17T20:10:00Z";
+const THIEF_LEASE = "2099-12-31T23:59:59Z";
 const LATER = "2026-07-17T20:12:00Z";
 const PAST = "2026-07-17T19:59:00Z";
 const MANIFEST = {
@@ -207,6 +208,56 @@ test("filters canonical items by fields, requirements, and lease state", async (
   );
 });
 
+test("excludes closed Issue-backed items when filtering by open", async () => {
+  const { store } = fixture({
+    items: [
+      makeItem({
+        id: "open-ready",
+        owner: "agent",
+        status: "ready",
+        state: "OPEN",
+      }),
+      makeItem({
+        id: "undefined-ready",
+        owner: "agent",
+        status: "ready",
+        state: undefined,
+      }),
+      makeItem({
+        id: "empty-ready",
+        owner: "agent",
+        status: "ready",
+        state: "",
+      }),
+      makeItem({
+        id: "closed-ready",
+        owner: "agent",
+        status: "ready",
+        state: "CLOSED",
+      }),
+      makeItem({
+        id: "mixedcase-closed-ready",
+        owner: "agent",
+        status: "ready",
+        state: "Closed",
+      }),
+      makeItem({
+        id: "lower-closed-ready",
+        owner: "agent",
+        status: "ready",
+        state: "closed",
+      }),
+    ],
+  });
+
+  assert.deepEqual(
+    (await store.listByFilter({ owner: "agent", open: true })).map(
+      (item) => item.id,
+    ),
+    ["open-ready", "undefined-ready", "empty-ready"],
+  );
+});
+
 test("bounds board reads and fetches individual items directly", async () => {
   const { store, gh } = fixture();
 
@@ -395,7 +446,7 @@ test("does not steal an active lease from another runner", async () => {
   assert.equal(result.item.fields.claimedBy, "runner-a");
 });
 
-test("refuses to claim a closed item and writes nothing", async () => {
+test("aborts a claim on a closed Issue without writing any field or assignment", async () => {
   const { store, gh } = fixture({
     items: [makeItem({ status: "ready", state: "CLOSED" })],
   });
@@ -403,6 +454,7 @@ test("refuses to claim a closed item and writes nothing", async () => {
   const result = await store.claimWithLease({
     itemId: "item-1",
     runner: "runner-a",
+    assignee: "octocat",
     leaseUntil: FUTURE,
   });
 
@@ -410,8 +462,921 @@ test("refuses to claim a closed item and writes nothing", async () => {
     { claimed: result.claimed, reason: result.reason },
     { claimed: false, reason: "issue-closed" },
   );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.status, "ready");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(gh.issueEdits, []);
   assert.equal(gh.projectEdits, 0);
-  assert.equal(gh.issueEdits.length, 0);
+});
+
+test("releases the claim when the Issue closes between the claim write and its confirmation", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  // Runner-owned fields are cleared, but the quiet rollback must not write the
+  // status field on the now-closed Issue.
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+  );
+  assert.deepEqual(gh.issueComments, []);
+});
+
+test("releases the claim and reports issue-closed when confirmation fails on a now-closed Issue", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    mismatchAndCloseOnFieldEdit: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+  );
+  assert.deepEqual(gh.issueComments, []);
+});
+
+test("tolerates a not-owner release during a closed rollback without throwing", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    stealClaimOnClose: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+});
+
+test("a closed rollback does not disturb a lease another runner legitimately holds", async () => {
+  // The steal fires during runner-a's phase-1 runner-owned write: it flips
+  // claimed-by to runner-thief, installs the thief's LIVE future lease, and
+  // closes the Issue -- all BEFORE claimWithLease re-reads the Issue and drives
+  // #quietClaimRollback. By the time the rollback runs, the item is owned by
+  // runner-thief, so the rollback's release() hits its not-owner guard and
+  // leaves the thief's fields completely untouched (no dead-lease machinery
+  // is involved).
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    stealClaimOnClose: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  // not-owner is tolerated exactly as before -- no throw.
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  // The thief's live claim is completely undisturbed by our rollback.
+  assert.equal(item.fields.claimedBy, "runner-thief");
+  assert.equal(item.fields.leaseUntil, THIEF_LEASE);
+});
+
+test("throws when the closed rollback release cannot be confirmed", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    failReleaseConfirmOnClose: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /Claim rollback failed/,
+  );
+});
+
+test("a mid-claim closed rollback whose release cannot be confirmed leaves a stranded (non-claimable) blank-lease claim on the closed Issue", async () => {
+  // failReleaseConfirmOnClose makes the rollback release's claimed-by clear a
+  // silent no-op (claimed-by stays runner-a) while its lease-until clear
+  // succeeds (lease-until -> ""), and closes the Issue. release() then reports
+  // release-not-confirmed, which #quietClaimRollback surfaces as a thrown
+  // "Claim rollback failed". The resulting end-state is claimed-by=runner-a
+  // with a BLANK lease on a CLOSED item. Under main semantics isExpired("") is
+  // false, so this is NOT claimable -- it is a stranded runner-owned residual.
+  // That is harmless debris rather than a live claim: a closed item is excluded
+  // from every dispatch/claim/recovery path by the open filter and a mid-claim
+  // failure leaves no resume pointer, so nothing ever acts on it while the
+  // Issue stays closed; the real-world resume-pointer variant is reconciled by
+  // the force-based closed reconciliation in #recoverResumeTasks.
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    failReleaseConfirmOnClose: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /Claim rollback failed/,
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "runner-a");
+  assert.equal(item.fields.leaseUntil, "");
+  // Documented residual: the stranded blank-lease claim is NOT claimable under
+  // main semantics. We prove that through the claimable filter, which no longer
+  // treats a blank lease as expired.
+  assert.ok(
+    !(await store.listByFilter({ claimable: true }))
+      .map((entry) => entry.id)
+      .includes("item-1"),
+    "a stranded blank-lease claim on a closed Issue must not be claimable",
+  );
+});
+
+test("a mid-claim closed rollback whose release THROWS leaves an unclaimed (claimable) item, not an immortal claim", async () => {
+  // GAP 1: the reviewer required the mid-claim-closed rollback-semantics test to
+  // cover BOTH failure modes. The failReleaseConfirmOnClose tests above cover
+  // mode (a) -- release returns {released:false, reason:"release-not-confirmed"}.
+  // This covers mode (b) -- the rollback release() THROWS. throwRollbackClear
+  // closes the Issue on the phase-1 write (via closeOnFieldEdit) and then makes
+  // the rollback release's lease-until clear throw. Because release() writes
+  // claimed-by BEFORE lease-until, the claimed-by clear has already landed when
+  // the throw fires, so the end state is claimed-by="" (UNCLAIMED). It is
+  // claimable because it is unclaimed (the !claimedBy short-circuit in the
+  // claimable filter), never an immortal claimed-by-set-with-live-lease. The
+  // post-phase-1 site has no try/catch around #quietClaimRollback, so the throw
+  // propagates and the claim call rejects.
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+    throwRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /rollback release write failed/,
+  );
+  const item = await store.getItem("item-1");
+  // The end state is NOT an immortal claim: claimed-by was cleared before the
+  // throw, so the item is UNCLAIMED and therefore claimable via the !claimedBy
+  // short-circuit -- not because a blank lease is treated as expired.
+  assert.equal(item.fields.claimedBy, "");
+  assert.ok(
+    (await store.listByFilter({ claimable: true }))
+      .map((entry) => entry.id)
+      .includes("item-1"),
+    "an item left unclaimed by a thrown rollback must be claimable",
+  );
+});
+
+// GAP 2: kill the {released:false} throw-guard AND the swallow-thrown-rollback
+// mutation at each of the six #quietClaimRollback call sites in claimWithLease.
+// Each site is reached by its own close-timing flag; failRollbackClear forces
+// the rollback release to return {released:false} (mode a) and throwRollbackClear
+// forces it to throw (mode b). The post-phase-1 site's mode (a) is already
+// covered by "throws when the closed rollback release cannot be confirmed"
+// (failReleaseConfirmOnClose) and its mode (b) by the GAP 1 test above.
+
+test("site2 not-confirmed-closed guard throws when the rollback release is not confirmed", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    mismatchAndCloseOnFieldEdit: true,
+    failRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /Claim rollback failed/,
+  );
+});
+
+test("site2 not-confirmed-closed guard propagates a thrown rollback release", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    mismatchAndCloseOnFieldEdit: true,
+    throwRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /rollback release write failed/,
+  );
+});
+
+test("site3 confirmed-but-closed guard throws when the rollback release is not confirmed", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeKeepingFieldsOnStatusWrite: true,
+    failRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /Claim rollback failed/,
+  );
+});
+
+test("site3 confirmed-but-closed guard propagates a thrown rollback release", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeKeepingFieldsOnStatusWrite: true,
+    throwRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /rollback release write failed/,
+  );
+});
+
+test("site4 pre-assign-closed guard throws when the rollback release is not confirmed", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeBeforeAssign: true,
+    failRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /Claim rollback failed/,
+  );
+});
+
+test("site4 pre-assign-closed guard propagates a thrown rollback release", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeBeforeAssign: true,
+    throwRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /rollback release write failed/,
+  );
+});
+
+test("site5 assignment-failure-closed guard throws an AggregateError when the rollback is not confirmed", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeAndFailAssign: true,
+    failRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    (err) =>
+      err instanceof AggregateError && /after claiming the item/.test(err.message),
+  );
+});
+
+test("site5 assignment-failure-closed try/catch wraps a thrown rollback in an AggregateError", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeAndFailAssign: true,
+    throwRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    (err) =>
+      err instanceof AggregateError && /rollback errored/.test(err.message),
+  );
+});
+
+test("site6 final-read-closed guard throws when the rollback release is not confirmed", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnAssign: true,
+    failRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /Claim rollback failed/,
+  );
+});
+
+test("site6 final-read-closed guard propagates a thrown rollback release", async () => {
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnAssign: true,
+    throwRollbackClear: true,
+  });
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /rollback release write failed/,
+  );
+});
+
+test("a claimed item with any lease (blank or future) stays leased against a different runner", async () => {
+  // Under main semantics isExpired("") is false, so a claimed item with a
+  // blank lease is treated as LEASED, exactly like one with a future lease: a
+  // DIFFERENT runner is blocked on both. This is the behavior that closes the
+  // duplicate-claim window during the transient claimed-by=runner-a,
+  // leaseUntil="" state of a healthy phase-1 claim.
+  const { store } = fixture({
+    items: [
+      makeItem({ id: "blank", number: 1, claimedBy: "runner-a", leaseUntil: "" }),
+      makeItem({
+        id: "future",
+        number: 2,
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+      }),
+    ],
+  });
+  const blankResult = await store.claimWithLease({
+    itemId: "blank",
+    runner: "runner-b",
+    leaseUntil: FUTURE,
+  });
+  assert.deepEqual(
+    { claimed: blankResult.claimed, reason: blankResult.reason },
+    { claimed: false, reason: "leased" },
+  );
+  const futureResult = await store.claimWithLease({
+    itemId: "future",
+    runner: "runner-b",
+    leaseUntil: LATER,
+  });
+  assert.deepEqual(
+    { claimed: futureResult.claimed, reason: futureResult.reason },
+    { claimed: false, reason: "leased" },
+  );
+});
+
+test("two runners cannot both claim an OPEN task when the first has written claimedBy but not yet leaseUntil (duplicate-claim guard)", async () => {
+  // T1 -- the mutation guard for reverting isExpired's blank branch. setFields
+  // writes fields sequentially, claimedBy BEFORE leaseUntil (see
+  // src/pan-store.js setFields / claimWithLease phase-1), so a healthy claim
+  // passes through a transient claimed-by=runner-a, leaseUntil="" window on an
+  // OPEN item. The onClaimedByWrite hook fires exactly in that window and drives
+  // runner-b's claim attempt before runner-a's leaseUntil write lands. Under
+  // main semantics isExpired("") is false, so runner-b sees the half-written
+  // claim as LEASED and is blocked; exactly one runner ends up holding the
+  // claim. If isExpired's blank branch is mutated back to `return true`,
+  // runner-b would treat the transient state as claimable and BOTH runners
+  // could return {claimed:true} -- duplicate execution. This test fails under
+  // that mutation.
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+  });
+  let runnerBResult;
+  gh.onClaimedByWrite = async (id) => {
+    if (id !== "item-1") {
+      return;
+    }
+    runnerBResult = await store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-b",
+      assignee: "octocat",
+      leaseUntil: LATER,
+    });
+  };
+  const runnerAResult = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.equal(runnerAResult.claimed, true);
+  assert.deepEqual(
+    { claimed: runnerBResult.claimed, reason: runnerBResult.reason },
+    { claimed: false, reason: "leased" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "runner-a");
+  assert.equal(item.fields.leaseUntil, FUTURE);
+});
+
+test("release on a claimed blank-lease item succeeds under the owner check because a blank lease is not expired", async () => {
+  // Under main semantics isExpired("") is false, so release() on a claimed item
+  // whose claimed-by matches the caller passes the not-owner check and is NOT
+  // treated as expired -> the guarded release succeeds without allowExpired.
+  const { store } = fixture({
+    items: [
+      makeItem({
+        id: "item-1",
+        number: 1,
+        claimedBy: "runner-a",
+        leaseUntil: "",
+        status: "in-progress",
+      }),
+    ],
+  });
+  const guarded = await store.release({ itemId: "item-1", runner: "runner-a" });
+  assert.equal(guarded.released, true);
+});
+
+test("release()'s not-owner guard leaves a foreign claim untouched when ownership changed BEFORE release's read (pre-read steal)", async () => {
+  // Documentation/pin test, no new production code. This covers ONLY the
+  // PRE-READ steal: the stealClaimOnClose hook flips ownership to runner-thief
+  // during runner-a's phase-1 write, i.e. BEFORE the subsequent
+  // #quietClaimRollback release() reads the item. release() then reads the
+  // already-stolen item and its not-owner guard fires, leaving the thief's live
+  // claim completely untouched. This is byte-identical to origin/main.
+  //
+  // The POST-READ window -- ownership changing AFTER release() reads the item
+  // but BEFORE it writes -- is the irreducible, pre-existing check-then-act
+  // race inside release(). That race is byte-identical to origin/main and is
+  // OUT OF SCOPE for this branch: this test does NOT exercise or fix it, and
+  // must not be read as claiming to.
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    stealClaimOnClose: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "runner-thief");
+  assert.equal(item.fields.leaseUntil, THIEF_LEASE);
+});
+
+test("the claimable filter treats only an unclaimed item as claimable, not a blank-lease or future-lease claim", async () => {
+  // Under main semantics a claim with any lease (blank or future) is NOT
+  // claimable; only a genuinely unclaimed item (claimed-by="") is.
+  const { store } = fixture({
+    items: [
+      makeItem({ id: "unclaimed", number: 1, owner: "agent", claimedBy: "" }),
+      makeItem({
+        id: "blank",
+        number: 2,
+        owner: "agent",
+        claimedBy: "runner-a",
+        leaseUntil: "",
+      }),
+      makeItem({
+        id: "future",
+        number: 3,
+        owner: "agent",
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+      }),
+    ],
+  });
+  assert.deepEqual(
+    (await store.listByFilter({ claimable: true })).map((entry) => entry.id),
+    ["unclaimed"],
+  );
+});
+
+test("heartbeat with a future lease still renews", async () => {
+  const { store } = fixture({
+    items: [
+      makeItem({
+        id: "item-1",
+        number: 1,
+        claimedBy: "runner-a",
+        leaseUntil: FUTURE,
+        status: "in-progress",
+      }),
+    ],
+  });
+  const result = await store.heartbeat({
+    itemId: "item-1",
+    runner: "runner-a",
+    leaseUntil: LATER,
+  });
+  assert.equal(result.renewed, true);
+});
+
+test("releases the claim without touching the assignee when the Issue closes at the assignee write", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnAssign: true,
+  });
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+  assert.notEqual(result.claimed, true);
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  // The final-read closed path must NOT write status and must NOT remove the
+  // assignee on the closed Issue; the stray assignee is deliberately left in
+  // place (no remove-assignee write against a closed Issue, and closed-item
+  // recovery passes no assignee) and is inert because the item is excluded
+  // everywhere by the open filter.
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.closedAtEdit,
+    ),
+    [],
+    "no status field write may land on the Issue after it closed",
+  );
+  const assigneeEdits = gh.issueEdits.filter((e) => e.assignee === "octocat");
+  assert.deepEqual(
+    assigneeEdits.map((e) => e.flag),
+    ["--add-assignee"],
+    "no remove-assignee write may land on the closed Issue",
+  );
+});
+
+test("does not write status:in-progress when the Issue closes before the status write", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.equal(result.claimed, false);
+  assert.equal(result.reason, "issue-closed");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "in-progress",
+    ),
+    [],
+    "the phase-1 gate must abort before any status:in-progress write",
+  );
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+  );
+});
+
+test("releases the claim when confirmation succeeds but the Issue is already closed", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeKeepingFieldsOnStatusWrite: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.equal(result.claimed, false);
+  assert.equal(result.reason, "issue-closed");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+  );
+});
+
+test("does not add an assignee when the Issue closes before the assignee write", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeBeforeAssign: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.equal(result.claimed, false);
+  assert.equal(result.reason, "issue-closed");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+    "the pre-add gate must abort before any --add-assignee write",
+  );
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+});
+
+test("clears the just-written claim during a closed rollback even after the lease expires", async () => {
+  let calls = 0;
+  const now = () => {
+    calls += 1;
+    return calls === 1 ? NOW : new Date(NOW.getTime() + 3600_000);
+  };
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnFieldEdit: true,
+    now,
+  });
+
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    });
+  });
+
+  assert.equal(result.reason, "issue-closed");
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "in-progress",
+    ),
+    [],
+  );
+});
+
+test("releases the claim when the Issue is observed closed only at the confirmation read", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnlyAtConfirm: true,
+  });
+
+  const result = await store.claimWithLease({
+    itemId: "item-1",
+    runner: "runner-a",
+    assignee: "octocat",
+    leaseUntil: FUTURE,
+  });
+
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the quiet rollback must not write status:ready on the closed Issue",
+  );
+  assert.deepEqual(
+    gh.issueEdits.filter((e) => e.flag === "--add-assignee"),
+    [],
+    "the confirmed-but-closed gate must abort before any --add-assignee write",
+  );
+});
+
+test("clears the just-written claim on the not-confirmed-closed path even after the lease expires", async () => {
+  let calls = 0;
+  const now = () => {
+    calls += 1;
+    return calls === 1 ? NOW : new Date(NOW.getTime() + 3600_000);
+  };
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    mismatchAndCloseOnFieldEdit: true,
+    now,
+  });
+
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    });
+  });
+
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+});
+
+test("clears the just-written claim on the confirmed-but-closed path even after the lease expires", async () => {
+  let calls = 0;
+  const now = () => {
+    calls += 1;
+    return calls === 1 ? NOW : new Date(NOW.getTime() + 3600_000);
+  };
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnlyAtConfirm: true,
+    now,
+  });
+
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    });
+  });
+
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+});
+
+test("clears the just-written claim on the pre-assign-closed path even after the lease expires", async () => {
+  let calls = 0;
+  const now = () => {
+    calls += 1;
+    return calls === 1 ? NOW : new Date(NOW.getTime() + 3600_000);
+  };
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeBeforeAssign: true,
+    now,
+  });
+
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    });
+  });
+
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+});
+
+test("clears the just-written claim on the final-read-closed path even after the lease expires", async () => {
+  let calls = 0;
+  const now = () => {
+    calls += 1;
+    return calls === 1 ? NOW : new Date(NOW.getTime() + 3600_000);
+  };
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeOnAssign: true,
+    now,
+  });
+
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    });
+  });
+
+  assert.deepEqual(
+    { claimed: result.claimed, reason: result.reason },
+    { claimed: false, reason: "issue-closed" },
+  );
+  const item = await store.getItem("item-1");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
 });
 
 test("rolls back a claim when Issue assignment fails", async () => {
@@ -432,6 +1397,63 @@ test("rolls back a claim when Issue assignment fails", async () => {
 
   const item = await store.getItem("item-1");
   assert.equal(item.fields.status, "ready");
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+});
+
+test("quietly clears runner-owned fields when assignment fails on a now-closed Issue", async () => {
+  const { store, gh } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeAndFailAssign: true,
+  });
+
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /assignment failed/,
+  );
+
+  const item = await store.getItem("item-1");
+  // Runner-owned fields are cleared, but the closed-Issue rollback must NOT
+  // write status:ready back onto the closed Issue.
+  assert.equal(item.fields.claimedBy, "");
+  assert.equal(item.fields.leaseUntil, "");
+  assert.deepEqual(
+    gh.projectFieldEdits.filter(
+      (edit) => edit.field === "status" && edit.value === "ready",
+    ),
+    [],
+    "the assignment-failure rollback must not write status:ready on the closed Issue",
+  );
+});
+
+test("clears the just-written claim when assignment fails on a closed Issue even after the lease expires", async () => {
+  let calls = 0;
+  const now = () => {
+    calls += 1;
+    return calls === 1 ? NOW : new Date(NOW.getTime() + 3600_000);
+  };
+  const { store } = fixture({
+    items: [makeItem({ status: "ready" })],
+    closeAndFailAssign: true,
+    now,
+  });
+
+  await assert.rejects(
+    store.claimWithLease({
+      itemId: "item-1",
+      runner: "runner-a",
+      assignee: "octocat",
+      leaseUntil: FUTURE,
+    }),
+    /assignment failed/,
+  );
+
+  const item = await store.getItem("item-1");
   assert.equal(item.fields.claimedBy, "");
   assert.equal(item.fields.leaseUntil, "");
 });
@@ -1704,6 +2726,18 @@ function fixture({
   projectItemSafetyLimit,
   workstreamStore,
   respectIssueListLimit = false,
+  closeOnFieldEdit = false,
+  mismatchAndCloseOnFieldEdit = false,
+  closeOnAssign = false,
+  stealClaimOnClose = false,
+  failReleaseConfirmOnClose = false,
+  closeKeepingFieldsOnStatusWrite = false,
+  closeBeforeAssign = false,
+  closeOnlyAtConfirm = false,
+  closeAndFailAssign = false,
+  failRollbackClear = false,
+  throwRollbackClear = false,
+  now = () => NOW,
 } = {}) {
   const gh = new FakeGh(items, {
     failAssignee,
@@ -1719,6 +2753,17 @@ function fixture({
     failIssueClose,
     projectPageSize,
     respectIssueListLimit,
+    closeOnFieldEdit,
+    mismatchAndCloseOnFieldEdit,
+    closeOnAssign,
+    stealClaimOnClose,
+    failReleaseConfirmOnClose,
+    closeKeepingFieldsOnStatusWrite,
+    closeBeforeAssign,
+    closeOnlyAtConfirm,
+    closeAndFailAssign,
+    failRollbackClear,
+    throwRollbackClear,
   });
   return {
     gh,
@@ -1729,7 +2774,7 @@ function fixture({
       gh,
       manifest: MANIFEST,
       projectItemSafetyLimit,
-      now: () => NOW,
+      now,
       sleep: async () => {},
       workstreamStore: workstreamStore ?? makeWorkstreamStore(workstreams ?? {}),
     }),
@@ -1889,6 +2934,17 @@ class FakeGh {
       projectPageSize,
       failIssueClose = false,
       respectIssueListLimit = false,
+      closeOnFieldEdit = false,
+      mismatchAndCloseOnFieldEdit = false,
+      closeOnAssign = false,
+      stealClaimOnClose = false,
+      failReleaseConfirmOnClose = false,
+      closeKeepingFieldsOnStatusWrite = false,
+      closeBeforeAssign = false,
+      closeOnlyAtConfirm = false,
+      closeAndFailAssign = false,
+      failRollbackClear = false,
+      throwRollbackClear = false,
     } = {},
   ) {
     this.items = structuredClone(items);
@@ -1905,11 +2961,25 @@ class FakeGh {
     this.projectPageSize = projectPageSize;
     this.failIssueClose = failIssueClose;
     this.respectIssueListLimit = respectIssueListLimit;
+    this.closeOnFieldEdit = closeOnFieldEdit;
+    this.mismatchAndCloseOnFieldEdit = mismatchAndCloseOnFieldEdit;
+    this.closeOnAssign = closeOnAssign;
+    this.stealClaimOnClose = stealClaimOnClose;
+    this.failReleaseConfirmOnClose = failReleaseConfirmOnClose;
+    this.closeKeepingFieldsOnStatusWrite = closeKeepingFieldsOnStatusWrite;
+    this.closeBeforeAssign = closeBeforeAssign;
+    this.closeOnlyAtConfirm = closeOnlyAtConfirm;
+    this.closeAndFailAssign = closeAndFailAssign;
+    this.failRollbackClear = failRollbackClear;
+    this.throwRollbackClear = throwRollbackClear;
+    this.confirmCloseFired = false;
+    this.sawInProgressRead = false;
     this.issueCreates = [];
     this.issueEdits = [];
     this.issueLists = [];
     this.issueStateEdits = [];
     this.issueComments = [];
+    this.projectFieldEdits = [];
     this.commentsByIssue = new Map();
     this.projectOrders = [];
     this.deletedIssues = [];
@@ -1933,8 +3003,143 @@ class FakeGh {
       if (this.failProjectEdit) {
         throw new Error("project edit failed");
       }
+      const isClear = args.includes("--clear");
+      const fieldId = valueAfter(args, "--field-id");
+      const targetField = MANIFEST.fields.find(
+        (candidate) => `field-${candidate.key}` === fieldId,
+      );
+      if (
+        this.failReleaseConfirmOnClose &&
+        isClear &&
+        targetField?.key === "claimedBy"
+      ) {
+        // Sabotage ONLY the rollback release's clear of the runner-owned
+        // claimed-by field: skip the actual clear so the value stays "runner-a"
+        // and the release's own confirmation mismatches, yielding
+        // release-not-confirmed (a non-not-owner failure the quiet rollback
+        // must surface by throwing).
+        this.projectEdits += 1;
+        return "";
+      }
+      const editTarget = this.items.find(
+        (candidate) => candidate.id === valueAfter(args, "--id"),
+      );
+      const editTargetClosed = editTarget?.content?.state === "CLOSED";
+      if (
+        this.failRollbackClear &&
+        isClear &&
+        targetField?.key === "claimedBy" &&
+        editTargetClosed
+      ) {
+        // Generic rollback-release-fails hook: skip ONLY the rollback release's
+        // claimed-by clear once the Issue is CLOSED (the rollback runs only on a
+        // closed Issue). The lease-until clear still succeeds, so the release's
+        // own confirmation mismatches -> release-not-confirmed ({released:false},
+        // reason !== "not-owner"), which each call site's throw-guard must
+        // surface. Unlike failReleaseConfirmOnClose this does not itself close
+        // the Issue, so it composes with any close-timing flag to reach any of
+        // the six #quietClaimRollback call sites.
+        this.projectEdits += 1;
+        return "";
+      }
+      if (
+        this.throwRollbackClear &&
+        isClear &&
+        targetField?.key === "leaseUntil" &&
+        editTargetClosed
+      ) {
+        // Generic rollback-release-fails hook: make the rollback release's
+        // lease-until clear THROW on a closed Issue. release() writes claimed-by
+        // BEFORE lease-until, so by the time this throws the claimed-by clear has
+        // already landed (claimed-by=""); the throw leaves lease-until untouched.
+        // The end state is therefore claimed-by="" (unclaimed => claimable),
+        // never an immortal claim. Composes with any close-timing flag to make
+        // any of the six call sites observe a THROWN rollback.
+        this.projectEdits += 1;
+        throw new Error("rollback release write failed");
+      }
       this.projectEdits += 1;
       this.#editProjectItem(args);
+      if (
+        this.onClaimedByWrite &&
+        !isClear &&
+        targetField?.key === "claimedBy"
+      ) {
+        // Interleaving hook for the duplicate-claim guard (T1): fire exactly
+        // when runner-a's phase-1 claimed-by write has landed but its
+        // lease-until write has NOT yet (setFields writes claimedBy before
+        // leaseUntil, so the store is observably claimed-by=runner-a,
+        // lease-until="" at this instant). The test drives runner-b's claim
+        // from inside this callback to model the true race.
+        const hook = this.onClaimedByWrite;
+        this.onClaimedByWrite = null;
+        await hook(valueAfter(args, "--id"));
+      }
+      if (this.closeOnFieldEdit) {
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited?.content) {
+          edited.content.state = "CLOSED";
+        }
+      }
+      if (this.failReleaseConfirmOnClose) {
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited?.content) {
+          edited.content.state = "CLOSED";
+        }
+      }
+      if (this.stealClaimOnClose) {
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        // One-shot: steal + close only on the phase-1 lease-until write while
+        // the Issue is still open. Firing on the lease-until write (which runs
+        // AFTER #editProjectItem set lease-until to runner-a's value) lets the
+        // thief's own distinct live lease survive phase-1. Guarding on "still
+        // open" means later edits (e.g. the rollback's own writes) never
+        // re-establish the thief, so a stomp of the thief's lease during
+        // rollback stays observable instead of being masked by a re-steal.
+        if (
+          edited &&
+          targetField?.key === "leaseUntil" &&
+          edited.content?.state !== "CLOSED"
+        ) {
+          edited["claimed-by"] = "runner-thief";
+          // The thief holds a concrete LIVE (future) lease, distinct from
+          // runner-a's phase-1 lease value, so a rollback that wrongly stomped
+          // the thief's lease would be observable in tests.
+          edited["lease-until"] = THIEF_LEASE;
+          if (edited.content) {
+            edited.content.state = "CLOSED";
+          }
+        }
+      }
+      if (this.mismatchAndCloseOnFieldEdit) {
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited?.Status === "in-progress") {
+          edited.Status = "blocked";
+          if (edited.content) {
+            edited.content.state = "CLOSED";
+          }
+        }
+      }
+      if (this.closeKeepingFieldsOnStatusWrite) {
+        // Close the Issue exactly when the Status field reaches "in-progress"
+        // (the phase-2 write) but LEAVE Status = "in-progress" so #confirmFields
+        // still matches every expected field and returns a confirmed item whose
+        // .state is closed -- exercising the confirmed-but-closed guard.
+        const edited = this.items.find(
+          (candidate) => candidate.id === valueAfter(args, "--id"),
+        );
+        if (edited?.Status === "in-progress" && edited.content) {
+          edited.content.state = "CLOSED";
+        }
+      }
       return "";
     }
     if (args[0] === "issue" && args[1] === "edit") {
@@ -1953,6 +3158,18 @@ class FakeGh {
       ) {
         throw new Error("assignment failed");
       }
+      if (this.closeAndFailAssign && flag === "--add-assignee") {
+        // Close the Issue during the --add-assignee attempt and then fail the
+        // write, so the assignment-failure catch reads a CLOSED Issue and must
+        // take the quiet runner-owned-clear path (never status:ready).
+        const closing = this.items.find(
+          (candidate) => candidate.content?.number === Number(args[2]),
+        );
+        if (closing?.content) {
+          closing.content.state = "CLOSED";
+        }
+        throw new Error("assignment failed");
+      }
       const item = this.items.find(
         (candidate) => candidate.content?.number === Number(args[2]),
       );
@@ -1965,6 +3182,14 @@ class FakeGh {
           item.assignees = item.assignees.filter(
             (candidate) => candidate !== assignee,
           );
+        }
+      }
+      if (this.closeOnAssign && flag === "--add-assignee") {
+        const closing = this.items.find(
+          (candidate) => candidate.content?.number === Number(args[2]),
+        );
+        if (closing?.content) {
+          closing.content.state = "CLOSED";
         }
       }
       return "";
@@ -2145,6 +3370,41 @@ class FakeGh {
       const item = this.items.find(
         (candidate) => candidate.id === valueAfterAssignment(args, "itemId"),
       );
+      if (
+        this.closeBeforeAssign &&
+        item &&
+        item.Status === "in-progress" &&
+        item["claimed-by"] &&
+        this.issueEdits.every((edit) => edit.flag !== "--add-assignee")
+      ) {
+        // Let the phase-2 confirmation read observe the item OPEN, then close it
+        // on the NEXT read of that item (the pre-add #requireItem), before any
+        // --add-assignee write is recorded. This exercises the pre-add gate.
+        if (!this.sawInProgressRead) {
+          this.sawInProgressRead = true;
+        } else if (item.content) {
+          item.content.state = "CLOSED";
+        }
+      }
+      if (
+        this.closeOnlyAtConfirm &&
+        item &&
+        item.Status === "in-progress" &&
+        item["claimed-by"]
+      ) {
+        // Make the item observed CLOSED ONLY at the #confirmFields read (the
+        // first item read after the phase-2 status write), then reopen it on
+        // every subsequent read (pre-assign / final). This isolates the
+        // confirmed-but-closed guard (path 3) as the sole closure observer.
+        if (!this.confirmCloseFired) {
+          this.confirmCloseFired = true;
+          if (item.content) {
+            item.content.state = "CLOSED";
+          }
+        } else if (item.content && item.content.state === "CLOSED") {
+          item.content.state = "OPEN";
+        }
+      }
       return {
         data: {
           node: item ? this.#graphQlItem(item) : null,
@@ -2162,18 +3422,42 @@ class FakeGh {
     const field = MANIFEST.fields.find(
       (candidate) => `field-${candidate.key}` === fieldId,
     );
+    // Record every field write together with whether the Issue was already
+    // closed at the moment of the write, so tests can assert that no status (or
+    // other) field write ever lands on a closed Issue during a rollback.
+    const closedAtEdit = item.content?.state === "CLOSED";
     if (args.includes("--clear")) {
+      this.projectFieldEdits.push({
+        id: item.id,
+        field: field.key,
+        value: "",
+        closedAtEdit,
+      });
       item[field.name] = "";
       return;
     }
     if (field.type === "single_select") {
       const optionId = valueAfter(args, "--single-select-option-id");
-      item[field.name] = field.options.find(
+      const value = field.options.find(
         (option) => `${field.key}-${option}` === optionId,
       );
+      this.projectFieldEdits.push({
+        id: item.id,
+        field: field.key,
+        value,
+        closedAtEdit,
+      });
+      item[field.name] = value;
       return;
     }
-    item[field.name] = valueAfter(args, "--text");
+    const value = valueAfter(args, "--text");
+    this.projectFieldEdits.push({
+      id: item.id,
+      field: field.key,
+      value,
+      closedAtEdit,
+    });
+    item[field.name] = value;
   }
 
   #graphQlItem(item) {

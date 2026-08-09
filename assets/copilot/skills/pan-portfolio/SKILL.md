@@ -63,7 +63,7 @@ ordering, or completion checks.
    reading `workstreams/<path>/README.md` through the GitHub Contents API.
 9. Immediately before each write, use `gh issue view` to confirm current state
    and re-read the Project item. Preserve active runner fields.
-8. Apply the smallest direct `gh project item-add`, `gh project item-edit`,
+10. Apply the smallest direct `gh project item-add`, `gh project item-edit`,
    `gh issue edit`, or `gh issue comment` operation. Re-read the target and
    report only confirmed effects.
 

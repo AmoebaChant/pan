@@ -144,7 +144,7 @@ export function dispatchBlocker(item) {
   if (item.state?.toLowerCase() === "closed") {
     return {
       code: "issue-closed",
-      message: "the Issue is closed and cannot be dispatched",
+      message: "its Issue is closed",
     };
   }
   if (item.fields?.owner !== "agent") {
