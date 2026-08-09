@@ -31,8 +31,9 @@ Pan works with exactly **one** Domain at a time.
 
 ## The loop
 
-1. Issues arrive in the Domain repository (created by the user, by Pan, or
-   mirrored from a declared external backlog).
+1. Issues arrive in the backlog (created by the user, by Pan, or added to the
+   Project from a declared external backlog repository — the external Issue stays
+   in its own repository and is only referenced by a Project item).
 2. **Triage** (an interactive Pan session with the user) decides whether each
    Issue has enough detail, fills in its Project fields, and picks the
    **playbook** that should run it. See [triage](triage.md).

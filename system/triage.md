@@ -27,17 +27,19 @@ until truncation is ruled out.
 
 A workstream README may declare external backlog repositories (see
 [workstreams](workstreams.md)). During registration, read the Domain's
-workstreams, collect those declarations, fetch each declared repository's
-complete Issue set, join by URL, and add the missing ones as `untriaged` with
-the declaring workstream recorded in the `workstream` field. External Issues
-stay in their owning repository: comments, closures, and edits target that
-repository, and Pan never creates proxy Issues in the Domain repository.
+workstreams, collect those declarations, fetch each declared repository's Issue
+set, join by URL, and add the missing ones to the Project as `untriaged`. Adding
+an Issue means creating a Project item that references it — the Issue is never
+copied. External Issues stay in their owning repository: comments, closures, and
+edits target that repository, and Pan never creates proxy Issues in the Domain
+repository.
 
-A repository maps to exactly one workstream. If two workstreams declare the same
-repository, or workstream discovery is incomplete (a README cannot be read),
-fail closed for the affected repositories: register nothing and report it,
-because an undiscovered duplicate could make a conflicting repository look
-uniquely owned.
+Record the declaring workstream in the added item's `workstream` field when
+exactly one workstream declares the repository. A repository may be declared by
+more than one workstream; when that happens the association is ambiguous, so
+leave `workstream` unset rather than guessing. If workstream discovery is
+incomplete (a README cannot be read), report it and proceed with the
+repositories you could read.
 
 ## 3. Classify and fill fields (with approval)
 

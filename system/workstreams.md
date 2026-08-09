@@ -39,11 +39,14 @@ be recorded.
 
 ## Optional sections a README may declare
 
-- **`## Backlog repositories`** — one `owner/repository` per list entry. Triage
-  registration mirrors those repositories' Issues into the Domain Project as
-  `untriaged`, associated with this workstream. A repository may be declared by
-  only one workstream. The Issues stay in their owning repository. See
-  [triage](triage.md).
+- **`## Backlog repositories`** — one `owner/repository` per list entry. During
+  triage, Pan adds those repositories' Issues to the Domain Project as
+  `untriaged` for triage. It adds a Project item that references each Issue — the
+  Issue is never copied and stays in its own repository. More than one workstream
+  may declare the same repository. Pan records the declaring workstream in an
+  added item's `workstream` field when that is unambiguous; when several
+  workstreams declare the same repository, it leaves the association unset rather
+  than guessing. See [triage](triage.md).
 - **`## Triage instructions`** — free-form prose that governs how Pan triages
   this workstream's backlog Issues. The single section applies to every backlog
   repository the workstream declares. It may direct Pan to recommend accept or
