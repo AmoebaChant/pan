@@ -29,3 +29,8 @@ those Issues in the domain Project as `untriaged`, associated with this
 workstream. A repository may be declared by only one workstream in the domain;
 the Issues remain in their owning repository, so all comments, closures, and
 edits target that repository.
+
+A workstream README may also add a `## Triage instructions` section with
+free-form prose that governs how Pan triages that workstream's backlog Issues.
+The single section applies to all of the backlog repositories that workstream
+declares.

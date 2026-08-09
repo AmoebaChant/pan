@@ -40,6 +40,13 @@ Issues. Backlog ownership does not route execution — agent-ready work still
 needs a runner-advertised `repo:<owner>/<repository>` selector in
 `requirements`.
 
+A workstream README may also carry a `## Triage instructions` section of
+free-form prose. It is workstream-level: the single section applies to every
+backlog repository that workstream declares. Pan reads and applies these
+instructions when classifying that workstream's backlog Issues, and they may
+direct Pan to recommend accept or reject and defer the decision to the user
+rather than acting.
+
 Pan discusses priority, ownership, requirements, and workstream with
 the user, then writes approved values with `gh project item-edit`. It re-reads
 each Issue and Project item immediately before mutation and verifies the result
