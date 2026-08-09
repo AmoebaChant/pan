@@ -95,6 +95,16 @@ The `workstream` field is an optional path relative to `workstreams/` in
 that case. Validate a non-empty path by reading its README through the GitHub
 Contents API before writing it.
 
+Runner profiles are domain data as well. Each machine's profile, including the
+playbooks that define what work it serves, lives in `PAN_DOMAIN_REPOSITORY` at
+`runners/<machine>.json` and follows the runner-profile schema. Create and edit
+it there through the GitHub Contents API on the default branch, the same way you
+edit a workstream README, never as an ad-hoc local file. The
+`repo:<owner>/<repository>` selector you write in `requirements` only routes work
+to a playbook that already advertises that repository, so when a task needs a
+repository or capability no profile yet serves, add or update a playbook in
+`runners/<machine>.json` (with approval) before marking the item `ready`.
+
 A runner only claims an item when `owner` is `agent`, `Status` is `ready`, and
 `requirements` names exactly one `repo:` entry that a
 playbook on that runner serves. A workstream is not required to claim or execute
