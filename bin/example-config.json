@@ -7,7 +7,7 @@
   "terminal": { "kind": "macos-terminal" },
   "copilotBin": "copilot",
   "workerPermissions": "yolo",
-  "copilotArgs": ["--interactive"],
+  "copilotArgs": [],
   "pollIntervalSeconds": 30,
   "leaseMinutes": 15,
   "maxConcurrent": null,

@@ -35,10 +35,14 @@
  *                                             // run unattended. "standard" adds
  *                                             // no auto-approve flags and needs a
  *                                             // human at the terminal.
- *   "copilotArgs": [],                        // extra args before the prompt,
- *                                             // appended after any permission
- *                                             // flags derived from
- *                                             // workerPermissions
+ *   "copilotArgs": [],                        // extra copilot flags, appended
+ *                                             // after any permission flags
+ *                                             // derived from workerPermissions.
+ *                                             // Do NOT put "--interactive"/"-i"
+ *                                             // here: the runner supplies the
+ *                                             // prompt as the value of
+ *                                             // --interactive itself (a bare
+ *                                             // interactive flag is stripped)
  *   "nodeBin":     "node",                    // node used to run .pan/launch.mjs
  *   "pollIntervalSeconds": 30,                // idle poll cadence (default 30)
  *   "leaseMinutes": 15,                       // lease duration (default 15)
@@ -1104,7 +1108,14 @@ class Runner {
   buildLauncherSource(windowTitle = '', sessionId = '') {
     const copilotBin = JSON.stringify(this.cfg.copilotBin);
     const sessionArgs = sessionId ? ['--session-id', sessionId] : [];
-    const copilotArgs = JSON.stringify([...this.cfg.permissionArgs, ...this.cfg.copilotArgs, ...sessionArgs]);
+    // copilot has no positional prompt argument: the initial prompt must be the
+    // VALUE of -i/--interactive (see `copilot --help`). The launcher appends
+    // `--interactive <promptText>` at spawn time, so strip any bare interactive
+    // flag a config may still carry, otherwise it would consume the prompt as
+    // its value and leave the real prompt as a rejected positional argument.
+    const baseArgs = [...this.cfg.permissionArgs, ...this.cfg.copilotArgs, ...sessionArgs]
+      .filter((a) => a !== '--interactive' && a !== '-i');
+    const copilotArgs = JSON.stringify(baseArgs);
     const title = JSON.stringify(windowTitle || '');
     return `import { spawn, execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
@@ -1200,7 +1211,9 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 }
 
 const promptText = readFileSync('.pan/launch-prompt.txt', 'utf8');
-const child = spawn(copilotBin, [...copilotArgs, promptText], { stdio: 'inherit' });
+// The prompt is the value of copilot's -i/--interactive flag, never a bare
+// positional argument (copilot has no positional prompt and would reject it).
+const child = spawn(copilotBin, [...copilotArgs, '--interactive', promptText], { stdio: 'inherit' });
 setWindowTitle();
 titleTimer = setInterval(setWindowTitle, 2000);
 if (typeof titleTimer.unref === 'function') titleTimer.unref();
