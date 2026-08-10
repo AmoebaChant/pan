@@ -16,15 +16,15 @@ Everything the runner reads or writes on GitHub follows the
 The runner is given, from local machine config written at onboarding:
 
 - the Domain repository and Project (`<owner>/<number>`);
-- this machine's name, used to read `machines/<machine>.md` from the Domain repo
-  (see [playbooks](playbooks.md)) for the playbooks, capacities, and working
-  directories it may run;
+- this machine's name, used to read `playbooks/<machine>/*.md` from the Domain
+  repo (see [playbooks](playbooks.md)) for the playbooks, capacities, and
+  working directories it may run;
 - a stable runner identity string for `claimed-by`;
 - terminal settings for launching a visible worker window (Windows Terminal on
   Windows, Terminal.app on macOS).
 
-The runner re-reads `machines/<machine>.md` and, for each playbook it lists, the
-per-machine `playbooks/<machine>/<name>.md` from GitHub, so playbook changes take
+The runner re-reads the `playbooks/<machine>/` folder and every
+`playbooks/<machine>/<name>.md` from GitHub each cycle, so playbook changes take
 effect without editing local config. Local config changes require restarting the
 runner.
 
@@ -36,9 +36,10 @@ Each cycle:
    `Status=ready`, and a non-empty `playbook` (the [dispatch
    rule](project-schema.md#dispatch-rule)). Read the full item set; do not stop
    at a default page.
-2. Keep only items whose `playbook` names a playbook in `machines/<machine>.md`
-   with spare capacity (global and per-playbook), and whose lease is free
-   (`lease-until` empty or in the past, or `claimed-by` is this runner).
+2. Keep only items whose `playbook` names a playbook in this machine's
+   `playbooks/<machine>/` folder with spare capacity (global and per-playbook),
+   and whose lease is free (`lease-until` empty or in the past, or `claimed-by`
+   is this runner).
 3. Order by `priority` (`urgent` > `high` > `normal` > `low`), preserving
    Project order among ties. Claim from the top while capacity remains.
 4. Back off when idle, and handle GitHub rate limits with bounded retries.
@@ -65,9 +66,9 @@ raise human attention so an unattended runner cannot retry forever.
 
 For a claimed task the runner:
 
-1. Prepares the working directory. If the resolved `workingDirectory` (from the
-   machine list, else the playbook default) is set, launch there and prepare no
-   workspace. Otherwise create an isolated workspace as the playbook instructs.
+1. Prepares the working directory. If the playbook's `workingDirectory` is set,
+   launch there and prepare no workspace. Otherwise create an isolated workspace
+   as the playbook instructs.
 2. Writes the task context into a `.pan/` directory the worker will read (see
    the [file contract](#worker-file-contract)).
 3. Launches a **headed** `copilot` session in a visible terminal window, with an

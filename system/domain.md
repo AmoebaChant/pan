@@ -11,7 +11,6 @@ in the Domain.
 <domain-repo>/
   workstreams/<path>/README.md   durable narrative per area of work
   playbooks/<machine>/<name>.md  playbook definitions (per machine)
-  machines/<machine>.md          which playbooks a machine runs, and capacity
   pan.md                         domain-specific Pan instructions (optional)
 ```
 
@@ -21,10 +20,10 @@ in the Domain.
   [project schema](project-schema.md).
 - **Workstreams** are the durable narrative for each area of work. See
   [workstreams](workstreams.md).
-- **Playbooks** define kinds of work and the instructions for doing them. See
+- **Playbooks** define kinds of work and the instructions for doing them. A
+  machine runs exactly the playbooks in its `playbooks/<machine>/` folder, and
+  each playbook file declares its own concurrency and working directory. See
   [playbooks](playbooks.md).
-- **Machine lists** (`machines/<machine>.md`) declare which playbooks a given
-  machine's runner may run and its capacity. See [playbooks](playbooks.md).
 - **`pan.md`** (optional) holds domain-specific instructions that extend the
   generic system — for example, "during triage, also add any new open Issues
   from `owner/other-repo` to the backlog." Pan reads it at the start of a
@@ -34,7 +33,7 @@ in the Domain.
 
 Pan uses the GitHub API through `gh`, always against the configured Domain
 repository and Project. The Domain is **never** required as a local checkout:
-read and write workstreams, playbooks, and machine lists through the GitHub
+read and write workstreams and playbooks through the GitHub
 Contents API, and read and write tasks through Issues and the Project.
 
 The runner is the exception that may keep a local checkout, because a worker

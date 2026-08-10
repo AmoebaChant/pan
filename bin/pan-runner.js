@@ -18,7 +18,7 @@
  *   // REQUIRED
  *   "domainRepo": "AmoebaChant/pan-domain",   // Domain repo as owner/name
  *   "project":    "AmoebaChant/7",            // Project as <owner>/<number>
- *   "machine":    "kevins-macbook",           // reads machines/<machine>.md
+ *   "machine":    "kevins-macbook",           // reads playbooks/<machine>/*.md
  *   "identity":   "kevins-macbook-runner-1",  // stable string for claimed-by
  *   "panCheckout":"/Users/kevin/Repos/pan",   // path to this Pan checkout
  *
@@ -263,7 +263,7 @@ async function loadConfig(configPath) {
 }
 
 // ---------------------------------------------------------------------------
-// Domain reads (GitHub Contents API): machine list + playbooks
+// Domain reads (GitHub Contents API): per-machine playbooks
 // ---------------------------------------------------------------------------
 
 /** Read a file from the Domain repo as raw text. Throws UserError on 404. */
@@ -321,122 +321,74 @@ function stripInlineComment(raw) {
   return raw;
 }
 
-/** Parse machines/<machine>.md: a table of playbook | capacity | workingDirectory.
- *  Fails loudly (UserError) on a malformed definition rather than silently
- *  dropping rows: the `machine:` front matter must match the configured machine,
- *  the table header must name the three expected columns, and every data row
- *  must carry a non-empty playbook name and a non-negative integer capacity
- *  (`0` is valid and disables that playbook). */
-function parseMachineList(text, machineName) {
-  const { front, body } = splitFrontMatter(text);
-
-  // (a) Require the `machine:` front-matter field and confirm it matches this
-  // machine. splitFrontMatter maps an empty/`null` value to null, so a present-
-  // but-empty `machine:` is treated as missing.
-  if (!front.machine) {
-    throw new UserError(`machines/${machineName}.md is missing a "machine:" field in its front matter.`);
-  }
-  if (front.machine !== machineName) {
-    throw new UserError(
-      `machines/${machineName}.md front matter machine "${front.machine}" does not match the configured machine "${machineName}".`,
-    );
-  }
-
-  const rows = body
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.startsWith('|'));
-
-  const playbooks = new Map(); // name -> { capacity, workingDirectory }
-  const expected = ['playbook', 'capacity', 'workingdirectory'];
-  let headerSeen = false;
-  for (const row of rows) {
-    // `| a | b | |` -> ['a', 'b', ''] : a trailing empty workingDirectory cell
-    // is preserved as the 3rd column by slicing off the leading/trailing pipes.
-    const cells = row.split('|').slice(1, -1).map((c) => c.trim());
-
-    // (b) The first table row is the header; require exactly the three columns.
-    if (!headerSeen) {
-      headerSeen = true;
-      const header = cells.map((c) => c.toLowerCase());
-      const ok = cells.length === expected.length && expected.every((h, i) => header[i] === h);
-      if (!ok) {
-        throw new UserError(
-          `machines/${machineName}.md table header must be exactly "playbook | capacity | workingDirectory", got: ${cells.join(' | ')}`,
-        );
-      }
-      continue;
+/** List a directory in the Domain repo via the Contents API. Returns the raw
+ *  entry array ([{ name, type, ... }]). Throws UserError on 404. */
+async function listDomainDir(cfg, repoPath) {
+  let raw;
+  try {
+    raw = await gh(['api', `/repos/${cfg.domainRepoSlug}/contents/${repoPath}`]);
+  } catch (e) {
+    if (/404|Not Found/i.test(e.message)) {
+      throw new UserError(`Domain directory not found: ${cfg.domainRepoSlug}:${repoPath}`);
     }
-
-    // Skip only a genuine |---|---|---| separator row (all cells are dashes).
-    // An all-empty row is NOT a separator and must be validated as a data row.
-    if (cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
-
-    // (b) Data rows must have exactly the three columns (workingDirectory may be
-    // empty, but the cell must be present).
-    if (cells.length !== expected.length) {
-      throw new UserError(
-        `machines/${machineName}.md table row must have exactly 3 columns (playbook | capacity | workingDirectory), got ${cells.length}: ${cells.join(' | ')}`,
-      );
-    }
-
-    // (c) Data row: reject an empty playbook name or a bad capacity.
-    const [name, capacity, workingDirectory] = cells;
-    if (!name) {
-      throw new UserError(`machines/${machineName}.md has a table row with an empty playbook name.`);
-    }
-    const capStr = String(capacity ?? '').trim();
-    const cap = Number(capStr);
-    if (capStr === '' || !Number.isFinite(cap) || !Number.isInteger(cap) || cap < 0) {
-      throw new UserError(
-        `machines/${machineName}.md: playbook "${name}" has invalid capacity "${capacity ?? ''}"; must be a non-negative integer (0 disables it).`,
-      );
-    }
-    playbooks.set(name, {
-      capacity: cap,
-      workingDirectory: workingDirectory ? workingDirectory : null,
-    });
+    throw e;
   }
-  if (!headerSeen) {
-    throw new UserError(
-      `machines/${machineName}.md has no playbook table; expected a header row "playbook | capacity | workingDirectory".`,
-    );
+  const entries = JSON.parse(raw);
+  if (!Array.isArray(entries)) {
+    throw new UserError(`Domain path is not a directory: ${cfg.domainRepoSlug}:${repoPath}`);
   }
-  return playbooks;
+  return entries;
 }
 
-/** Read the machine list and every playbook it references. */
+/** Read every playbook this machine runs from playbooks/<machine>/*.md.
+ *  A machine runs exactly the playbooks present in its folder; each file
+ *  self-describes its concurrency (`capacity`) and optional `workingDirectory`
+ *  in its front matter. Fails loudly (UserError) on a malformed definition
+ *  rather than silently dropping it. */
 async function loadPlaybooks(cfg) {
-  const machineText = await readDomainFile(cfg, `machines/${cfg.machine}.md`);
-  const machinePlaybooks = parseMachineList(machineText, cfg.machine);
-  if (machinePlaybooks.size === 0) {
-    throw new UserError(`machines/${cfg.machine}.md lists no playbooks.`);
+  const dir = `playbooks/${cfg.machine}`;
+  const entries = await listDomainDir(cfg, dir);
+  const files = entries
+    .filter((e) => e.type === 'file' && /\.md$/i.test(e.name))
+    .map((e) => e.name)
+    .sort();
+  if (files.length === 0) {
+    throw new UserError(`${dir}/ contains no playbooks (expected one or more <name>.md files).`);
   }
 
   const playbooks = new Map(); // name -> { name, description, workingDirectory, capacity, body }
-  for (const [name, machineEntry] of machinePlaybooks) {
-    const pbText = await readDomainFile(cfg, `playbooks/${cfg.machine}/${name}.md`);
+  for (const file of files) {
+    const name = file.replace(/\.md$/i, '');
+    const pbText = await readDomainFile(cfg, `${dir}/${file}`);
     const { front, body } = splitFrontMatter(pbText);
     if (!front.name || front.name !== name) {
       throw new UserError(
-        `playbooks/${cfg.machine}/${name}.md front matter must have name equal to "${name}" (got ${JSON.stringify(front.name ?? null)}).`,
+        `${dir}/${file} front matter must have name equal to "${name}" (got ${JSON.stringify(front.name ?? null)}).`,
       );
     }
     if (!front.description || String(front.description).trim().length === 0) {
-      throw new UserError(`playbooks/${cfg.machine}/${name}.md is missing a non-empty "description" in its front matter.`);
+      throw new UserError(`${dir}/${file} is missing a non-empty "description" in its front matter.`);
     }
-    // Machine workingDirectory overrides the playbook default.
-    const workingDirectory = machineEntry.workingDirectory ?? front.workingDirectory ?? null;
+    // Concurrency lives in the playbook front matter: a non-negative integer
+    // (`0` disables the playbook on this machine without removing its file).
+    const capStr = String(front.capacity ?? '').trim();
+    const cap = Number(capStr);
+    if (capStr === '' || !Number.isFinite(cap) || !Number.isInteger(cap) || cap < 0) {
+      throw new UserError(
+        `${dir}/${file} has invalid capacity ${JSON.stringify(front.capacity ?? null)}; must be a non-negative integer (0 disables it).`,
+      );
+    }
+    const workingDirectory = front.workingDirectory ?? null;
     if (workingDirectory !== null && !path.isAbsolute(workingDirectory)) {
       throw new UserError(
-        `playbooks/${cfg.machine}/${name}.md workingDirectory must be an absolute path, got: ${workingDirectory}`,
+        `${dir}/${file} workingDirectory must be an absolute path, got: ${workingDirectory}`,
       );
     }
     playbooks.set(name, {
       name,
       description: String(front.description).trim(),
       workingDirectory,
-      capacity: machineEntry.capacity,
+      capacity: cap,
       body,
     });
   }

@@ -32,7 +32,7 @@ reads, user approval, or runner-owned fields.
 
 When the lesson is about the user's own work — a decision, a datum, a better way
 to route or triage something — record it in the right workstream README,
-playbook, machine list, or `pan.md`, with the user's approval, so future
+playbook, or `pan.md`, with the user's approval, so future
 sessions in this Domain benefit.
 
 ## Efficiency, not just correctness

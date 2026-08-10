@@ -51,22 +51,21 @@ Through the GitHub Contents API (no clone needed), create starter files if
 absent:
 
 - `workstreams/README.md` explaining the workstream convention;
-- `playbooks/` with at least one starter playbook the user wants (see
-  [`playbooks.md`](../../system/playbooks.md) for the format);
-- `machines/<machine>.md` for this machine listing the playbooks it will run and
-  their capacity;
+- `playbooks/<machine>/` with at least one starter playbook the user wants (see
+  [`playbooks.md`](../../system/playbooks.md) for the format), each declaring
+  its own `capacity` and optional `workingDirectory` in front matter;
 - optionally `pan.md` for domain-specific instructions.
 
-Ask one focused question at a time to gather the first playbook and this
-machine's capacity. Do not invent playbooks the user does not want.
+Ask one focused question at a time to gather the first playbook and its
+capacity. Do not invent playbooks the user does not want.
 
 ## 5. Record local machine config
 
 Write this machine's local Pan config (outside the Domain and outside this repo,
 in the user's config directory): the Domain repository, the Project
-`<owner>/<number>`, this machine's name (matching `machines/<machine>.md`), a
-stable runner identity for `claimed-by`, and terminal settings for launching
-headed workers (Windows Terminal on Windows, Terminal.app on macOS).
+`<owner>/<number>`, this machine's name (matching the `playbooks/<machine>/`
+folder), a stable runner identity for `claimed-by`, and terminal settings for
+launching headed workers (Windows Terminal on Windows, Terminal.app on macOS).
 
 ## 6. Explain how to run
 
@@ -74,5 +73,5 @@ Explain that the [runner](../../system/runner.md) is what picks up work on this
 machine, and how to start it (see the README). Explain that playbooks are
 per-machine: connecting the same Domain on another machine does not make this
 machine's playbooks apply there. Finish by confirming the Domain is reachable
-and at least one playbook and machine list exist, then tell the user how to
-start a Pan session and the runner.
+and at least one playbook exists in `playbooks/<machine>/`, then tell the user
+how to start a Pan session and the runner.

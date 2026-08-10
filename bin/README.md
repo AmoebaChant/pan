@@ -22,7 +22,7 @@ node bin/pan-runner.js --help
 - `--once` — run a single poll cycle, then supervise whatever it launched until
   those workers finish, then exit.
 - `--validate-config` — validate the config **and** Domain access
-  (`machines/<machine>.md` plus every `playbooks/<machine>/<name>.md` it references, and
+  (every `playbooks/<machine>/<name>.md` in this machine's folder, and
   the Project), then exit `0`. This also validates the Project **schema**: all 8
   canonical fields must be present with the correct types (`Status`, `owner`,
   `priority` as single-selects; `playbook`, `workstream`, `needs-human-since`,
@@ -44,7 +44,7 @@ launch preferences. See [`example-config.json`](example-config.json).
 | --- | --- | --- |
 | `domainRepo` | yes | Domain repository as `owner/name`, e.g. `AmoebaChant/pan-domain`. |
 | `project` | yes | Project as `<owner>/<number>`, e.g. `AmoebaChant/7`. |
-| `machine` | yes | This machine's name; reads `machines/<machine>.md` from the Domain repo. |
+| `machine` | yes | This machine's name; reads `playbooks/<machine>/*.md` from the Domain repo. |
 | `identity` | yes | Stable runner identity string written to the `claimed-by` field. |
 | `panCheckout` | yes | Absolute path to this Pan checkout, so workers get `system/` docs, agents, and skills. |
 | `terminal` | no | `{ "kind": "macos-terminal" \| "windows-terminal" }`. Auto-detected by platform if omitted. |
@@ -56,10 +56,10 @@ launch preferences. See [`example-config.json`](example-config.json).
 | `maxConcurrent` | no | Optional global cap on concurrent workers. Default unlimited. |
 | `workspaceRoot` | no | Root for the worker's isolated workspaces. Default `os.tmpdir()/pan-workspaces`. |
 
-Per-playbook concurrency (`capacity`) and any `workingDirectory` override come
-from the Domain's `machines/<machine>.md`, **not** this file. Changing playbooks
-in the Domain takes effect without editing local config; changing local config
-requires restarting the runner.
+Per-playbook concurrency (`capacity`) and any `workingDirectory` come from each
+`playbooks/<machine>/<name>.md` front matter in the Domain, **not** this file.
+Changing playbooks in the Domain takes effect without editing local config;
+changing local config requires restarting the runner.
 
 A **fixed `workingDirectory`** should use **capacity 1**. That directory's
 `.pan/` is shared, so two concurrent workers would clobber each other's signals
@@ -75,23 +75,17 @@ When present, `pollIntervalSeconds` and `leaseMinutes` must be numbers greater
 than `0` (they cannot be `null`; omit them to use the default), and
 `maxConcurrent` must be an integer `>= 1` (or `null`/omitted for
 unlimited); invalid values fail fast with a clear message. A playbook's
-`workingDirectory` (from the playbook front matter or the machine-list override)
-must be an absolute path.
+`workingDirectory` (from the playbook front matter) must be an absolute path.
 
-The Domain's `machines/<machine>.md` is validated strictly (during both
-`--validate-config` and normal startup): its `machine:` front-matter field must
-be present and equal the configured machine name, and the file must contain a
-playbook table whose header row names **exactly** the three columns
-`playbook | capacity | workingDirectory` (in that order). Every data row must
-have exactly those three columns, a non-empty playbook name, and a
-**non-negative integer** `capacity` (`0` disables that playbook); the
-`workingDirectory` cell may be left empty. A missing table/header, a header with
-missing/renamed/reordered columns, a row with the wrong number of columns, a
-missing/empty playbook name, or a missing, non-numeric, fractional, or negative
-capacity is a hard error — malformed or empty rows are **not** silently dropped.
-Only the header row and a standard Markdown separator row — cells of dashes with
-optional leading/trailing alignment colons (e.g. `---`, `:---`, `:--:`) — are
-skipped.
+Each `playbooks/<machine>/<name>.md` is validated strictly (during both
+`--validate-config` and normal startup): its front matter must have a `name`
+equal to the filename basename, a non-empty `description`, and a
+**non-negative integer** `capacity` (`0` disables that playbook on this
+machine). A missing/mismatched `name`, a missing/empty `description`, a
+missing, non-numeric, fractional, or negative `capacity`, or a non-absolute
+`workingDirectory` is a hard error. The machine's runnable set is exactly the
+`.md` files in `playbooks/<machine>/`; an empty or missing folder is a hard
+error.
 
 ### Note on temp directories
 
