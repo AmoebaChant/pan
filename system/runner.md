@@ -20,6 +20,13 @@ The runner is given, from local machine config written at onboarding:
   repo (see [playbooks](playbooks.md)) for the playbooks, capacities, and
   working directories it may run;
 - a stable runner identity string for `claimed-by`;
+- the **default worker permissions** for agents this runner launches
+  (`workerPermissions`): `yolo` (default — launch workers with `--allow-all`,
+  auto-approving every tool, path, and URL and clearing copilot's folder-trust
+  prompt so workers run fully unattended) or `standard` (no auto-approve flags,
+  which requires a human at the terminal to confirm folder trust and each tool).
+  A raw `copilotArgs` escape hatch is still appended after the derived
+  permission flags for anything not expressed by this setting;
 - terminal settings for launching a visible worker window (Windows Terminal on
   Windows, Terminal.app on macOS).
 

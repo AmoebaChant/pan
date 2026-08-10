@@ -27,7 +27,18 @@
  *     "kind": "macos-terminal" | "windows-terminal"  // auto-detected if omitted
  *   },
  *   "copilotBin":  "copilot",                 // command that starts a worker
- *   "copilotArgs": [],                        // extra args before the prompt
+ *   "workerPermissions": "yolo",              // "yolo" (default) | "standard".
+ *                                             // "yolo" launches workers with
+ *                                             // --allow-all (auto-approves every
+ *                                             // tool, path, and URL, and clears
+ *                                             // the folder-trust prompt) so they
+ *                                             // run unattended. "standard" adds
+ *                                             // no auto-approve flags and needs a
+ *                                             // human at the terminal.
+ *   "copilotArgs": [],                        // extra args before the prompt,
+ *                                             // appended after any permission
+ *                                             // flags derived from
+ *                                             // workerPermissions
  *   "nodeBin":     "node",                    // node used to run .pan/launch.mjs
  *   "pollIntervalSeconds": 30,                // idle poll cadence (default 30)
  *   "leaseMinutes": 15,                       // lease duration (default 15)
@@ -244,6 +255,18 @@ async function loadConfig(configPath) {
     throw new UserError('Config field "maxConcurrent" must be an integer >= 1 (or null for unlimited).');
   }
 
+  // Default worker permissions. Maps a friendly level onto copilot launch flags
+  // so onboarding and config can express intent without knowing CLI flags.
+  // Defaults to "yolo": runner-launched workers are unattended, so they must
+  // clear copilot's folder-trust gate and tool/path/URL confirmations without a
+  // human present. Set "standard" to launch with no auto-approve flags (a human
+  // must be at the terminal to confirm folder trust and every tool).
+  const workerPermissions = json.workerPermissions ?? 'yolo';
+  if (!['standard', 'yolo'].includes(workerPermissions)) {
+    throw new UserError('Config field "workerPermissions" must be "standard" or "yolo".');
+  }
+  const permissionArgs = workerPermissions === 'yolo' ? ['--allow-all'] : [];
+
   return {
     domain,
     domainRepoSlug: `${domain.owner}/${domain.name}`,
@@ -253,6 +276,8 @@ async function loadConfig(configPath) {
     panCheckout: path.resolve(json.panCheckout),
     terminalKind,
     copilotBin: json.copilotBin || 'copilot',
+    workerPermissions,
+    permissionArgs,
     copilotArgs: Array.isArray(json.copilotArgs) ? json.copilotArgs : [],
     nodeBin: json.nodeBin || 'node',
     pollIntervalSeconds,
@@ -478,7 +503,7 @@ function validateProjectSchema(meta) {
 
 const ITEM_FRAGMENT = `
   id
-  content{ __typename ... on Issue { number title body url } }
+  content{ __typename ... on Issue { number title body url repository { nameWithOwner } } }
   fieldValues(first:50){ nodes{
     __typename
     ... on ProjectV2ItemFieldTextValue { text field{ ... on ProjectV2FieldCommon { name } } }
@@ -494,7 +519,16 @@ function parseItemNode(node) {
     else if (typeof fv.name === 'string') fields[name] = fv.name;
   }
   const issue = node.content?.__typename === 'Issue'
-    ? { number: node.content.number, title: node.content.title, body: node.content.body, url: node.content.url }
+    ? {
+        number: node.content.number,
+        title: node.content.title,
+        body: node.content.body,
+        url: node.content.url,
+        // The repository the Issue physically lives in. For external-backlog
+        // items this differs from the Domain repo, so all issue writes MUST
+        // target this slug rather than cfg.domainRepoSlug.
+        repo: node.content.repository?.nameWithOwner || null,
+      }
     : null;
   return { itemId: node.id, issue, fields };
 }
@@ -572,8 +606,16 @@ async function setSelectField(cfg, meta, itemId, fieldName, optionName) {
 // Issue writes
 // ---------------------------------------------------------------------------
 
-async function issueComment(cfg, number, bodyText) {
-  await gh(['issue', 'comment', String(number), '--repo', cfg.domainRepoSlug, '--body', bodyText]);
+/** Derive an "owner/name" repo slug from a GitHub Issue/PR URL, else null.
+ *  Used as a fallback when a worker's stored content repo is unavailable
+ *  (e.g. a task.json written before repo tracking existed). */
+function repoFromUrl(url) {
+  const m = /github\.com\/([^/\s]+)\/([^/\s]+)\/(?:issues|pull)\//.exec(String(url || ''));
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+async function issueComment(repoSlug, number, bodyText) {
+  await gh(['issue', 'comment', String(number), '--repo', repoSlug, '--body', bodyText]);
 }
 
 // ---------------------------------------------------------------------------
@@ -766,7 +808,7 @@ class Runner {
       // added to this.active, so handleOperationalFailure's active.delete is a
       // harmless no-op. Do NOT launch a worker.
       await this.handleOperationalFailure(
-        { itemId: item.itemId, issueNumber: number },
+        { itemId: item.itemId, issueNumber: number, url: item.issue?.url, repo: item.issue?.repo },
         `claim confirm re-read failed: ${e.message}`,
       );
       return false;
@@ -817,7 +859,7 @@ class Runner {
     } catch (e) {
       logErr(`launch failed for #${number}: ${e.message}`);
       await this.handleOperationalFailure(
-        { itemId: item.itemId, issueNumber: number },
+        { itemId: item.itemId, issueNumber: number, url: item.issue?.url, repo: item.issue?.repo },
         `launch failed: ${e.message}`,
       );
       return false;
@@ -849,7 +891,7 @@ class Runner {
     // fixed workingDirectory whose `.pan/` is reused; an isolated workspace is
     // already fresh, but clearing unconditionally is simplest and harmless.
     await Promise.all(
-      ['result.json', 'needs-human.json', 'worker.running', 'worker.pid'].map((f) =>
+      ['result.json', 'needs-human.json', 'worker.running', 'worker.pid', 'pan.md'].map((f) =>
         rm(path.join(panDir, f), { force: true }),
       ),
     );
@@ -860,6 +902,7 @@ class Runner {
       title: item.issue.title,
       body: item.issue.body,
       url: item.issue.url,
+      repo: item.issue.repo || repoFromUrl(item.issue.url),
       playbook: playbookName,
       workstream: val(item, FIELD.workstream, '') || null,
       // No durable answer store exists yet; answers arrive live in the terminal.
@@ -869,8 +912,21 @@ class Runner {
     await writeFile(path.join(panDir, 'task.json'), JSON.stringify(task, null, 2));
     await writeFile(path.join(panDir, 'playbook.md'), pb.body);
 
+    // Domain-specific instructions live in the Domain repo's pan.md and must
+    // reach the worker (playbooks and worker-base-instructions alone don't
+    // carry them). Fetch it live, best-effort: a Domain without a pan.md simply
+    // gets no file, and a transient read failure must not block the launch.
+    let hasDomainPan = false;
+    try {
+      const domainPan = await readDomainFile(this.cfg, 'pan.md');
+      await writeFile(path.join(panDir, 'pan.md'), domainPan);
+      hasDomainPan = true;
+    } catch (e) {
+      logErr(`could not fetch Domain pan.md for #${number} (continuing without it): ${e.message}`);
+    }
+
     const systemDir = path.join(this.cfg.panCheckout, 'system');
-    const prompt = this.buildPrompt(systemDir, playbookName);
+    const prompt = this.buildPrompt(systemDir, playbookName, hasDomainPan);
     await writeFile(path.join(panDir, 'launch-prompt.txt'), prompt);
 
     // Generate the Node launcher. It runs with its CWD set to workingDir and
@@ -887,6 +943,7 @@ class Runner {
       issueNumber: number,
       title: item.issue.title,
       url: item.issue.url,
+      repo: item.issue.repo || repoFromUrl(item.issue.url),
       playbook: playbookName,
       workingDir,
       panDir,
@@ -902,16 +959,19 @@ class Runner {
     log(`launched worker for #${number} in ${workingDir}`);
   }
 
-  buildPrompt(systemDir, playbookName) {
+  buildPrompt(systemDir, playbookName, hasDomainPan = false) {
     // Single line: some terminal launchers only read the first line of the file.
     return [
       `You are a Pan worker doing exactly one task.`,
       `Read and follow ${path.join(systemDir, 'worker-base-instructions.md')}.`,
       `The Pan system documents are in ${systemDir}.`,
+      hasDomainPan
+        ? `Read .pan/pan.md in this working directory for Domain-specific instructions and apply them.`
+        : ``,
       `Your task is in .pan/task.json and your playbook "${playbookName}" is in .pan/playbook.md, both in this working directory.`,
       `Signal that you need the user by writing .pan/needs-human.json (delete it once resolved), and write .pan/result.json exactly once when finished.`,
       `Do not edit any GitHub Project field yourself. Begin.`,
-    ].join(' ');
+    ].filter(Boolean).join(' ');
   }
 
   async spawnTerminal(workingDir, panDir) {
@@ -929,11 +989,12 @@ class Runner {
    * working directory, it maintains the liveness marker and pid, then spawns
    * copilot with the prompt as a single argv element (never re-parsed by any
    * shell). copilotBin/copilotArgs are baked in as JSON literals so the
-   * launcher reads no config at runtime.
+   * launcher reads no config at runtime. Permission flags derived from
+   * workerPermissions are prepended to copilotArgs.
    */
   buildLauncherSource() {
     const copilotBin = JSON.stringify(this.cfg.copilotBin);
-    const copilotArgs = JSON.stringify(this.cfg.copilotArgs);
+    const copilotArgs = JSON.stringify([...this.cfg.permissionArgs, ...this.cfg.copilotArgs]);
     return `import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 
@@ -1087,7 +1148,7 @@ child.on('exit', (code, signal) => {
         } else {
           const since = parsed.since || new Date().toISOString();
           await setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, since);
-          await issueComment(this.cfg, w.issueNumber, `⏳ Worker needs the user:\n\n> ${question}`);
+          await issueComment(this.issueRepoOf(w), w.issueNumber, `⏳ Worker needs the user:\n\n> ${question}`);
           w.hadNeedsHuman = true;
           w.needsHumanRelayed = true;
           w.warnedPartialNeedsHuman = false;
@@ -1133,6 +1194,14 @@ child.on('exit', (code, signal) => {
     }
   }
 
+  /** Resolve the repo slug for a worker's Issue writes. Prefers the repository
+   *  captured from the Project item, falls back to the Issue URL, and finally
+   *  to the Domain repo. External-backlog Issues live in their own repo, so
+   *  this must never be assumed to be cfg.domainRepoSlug. */
+  issueRepoOf(w) {
+    return w.repo || repoFromUrl(w.url) || this.cfg.domainRepoSlug;
+  }
+
   async finalize(w, resultPath) {
     let result;
     try {
@@ -1168,7 +1237,7 @@ child.on('exit', (code, signal) => {
     }
 
     try {
-      await issueComment(this.cfg, w.issueNumber, comment);
+      await issueComment(this.issueRepoOf(w), w.issueNumber, comment);
       // Clear any lingering human-attention signal on completion (idempotent).
       await setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, '');
       await setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, status);
@@ -1235,7 +1304,7 @@ child.on('exit', (code, signal) => {
         await setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, new Date().toISOString());
         await setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'blocked');
         await issueComment(
-          this.cfg,
+          this.issueRepoOf(w),
           number,
           `⚠️ Pan runner hit 3 consecutive operational failures on this task and stopped retrying.\n\nLast reason: ${reason}`,
         );
@@ -1343,6 +1412,7 @@ child.on('exit', (code, signal) => {
         issueNumber: number,
         title: task.title,
         url: task.url,
+        repo: task.repo || repoFromUrl(task.url),
         playbook: task.playbook,
         workingDir,
         panDir,
@@ -1391,7 +1461,7 @@ child.on('exit', (code, signal) => {
         // escalation. This worker was never added to this.active, so the
         // internal active.delete is a harmless no-op (no double-release).
         await this.handleOperationalFailure(
-          { itemId: match.itemId, issueNumber: number },
+          { itemId: match.itemId, issueNumber: number, url: task.url, repo: task.repo || repoFromUrl(task.url) },
           'worker vanished during downtime (marker gone or PID dead) (rehydrate)',
         );
         continue;
@@ -1524,6 +1594,7 @@ async function main() {
   if (args['validate-config']) {
     validateProjectSchema(meta);
     log(`config OK: domain=${cfg.domainRepoSlug} project=${cfg.project.owner}/${cfg.project.number} machine=${cfg.machine}`);
+    log(`worker permissions: ${cfg.workerPermissions}${cfg.workerPermissions === 'yolo' ? ' (workers launch with --allow-all)' : ''}`);
     log(`project schema OK: all 8 canonical fields present with correct types`);
     log(`playbooks this machine runs: ${[...playbooks.keys()].join(', ')}`);
     return 0;

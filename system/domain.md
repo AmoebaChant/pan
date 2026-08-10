@@ -45,8 +45,10 @@ not the Domain. See [playbooks](playbooks.md) and [runner](runner.md).
 Onboarding records, per machine, which Domain this machine is bound to (the
 repository and the Project). Keep that binding in a small local config the
 runner and sessions read; it names the Domain repository and the Project
-(`<owner>/<number>`) and nothing sensitive beyond what `gh` already holds. The
-canonical Domain data always lives in GitHub, not in local config.
+(`<owner>/<number>`), the default worker permissions for agents this machine's
+runner launches (`workerPermissions`: `standard` or `yolo`), and nothing
+sensitive beyond what `gh` already holds. The canonical Domain data always lives
+in GitHub, not in local config.
 
 ## Boundaries
 

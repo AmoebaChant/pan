@@ -6,6 +6,7 @@
   "panCheckout": "/Users/kevin.brown/Repos/pan",
   "terminal": { "kind": "macos-terminal" },
   "copilotBin": "copilot",
+  "workerPermissions": "yolo",
   "copilotArgs": ["--interactive"],
   "pollIntervalSeconds": 30,
   "leaseMinutes": 15,
