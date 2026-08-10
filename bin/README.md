@@ -232,7 +232,12 @@ lifetime; writes use `gh project item-edit`.
   forever. Workers launched into a **fixed `workingDirectory`** are not
   rediscovered (there is no persisted registry of launched handles), and the
   exact child process is not re-attached — only file-signal supervision and lease
-  renewal resume.
+  renewal resume. An isolated workspace that is **inert** — no live worker and no
+  longer this runner's to supervise (finalized, released, requeued, missing from
+  the Project, or externally transitioned) — has its directory **pruned** during
+  rehydration, so finished workspaces do not accumulate under `workspaceRoot` and
+  get re-scanned and re-logged on every restart. Only workspaces confirmed inert
+  are removed; a live or still-owned-and-adoptable workspace is never touched.
 - **A hard kill can leave the liveness marker.** Both platforms launch the
   worker through the generated `.pan/launch.mjs`, whose signal handlers remove
   `.pan/worker.running` on window close (`SIGINT`/`SIGTERM`/`SIGHUP`) and on
