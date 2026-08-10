@@ -133,7 +133,10 @@ Written by the runner before launch:
   summary — which overrides any terminal-side "custom title" — so the launcher
   keeps re-emitting the stable `#<number> <title>` so each worker window stays
   identifiable (a brief flicker to copilot's title can appear right after each of
-  its infrequent updates).
+  its infrequent updates). The launcher also watches for `.pan/worker.stop`
+  (below) and, on that signal, stops `copilot` and closes its own terminal
+  window (on macOS via Terminal.app matched by tty; on Windows by exiting 0 so
+  Windows Terminal auto-closes the tab).
 
 Written by the worker:
 
@@ -155,10 +158,18 @@ Written by the worker:
   same tick (human-attention relay, liveness check, and lease renewal all
   continue) so the worker can correct its result without the task stalling.
 
+Written by the runner after finalizing:
+
+- `.pan/worker.stop` — written once the runner has recorded a worker's
+  `result.json` on the Issue and updated the Project (for `done` or
+  `needs-review`). Its presence tells the launcher the task is finished, so the
+  worker session shuts down and closes its terminal window instead of lingering.
+  It is not written while a worker is merely paused on `needs-human.json`.
+
 Before each launch the runner clears any stale `.pan/` signal files
-(`result.json`, `needs-human.json`, `worker.running`, `worker.pid`) so a reused
-fixed `workingDirectory` cannot make a new task finalize on a prior task's
-signals.
+(`result.json`, `needs-human.json`, `worker.running`, `worker.pid`,
+`worker.stop`) so a reused fixed `workingDirectory` cannot make a new task
+finalize on a prior task's signals.
 
 Internal liveness marker: `.pan/worker.running` is created by the Node launcher
 (`.pan/launch.mjs`) and removed when the worker process exits — including on

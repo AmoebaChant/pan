@@ -893,7 +893,7 @@ class Runner {
     // fixed workingDirectory whose `.pan/` is reused; an isolated workspace is
     // already fresh, but clearing unconditionally is simplest and harmless.
     await Promise.all(
-      ['result.json', 'needs-human.json', 'worker.running', 'worker.pid', 'pan.md'].map((f) =>
+      ['result.json', 'needs-human.json', 'worker.running', 'worker.pid', 'worker.stop', 'pan.md'].map((f) =>
         rm(path.join(panDir, f), { force: true }),
       ),
     );
@@ -1054,13 +1054,20 @@ class Runner {
    * each worker window identifiable. This is a benign competition — an `OSC 0`
    * title escape never touches copilot's alt-screen content — with at most a
    * brief flicker to copilot's title after each of its (infrequent) updates.
+   *
+   * Finally, the launcher watches for `.pan/worker.stop`, which the runner
+   * writes once it has finalized the task. On that signal the launcher stops
+   * copilot and closes its own terminal window so finished worker windows do
+   * not accumulate: on macOS it asks Terminal.app to close the window matching
+   * its tty; on Windows it simply exits 0 and Windows Terminal auto-closes the
+   * tab.
    */
   buildLauncherSource(windowTitle = '') {
     const copilotBin = JSON.stringify(this.cfg.copilotBin);
     const copilotArgs = JSON.stringify([...this.cfg.permissionArgs, ...this.cfg.copilotArgs]);
     const title = JSON.stringify(windowTitle || '');
-    return `import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+    return `import { spawn, execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 
 // Baked in by the runner; the launcher reads no config at runtime.
 const copilotBin = ${copilotBin};
@@ -1068,13 +1075,26 @@ const copilotArgs = ${copilotArgs};
 const windowTitle = ${title};
 
 const marker = '.pan/worker.running';
+const stopSignal = '.pan/worker.stop';
 let cleaned = false;
 let titleTimer = null;
+let stopTimer = null;
+let stopping = false;
 function cleanup() {
   if (cleaned) return;
   cleaned = true;
   if (titleTimer) { try { clearInterval(titleTimer); } catch {} titleTimer = null; }
+  if (stopTimer) { try { clearInterval(stopTimer); } catch {} stopTimer = null; }
   try { rmSync(marker, { force: true }); } catch {}
+}
+
+// Capture our controlling terminal up front (before copilot inherits stdio) so
+// that, when the runner signals the task is finished, we can close exactly our
+// own window on macOS. Terminal.app does not auto-close a tab when its command
+// exits, unlike Windows Terminal.
+let myTty = '';
+if (process.platform === 'darwin') {
+  try { myTty = execFileSync('tty', { stdio: ['inherit', 'pipe', 'ignore'] }).toString().trim(); } catch {}
 }
 
 // Keep our task title on the window. copilot re-emits its own \`OSC 0\` title
@@ -1086,6 +1106,46 @@ function setWindowTitle() {
   try {
     if (process.stdout.isTTY) process.stdout.write('\\u001b]0;' + windowTitle + '\\u0007');
   } catch {}
+}
+
+// Close our own terminal window once the task is done. On macOS we ask
+// Terminal.app to close the window whose selected tab matches our tty; the
+// osascript is detached and briefly delayed so it runs AFTER this launcher has
+// exited, leaving only the login shell in the tab, which Terminal closes
+// without a "processes still running" prompt. On Windows the tab auto-closes
+// when this launcher exits 0, so no explicit close is needed.
+function closeWindow() {
+  if (process.platform !== 'darwin' || !myTty) return;
+  const osa = [
+    'tell application "Terminal"',
+    '  repeat with w in windows',
+    '    if tty of selected tab of w is "' + myTty + '" then',
+    '      close w saving no',
+    '    end if',
+    '  end repeat',
+    'end tell',
+  ].join('\\n');
+  try {
+    const closer = spawn(process.execPath, ['-e',
+      'setTimeout(() => { try { require("child_process").execFileSync("osascript", ["-e", process.argv[1]]); } catch {} }, 500)',
+      osa,
+    ], { detached: true, stdio: 'ignore' });
+    closer.unref();
+  } catch {}
+}
+
+// The runner writes .pan/worker.stop after it finalizes the task (records the
+// result and updates the Project). That is our cue to shut copilot down and
+// close this window so finished worker windows don't pile up. We exit 0 so
+// Windows Terminal auto-closes the tab; the detached closer handles macOS.
+function shutdownForStop() {
+  if (stopping) return;
+  stopping = true;
+  if (stopTimer) { try { clearInterval(stopTimer); } catch {} stopTimer = null; }
+  closeWindow();
+  try { child.kill('SIGTERM'); } catch {}
+  cleanup();
+  setTimeout(() => process.exit(0), 400);
 }
 
 try { writeFileSync('.pan/worker.pid', String(process.pid)); } catch {}
@@ -1104,9 +1164,12 @@ const child = spawn(copilotBin, [...copilotArgs, promptText], { stdio: 'inherit'
 setWindowTitle();
 titleTimer = setInterval(setWindowTitle, 2000);
 if (typeof titleTimer.unref === 'function') titleTimer.unref();
+stopTimer = setInterval(() => { if (existsSync(stopSignal)) shutdownForStop(); }, 1000);
+if (typeof stopTimer.unref === 'function') stopTimer.unref();
 child.on('error', (e) => { cleanup(); console.error(e.message); process.exit(1); });
 child.on('exit', (code, signal) => {
   cleanup();
+  if (stopping) { process.exit(0); return; }
   process.exit(code == null ? (signal ? 1 : 0) : code);
 });
 `;
@@ -1353,6 +1416,14 @@ child.on('exit', (code, signal) => {
     w.finished = true;
     this.failCounts.delete(w.issueNumber);
     this.active.delete(w.issueNumber);
+    // Tell the worker's launcher the task is finalized so it can close its now
+    // finished terminal window (see buildLauncherSource). Best-effort: if the
+    // signal can't be written the only cost is a lingering window.
+    try {
+      await writeFile(path.join(w.panDir, 'worker.stop'), '');
+    } catch (e) {
+      logErr(`could not signal worker.stop for #${w.issueNumber}: ${e.message}`);
+    }
     log(`#${w.issueNumber} → ${status}`);
     return true;
   }

@@ -131,6 +131,16 @@ the worker's working directory.
   best-effort and not yet enforced — a playbook that must not auto-complete
   before merge should report `needs-review` rather than `done`.
 
+**Runner → worker (written after finalizing):**
+
+- `.pan/worker.stop` — **presence means the task is finalized; the worker should
+  shut down and close its window.** Once the runner has recorded a worker's
+  `result.json` on the Issue and updated the Project (for either outcome), it
+  writes this file. The worker session then stops and closes its own terminal
+  window so finished worker windows do not pile up. This fires only on
+  completion — a worker paused on `needs-human.json` keeps its window open for
+  the user to answer in.
+
 ## Human-attention relay
 
 `needs-human-since` on the Issue is the single signal that a human is needed. It
