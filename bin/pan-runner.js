@@ -679,6 +679,21 @@ async function workerPidAlive(panDir) {
   }
 }
 
+/** Best-effort removal of an inert isolated workspace directory. Only ever
+ *  called during rehydrate for a directory under `workspaceRoot` (which holds
+ *  only runner-created isolated workspaces) that has been confirmed inert — no
+ *  live worker AND no longer owned/adoptable by this runner. Removing it stops
+ *  finished workspaces from accumulating and being re-scanned and re-logged on
+ *  every restart. A failure is logged but never fatal. */
+async function pruneWorkspace(workingDir, number, why) {
+  try {
+    await rm(workingDir, { recursive: true, force: true });
+    log(`#${number} pruned stale workspace ${workingDir} (${why}) (rehydrate)`);
+  } catch (e) {
+    logErr(`could not prune stale workspace ${workingDir} for #${number}: ${e.message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Logging
 // ---------------------------------------------------------------------------
@@ -1561,6 +1576,13 @@ child.on('exit', (code, signal) => {
    * - A workspace whose marker is gone — OR whose marker is present but whose
    *   recorded PID is dead/missing (a vanished worker) — with the item still
    *   ours and `in-progress`, is requeued to `ready` as bounded, safe cleanup.
+   * - An isolated workspace that is inert — no live worker AND no longer
+   *   owned/adoptable by this runner (finalized, released, requeued, missing
+   *   from the Project, or externally transitioned) — is pruned (its directory
+   *   removed). Otherwise finished workspaces accumulate under workspaceRoot and
+   *   are re-scanned and re-logged on every restart. Only workspaces confirmed
+   *   inert are removed; a live or still-owned-and-adoptable workspace is never
+   *   touched.
    *
    * LIMITATION: playbooks with a fixed workingDirectory are not discovered here
    * (there is no persisted registry of launched handles), and a worker's exact
@@ -1621,15 +1643,34 @@ child.on('exit', (code, signal) => {
       const number = task.number;
       if (!number || this.active.has(number)) continue;
 
+      // Liveness of this workspace's worker: the marker must be present AND its
+      // recorded PID must be a live process. Computed up front so the ownership
+      // and finalization branches below can prune an inert leftover rather than
+      // re-logging it on every restart.
+      const alive = existsSync(markerPath) && (await workerPidAlive(panDir));
+
       // Confirm the Project still shows this task claimed by us.
       const match = items.find((it) => it.issue?.number === number);
-      if (!match) continue;
+      if (!match) {
+        // The task is no longer on the Project. If no worker is alive here, the
+        // isolated workspace is an inert leftover — prune it.
+        if (!alive) await pruneWorkspace(workingDir, number, 'task not found on Project');
+        continue;
+      }
       if (val(match, FIELD.claimedBy, '') !== this.cfg.identity) {
-        log(
-          `#${number} no longer owned by this runner ` +
-            `(claimed-by=${JSON.stringify(val(match, FIELD.claimedBy, ''))}); ` +
-            `skipping adoption/finalization (rehydrate)`,
-        );
+        // No longer ours: finalized (finalize clears claimed-by) or released to
+        // another runner. With no live worker here, the workspace is an inert
+        // leftover — prune it so it is not re-scanned and re-logged every
+        // restart. If a worker is somehow still alive, leave it untouched.
+        if (!alive) {
+          await pruneWorkspace(workingDir, number, 'no longer owned by this runner');
+        } else {
+          log(
+            `#${number} no longer owned by this runner ` +
+              `(claimed-by=${JSON.stringify(val(match, FIELD.claimedBy, ''))}); ` +
+              `skipping adoption/finalization (rehydrate)`,
+          );
+        }
         continue;
       }
 
@@ -1667,19 +1708,25 @@ child.on('exit', (code, signal) => {
             `#${number} has a pending result but was externally transitioned ` +
               `(status=${statusOf(match)}); skipping finalization (rehydrate)`,
           );
+          // The worker already finished (it wrote result.json). If it is no
+          // longer alive, the workspace is inert — prune it.
+          if (!alive) await pruneWorkspace(workingDir, number, 'pending result, externally transitioned');
           continue;
         }
         const finalized = await this.finalize(w, resultPath);
         if (finalized) continue;
       }
 
-      // Liveness: the marker must be present AND its recorded PID must be a live
-      // process. A missing marker, or a marker whose PID is dead/gone, is a
-      // vanished worker: if the item is still ours and in-progress, requeue it
-      // to `ready` rather than adopting a corpse and renewing its lease forever.
-      const alive = existsSync(markerPath) && (await workerPidAlive(panDir));
+      // A missing marker, or a marker whose PID is dead/gone, is a vanished
+      // worker: if the item is still ours and in-progress, requeue it to
+      // `ready` rather than adopting a corpse and renewing its lease forever
+      // (liveness was computed once, above).
       if (!alive) {
-        if (statusOf(match) !== 'in-progress') continue;
+        if (statusOf(match) !== 'in-progress') {
+          // Not ours to requeue and no live worker: inert leftover — prune it.
+          await pruneWorkspace(workingDir, number, 'vanished worker, not in-progress');
+          continue;
+        }
         // Route through the same operational-failure path used elsewhere rather
         // than releasing fields directly: it re-reads ownership first (so it
         // won't stomp a claim a DIFFERENT runner has since taken), counts a
@@ -1690,6 +1737,9 @@ child.on('exit', (code, signal) => {
           { itemId: match.itemId, issueNumber: number, url: task.url, repo: task.repo || repoFromUrl(task.url) },
           'worker vanished during downtime (marker gone or PID dead) (rehydrate)',
         );
+        // The task has been requeued to `ready` (or escalated); its dead
+        // worker's workspace is now inert — prune it.
+        await pruneWorkspace(workingDir, number, 'worker vanished, requeued');
         continue;
       }
 

@@ -173,6 +173,15 @@ a playbook's fixed `workingDirectory` is not yet rediscovered across a runner
 restart; until it is, its lease simply expires and the task returns to `ready`
 for a normal, resumable re-claim.
 
+Rehydration also cleans up after itself. An isolated workspace whose task is no
+longer this runner's to supervise — finalized, released, requeued to `ready`,
+missing from the Project, or externally transitioned — and which has no live
+worker, is **inert**, and the runner removes its directory during rehydration.
+Without this, finished workspaces pile up under the workspace root and the
+runner re-scans and re-logs each one on every restart. Only workspaces confirmed
+inert are removed; a workspace with a live worker or one still owned and
+adoptable by this runner is never touched.
+
 Because the runner records the `machine` and `session-id` of every launch, a
 task whose worker truly died is resumable. When such a task returns to `ready`
 and is re-claimed on the same machine, the runner relaunches copilot with the
