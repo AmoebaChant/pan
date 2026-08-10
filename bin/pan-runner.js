@@ -1792,6 +1792,12 @@ child.on('exit', (code, signal) => {
           idleSeconds = claimed > 0 || candidates > 0
             ? this.cfg.pollIntervalSeconds
             : Math.min(idleSeconds * 1.5, DEFAULTS.idleBackoffMaxSeconds);
+          // Heartbeat so an idle runner is visibly alive between claims: a
+          // healthy poll that finds nothing otherwise prints no output, which
+          // looks indistinguishable from a hung process.
+          if (!once) {
+            log(`polled: ${candidates} candidate(s), ${claimed} claimed, ${this.activeCount()} active; next poll in ${Math.round(idleSeconds)}s`);
+          }
         } catch (e) {
           logErr(`poll cycle error: ${e.message}`);
           idleSeconds = Math.min(idleSeconds * 1.5, DEFAULTS.idleBackoffMaxSeconds);
