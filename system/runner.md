@@ -70,10 +70,10 @@ workers on shutdown.
 ## Claiming (leases)
 
 To claim an item, re-read it, confirm it is still dispatchable and unleased,
-then set `claimed-by` to this runner, `lease-until` to a near-future UTC time,
-and `Status` to `in-progress`. Renew `lease-until` periodically while the worker
-runs. If a claim races with another runner (the re-read shows it already
-claimed), skip it.
+then set `claimed-by` to this runner, `machine` to this machine's name,
+`lease-until` to a near-future UTC time, and `Status` to `in-progress`. Renew
+`lease-until` periodically while the worker runs. If a claim races with another
+runner (the re-read shows it already claimed), skip it.
 
 An operational failure — terminal closed, launch failed, lease lost, worker
 vanished — returns the item to `ready` with its state intact (clear
@@ -93,7 +93,14 @@ For a claimed task the runner:
 3. Launches a **headed** `copilot` session in a visible terminal window, with an
    initial prompt that tells the worker to follow
    [`system/worker-base-instructions.md`](worker-base-instructions.md), its
-   playbook, and the task context in `.pan/`.
+   playbook, and the task context in `.pan/`. The session runs under an explicit
+   copilot session id (`copilot --session-id <id>`); the runner records that id
+   in the Issue's `session-id` field so the work can be resumed or revisited
+   later. On the first launch it mints a fresh UUID; on a re-launch of a task
+   that already carries a `session-id` recorded for this same `machine`, it
+   reuses that id so copilot resumes the earlier session rather than starting
+   over. copilot sessions are local to a machine, so a `session-id` recorded for
+   a different machine is never reused.
 4. Watches `.pan/` for the human-attention and result signals below, and renews
    the lease while the worker runs.
 
@@ -155,3 +162,12 @@ in runner-created isolated workspaces by process liveness. A worker launched in
 a playbook's fixed `workingDirectory` is not yet rediscovered across a runner
 restart; until it is, its lease simply expires and the task returns to `ready`
 for a normal, resumable re-claim.
+
+Because the runner records the `machine` and `session-id` of every launch, a
+task whose worker truly died is resumable. When such a task returns to `ready`
+and is re-claimed on the same machine, the runner relaunches copilot with the
+recorded `session-id`, so the worker picks up the earlier session's transcript
+and state instead of starting from scratch. `machine` and `session-id` are
+therefore durable — they survive requeue and are only overwritten when a new
+worker is launched — leaving a lasting record of where each task ran that a
+person can also use to revisit the session by hand.

@@ -22,6 +22,8 @@ reads as its documented default rather than as an error.
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp. Non-empty means a live worker is waiting for the user right now. |
 | `lease-until` | text | the runner | RFC 3339 UTC timestamp. When a claim expires. |
 | `claimed-by` | text | the runner | Stable identity of the runner holding the task. |
+| `machine` | text | the runner | Name of the machine whose runner ran the task (matches a `playbooks/<machine>/` folder). Durable provenance for resuming: unlike the lease it survives requeue. Empty means no runner has launched a worker for it yet. |
+| `session-id` | text | the runner | UUID of the copilot worker session the runner launched, so the work can be resumed or revisited later (`copilot --resume=<id>` / `--session-id=<id>`) on `machine`. Empty means no worker has been launched yet. |
 
 ## Status meanings
 
@@ -47,7 +49,10 @@ reads as its documented default rather than as an error.
 
 - **Triage owns** `owner`, `Status`, `priority`, `playbook`, and `workstream`.
 - **The runner owns** `Status` transitions after it claims, plus `lease-until`
-  and `claimed-by`, while it holds the lease.
+  and `claimed-by`, while it holds the lease, and `machine` and `session-id`,
+  which it records at claim and launch as durable provenance. Unlike the lease,
+  `machine` and `session-id` are not cleared on requeue — they let a task whose
+  worker died be resumed or revisited on the machine that ran it.
 - **The worker owns** `needs-human-since`, written on its behalf by the runner
   (see [worker base instructions](worker-base-instructions.md)). It must survive
   a requeue.
