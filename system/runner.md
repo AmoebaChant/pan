@@ -144,9 +144,12 @@ the worker's working directory.
   shut down and close its window.** Once the runner has recorded a worker's
   `result.json` on the Issue and updated the Project (for either outcome), it
   writes this file. The worker session then stops and closes its own terminal
-  window so finished worker windows do not pile up. This fires only on
-  completion — a worker paused on `needs-human.json` keeps its window open for
-  the user to answer in.
+  window so finished worker windows do not pile up. On macOS the launcher runs
+  in place of the login shell (via `exec`), so once it exits the terminal tab
+  has no running process and Terminal.app closes it silently — without its "Do
+  you want to terminate running processes in this window?" prompt. This fires
+  only on completion — a worker paused on `needs-human.json` keeps its window
+  open for the user to answer in.
 
 ## Human-attention relay
 
