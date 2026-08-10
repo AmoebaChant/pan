@@ -931,10 +931,15 @@ class Runner {
     const prompt = this.buildPrompt(systemDir, playbookName, hasDomainPan);
     await writeFile(path.join(panDir, 'launch-prompt.txt'), prompt);
 
+    // Stable, human-readable window title so the user can tell at a glance
+    // which task each spawned window is working on. Computed here because the
+    // launcher bakes it in to keep re-asserting it against copilot (see below).
+    const windowTitle = workerWindowTitle(number, item.issue.title);
+
     // Generate the Node launcher. It runs with its CWD set to workingDir and
     // passes the prompt to copilot as a single argv element, so no shell ever
     // re-parses the (domain-controlled) prompt text on any platform.
-    await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource());
+    await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource(windowTitle));
 
     // 3. Pre-trust the workspace folder so the headed worker starts without an
     // interactive "trust this folder?" prompt. copilot's --allow-all covers
@@ -943,10 +948,10 @@ class Runner {
     // failure the worker at worst shows the prompt as before.
     await this.trustWorkspace(workingDir);
 
-    // 4. Launch a headed copilot session in a visible terminal window. Give the
-    // window a stable, human-readable title so the user can tell at a glance
-    // which task each spawned window is working on.
-    const windowTitle = workerWindowTitle(number, item.issue.title);
+    // 4. Launch a headed copilot session in a visible terminal window. The
+    // window title is set by the launcher's watchdog (baked in above); the
+    // terminal-side title below is just the initial value shown before copilot
+    // loads.
     await this.spawnTerminal(workingDir, panDir, windowTitle);
 
     // 5. Register supervision state.
@@ -1041,23 +1046,46 @@ class Runner {
    * shell). copilotBin/copilotArgs are baked in as JSON literals so the
    * launcher reads no config at runtime. Permission flags derived from
    * workerPermissions are prepended to copilotArgs.
+   *
+   * The launcher also runs a title watchdog: copilot rewrites the terminal
+   * title (`OSC 0`) repeatedly during a session with its own AI-generated
+   * summary, and that always wins over a terminal-side "custom title". So the
+   * launcher periodically re-emits our stable task title to the tty, keeping
+   * each worker window identifiable. This is a benign competition — an `OSC 0`
+   * title escape never touches copilot's alt-screen content — with at most a
+   * brief flicker to copilot's title after each of its (infrequent) updates.
    */
-  buildLauncherSource() {
+  buildLauncherSource(windowTitle = '') {
     const copilotBin = JSON.stringify(this.cfg.copilotBin);
     const copilotArgs = JSON.stringify([...this.cfg.permissionArgs, ...this.cfg.copilotArgs]);
+    const title = JSON.stringify(windowTitle || '');
     return `import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 
 // Baked in by the runner; the launcher reads no config at runtime.
 const copilotBin = ${copilotBin};
 const copilotArgs = ${copilotArgs};
+const windowTitle = ${title};
 
 const marker = '.pan/worker.running';
 let cleaned = false;
+let titleTimer = null;
 function cleanup() {
   if (cleaned) return;
   cleaned = true;
+  if (titleTimer) { try { clearInterval(titleTimer); } catch {} titleTimer = null; }
   try { rmSync(marker, { force: true }); } catch {}
+}
+
+// Keep our task title on the window. copilot re-emits its own \`OSC 0\` title
+// throughout the session, overriding any terminal-side custom title, so we
+// periodically re-assert ours to the tty. An \`OSC 0\` escape only sets the
+// title (icon + window); it never disturbs copilot's alt-screen content.
+function setWindowTitle() {
+  if (!windowTitle) return;
+  try {
+    if (process.stdout.isTTY) process.stdout.write('\\u001b]0;' + windowTitle + '\\u0007');
+  } catch {}
 }
 
 try { writeFileSync('.pan/worker.pid', String(process.pid)); } catch {}
@@ -1073,6 +1101,9 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 
 const promptText = readFileSync('.pan/launch-prompt.txt', 'utf8');
 const child = spawn(copilotBin, [...copilotArgs, promptText], { stdio: 'inherit' });
+setWindowTitle();
+titleTimer = setInterval(setWindowTitle, 2000);
+if (typeof titleTimer.unref === 'function') titleTimer.unref();
 child.on('error', (e) => { cleanup(); console.error(e.message); process.exit(1); });
 child.on('exit', (code, signal) => {
   cleanup();
@@ -1089,10 +1120,11 @@ child.on('exit', (code, signal) => {
     void panDir;
     const nodeBin = this.cfg.nodeBin;
     const doScript = `cd ${shQuote(workingDir)} && ${shQuote(nodeBin)} .pan/launch.mjs`;
-    // Capture the tab returned by `do script` and pin a custom title on it. In
-    // Terminal.app a custom title is sticky: it overrides any OSC title escape
-    // the running program emits, so the task name stays visible for the life of
-    // the window.
+    // Capture the tab returned by `do script` and set an initial title on it.
+    // This is only the title shown before copilot loads: copilot rewrites the
+    // window title (OSC 0) during the session and that overrides Terminal.app's
+    // custom title, so the launcher's watchdog re-asserts our task title while
+    // the worker runs (see buildLauncherSource).
     const args = [
       '-e', 'tell application "Terminal" to activate',
     ];
@@ -1116,7 +1148,9 @@ child.on('exit', (code, signal) => {
     // `.pan/...` paths resolve. The launcher maintains the liveness marker
     // (including on window-close signals), so no batch file is needed.
     // `--title` plus `--suppressApplicationTitle` pin a stable task name that
-    // the running program cannot overwrite.
+    // Windows Terminal will not let the running program overwrite. (The
+    // launcher's title watchdog also runs, but its OSC titles are ignored here
+    // for the same reason — belt-and-suspenders with the macOS path.)
     void panDir;
     const ntArgs = ['-w', '0', 'nt'];
     if (title) {
