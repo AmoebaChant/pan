@@ -23,12 +23,12 @@ node bin/pan-runner.js --help
   those workers finish, then exit.
 - `--validate-config` — validate the config **and** Domain access
   (every `playbooks/<machine>/<name>.md` in this machine's folder, and
-  the Project), then exit `0`. This also validates the Project **schema**: all 8
+  the Project), then exit `0`. This also validates the Project **schema**: all 10
   canonical fields must be present with the correct types (`Status`, `owner`,
   `priority` as single-selects; `playbook`, `workstream`, `needs-human-since`,
-  `lease-until`, `claimed-by` as text). Performs **no polling**. Exits non-zero
-  with a clear message on any failure (missing/wrong-typed fields are all
-  reported together).
+  `lease-until`, `claimed-by`, `machine`, `session-id` as text). Performs **no
+  polling**. Exits non-zero with a clear message on any failure (missing/wrong-typed
+  fields are all reported together).
 - `--help` — print usage and exit `0`.
 
 Without `--once` the runner loops until interrupted (`SIGINT`/`SIGTERM`),
@@ -101,17 +101,21 @@ itself keeps **no** scratch, log, or state files under any temp directory.
    machine runs, with spare capacity (global and per-playbook) and a free lease.
    Order by `priority` (`urgent` > `high` > `normal` > `low`), preserving Project
    order among ties.
-2. **Claim** — re-read the item to avoid races, then set `claimed-by`,
-   `lease-until` (near-future UTC), and `Status=in-progress`. Immediately after
-   writing, the runner **re-reads once more to confirm** it still owns the claim
-   (`claimed-by` is still this runner and `lease-until` is exactly the value it
-   wrote); if another runner won the race, it abandons the item **without
-   overwriting** the winner's fields. This is best-effort optimistic concurrency
-   (GitHub has no atomic compare-and-swap); the confirming re-read is the point.
-   The lease is renewed periodically while the worker runs.
+2. **Claim** — re-read the item to avoid races, then set `claimed-by`, `machine`
+   (this machine's name), `lease-until` (near-future UTC), and `Status=in-progress`.
+   Immediately after writing, the runner **re-reads once more to confirm** it
+   still owns the claim (`claimed-by` is still this runner and `lease-until` is
+   exactly the value it wrote); if another runner won the race, it abandons the
+   item **without overwriting** the winner's fields. This is best-effort optimistic
+   concurrency (GitHub has no atomic compare-and-swap); the confirming re-read is
+   the point. The lease is renewed periodically while the worker runs.
 3. **Launch** — prepare the working directory (fixed `workingDirectory` if set,
    else an isolated workspace under `workspaceRoot`), write the task context into
-   `.pan/`, and open a headed `copilot` session in a visible terminal window. If
+   `.pan/`, and open a headed `copilot` session in a visible terminal window under
+   an explicit copilot session id (`--session-id`), recording that id in the
+   Issue's `session-id` field. A fresh UUID is minted for a new task; a task that
+   already carries a `session-id` recorded for this same `machine` is relaunched
+   with that id so copilot **resumes** the earlier session. If
    the resolved directory is a fixed `workingDirectory` already in use by another
    active worker, the runner does **not** launch: it returns the task to `ready`
    (a benign capacity collision, not an operational strike).
@@ -191,11 +195,11 @@ unaffected; a second interrupt exits immediately.
 The runner reads/writes exactly the fields in
 [`system/project-schema.md`](../system/project-schema.md): the built-in `Status`
 select, plus custom fields `owner`, `priority`, `playbook`, `workstream`,
-`needs-human-since`, `lease-until`, `claimed-by`. Empty selects read as their
-documented defaults (`owner`→`unassigned`, `Status`→`untriaged`,
-`priority`→`normal`). Field ids and single-select option ids are resolved from the
-Project once via GraphQL and cached for the process lifetime; writes use
-`gh project item-edit`.
+`needs-human-since`, `lease-until`, `claimed-by`, `machine`, `session-id`. Empty
+selects read as their documented defaults (`owner`→`unassigned`,
+`Status`→`untriaged`, `priority`→`normal`). Field ids and single-select option ids
+are resolved from the Project once via GraphQL and cached for the process
+lifetime; writes use `gh project item-edit`.
 
 ## Known limitations / TODOs (v1)
 

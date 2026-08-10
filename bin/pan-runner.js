@@ -61,6 +61,7 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -75,6 +76,8 @@ const FIELD = {
   needsHumanSince: 'needs-human-since',
   leaseUntil: 'lease-until',
   claimedBy: 'claimed-by',
+  machine: 'machine',
+  sessionId: 'session-id',
 };
 
 const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
@@ -480,13 +483,13 @@ async function loadProjectMeta(cfg) {
   return { ownerType, projectId: project.id, fields };
 }
 
-/** Validate the resolved Project has the 8 canonical fields with correct types
+/** Validate the resolved Project has the 10 canonical fields with correct types
  *  (see system/project-schema.md). Single-select fields must expose an options
  *  Map; text fields must have null options. Throws a single UserError naming
  *  ALL missing or wrong-typed fields. */
 function validateProjectSchema(meta) {
   const singleSelects = ['Status', 'owner', 'priority'];
-  const textFields = ['playbook', 'workstream', 'needs-human-since', 'lease-until', 'claimed-by'];
+  const textFields = ['playbook', 'workstream', 'needs-human-since', 'lease-until', 'claimed-by', 'machine', 'session-id'];
   const problems = [];
   for (const name of singleSelects) {
     const f = meta.fields.get(name);
@@ -778,10 +781,14 @@ class Runner {
       return false;
     }
 
-    // Record the claim: claimed-by, lease-until, Status=in-progress.
+    // Record the claim: claimed-by, machine, lease-until, Status=in-progress.
+    // `machine` is durable provenance (which machine ran the work); unlike the
+    // lease it is not cleared on requeue, so a task that dies can be resumed on
+    // the same machine (see session-id, written at launch).
     const leaseWritten = this.leaseTimestamp();
     try {
       await setTextField(this.cfg, this.meta, item.itemId, FIELD.claimedBy, this.cfg.identity);
+      await setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, this.cfg.machine);
       await setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, leaseWritten);
       await setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, 'in-progress');
     } catch (e) {
@@ -843,6 +850,11 @@ class Runner {
       if (collision) {
         try {
           await setTextField(this.cfg, this.meta, item.itemId, FIELD.claimedBy, '');
+          // Restore `machine` to its pre-claim value: no worker ran here, so the
+          // just-written claim must not leave stale provenance that would later
+          // pair this machine with another machine's `session-id` and trigger a
+          // bogus "resume".
+          await setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, val(fresh, FIELD.machine, ''));
           await setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, '');
           await setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, 'ready');
         } catch (e) {
@@ -873,6 +885,17 @@ class Runner {
   async launchWorker(item, playbookName) {
     const pb = this.playbooks.get(playbookName);
     const number = item.issue.number;
+
+    // Copilot session id for resumability. Copilot sessions live on the local
+    // machine, so only reuse a previously recorded session id when it was
+    // created on THIS machine — then a task whose worker died can be resumed
+    // (its transcript and state re-adopted) instead of started from scratch.
+    // Otherwise mint a fresh UUID. Passing the id via `copilot --session-id`
+    // both creates the session on first launch and resumes it on a later one.
+    const recordedSessionId = val(item, FIELD.sessionId, '');
+    const recordedMachine = val(item, FIELD.machine, '');
+    const resuming = !!recordedSessionId && recordedMachine === this.cfg.machine;
+    const sessionId = resuming ? recordedSessionId : randomUUID();
 
     // 1. Working directory: fixed workingDirectory, else isolated workspace.
     let workingDir;
@@ -938,8 +961,20 @@ class Runner {
 
     // Generate the Node launcher. It runs with its CWD set to workingDir and
     // passes the prompt to copilot as a single argv element, so no shell ever
-    // re-parses the (domain-controlled) prompt text on any platform.
-    await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource(windowTitle));
+    // re-parses the (domain-controlled) prompt text on any platform. The
+    // session id is baked in as `--session-id` so the worker's copilot session
+    // is the one recorded on the Issue, making the task resumable.
+    await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource(windowTitle, sessionId));
+
+    // Record the copilot session id so the task can be resumed or revisited on
+    // this machine later. Best-effort: a failure here must not block a launch
+    // that is otherwise ready — provenance is recoverable, a wasted launch is
+    // not.
+    try {
+      await setTextField(this.cfg, this.meta, item.itemId, FIELD.sessionId, sessionId);
+    } catch (e) {
+      logErr(`could not record session-id for #${number} (continuing): ${e.message}`);
+    }
 
     // 3. Pre-trust the workspace folder so the headed worker starts without an
     // interactive "trust this folder?" prompt. copilot's --allow-all covers
@@ -965,6 +1000,7 @@ class Runner {
       workingDir,
       panDir,
       isolated,
+      sessionId,
       startedAt: Date.now(),
       lastRenew: Date.now(),
       hadNeedsHuman: !!val(item, FIELD.needsHumanSince, ''),
@@ -973,7 +1009,7 @@ class Runner {
       lastBadOutcome: null,
       finished: false,
     });
-    log(`launched worker for #${number} in ${workingDir}`);
+    log(`launched worker for #${number} in ${workingDir}${resuming ? ` (resuming session ${sessionId})` : ` (session ${sessionId})`}`);
   }
 
   buildPrompt(systemDir, playbookName, hasDomainPan = false) {
@@ -1045,7 +1081,10 @@ class Runner {
    * copilot with the prompt as a single argv element (never re-parsed by any
    * shell). copilotBin/copilotArgs are baked in as JSON literals so the
    * launcher reads no config at runtime. Permission flags derived from
-   * workerPermissions are prepended to copilotArgs.
+   * workerPermissions are prepended to copilotArgs, and `--session-id <id>` is
+   * appended so the worker runs under the exact session id recorded on the
+   * Issue — creating that session on first launch and resuming it on a later
+   * one (see system/runner.md, "Restart and rehydration").
    *
    * The launcher also runs a title watchdog: copilot rewrites the terminal
    * title (`OSC 0`) repeatedly during a session with its own AI-generated
@@ -1055,9 +1094,10 @@ class Runner {
    * title escape never touches copilot's alt-screen content — with at most a
    * brief flicker to copilot's title after each of its (infrequent) updates.
    */
-  buildLauncherSource(windowTitle = '') {
+  buildLauncherSource(windowTitle = '', sessionId = '') {
     const copilotBin = JSON.stringify(this.cfg.copilotBin);
-    const copilotArgs = JSON.stringify([...this.cfg.permissionArgs, ...this.cfg.copilotArgs]);
+    const sessionArgs = sessionId ? ['--session-id', sessionId] : [];
+    const copilotArgs = JSON.stringify([...this.cfg.permissionArgs, ...this.cfg.copilotArgs, ...sessionArgs]);
     const title = JSON.stringify(windowTitle || '');
     return `import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -1709,7 +1749,7 @@ async function main() {
     validateProjectSchema(meta);
     log(`config OK: domain=${cfg.domainRepoSlug} project=${cfg.project.owner}/${cfg.project.number} machine=${cfg.machine}`);
     log(`worker permissions: ${cfg.workerPermissions}${cfg.workerPermissions === 'yolo' ? ' (workers launch with --allow-all)' : ''}`);
-    log(`project schema OK: all 8 canonical fields present with correct types`);
+    log(`project schema OK: all 10 canonical fields present with correct types`);
     log(`playbooks this machine runs: ${[...playbooks.keys()].join(', ')}`);
     return 0;
   }

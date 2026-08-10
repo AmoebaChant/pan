@@ -41,8 +41,9 @@ Ask whether to **create a new** private Domain or **connect an existing** one.
 
 Create any missing custom fields exactly as [`project-schema.md`](../../system/project-schema.md)
 defines them — `owner`, `priority` (single-select with the listed options),
-`playbook`, `workstream`, `needs-human-since`, `lease-until`, `claimed-by`
-(text) — plus the built-in `Status` field's options. Never rename `Status`.
+`playbook`, `workstream`, `needs-human-since`, `lease-until`, `claimed-by`,
+`machine`, `session-id` (text) — plus the built-in `Status` field's options.
+Never rename `Status`.
 Verify each field afterward.
 
 ## 4. Scaffold the Domain repository
