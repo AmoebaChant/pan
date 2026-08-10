@@ -49,7 +49,8 @@ For each open task, decide and set:
 - `priority` — weigh urgency, dates, dependencies, blockers, recent activity,
   comments, and workstream narrative.
 - `playbook` — for `agent` tasks, the name of the playbook that fits (see
-  [playbooks](playbooks.md)). Read `playbooks/*.md` to choose.
+  [playbooks](playbooks.md)). Read `playbooks/*/*.md` (per-machine definitions)
+  to choose.
 - `workstream` — the area this task belongs to, if any. Validate a non-empty
   path by reading `workstreams/<path>/README.md` first.
 - `Status`:

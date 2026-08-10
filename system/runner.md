@@ -23,9 +23,10 @@ The runner is given, from local machine config written at onboarding:
 - terminal settings for launching a visible worker window (Windows Terminal on
   Windows, Terminal.app on macOS).
 
-The runner re-reads `machines/<machine>.md` and the `playbooks/*.md` it
-references from GitHub, so playbook changes take effect without editing local
-config. Local config changes require restarting the runner.
+The runner re-reads `machines/<machine>.md` and, for each playbook it lists, the
+per-machine `playbooks/<machine>/<name>.md` from GitHub, so playbook changes take
+effect without editing local config. Local config changes require restarting the
+runner.
 
 ## Poll cycle
 

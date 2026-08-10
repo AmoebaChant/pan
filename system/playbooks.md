@@ -8,15 +8,20 @@ task only if the machine it is on lists that playbook name.
 ## Where playbooks live
 
 Playbook definitions live in the **Domain** repository at
-`playbooks/<name>.md`. The `<name>` (the file's basename without `.md`) is the
-playbook name written into the Project `playbook` field. The Pan tool repository
-defines only the *format* below and the base instructions every worker gets;
-it ships no concrete playbooks.
+`playbooks/<machine>/<name>.md`. Definitions are **per machine**: `<machine>`
+is the machine name (matching a `machines/<machine>.md`) and `<name>` (the
+file's basename without `.md`) is the playbook name written into the Project
+`playbook` field. The same playbook name may be defined differently on
+different machines, so each machine that runs a playbook has its own file for it
+— there is no shared default and no fallback. Whichever machine claims a task
+runs its own definition of that playbook name. The Pan tool repository defines
+only the *format* below and the base instructions every worker gets; it ships no
+concrete playbooks.
 
 ## Playbook definition format
 
-`playbooks/<name>.md` is Markdown with a small YAML front matter and a free-form
-instructions body:
+`playbooks/<machine>/<name>.md` is Markdown with a small YAML front matter and a
+free-form instructions body:
 
 ```markdown
 ---
@@ -41,9 +46,9 @@ Front matter fields:
 - `workingDirectory` (optional) — an absolute path the worker is launched in
   when this playbook owns its own workspace. When omitted, the runner is
   responsible for preparing an isolated workspace as its instructions require.
-  This is a *local* path, so it is really a per-machine concern; a playbook that
-  needs different directories on different machines should say so and let the
-  machine list override it (below).
+  Because playbook files are now per machine, this path is naturally
+  machine-specific; the `machines/<machine>.md` table's `workingDirectory`
+  column still overrides it if set.
 
 The instructions body carries everything else — how to isolate work, build,
 test, and deliver. There are no capability tokens and no `repo:` selector; the
@@ -78,10 +83,12 @@ machine: kevins-macbook
 ## How triage uses playbooks
 
 During [triage](triage.md), for each agent task, Pan reads the available
-`playbooks/*.md`, picks the one whose `description` and instructions fit the
-task, and writes its name into the Project `playbook` field. If no playbook
-fits, the task is not agent-ready: either keep it `human`-owned, keep it
-`needs-detail`, or propose creating a new playbook.
+`playbooks/*/*.md` across every machine, picks the one whose `description` and
+instructions fit the task, and writes its **name** into the Project `playbook`
+field. The name is the routing key; the same name may be defined differently per
+machine, and whichever machine claims the task runs its own definition. If no
+playbook fits, the task is not agent-ready: either keep it `human`-owned, keep
+it `needs-detail`, or propose creating a new playbook.
 
 ## How the runner uses playbooks
 

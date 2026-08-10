@@ -415,21 +415,21 @@ async function loadPlaybooks(cfg) {
 
   const playbooks = new Map(); // name -> { name, description, workingDirectory, capacity, body }
   for (const [name, machineEntry] of machinePlaybooks) {
-    const pbText = await readDomainFile(cfg, `playbooks/${name}.md`);
+    const pbText = await readDomainFile(cfg, `playbooks/${cfg.machine}/${name}.md`);
     const { front, body } = splitFrontMatter(pbText);
     if (!front.name || front.name !== name) {
       throw new UserError(
-        `playbooks/${name}.md front matter must have name equal to "${name}" (got ${JSON.stringify(front.name ?? null)}).`,
+        `playbooks/${cfg.machine}/${name}.md front matter must have name equal to "${name}" (got ${JSON.stringify(front.name ?? null)}).`,
       );
     }
     if (!front.description || String(front.description).trim().length === 0) {
-      throw new UserError(`playbooks/${name}.md is missing a non-empty "description" in its front matter.`);
+      throw new UserError(`playbooks/${cfg.machine}/${name}.md is missing a non-empty "description" in its front matter.`);
     }
     // Machine workingDirectory overrides the playbook default.
     const workingDirectory = machineEntry.workingDirectory ?? front.workingDirectory ?? null;
     if (workingDirectory !== null && !path.isAbsolute(workingDirectory)) {
       throw new UserError(
-        `playbooks/${name}.md workingDirectory must be an absolute path, got: ${workingDirectory}`,
+        `playbooks/${cfg.machine}/${name}.md workingDirectory must be an absolute path, got: ${workingDirectory}`,
       );
     }
     playbooks.set(name, {

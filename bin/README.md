@@ -22,7 +22,7 @@ node bin/pan-runner.js --help
 - `--once` — run a single poll cycle, then supervise whatever it launched until
   those workers finish, then exit.
 - `--validate-config` — validate the config **and** Domain access
-  (`machines/<machine>.md` plus every `playbooks/<name>.md` it references, and
+  (`machines/<machine>.md` plus every `playbooks/<machine>/<name>.md` it references, and
   the Project), then exit `0`. This also validates the Project **schema**: all 8
   canonical fields must be present with the correct types (`Status`, `owner`,
   `priority` as single-selects; `playbook`, `workstream`, `needs-human-since`,

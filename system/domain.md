@@ -10,7 +10,7 @@ in the Domain.
 ```text
 <domain-repo>/
   workstreams/<path>/README.md   durable narrative per area of work
-  playbooks/<name>.md            playbook definitions (how to do a kind of work)
+  playbooks/<machine>/<name>.md  playbook definitions (per machine)
   machines/<machine>.md          which playbooks a machine runs, and capacity
   pan.md                         domain-specific Pan instructions (optional)
 ```
