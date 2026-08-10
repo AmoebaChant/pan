@@ -37,6 +37,9 @@ reads as its documented default rather than as an error.
 - `in-review` — the worker finished but a human should look before it is done
   (for example, a pull request awaiting merge).
 - `done` — complete and confirmed. For pull-request work, confirmed merged.
+  Setting `Status=done` and closing the Issue go together: whoever marks a task
+  `done` also closes its Issue as completed (`gh issue close --reason
+  completed`), and a task is never left `done` with its Issue still open.
 - `blocked` — waiting on something outside the user's control, with no worker
   holding it. This is the *only* meaning of `blocked`.
 

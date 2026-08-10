@@ -103,7 +103,10 @@ the worker's working directory.
 - `.pan/result.json` — written once when the worker finishes:
   `{ "outcome": "done" | "needs-review", "summary": "…", "details": "…" }`.
   The runner records the summary/details on the Issue and moves the Project item
-  to `done` (outcome `done`) or `in-review` (outcome `needs-review`). For
+  to `done` (outcome `done`) or `in-review` (outcome `needs-review`). When it
+  sets `done` it also closes the Issue as completed, per the
+  [project schema](project-schema.md) (`done` and a closed Issue go together).
+  For
   pull-request work, the runner should confirm the merge from GitHub before
   setting `done`; in the current implementation this merge confirmation is
   best-effort and not yet enforced — a playbook that must not auto-complete
