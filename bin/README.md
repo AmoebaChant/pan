@@ -126,8 +126,14 @@ Written by the runner before launch:
 - `.pan/launch-prompt.txt` — the initial prompt handed to `copilot`.
 - `.pan/launch.mjs` — a generated Node launcher (ESM). Run with its CWD set to
   the working directory, it passes the prompt to `copilot` as a single argv
-  element (no shell ever re-parses the prompt on any platform) and maintains the
-  liveness marker below.
+  element (no shell ever re-parses the prompt on any platform), maintains the
+  liveness marker below, and runs a **title watchdog** that periodically
+  re-asserts the worker's task title on the terminal. `copilot` rewrites the
+  window title (`OSC 0`) repeatedly during a session with its own AI-generated
+  summary — which overrides any terminal-side "custom title" — so the launcher
+  keeps re-emitting the stable `#<number> <title>` so each worker window stays
+  identifiable (a brief flicker to copilot's title can appear right after each of
+  its infrequent updates).
 
 Written by the worker:
 
