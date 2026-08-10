@@ -22,13 +22,25 @@ The runner is given, from local machine config written at onboarding:
 - a stable runner identity string for `claimed-by`;
 - the **default worker permissions** for agents this runner launches
   (`workerPermissions`): `yolo` (default — launch workers with `--allow-all`,
-  auto-approving every tool, path, and URL and clearing copilot's folder-trust
-  prompt so workers run fully unattended) or `standard` (no auto-approve flags,
-  which requires a human at the terminal to confirm folder trust and each tool).
-  A raw `copilotArgs` escape hatch is still appended after the derived
-  permission flags for anything not expressed by this setting;
+  auto-approving every tool, path, and URL so workers run fully unattended) or
+  `standard` (no auto-approve flags, which requires a human at the terminal to
+  confirm each tool). A raw `copilotArgs` escape hatch is still appended after
+  the derived permission flags for anything not expressed by this setting;
 - terminal settings for launching a visible worker window (Windows Terminal on
   Windows, Terminal.app on macOS).
+
+Regardless of `workerPermissions`, the runner pre-authorizes each worker's
+workspace folder before launch by adding it to copilot's `trustedFolders`
+(`~/.copilot/config.json`, overridable via `copilotConfigPath`). copilot's
+`--allow-all` covers tools, paths, and URLs but not the separate per-folder
+trust gate, and each worker runs in a fresh temporary directory; without this
+step every worker would stop on an interactive "trust this folder?" prompt. The
+write is best-effort — on any failure the worker simply falls back to prompting.
+
+Each worker window is given a stable, human-readable title (`#<number> <short
+title>`) so the user can tell at a glance which task each spawned window is
+working on. On macOS this is pinned as a Terminal.app custom title; on Windows
+via `--title`/`--suppressApplicationTitle`.
 
 The runner re-reads the `playbooks/<machine>/` folder and every
 `playbooks/<machine>/<name>.md` from GitHub each cycle, so playbook changes take

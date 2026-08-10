@@ -71,15 +71,15 @@ Ask which **default worker permissions** the runner should launch agents with,
 and record it as `workerPermissions`:
 
 - `yolo` — launch workers with `--allow-all`, auto-approving every tool, path,
-  and URL (this also clears copilot's folder-trust prompt) so runner-launched
-  workers run fully unattended. This is the default, because a runner's workers
-  start in fresh directories with no human present; the trade-off is that a
-  worker can take any action without asking.
-- `standard` — no auto-approve flags; the worker prompts for folder trust and
-  each tool, so a human must be at the terminal.
+  and URL so runner-launched workers run fully unattended. This is the default,
+  because a runner's workers start in fresh directories with no human present;
+  the trade-off is that a worker can take any action without asking.
+- `standard` — no auto-approve flags; the worker prompts for each tool, so a
+  human must be at the terminal.
 
 State this trade-off plainly and default to `yolo` unless the user chooses
-`standard`.
+`standard`. Either way the runner pre-trusts each worker's workspace folder
+(via copilot's `trustedFolders`) so no interactive folder-trust prompt appears.
 
 ## 6. Explain how to run
 

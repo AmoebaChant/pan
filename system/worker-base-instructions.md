@@ -21,14 +21,6 @@ Domain and the target repository your playbook names.
   playbook does not spell out.
 - The Pan system documents in `system/` — conventions and contracts.
 
-## First: name your window
-
-The runner launches you in a visible terminal window. As your very first action,
-run the `/rename` slash command to give the window a short, clear name for what
-you are working on — use the Issue number and a few words from its title, e.g.
-`/rename #60 feedback form intermittent failures`. This lets the user tell at a
-glance what each spawned window is doing. Do this before starting the work.
-
 ## Doing the work
 
 Follow your playbook exactly. It, together with the Issue, is the only thing

@@ -284,6 +284,8 @@ async function loadConfig(configPath) {
     leaseMinutes,
     maxConcurrent,
     workspaceRoot: json.workspaceRoot || path.join(os.tmpdir(), 'pan-workspaces'),
+    copilotConfigPath:
+      json.copilotConfigPath || path.join(os.homedir(), '.copilot', 'config.json'),
   };
 }
 
@@ -934,10 +936,20 @@ class Runner {
     // re-parses the (domain-controlled) prompt text on any platform.
     await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource());
 
-    // 3. Launch a headed copilot session in a visible terminal window.
-    await this.spawnTerminal(workingDir, panDir);
+    // 3. Pre-trust the workspace folder so the headed worker starts without an
+    // interactive "trust this folder?" prompt. copilot's --allow-all covers
+    // tools/paths/URLs but NOT the per-folder trust gate, which is governed
+    // only by trustedFolders in ~/.copilot/config.json. Best-effort: on any
+    // failure the worker at worst shows the prompt as before.
+    await this.trustWorkspace(workingDir);
 
-    // 4. Register supervision state.
+    // 4. Launch a headed copilot session in a visible terminal window. Give the
+    // window a stable, human-readable title so the user can tell at a glance
+    // which task each spawned window is working on.
+    const windowTitle = workerWindowTitle(number, item.issue.title);
+    await this.spawnTerminal(workingDir, panDir, windowTitle);
+
+    // 5. Register supervision state.
     this.active.set(number, {
       itemId: item.itemId,
       issueNumber: number,
@@ -974,12 +986,50 @@ class Runner {
     ].filter(Boolean).join(' ');
   }
 
-  async spawnTerminal(workingDir, panDir) {
+  /**
+   * Best-effort: add a worker's workspace folder to copilot's trustedFolders so
+   * the headed session starts without the interactive folder-trust modal. The
+   * config file (~/.copilot/config.json) is "managed automatically" and may
+   * begin with `//` comment lines before the JSON body; we strip those to parse,
+   * then rewrite preserving the original header. Idempotent (skips folders that
+   * are already trusted) and non-fatal: any error is logged and the launch
+   * continues, so a worker at worst prompts as it did before.
+   */
+  async trustWorkspace(folderPath) {
+    const configPath = this.cfg.copilotConfigPath;
+    try {
+      let raw;
+      try {
+        raw = await readFile(configPath, 'utf8');
+      } catch {
+        raw = '';
+      }
+      const lines = raw.split('\n');
+      let i = 0;
+      while (i < lines.length && (lines[i].trimStart().startsWith('//') || lines[i].trim() === '')) {
+        i++;
+      }
+      const header = lines.slice(0, i).join('\n');
+      const body = lines.slice(i).join('\n').trim();
+      const config = body ? JSON.parse(body) : {};
+      const trusted = Array.isArray(config.trustedFolders) ? config.trustedFolders : [];
+      if (trusted.includes(folderPath)) return;
+      trusted.push(folderPath);
+      config.trustedFolders = trusted;
+      const out = (header ? header + '\n' : '') + JSON.stringify(config, null, 2) + '\n';
+      await mkdir(path.dirname(configPath), { recursive: true });
+      await writeFile(configPath, out);
+    } catch (e) {
+      logErr(`could not pre-trust workspace ${folderPath} (worker may prompt): ${e.message}`);
+    }
+  }
+
+  async spawnTerminal(workingDir, panDir, title) {
     if (this.cfg.terminalKind === 'macos-terminal') {
-      return this.spawnMacTerminal(workingDir, panDir);
+      return this.spawnMacTerminal(workingDir, panDir, title);
     }
     if (this.cfg.terminalKind === 'windows-terminal') {
-      return this.spawnWindowsTerminal(workingDir, panDir);
+      return this.spawnWindowsTerminal(workingDir, panDir, title);
     }
     throw new Error(`Unsupported terminalKind: ${this.cfg.terminalKind}`);
   }
@@ -1031,7 +1081,7 @@ child.on('exit', (code, signal) => {
 `;
   }
 
-  async spawnMacTerminal(workingDir, panDir) {
+  async spawnMacTerminal(workingDir, panDir, title) {
     // The Node launcher (.pan/launch.mjs) owns the liveness marker and pid; we
     // only cd into the working dir and run it. No prompt text flows through the
     // shell — the sole shell-quoted values are the controlled working-dir path
@@ -1039,23 +1089,41 @@ child.on('exit', (code, signal) => {
     void panDir;
     const nodeBin = this.cfg.nodeBin;
     const doScript = `cd ${shQuote(workingDir)} && ${shQuote(nodeBin)} .pan/launch.mjs`;
-    await spawnOk('osascript', [
+    // Capture the tab returned by `do script` and pin a custom title on it. In
+    // Terminal.app a custom title is sticky: it overrides any OSC title escape
+    // the running program emits, so the task name stays visible for the life of
+    // the window.
+    const args = [
       '-e', 'tell application "Terminal" to activate',
-      '-e', `tell application "Terminal" to do script "${appleScriptEscape(doScript)}"`,
-    ]);
+    ];
+    if (title) {
+      args.push(
+        '-e',
+        `tell application "Terminal" to set custom title of (do script "${appleScriptEscape(doScript)}") to "${appleScriptEscape(title)}"`,
+      );
+    } else {
+      args.push(
+        '-e',
+        `tell application "Terminal" to do script "${appleScriptEscape(doScript)}"`,
+      );
+    }
+    await spawnOk('osascript', args);
   }
 
-  async spawnWindowsTerminal(workingDir, panDir) {
+  async spawnWindowsTerminal(workingDir, panDir, title) {
     // Launch the Node launcher (.pan/launch.mjs) via an argv array with no cmd
     // prompt expansion. `-d workingDir` sets the CWD so the launcher's relative
     // `.pan/...` paths resolve. The launcher maintains the liveness marker
     // (including on window-close signals), so no batch file is needed.
+    // `--title` plus `--suppressApplicationTitle` pin a stable task name that
+    // the running program cannot overwrite.
     void panDir;
-    await spawnOk(
-      'wt.exe',
-      ['-w', '0', 'nt', '-d', workingDir, this.cfg.nodeBin, path.join('.pan', 'launch.mjs')],
-      { detached: true },
-    );
+    const ntArgs = ['-w', '0', 'nt'];
+    if (title) {
+      ntArgs.push('--title', title, '--suppressApplicationTitle');
+    }
+    ntArgs.push('-d', workingDir, this.cfg.nodeBin, path.join('.pan', 'launch.mjs'));
+    await spawnOk('wt.exe', ntArgs, { detached: true });
   }
 
   // ---- Supervision --------------------------------------------------------
@@ -1573,6 +1641,18 @@ function shQuote(s) {
 /** Escape for an AppleScript double-quoted string literal. */
 function appleScriptEscape(s) {
   return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Build a stable, human-readable window title for a worker. Format is
+ * `#<number> <short title>`, collapsed to one line and truncated so it stays
+ * readable in a terminal tab.
+ */
+function workerWindowTitle(number, title) {
+  const clean = String(title || '').replace(/\s+/g, ' ').trim();
+  const max = 60;
+  const short = clean.length > max ? clean.slice(0, max - 1).trimEnd() + '…' : clean;
+  return short ? `#${number} ${short}` : `#${number}`;
 }
 
 // ---------------------------------------------------------------------------
