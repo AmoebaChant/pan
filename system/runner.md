@@ -24,8 +24,13 @@ The runner is given, from local machine config written at onboarding:
   (`workerPermissions`): `yolo` (default — launch workers with `--allow-all`,
   auto-approving every tool, path, and URL so workers run fully unattended) or
   `standard` (no auto-approve flags, which requires a human at the terminal to
-  confirm each tool). A raw `copilotArgs` escape hatch is still appended after
-  the derived permission flags for anything not expressed by this setting;
+  confirm each tool). Regardless of this setting the runner always launches
+  workers with `--deny-tool ask_user`: a worker's only channel for reaching the
+  user is `.pan/needs-human.json` (see below), so the interactive `ask_user`
+  tool — which would block silently in the worker's own terminal without setting
+  `needs-human-since` — is never available to it. A raw `copilotArgs` escape
+  hatch is still appended after the derived permission flags for anything not
+  expressed by this setting;
 - terminal settings for launching a visible worker window (Windows Terminal on
   Windows, Terminal.app on macOS).
 
@@ -199,7 +204,10 @@ the worker's working directory.
 `needs-human-since` on the Issue is the single signal that a human is needed. It
 is set from the presence of `.pan/needs-human.json` and cleared when that file
 is removed. A worker waiting for the user stays alive, holds its lease and its
-concurrency slot, and spends no budget until answered. `Status` stays
+concurrency slot, and spends no budget until answered. Because the runner
+launches workers with `--deny-tool ask_user`, this file is a worker's only way
+to reach the user; a worker cannot instead pop an interactive `ask_user`
+prompt that the runner would never surface as `needs-human-since`. `Status` stays
 `in-progress`; the user answers in that worker's terminal, the worker clears its
 file, and the runner clears the Issue field. A future notification system will
 alert the user when `needs-human-since` is set.
