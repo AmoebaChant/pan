@@ -82,11 +82,47 @@ State this trade-off plainly and default to `yolo` unless the user chooses
 `standard`. Either way the runner pre-trusts each worker's workspace folder
 (via copilot's `trustedFolders`) so no interactive folder-trust prompt appears.
 
-## 6. Explain how to run
+## 6. Offer desktop shortcuts
+
+Offer to create two desktop launchers so the user can start Pan without a
+terminal command. Both point at **this local Pan checkout** (from step 1) and
+this machine's config (from step 5) — never at an "installed" copy of Pan. Ask
+before creating; skip any the user declines.
+
+Resolve absolute paths for the binaries and embed them, because GUI-launched
+terminals often start with a minimal `PATH`: find `copilot` (`command -v
+copilot`) and `node` (`command -v node`), and use the checkout path from step 1
+(`<checkout>`) and the config file written in step 5 (`<config>`).
+
+The two commands each launcher runs are:
+
+- **Pan Chat** — an interactive session:
+  `cd '<checkout>' && exec '<copilot>' --agent pan --allow-all --interactive 'Start your Pan session.'`
+- **Pan Runner** — the polling runner:
+  `cd '<checkout>' && exec '<node>' '<checkout>/bin/pan-runner.js' --config '<config>'`
+
+Create them per platform:
+
+- **macOS** — for each, make a Desktop `.app` bundle (e.g. `~/Desktop/Pan
+  Chat.app`) whose `Contents/MacOS/launch` runs `open -a Terminal
+  "$DIR/../Resources/run.command"`, and whose `Contents/Resources/run.command`
+  is a `#!/bin/bash` script containing that launcher's command (chmod +x both).
+  A minimal `Contents/Info.plist` with `CFBundleName`/`CFBundleExecutable
+  = launch` is enough; a custom icon is optional. If a bundle already exists,
+  back up its `run.command` before overwriting.
+- **Windows** — for each, create a Desktop shortcut (`.lnk` via PowerShell
+  `WScript.Shell`, or a `.cmd` file) that launches the same command in Windows
+  Terminal (`wt.exe`), e.g. `wt.exe cmd /k "cd /d <checkout> && <command>"`.
+
+Verify each launcher exists after creating it, and tell the user they can move
+these to the Dock/Taskbar or Start menu.
+
+## 7. Explain how to run
 
 Explain that the [runner](../../system/runner.md) is what picks up work on this
-machine, and how to start it (see the README). Explain that playbooks are
-per-machine: connecting the same Domain on another machine does not make this
-machine's playbooks apply there. Finish by confirming the Domain is reachable
-and at least one playbook exists in `playbooks/<machine>/`, then tell the user
-how to start a Pan session and the runner.
+machine, and how to start it (see the README) — either the Pan Runner shortcut
+from step 6 or the terminal command. Explain that playbooks are per-machine:
+connecting the same Domain on another machine does not make this machine's
+playbooks apply there. Finish by confirming the Domain is reachable and at least
+one playbook exists in `playbooks/<machine>/`, then tell the user how to start a
+Pan session and the runner.
