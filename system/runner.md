@@ -61,7 +61,15 @@ Each cycle:
    is this runner).
 3. Order by `priority` (`urgent` > `high` > `normal` > `low`), preserving
    Project order among ties. Claim from the top while capacity remains.
-4. Back off when idle, and handle GitHub rate limits with bounded retries.
+4. **Resume this machine's paused tasks.** For items with `Status=paused` and
+   `machine` equal to this machine, resume them (see [resume](#lease-driven-resume)),
+   subject to the same capacity limits, before or alongside claiming new `ready`
+   work. Paused tasks pinned to another machine are left untouched.
+5. **Sweep stale running tasks to `paused`.** For any item that is
+   `in-progress` with an expired lease that this runner is not itself
+   supervising, flip it to `paused` (see [the paused sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)).
+   This is a safe, visibility-only write.
+6. Back off when idle, and handle GitHub rate limits with bounded retries.
 
 `--once` runs a single cycle and then supervises whatever it launched;
 otherwise the runner loops until interrupted (SIGINT/SIGTERM), draining active
@@ -69,14 +77,32 @@ workers on shutdown.
 
 ## Claiming (leases)
 
-To claim an item, re-read it, confirm it is still dispatchable and unleased,
-then set `claimed-by` to this runner, `machine` to this machine's name,
-`lease-until` to a near-future UTC time, and `Status` to `in-progress`. Renew
-`lease-until` periodically while the worker runs. If a claim races with another
-runner (the re-read shows it already claimed), skip it.
+The lease is Pan's **single liveness signal**. The runner renews an active
+worker's `lease-until` periodically while the worker runs (about every 1/3 of
+the lease window), so a valid lease means the owning runner is alive and
+supervising, and an expired lease means the task is not running. Recovery is
+therefore driven by the lease at poll time — not by scanning the filesystem, and
+not only at startup.
 
-An operational failure — terminal closed, launch failed, lease lost, worker
-vanished — returns the item to `ready` with its state intact (clear
+To claim a `ready` item, re-read it, confirm it is still dispatchable and
+unleased, then set `claimed-by` to this runner, `machine` to this machine's
+name, `lease-until` to a near-future UTC time, and `Status` to `in-progress`.
+Renew `lease-until` periodically while the worker runs. If a claim races with
+another runner (the re-read shows it already claimed), skip it.
+
+When a worker's PID dies, the owning runner should **proactively release the
+lease** immediately rather than waiting for it to expire: clear `lease-until` and
+`claimed-by` and set `Status=paused`, keeping `machine` and `session-id` so the
+task can resume on this machine. This collapses the one inconsistent state
+(`lease valid` + dead worker) into `paused` at once. A graceful shutdown/drain
+does the same for the runner's active tasks.
+
+A crash the owning runner cannot report itself (the whole runner died) leaves an
+`in-progress` item with an expiring lease; the [poll-time sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)
+on any runner flips it to `paused` once the lease has expired.
+
+An operational failure that is not a crash — launch failed, terminal could not
+open — returns the item to `ready` with its state intact (clear
 `claimed-by`/`lease-until`, set `Status=ready`); it is not human attention.
 Repeated operational failures on the same task (three in a row) should instead
 raise human attention so an unattended runner cannot retry forever.
@@ -161,35 +187,43 @@ concurrency slot, and spends no budget until answered. `Status` stays
 file, and the runner clears the Issue field. A future notification system will
 alert the user when `needs-human-since` is set.
 
-## Restart and rehydration
+## Lease-driven resume
 
-If the runner restarts while a worker survives, it re-adopts that worker against
-its saved `.pan/` context and resumes lease renewal and signal watching before
-polling for new work. A task waiting on the user is only ever rehydrated on the
-machine that asked, so the question is re-posed in a terminal the user can
-reach. A worker that cannot be verified is left alone rather than duplicated; a
-worker that is truly gone releases its task back to `ready`.
+Recovery of a started task is driven by the lease at poll time, not by scanning
+the filesystem and not only at startup. It replaces the earlier startup-only,
+workspace-scanning `rehydrate()` recovery.
 
-In the current implementation re-adoption is best-effort: it rediscovers workers
-in runner-created isolated workspaces by process liveness. A worker launched in
-a playbook's fixed `workingDirectory` is not yet rediscovered across a runner
-restart; until it is, its lease simply expires and the task returns to `ready`
-for a normal, resumable re-claim.
+A started task that is not running is `Status=paused` (see [status
+transitions](project-schema.md#status-transitions)). Because the copilot
+`session-id` and the local workspace are machine-local, only the machine that
+ran the task can reuse them, so **paused tasks are machine-pinned**: a runner
+resumes only items where `machine` equals this machine and `Status` is `paused`.
 
-Rehydration also cleans up after itself. An isolated workspace whose task is no
-longer this runner's to supervise — finalized, released, requeued to `ready`,
-missing from the Project, or externally transitioned — and which has no live
-worker, is **inert**, and the runner removes its directory during rehydration.
-Without this, finished workspaces pile up under the workspace root and the
-runner re-scans and re-logs each one on every restart. Only workspaces confirmed
-inert are removed; a workspace with a live worker or one still owned and
-adoptable by this runner is never touched.
+To resume such a task the runner, subject to its capacity limits:
 
-Because the runner records the `machine` and `session-id` of every launch, a
-task whose worker truly died is resumable. When such a task returns to `ready`
-and is re-claimed on the same machine, the runner relaunches copilot with the
-recorded `session-id`, so the worker picks up the earlier session's transcript
-and state instead of starting from scratch. `machine` and `session-id` are
-therefore durable — they survive requeue and are only overwritten when a new
-worker is launched — leaving a lasting record of where each task ran that a
-person can also use to revisit the session by hand.
+1. Re-reads the item and confirms it is still `paused` and pinned to this
+   machine. If another cycle or machine changed it, skip.
+2. Reuses the local workspace the task ran in and relaunches copilot with the
+   recorded `session-id`, so the worker picks up the earlier session's
+   transcript and state instead of starting over. A `session-id` recorded for a
+   different machine is never reused.
+3. Sets `Status=in-progress`, a fresh `lease-until`, and `claimed-by` to this
+   runner, and **clears `needs-human-since`**. A human-attention question is not
+   a recovery input; if it still stands the worker re-raises it, and because it
+   is surfaced on the Issue the user sees it wherever it resumes.
+
+If the runner restarts while a worker is still alive, it re-adopts that live
+worker against its saved `.pan/` context and resumes lease renewal and signal
+watching. A worker it cannot verify as alive is not duplicated; its task simply
+shows up as `paused` (once its lease has expired or the runner releases it) and
+is resumed through the normal poll-time path above.
+
+### Workspace hygiene
+
+A runner-created isolated workspace whose task is no longer this runner's to
+supervise — finalized, released to `ready`, missing from the Project, or
+externally transitioned — and which has no live worker and is not a paused task
+pinned to this machine awaiting resume, is **inert**, and the runner removes its
+directory. Without this, finished workspaces pile up under the workspace root.
+Only workspaces confirmed inert are removed; a workspace with a live worker, or
+one holding a paused task this machine will resume, is never touched.

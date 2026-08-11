@@ -61,6 +61,27 @@ For each open task, decide and set:
 
 Preserve Project order as the user's precedence within the same priority.
 
+## 3a. Recover started tasks (passive sweep and stale `paused`)
+
+A **started** task is either `in-progress` (running now: valid lease) or
+`paused` (started but not running: expired lease), per the [project
+schema](project-schema.md#status-meanings). Triage helps keep this honest:
+
+- **Passive `paused` sweep.** When you notice an item that is `in-progress` with
+  an **expired lease**, flip it to `paused`. This is the documented
+  visibility-only non-owner write (see [the paused
+  sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)); it
+  changes only `Status` and needs no separate approval. Never touch a valid
+  lease — that task is running.
+- **Flag stale `paused` tasks.** A `paused` task is machine-pinned: it resumes
+  only when its owning `machine`'s runner next polls. If one has been `paused`
+  well beyond a normal restart window, surface it and offer two paths: (a) start
+  the owning `machine`'s runner so it resumes there, or (b) **manual
+  cross-machine handoff** — with approval, clear `machine` and `session-id` (and
+  any `needs-human-since`) and set `Status=ready`, dropping the pin so another
+  capable machine starts the task fresh. Handoff loses the paused session's
+  transcript, so prefer resuming on the owning machine when it is available.
+
 ## 4. Approval and mutation
 
 Read, analyze, and recommend freely. An explicit user request for a specific
@@ -76,8 +97,12 @@ operation. Re-read the target and report only confirmed effects.
 - Closed Issues, once registered, are historical records. Routine triage does
   not reclassify, reopen, or edit them unless the user explicitly asks about a
   specific closed Issue.
-- Runner-owned fields (`claimed-by`, `lease-until`) and the worker's
-  `needs-human-since` are never touched by triage.
+- Runner-owned lease fields (`claimed-by`, `lease-until`) are never written by
+  triage. The worker's `needs-human-since` is likewise left alone in routine
+  triage — the two deliberate exceptions are the passive `paused` sweep (a
+  `Status`-only write, §3a) and an approved manual cross-machine handoff, which
+  clears `machine`, `session-id`, and any `needs-human-since` to un-pin a stale
+  `paused` task back to `ready` (§3a).
 - Never leave an `agent` + `ready` task with an empty `playbook`.
 
 ## Scheduled triage
