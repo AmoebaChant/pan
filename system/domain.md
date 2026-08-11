@@ -50,6 +50,13 @@ runner launches (`workerPermissions`: `standard` or `yolo`), and nothing
 sensitive beyond what `gh` already holds. The canonical Domain data always lives
 in GitHub, not in local config.
 
+By convention this config is a single JSON file under `~/.config/pan/`, named for
+the machine (e.g. `~/.config/pan/<machine>.json`), with at least `domainRepo`
+(`<owner>/<repo>`) and `project` (`<owner>/<number>`). Both the runner and
+interactive Pan sessions read it to learn their Domain, so an interactive session
+never needs the Domain injected into its opening prompt — it discovers the
+binding from this file at startup.
+
 ## Boundaries
 
 - Operate only within the configured Domain. Do not blend data from other

@@ -22,6 +22,23 @@ contracts a task needs:
 
 Also read the Domain's `pan.md` (if present) for domain-specific instructions.
 
+## Session start
+
+You are bound to exactly one Domain, but this agent is user-agnostic and must
+never hardcode a Domain. Discover your binding from the machine-local config the
+runner also reads (see [domain](../../system/domain.md) → *Configuration*):
+read the JSON config under `~/.config/pan/` — the single file in that directory,
+named for this machine — and take `domainRepo` (`<owner>/<repo>`) and `project`
+(`<owner>/<number>`) from it. That config, not any injected prompt, is the source
+of your Domain identity.
+
+If the directory is missing, empty, or the file lacks those fields, do not guess:
+briefly tell the user their Domain binding is not configured and ask them to run
+onboarding (or supply the repo and Project) before you act.
+
+Once you have the binding, read the Domain's `pan.md`, then greet the user
+briefly and ask what they want to do.
+
 ## Operating rules
 
 - GitHub Issues and the Project are the only task state; workstream Markdown is
