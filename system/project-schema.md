@@ -15,15 +15,15 @@ reads as its documented default rather than as an error.
 | Field | Type | Owned by | Meaning |
 | --- | --- | --- | --- |
 | `owner` | single select | triage | `unassigned` \| `human` \| `agent`. Empty reads as `unassigned`. Separates the human queue from the agent queue; nothing else does. |
-| `Status` | single select | triage, then the runner | `untriaged` \| `needs-detail` \| `ready` \| `in-progress` \| `in-review` \| `done` \| `blocked`. Empty reads as `untriaged`. |
+| `Status` | single select | triage, then the runner | `untriaged` \| `needs-detail` \| `ready` \| `in-progress` \| `paused` \| `in-review` \| `done` \| `blocked`. Empty reads as `untriaged`. |
 | `priority` | single select | triage | `urgent` \| `high` \| `normal` \| `low`. Empty reads as `normal`. |
 | `playbook` | text | triage | The name of the playbook that should run this task (see [playbooks](playbooks.md)). Empty means no playbook has been chosen yet. |
 | `workstream` | text | triage | Optional path relative to `workstreams/`. Empty means the task has no workstream. |
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp. Non-empty means a live worker is waiting for the user right now. |
 | `lease-until` | text | the runner | RFC 3339 UTC timestamp. When a claim expires. |
 | `claimed-by` | text | the runner | Stable identity of the runner holding the task. |
-| `machine` | text | the runner | Name of the machine whose runner ran the task (matches a `playbooks/<machine>/` folder). Durable provenance for resuming: unlike the lease it survives requeue. Empty means no runner has launched a worker for it yet. |
-| `session-id` | text | the runner | UUID of the copilot worker session the runner launched, so the work can be resumed or revisited later (`copilot --resume=<id>` / `--session-id=<id>`) on `machine`. Empty means no worker has been launched yet. |
+| `machine` | text | the runner | Name of the machine whose runner ran the task (matches a `playbooks/<machine>/` folder). Durable provenance for machine-pinned resume: unlike the lease it survives pause. Empty means no runner has launched a worker for it yet. |
+| `session-id` | text | the runner | UUID of the copilot worker session the runner launched, so the work can be resumed or revisited later (`copilot --resume=<id>` / `--session-id=<id>`) on `machine`. Survives pause. Empty means no worker has been launched yet. |
 
 ## Status meanings
 
@@ -31,11 +31,23 @@ reads as its documented default rather than as an error.
   missing Issues sets this automatically.
 - `needs-detail` — reviewed, but lacks enough information to act. Waiting on the
   user to add detail.
-- `ready` — fully triaged and dispatchable. For an `agent`-owned task this
-  requires a non-empty `playbook`. For a `human`-owned task it just means the
-  user can pick it up.
-- `in-progress` — a runner has claimed it and a worker is running (or is
-  rehydrating, or is waiting on the user with `needs-human-since` set).
+- `ready` — fully triaged and dispatchable, and **never started** (or
+  deliberately un-pinned for a fresh start). Any capable machine may claim it.
+  For an `agent`-owned task this requires a non-empty `playbook`. For a
+  `human`-owned task it just means the user can pick it up.
+- `in-progress` — started and **running right now**: a runner holds a valid
+  lease and its worker is being supervised. A valid lease is the single liveness
+  signal — a live runner renews an active worker's lease every ~1/3 of
+  `leaseMinutes`, so `lease valid` ⟺ the owning runner is alive and supervising.
+  This includes a worker that is **alive but waiting on the user**
+  (`needs-human-since` set): the worker still holds its lease and slot, so it is
+  running.
+- `paused` — started but **not running right now**: the lease has expired, so no
+  runner is supervising it. The task is **machine-pinned** — it awaits resume on
+  its owning `machine` (recorded in `machine` and `session-id`), which alone can
+  reuse the local workspace and copilot session. Distinct from `blocked`:
+  `paused` means "was running, will resume on its machine," while `blocked`
+  means "waiting on the outside world."
 - `in-review` — the worker finished but a human should look before it is done
   (for example, a pull request awaiting merge).
 - `done` — complete and confirmed. For pull-request work, confirmed merged.
@@ -45,19 +57,69 @@ reads as its documented default rather than as an error.
 - `blocked` — waiting on something outside the user's control, with no worker
   holding it. This is the *only* meaning of `blocked`.
 
+### Status transitions
+
+```
+ready --claim--> in-progress
+in-progress --lease expires (runner crash / force-close / graceful stop)--> paused
+paused --owning machine resumes--> in-progress
+in-progress / paused --> in-review / done   (normal completion)
+paused --triage clears resume info--> ready  (manual cross-machine handoff)
+```
+
+Machine-pinning applies only to **resumes**: `ready` work is never pinned, so
+any capable machine may claim it; once a task has started, only the machine that
+ran it resumes it (from `paused`) until triage deliberately un-pins it back to
+`ready`.
+
 ## Ownership rules
 
 - **Triage owns** `owner`, `Status`, `priority`, `playbook`, and `workstream`.
+  As a deliberate exception, triage (or any runner's poll) may perform the
+  passive visibility sweep below.
 - **The runner owns** `Status` transitions after it claims, plus `lease-until`
   and `claimed-by`, while it holds the lease, and `machine` and `session-id`,
   which it records at claim and launch as durable provenance. Unlike the lease,
-  `machine` and `session-id` are not cleared on requeue — they let a task whose
-  worker died be resumed or revisited on the machine that ran it.
+  `machine` and `session-id` are not cleared on pause — they let a started task
+  be resumed or revisited on the machine that ran it.
 - **The worker owns** `needs-human-since`, written on its behalf by the runner
-  (see [worker base instructions](worker-base-instructions.md)). It must survive
-  a requeue.
-- Nothing writes a field it does not own. In particular, answering a worker's
-  question never touches `needs-human-since`, `claimed-by`, or `lease-until`.
+  (see [worker base instructions](worker-base-instructions.md)). It is an
+  independent human-attention signal and is **never** a recovery input; on
+  resume the runner clears it and lets the worker re-raise it if the question
+  still stands.
+- Nothing writes a field it does not own, with one **documented exception**: the
+  passive `in-progress` + expired-lease → `paused` sweep (below) is a
+  visibility-only `Status` write that a non-owner (any runner's poll, or triage)
+  may perform. Answering a worker's question never touches `needs-human-since`,
+  `claimed-by`, or `lease-until`.
+
+### The `paused` sweep (documented non-owner write)
+
+`in-progress` + an expired lease is the one inconsistent state — it claims to be
+running while no runner supervises it. It must be flipped to `paused` so the
+backlog reflects the truth even after a crash:
+
+- **The owning runner** sets its active tasks to `paused` on graceful
+  shutdown/drain, and should **proactively release the lease** the moment it
+  detects the worker PID is dead rather than waiting for expiry, collapsing the
+  inconsistent state into `paused` immediately.
+- **Any runner's poll** (and **triage**, if it notices) performs a passive
+  sweep: `in-progress` + expired-lease → `paused`. This is safe, non-destructive,
+  and visibility-only, which is why a non-owner is permitted to write it.
+
+### Field hygiene across pause and resume
+
+- On **pause**, keep durable provenance (`machine`, `session-id` — needed to
+  resume on the owning machine) and clear the lease-scoped fields (`lease-until`,
+  `claimed-by`). `needs-human-since` is left as it was; it is not a recovery
+  input.
+- On **resume**, the owning runner (`machine == me AND Status == paused`) sets
+  `Status=in-progress` with a fresh lease, reuses the recorded `session-id`, and
+  clears `needs-human-since` so the worker re-raises the question if it still
+  stands.
+- On **manual handoff** (triage), clearing `machine` and `session-id` (and any
+  `needs-human-since`) and setting `Status=ready` drops the pin so another
+  machine starts the task fresh.
 
 ## Dispatch rule
 
@@ -74,17 +136,24 @@ get approval for both.
 
 ## Waiting-for-human states
 
-`needs-human-since` is the single signal that a human is needed. A worker that
-needs an answer stays alive, keeps its lease and its concurrency slot, and stops
-spending budget while it waits; `Status` stays `in-progress`.
+`needs-human-since` is the single signal that a human is needed, and it is
+**independent of** the lease: it never decides recovery. A worker that needs an
+answer stays alive, keeps its lease and its concurrency slot, and stops spending
+budget while it waits; `Status` stays `in-progress` because the worker is still
+running.
 
-| `needs-human-since` | lease | `Status` | Meaning |
+Because the lease is the single liveness signal, the waiting-for-human matrix
+collapses to the lease: a valid lease means running (`in-progress`, whether or
+not `needs-human-since` is set), and an expired lease means not running.
+
+| lease | `needs-human-since` | `Status` | Meaning |
 | --- | --- | --- | --- |
-| empty | held | `in-progress` | working |
-| set | held | `in-progress` | alive, waiting for the user at its terminal |
-| set | expired | `in-progress` | its machine restarted; pending rehydration there |
-| empty | expired | `in-progress` | interrupted; resumes normally |
-| any | none | `blocked` | waiting on the world |
+| valid | empty | `in-progress` | running |
+| valid | set | `in-progress` | alive, waiting for the user at its terminal |
+| expired | any | `paused` | not running; awaits resume on its owning `machine` |
+| none | any | `blocked` | waiting on the world |
 
-A task waiting for an answer is only ever resumed on the machine that asked, so
-the question is re-posed in a terminal the user can reach.
+A paused task is only ever resumed on the machine that ran it, and on resume its
+`needs-human-since` is cleared; if the question still stands the worker re-raises
+it, and because the question is surfaced on the **Issue** (a comment plus
+`needs-human-since`), the user sees it wherever it resumes.
