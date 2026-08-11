@@ -34,7 +34,11 @@
  *                                             // the folder-trust prompt) so they
  *                                             // run unattended. "standard" adds
  *                                             // no auto-approve flags and needs a
- *                                             // human at the terminal.
+ *                                             // human at the terminal. Either
+ *                                             // way the runner also passes
+ *                                             // --deny-tool ask_user so workers
+ *                                             // signal via .pan/needs-human.json
+ *                                             // instead of blocking on ask_user.
  *   "copilotArgs": [],                        // extra copilot flags, appended
  *                                             // after any permission flags
  *                                             // derived from workerPermissions.
@@ -273,7 +277,17 @@ async function loadConfig(configPath) {
   if (!['standard', 'yolo'].includes(workerPermissions)) {
     throw new UserError('Config field "workerPermissions" must be "standard" or "yolo".');
   }
-  const permissionArgs = workerPermissions === 'yolo' ? ['--allow-all'] : [];
+  // Always deny the interactive `ask_user` tool. Runner-launched workers are
+  // headed but unattended: a worker that asks a question through `ask_user`
+  // blocks in its own terminal without setting the Issue's `needs-human-since`,
+  // so the user is never told it is waiting. The worker contract requires
+  // signalling via `.pan/needs-human.json` instead (see worker-base-instructions
+  // and runner.md), so this tool must never be available regardless of the
+  // permission level.
+  const permissionArgs = [
+    ...(workerPermissions === 'yolo' ? ['--allow-all'] : []),
+    '--deny-tool=ask_user',
+  ];
 
   return {
     domain,
