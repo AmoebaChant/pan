@@ -136,7 +136,11 @@ the worker's working directory.
   pull-request work, the runner should confirm the merge from GitHub before
   setting `done`; in the current implementation this merge confirmation is
   best-effort and not yet enforced — a playbook that must not auto-complete
-  before merge should report `needs-review` rather than `done`.
+  before merge should report `needs-review` rather than `done`. A **cross-repo**
+  PR (its Issue in the Domain repository, its PR in another) cannot be confirmed
+  this way at all, since GitHub links neither the PR nor the merge back to the
+  Issue; such a task stays `in-review` until [triage](triage.md) reconciles the
+  merge from the PR link the worker recorded on the Issue.
 
 **Runner → worker (written after finalizing):**
 

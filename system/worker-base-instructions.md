@@ -67,6 +67,27 @@ example, a pull request awaiting merge); use `done` when nothing further is
 needed. The runner records this on the Issue and sets the Project status
 accordingly. Do not edit any Project field yourself.
 
+### Cross-repo deliverables (record the PR link)
+
+When your deliverable is a pull request in a repository **different from the one
+your Domain Issue lives in** — for example a `pan-dev` task whose Issue is in the
+Domain repository but whose PR targets `AmoebaChant/pan` — GitHub's native
+"Linked pull requests" field and `Closes #N` auto-close **do not work across
+repositories**. The Issue would show no linked PR and would never auto-close on
+merge. Make the linkage explicit and durable yourself:
+
+- **Record the PR on the Domain Issue.** Post a comment on the Domain Issue whose
+  first line is `Pan: pull request <PR URL>` (the full `https://github.com/…/pull/<n>`
+  URL). This one fixed marker makes the cross-repo link discoverable without
+  opening the target repository, and lets a later triage sweep find the PR to
+  reconcile its merge. Put the same URL in your `result.json` `details` too.
+- **Report `needs-review`, never `done`, for PR work.** A cross-repo PR is not
+  merged when you finish, so completion is not yours to declare. Reporting
+  `needs-review` leaves the task in `in-review` until the merge is reconciled.
+- **Do not close the Issue or mark it done yourself.** Completion happens when
+  the PR merges; triage reconciles the merge and closes the Issue then (see
+  [triage](triage.md)).
+
 ## Improving Pan as you go
 
 If a gap in these instructions, a playbook, or the system contracts blocked or
