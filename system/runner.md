@@ -75,6 +75,19 @@ Each cycle:
 otherwise the runner loops until interrupted (SIGINT/SIGTERM), draining active
 workers on shutdown.
 
+When looping in a terminal, the runner backs off between polls while idle. An
+operator who has just added or unblocked work can skip that wait: pressing
+**Enter** or **Space** in the runner's terminal triggers a poll cycle
+immediately. This only wakes the idle wait — the next cycle is an ordinary poll
+— and is ignored while draining.
+
+## Console output
+
+Timestamps the runner prints to its terminal are in the machine's **local
+time** (`YYYY-MM-DD HH:MM:SS`), since that output is for the person watching the
+window. Timestamps written to the Project or to signal files (leases,
+needs-human `since`) remain RFC 3339 UTC.
+
 ## Claiming (leases)
 
 The lease is Pan's **single liveness signal**. The runner renews an active

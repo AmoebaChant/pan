@@ -66,6 +66,7 @@ import os from 'node:os';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
+import readline from 'node:readline';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -698,11 +699,22 @@ async function pruneWorkspace(workingDir, number, why) {
 // Logging
 // ---------------------------------------------------------------------------
 
+/** A human-friendly local-time stamp (`YYYY-MM-DD HH:MM:SS`) for console lines.
+ *  Console output is for the person watching this runner's terminal, so it uses
+ *  the machine's local time — not UTC. Timestamps written to the Project or to
+ *  signal files (leases, needs-human `since`) stay RFC 3339 UTC. */
+function consoleTimestamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 function log(msg) {
-  process.stdout.write(`[pan-runner ${new Date().toISOString()}] ${msg}\n`);
+  process.stdout.write(`[pan-runner ${consoleTimestamp()}] ${msg}\n`);
 }
 function logErr(msg) {
-  process.stderr.write(`[pan-runner ${new Date().toISOString()}] ${msg}\n`);
+  process.stderr.write(`[pan-runner ${consoleTimestamp()}] ${msg}\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1778,6 +1790,17 @@ child.on('exit', (code, signal) => {
     this.wakeController?.abort();
   }
 
+  /** Trigger a poll cycle immediately instead of waiting out the current
+   *  idle/backoff sleep. Bound to a keypress on the runner's terminal so an
+   *  operator who just added work does not have to wait for the next poll. It
+   *  only wakes the sleep — the loop top then runs a normal cycle — and is a
+   *  no-op while draining (no new claims are made then anyway). */
+  pokeNow() {
+    if (this.draining) return;
+    log('manual trigger: running a poll cycle now');
+    this.wakeController?.abort();
+  }
+
   /** Sleep that can be aborted by requestDrain() so SIGINT/SIGTERM promptly
    *  wakes the runner from an idle/backoff wait. A fresh controller is created
    *  per sleep (an aborted controller stays aborted); AbortError just ends the
@@ -1916,8 +1939,37 @@ async function main() {
   }
 
   log(`starting: identity=${cfg.identity} terminal=${cfg.terminalKind} once=${!!args.once}`);
+  if (!args.once) enableManualTrigger(runner);
   await runner.loop({ once: !!args.once });
   return 0;
+}
+
+/** Bind Enter/Space on the runner's terminal to an immediate poll cycle.
+ *  Uses raw keypress mode so a single key works without a trailing newline;
+ *  because raw mode suppresses the automatic SIGINT, Ctrl+C is forwarded to the
+ *  same drain path the signal handler uses. No-ops when stdin is not a TTY (for
+ *  example, launched detached or with piped input). */
+function enableManualTrigger(runner) {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return;
+
+  readline.emitKeypressEvents(stdin);
+  stdin.setRawMode(true);
+  stdin.resume();
+  if (typeof stdin.unref === 'function') stdin.unref();
+
+  const restore = () => { try { if (stdin.isTTY) stdin.setRawMode(false); } catch {} };
+  process.on('exit', restore);
+
+  stdin.on('keypress', (_str, key) => {
+    if (!key) return;
+    if (key.ctrl && key.name === 'c') { restore(); runner.requestDrain(); return; }
+    if (key.name === 'return' || key.name === 'enter' || key.name === 'space') {
+      runner.pokeNow();
+    }
+  });
+
+  log('press Enter or Space to trigger a poll cycle now; Ctrl+C to drain and exit');
 }
 
 main()
