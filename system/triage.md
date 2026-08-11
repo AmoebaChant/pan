@@ -13,8 +13,10 @@ current.
 Every Domain Issue is a task and belongs to the Project. Read the complete Issue
 set and the complete Project item set, join them by Issue URL, and add every
 missing Issue to the Project with `Status=untriaged` — including closed Issues,
-without editing or reopening them. This registration is the only reconciliation
-that needs no approval. Do not rewrite existing items or runner-owned fields.
+without editing or reopening them. This registration is one of two
+reconciliations that need no approval (the other is merged-PR completion in
+step 3), because each acts on an objective fact. Do not rewrite existing items or
+runner-owned fields.
 
 Read completely. `gh issue list --limit <n>` and `gh project item-list -L <n>`
 are hard caps with no truncation signal: if the returned count equals the limit,
@@ -41,7 +43,35 @@ leave `workstream` unset rather than guessing. If workstream discovery is
 incomplete (a README cannot be read), report it and proceed with the
 repositories you could read.
 
-## 3. Classify and fill fields (with approval)
+## 3. Complete merged cross-repo PRs (automatic)
+
+Some playbooks deliver a pull request in a repository other than the one the
+Domain Issue lives in (see the worker base instructions' *Cross-repo
+deliverables*). GitHub cannot auto-close an Issue from a merge in another
+repository, so a finished task would otherwise strand in `in-review` after its PR
+merged. Reconcile that here so completed work does not sit forever.
+
+For each Project item in `in-review`, read its Domain Issue for the PR link the
+worker recorded — a comment whose first line is `Pan: pull request <PR URL>`.
+For each such PR, read its live state (`gh pr view <url> --json state,mergedAt`):
+
+- **Merged** — complete the task exactly as the [project schema](project-schema.md)
+  requires `done` to be reached: set `Status=done` and close the Issue as
+  completed (`gh issue close --reason completed`) together, never one without the
+  other.
+- **Still open** — leave the item in `in-review`; the work is not done yet.
+- **Closed without merging** — the work is not done. Leave the item and surface
+  it for the user rather than completing it.
+
+An `in-progress` item whose lease has expired (no live worker) and whose recorded
+PR has merged is the same situation; complete it the same way. **Never** touch an
+`in-progress` item whose lease is still live — that is an active worker's task.
+
+Like registration, this reconciliation acts on an objective fact (a merge) and
+needs no approval. It only advances items that carry a recorded, merged PR, and
+it never edits runner-owned fields.
+
+## 4. Classify and fill fields (with approval)
 
 For each open task, decide and set:
 
@@ -61,7 +91,7 @@ For each open task, decide and set:
 
 Preserve Project order as the user's precedence within the same priority.
 
-## 3a. Recover started tasks (passive sweep and stale `paused`)
+## 5. Recover started tasks (passive sweep and stale `paused`)
 
 A **started** task is either `in-progress` (running now: valid lease) or
 `paused` (started but not running: expired lease), per the [project
@@ -82,7 +112,7 @@ schema](project-schema.md#status-meanings). Triage helps keep this honest:
   capable machine starts the task fresh. Handoff loses the paused session's
   transcript, so prefer resuming on the owning machine when it is available.
 
-## 4. Approval and mutation
+## 6. Approval and mutation
 
 Read, analyze, and recommend freely. An explicit user request for a specific
 change is approval for that change. Otherwise, present the proposed field
@@ -92,7 +122,7 @@ short summary of the relevant context — and get approval before writing.
 Apply the smallest `gh project item-edit` / `gh issue edit` / `gh issue comment`
 operation. Re-read the target and report only confirmed effects.
 
-## 5. What triage leaves alone
+## 7. What triage leaves alone
 
 - Closed Issues, once registered, are historical records. Routine triage does
   not reclassify, reopen, or edit them unless the user explicitly asks about a
@@ -100,14 +130,14 @@ operation. Re-read the target and report only confirmed effects.
 - Runner-owned lease fields (`claimed-by`, `lease-until`) are never written by
   triage. The worker's `needs-human-since` is likewise left alone in routine
   triage — the two deliberate exceptions are the passive `paused` sweep (a
-  `Status`-only write, §3a) and an approved manual cross-machine handoff, which
+  `Status`-only write, §5) and an approved manual cross-machine handoff, which
   clears `machine`, `session-id`, and any `needs-human-since` to un-pin a stale
-  `paused` task back to `ready` (§3a).
+  `paused` task back to `ready` (§5).
 - Never leave an `agent` + `ready` task with an empty `playbook`.
 
 ## Scheduled triage
 
 A recurring review runs the same live reads and the same automatic registration
-(steps 1–2). Beyond registration, a scheduled pass stays read-only unless the
-user has given a standing policy to act. Do not create a separate scheduler or
-catch up work from an earlier session.
+and merged-PR completion (steps 1–3). Beyond those automatic reconciliations, a
+scheduled pass stays read-only unless the user has given a standing policy to
+act. Do not create a separate scheduler or catch up work from an earlier session.
