@@ -1118,7 +1118,9 @@ class Runner {
    * copilot and closes its own terminal window so finished worker windows do
    * not accumulate: on macOS it asks Terminal.app to close the window matching
    * its tty; on Windows it simply exits 0 and Windows Terminal auto-closes the
-   * tab.
+   * tab. On macOS the launcher runs via `exec node` (it replaced the login
+   * shell), so when it exits the tab has no running process and Terminal closes
+   * it without its "terminate running processes in this window?" prompt.
    */
   buildLauncherSource(windowTitle = '', sessionId = '') {
     const copilotBin = JSON.stringify(this.cfg.copilotBin);
@@ -1175,17 +1177,24 @@ function setWindowTitle() {
 }
 
 // Close our own terminal window once the task is done. On macOS we ask
-// Terminal.app to close the window whose selected tab matches our tty; the
-// osascript is detached and briefly delayed so it runs AFTER this launcher has
-// exited, leaving only the login shell in the tab, which Terminal closes
-// without a "processes still running" prompt. On Windows the tab auto-closes
-// when this launcher exits 0, so no explicit close is needed.
+// Terminal.app to close the window whose selected tab matches our tty. Because
+// the launcher runs via \`exec node\` (it replaced the login shell), once this
+// launcher exits the tab has no running process at all, so \`close\` never
+// triggers Terminal's "terminate running processes" prompt. The osascript is
+// detached and briefly delayed so it runs AFTER this launcher has exited, and
+// it additionally waits for the tab to report \`not busy\` before closing, so a
+// slow exit can never race the close into that prompt. On Windows the tab
+// auto-closes when this launcher exits 0, so no explicit close is needed.
 function closeWindow() {
   if (process.platform !== 'darwin' || !myTty) return;
   const osa = [
     'tell application "Terminal"',
     '  repeat with w in windows',
     '    if tty of selected tab of w is "' + myTty + '" then',
+    '      repeat 40 times',
+    '        if not busy of selected tab of w then exit repeat',
+    '        delay 0.25',
+    '      end repeat',
     '      close w saving no',
     '    end if',
     '  end repeat',
@@ -1250,7 +1259,14 @@ child.on('exit', (code, signal) => {
     // and nodeBin.
     void panDir;
     const nodeBin = this.cfg.nodeBin;
-    const doScript = `cd ${shQuote(workingDir)} && ${shQuote(nodeBin)} .pan/launch.mjs`;
+    // `exec` replaces the login shell (`-zsh`) with the Node launcher so the
+    // tab has exactly one process — node — and no leftover interactive shell.
+    // That matters when the launcher closes its own window on completion: once
+    // node exits the tab has NO running process at all ("[Process completed]"),
+    // so Terminal.app closes it silently instead of showing its "Do you want to
+    // terminate running processes in this window?" prompt for the idle shell
+    // (see buildLauncherSource / closeWindow).
+    const doScript = `cd ${shQuote(workingDir)} && exec ${shQuote(nodeBin)} .pan/launch.mjs`;
     // Capture the tab returned by `do script` and set an initial title on it.
     // This is only the title shown before copilot loads: copilot rewrites the
     // window title (OSC 0) during the session and that overrides Terminal.app's
