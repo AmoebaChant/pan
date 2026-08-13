@@ -115,9 +115,16 @@ Create them per platform:
   `lsregister -f '<bundle>'` (under
   `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/`)
   so the icon redraws.
-- **Windows** — for each, create a Desktop shortcut (`.lnk` via PowerShell
-  `WScript.Shell`, or a `.cmd` file) that launches the same command in Windows
-  Terminal (`wt.exe`), e.g. `wt.exe cmd /k "cd /d <checkout> && <command>"`.
+- **Windows** — for each, create a Desktop `.lnk` shortcut via PowerShell
+  `WScript.Shell` with `wt.exe` as its target. Do not wrap the command in
+  `cmd /k` or copy the POSIX command text above: `cmd.exe` does not treat its
+  single quotes as argument delimiters. Instead use Windows Terminal's `-d`
+  option for the working directory and set the shortcut arguments to:
+  - Pan Chat: `-d "<checkout>" "<copilot>" --agent pan --allow-all --interactive "Start your Pan session."`
+  - Pan Runner: `-d "<checkout>" "<node>" "<checkout>\bin\pan-runner.js" --config "<config>"`
+  Preserve the double quotes shown here when constructing the PowerShell
+  string, including those around the complete chat prompt, so each path and the
+  prompt reach the child process as one argument.
 
 Verify each launcher exists after creating it, and tell the user they can move
 these to the Dock/Taskbar or Start menu.
