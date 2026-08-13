@@ -124,7 +124,11 @@ Create them per platform:
   - Pan Runner: `-d "<checkout>" "<node>" "<checkout>\bin\pan-runner.js" --config "<config>"`
   Preserve the double quotes shown here when constructing the PowerShell
   string, including those around the complete chat prompt, so each path and the
-  prompt reach the child process as one argument.
+  prompt reach the child process as one argument. Set the shortcut's
+  `IconLocation` to `<checkout>\assets\pan.ico,0` so both launchers use the Pan
+  icon. Verify the saved shortcut's target, arguments, and `IconLocation`;
+  refresh the Windows icon cache if an existing shortcut does not immediately
+  show the new icon.
 
 Verify each launcher exists after creating it, and tell the user they can move
 these to the Dock/Taskbar or Start menu.
