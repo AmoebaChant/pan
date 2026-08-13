@@ -86,6 +86,11 @@ operator who has just added or unblocked work can skip that wait: pressing
 immediately. This only wakes the idle wait — the next cycle is an ordinary poll
 — and is ignored while draining.
 
+Supervising active workers is decoupled from the poll cadence: while workers are
+running the runner wakes frequently to service their signals and renew leases,
+but it still polls the Project no more often than `pollIntervalSeconds`. A
+running worker therefore never accelerates polling.
+
 ## Console output
 
 Timestamps the runner prints to its terminal are in the machine's **local

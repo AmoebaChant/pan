@@ -109,7 +109,12 @@ Create them per platform:
   is a `#!/bin/bash` script containing that launcher's command (chmod +x both).
   A minimal `Contents/Info.plist` with `CFBundleName`/`CFBundleExecutable
   = launch` is enough; a custom icon is optional. If a bundle already exists,
-  back up its `run.command` before overwriting.
+  back up its `run.command` before overwriting — then, because editing a
+  bundle's internals in place leaves Finder's icon cache stale (the icon can
+  vanish to a generic one), `touch` the `.app` and re-register it with
+  `lsregister -f '<bundle>'` (under
+  `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/`)
+  so the icon redraws.
 - **Windows** — for each, create a Desktop `.lnk` shortcut via PowerShell
   `WScript.Shell` that launches the same command in Windows Terminal
   (`wt.exe`), e.g. `wt.exe cmd /k "cd /d <checkout> && <command>"`. Set the
