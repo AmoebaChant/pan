@@ -1835,11 +1835,21 @@ child.on('exit', (code, signal) => {
 
     let firstCycleDone = false;
     let idleSeconds = this.cfg.pollIntervalSeconds;
+    // The poll cadence is decoupled from the supervise cadence. While workers
+    // are active the loop wakes every superviseTickSeconds to service their
+    // status and leases, but it must NOT poll/claim on every one of those fast
+    // ticks — otherwise a running worker forces a GitHub poll every few seconds
+    // even while the heartbeat reports "next poll in 120s". `nextPollAt` gates
+    // polling to the real idle cadence regardless of how often we tick.
+    let nextPollAt = 0; // due immediately on the first iteration
 
     for (;;) {
       if (this.hardStop) break;
 
-      if (!this.draining && !(once && firstCycleDone)) {
+      const pollDue = !this.draining
+        && !(once && firstCycleDone)
+        && Date.now() >= nextPollAt;
+      if (pollDue) {
         try {
           const { candidates, claimed } = await this.pollAndClaim();
           idleSeconds = claimed > 0 || candidates > 0
@@ -1855,6 +1865,7 @@ child.on('exit', (code, signal) => {
           logErr(`poll cycle error: ${e.message}`);
           idleSeconds = Math.min(idleSeconds * 1.5, DEFAULTS.idleBackoffMaxSeconds);
         }
+        nextPollAt = Date.now() + idleSeconds * 1000;
       }
       firstCycleDone = true;
 
@@ -1864,13 +1875,16 @@ child.on('exit', (code, signal) => {
       if (once && this.activeCount() === 0) break;
       if (this.draining && this.activeCount() === 0) break;
 
-      // Adaptive sleep: tick fast while supervising, back off when idle. The
-      // sleep is abortable so a drain/shutdown signal wakes it promptly; the
-      // loop top re-checks this.hardStop on the next iteration.
-      const sleepSeconds = this.activeCount() > 0
-        ? Math.min(DEFAULTS.superviseTickSeconds, idleSeconds)
-        : idleSeconds;
-      await this.abortableSleep(sleepSeconds * 1000);
+      // Sleep until the next poll is due, but while workers are active wake at
+      // least every superviseTickSeconds so their status/leases are serviced
+      // promptly. Polling itself is gated by nextPollAt above, so a fast
+      // supervise tick no longer forces a poll. The sleep is abortable so a
+      // drain/shutdown signal wakes it, and the loop top re-checks hardStop.
+      const msUntilPoll = Math.max(0, nextPollAt - Date.now());
+      const sleepMs = this.activeCount() > 0
+        ? Math.min(DEFAULTS.superviseTickSeconds * 1000, msUntilPoll)
+        : msUntilPoll;
+      await this.abortableSleep(Math.max(250, sleepMs));
     }
 
     if (this.activeCount() > 0) {
