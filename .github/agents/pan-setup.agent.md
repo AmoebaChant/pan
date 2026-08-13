@@ -110,9 +110,13 @@ Create them per platform:
   A minimal `Contents/Info.plist` with `CFBundleName`/`CFBundleExecutable
   = launch` is enough; a custom icon is optional. If a bundle already exists,
   back up its `run.command` before overwriting.
-- **Windows** — for each, create a Desktop shortcut (`.lnk` via PowerShell
-  `WScript.Shell`, or a `.cmd` file) that launches the same command in Windows
-  Terminal (`wt.exe`), e.g. `wt.exe cmd /k "cd /d <checkout> && <command>"`.
+- **Windows** — for each, create a Desktop `.lnk` shortcut via PowerShell
+  `WScript.Shell` that launches the same command in Windows Terminal
+  (`wt.exe`), e.g. `wt.exe cmd /k "cd /d <checkout> && <command>"`. Set the
+  shortcut's `IconLocation` to `<checkout>\assets\pan.ico,0` so both launchers
+  use the Pan icon. Verify the saved shortcut's target, arguments, and
+  `IconLocation`; refresh the Windows icon cache if an existing shortcut does
+  not immediately show the new icon.
 
 Verify each launcher exists after creating it, and tell the user they can move
 these to the Dock/Taskbar or Start menu.
