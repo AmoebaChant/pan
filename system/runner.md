@@ -38,9 +38,10 @@ Regardless of `workerPermissions`, the runner pre-authorizes each worker's
 workspace folder before launch by adding it to copilot's `trustedFolders`
 (`~/.copilot/config.json`, overridable via `copilotConfigPath`). copilot's
 `--allow-all` covers tools, paths, and URLs but not the separate per-folder
-trust gate, and each worker runs in a fresh temporary directory; without this
-step every worker would stop on an interactive "trust this folder?" prompt. The
-write is best-effort — on any failure the worker simply falls back to prompting.
+trust gate. Each newly started task gets its own temporary directory and later
+resumes reuse it; without this step every worker would stop on an interactive
+"trust this folder?" prompt. The write is best-effort — on any failure the
+worker simply falls back to prompting.
 
 Each worker window is given a stable, human-readable title (`#<number> <short
 title>`) so the user can tell at a glance which task each spawned window is
@@ -82,9 +83,10 @@ workers on shutdown.
 
 When looping in a terminal, the runner backs off between polls while idle. An
 operator who has just added or unblocked work can skip that wait: pressing
-**Enter** or **Space** in the runner's terminal triggers a poll cycle
-immediately. This only wakes the idle wait — the next cycle is an ordinary poll
-— and is ignored while draining.
+**Enter** or **Space** in the runner's terminal queues a poll cycle immediately.
+The request remains queued if the runner is currently polling or supervising,
+so it cannot be lost merely because no idle wait is active. The resulting cycle
+is an ordinary poll and the trigger is ignored while draining.
 
 Supervising active workers is decoupled from the poll cadence: while workers are
 running the runner wakes frequently to service their signals and renew leases,
@@ -125,10 +127,11 @@ A crash the owning runner cannot report itself (the whole runner died) leaves an
 on any runner flips it to `paused` once the lease has expired.
 
 An operational failure that is not a crash — launch failed, terminal could not
-open — returns the item to `ready` with its state intact (clear
-`claimed-by`/`lease-until`, set `Status=ready`); it is not human attention.
-Repeated operational failures on the same task (three in a row) should instead
-raise human attention so an unattended runner cannot retry forever.
+open — restores the state from which launch was attempted: a new task returns
+to `ready`, while a failed resume remains `paused` so its established session
+and workspace are not discarded. It is not human attention. Repeated
+operational failures on the same task (three in a row) should instead raise
+human attention so an unattended runner cannot retry forever.
 
 ## Launching a worker
 
@@ -136,7 +139,8 @@ For a claimed task the runner:
 
 1. Prepares the working directory. If the playbook's `workingDirectory` is set,
    launch there and prepare no workspace. Otherwise create an isolated workspace
-   as the playbook instructs.
+   whose path is stable for the task's local Copilot session. A resumed task
+   reopens that same directory; it never creates a replacement workspace.
 2. Writes the task context into a `.pan/` directory the worker will read (see
    the [file contract](#worker-file-contract)).
 3. Launches a **headed** `copilot` session in a visible terminal window, with an

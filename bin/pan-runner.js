@@ -742,9 +742,11 @@ class Runner {
     this.playbooks = playbooks;
     this.active = new Map();      // issueNumber -> worker state
     this.failCounts = new Map();  // issueNumber -> consecutive operational failures
+    this.resumeWorkspaces = new Map(); // issueNumber -> paused isolated workspace
     this.draining = false;
     this.hardStop = false;
-    this.wakeController = null; // aborts an in-progress idle/backoff sleep on drain
+    this.pollRequested = false;
+    this.wakeController = null; // aborts an in-progress idle/backoff sleep
   }
 
   activeCount() {
@@ -765,24 +767,36 @@ class Runner {
   async pollAndClaim() {
     const items = await readAllItems(this.cfg, this.meta);
 
-    const candidates = items.filter((it) => {
+    const canRun = (it) => {
       if (ownerOf(it) !== 'agent') return false;
-      if (statusOf(it) !== 'ready') return false;
       const pb = val(it, FIELD.playbook, '');
       if (!pb || !this.playbooks.has(pb)) return false;
       if (this.playbooks.get(pb).capacity <= 0) return false;
       if (!leaseIsFree(it, this.cfg.identity)) return false;
       if (it.issue && this.active.has(it.issue.number)) return false;
       return true;
-    });
+    };
+
+    const paused = items.filter((it) =>
+      statusOf(it) === 'paused'
+      && val(it, FIELD.machine, '') === this.cfg.machine
+      && !!val(it, FIELD.sessionId, '')
+      && canRun(it),
+    );
+    const ready = items.filter((it) => statusOf(it) === 'ready' && canRun(it));
 
     // Sort by priority, preserving Project order (items array order) among ties.
-    candidates.sort((a, b) => {
+    const byPriority = (a, b) => {
       const pa = PRIORITY_RANK[priorityOf(a)] ?? 2;
       const pb = PRIORITY_RANK[priorityOf(b)] ?? 2;
       if (pa !== pb) return pa - pb;
       return items.indexOf(a) - items.indexOf(b);
-    });
+    };
+    paused.sort(byPriority);
+    ready.sort(byPriority);
+    // A paused task already owns local session/workspace state, so resume it
+    // before claiming new work at the same priority/capacity.
+    const candidates = [...paused, ...ready];
 
     let claimed = 0;
     for (const it of candidates) {
@@ -805,7 +819,10 @@ class Runner {
     // Re-read and re-confirm dispatchable + unleased.
     const fresh = await readItemById(item.itemId);
     if (!fresh || !fresh.issue) return false;
-    if (ownerOf(fresh) !== 'agent' || statusOf(fresh) !== 'ready') return false;
+    const previousStatus = statusOf(fresh);
+    const resuming = previousStatus === 'paused';
+    if (ownerOf(fresh) !== 'agent' || (previousStatus !== 'ready' && !resuming)) return false;
+    if (resuming && val(fresh, FIELD.machine, '') !== this.cfg.machine) return false;
     if (!leaseIsFree(fresh, this.cfg.identity)) return false; // claim race — skip
     const pb = val(fresh, FIELD.playbook, '');
     if (!this.playbooks.has(pb)) return false;
@@ -828,7 +845,7 @@ class Runner {
 
     // Record the claim: claimed-by, machine, lease-until, Status=in-progress.
     // `machine` is durable provenance (which machine ran the work); unlike the
-    // lease it is not cleared on requeue, so a task that dies can be resumed on
+    // lease it is not cleared on pause, so a stopped task can be resumed on
     // the same machine (see session-id, written at launch).
     const leaseWritten = this.leaseTimestamp();
     try {
@@ -855,15 +872,15 @@ class Runner {
     } catch (e) {
       // Unlike a foreign-claim loss (where the read SUCCEEDS and shows we lost),
       // a THROW here leaves the item in-progress with our lease but no worker,
-      // supervision, or local state — stranded forever, since polling only
-      // considers Status=ready. Treat it as an operational failure so the item
-      // is requeued to ready (best-effort writes) and counts toward the
-      // consecutive-failure tally for 3-strikes escalation. The item was never
+      // supervision, or local state. Restore its pre-launch ready/paused state
+      // (best-effort writes) and count this toward the consecutive-failure
+      // tally for 3-strikes escalation. The item was never
       // added to this.active, so handleOperationalFailure's active.delete is a
       // harmless no-op. Do NOT launch a worker.
       await this.handleOperationalFailure(
         { itemId: item.itemId, issueNumber: number, url: item.issue?.url, repo: item.issue?.repo },
         `claim confirm re-read failed: ${e.message}`,
+        { returnStatus: previousStatus },
       );
       return false;
     }
@@ -879,9 +896,9 @@ class Runner {
     // context (the pre-launch stale-signal cleanup wipes the other's marker),
     // so a worker could finalize the wrong task. Isolated workspaces are
     // per-task unique and never collide. This is a benign capacity collision,
-    // not an operational failure: revert the just-written claim to `ready` and
-    // do NOT count a strike. We only reach here still owning the claim, so the
-    // revert cannot stomp another runner's winning claim.
+    // not an operational failure: restore the just-written claim to its prior
+    // state and do NOT count a strike. We only reach here still owning the
+    // claim, so the restore cannot stomp another runner's winning claim.
     const pbObj = this.playbooks.get(pb);
     if (pbObj?.workingDirectory) {
       const resolvedDir = path.resolve(pbObj.workingDirectory);
@@ -901,12 +918,12 @@ class Runner {
           // bogus "resume".
           await setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, val(fresh, FIELD.machine, ''));
           await setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, '');
-          await setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, 'ready');
+          await setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, previousStatus);
         } catch (e) {
-          logErr(`revert-to-ready writes failed for #${number}: ${e.message}`);
+          logErr(`revert-to-${previousStatus} writes failed for #${number}: ${e.message}`);
         }
         log(
-          `#${number} skipped: fixed workingDirectory ${resolvedDir} already in use by an active worker; returned to ready`,
+          `#${number} skipped: fixed workingDirectory ${resolvedDir} already in use by an active worker; returned to ${previousStatus}`,
         );
         return false;
       }
@@ -914,15 +931,27 @@ class Runner {
 
     try {
       await this.launchWorker(fresh, pb);
-      return true;
     } catch (e) {
       logErr(`launch failed for #${number}: ${e.message}`);
       await this.handleOperationalFailure(
         { itemId: item.itemId, issueNumber: number, url: item.issue?.url, repo: item.issue?.repo },
         `launch failed: ${e.message}`,
+        { returnStatus: previousStatus },
       );
       return false;
     }
+    this.failCounts.delete(number);
+    if (resuming) {
+      try {
+        await setTextField(this.cfg, this.meta, item.itemId, FIELD.needsHumanSince, '');
+        const worker = this.active.get(number);
+        if (worker) worker.hadNeedsHuman = false;
+      } catch (e) {
+        // Keep hadNeedsHuman set so normal supervision retries the clear.
+        logErr(`could not clear needs-human-since while resuming #${number}: ${e.message}`);
+      }
+    }
+    return true;
   }
 
   // ---- Launch -------------------------------------------------------------
@@ -937,9 +966,13 @@ class Runner {
     // (its transcript and state re-adopted) instead of started from scratch.
     // Otherwise mint a fresh UUID. Passing the id via `copilot --session-id`
     // both creates the session on first launch and resumes it on a later one.
+    const previousStatus = statusOf(item);
     const recordedSessionId = val(item, FIELD.sessionId, '');
     const recordedMachine = val(item, FIELD.machine, '');
-    const resuming = !!recordedSessionId && recordedMachine === this.cfg.machine;
+    const resuming = previousStatus === 'paused';
+    if (resuming && (!recordedSessionId || recordedMachine !== this.cfg.machine)) {
+      throw new Error(`cannot resume #${number}: recorded session or machine is missing/mismatched`);
+    }
     const sessionId = resuming ? recordedSessionId : randomUUID();
 
     // 1. Working directory: fixed workingDirectory, else isolated workspace.
@@ -950,8 +983,19 @@ class Runner {
       await mkdir(workingDir, { recursive: true });
     } else {
       isolated = true;
-      workingDir = path.join(this.cfg.workspaceRoot, `pan-${number}-${Date.now()}`);
-      await mkdir(workingDir, { recursive: true });
+      const stablePath = path.join(this.cfg.workspaceRoot, `pan-${number}-${sessionId}`);
+      workingDir = resuming ? (this.resumeWorkspaces.get(number) || stablePath) : stablePath;
+      if (resuming) {
+        if (!existsSync(workingDir)) {
+          throw new Error(`cannot resume #${number}: isolated workspace is missing (${workingDir})`);
+        }
+      } else {
+        await mkdir(this.cfg.workspaceRoot, { recursive: true });
+        if (existsSync(workingDir)) {
+          throw new Error(`new isolated workspace already exists (${workingDir})`);
+        }
+        await mkdir(workingDir);
+      }
     }
 
     const panDir = path.join(workingDir, '.pan');
@@ -1011,14 +1055,11 @@ class Runner {
     // is the one recorded on the Issue, making the task resumable.
     await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource(windowTitle, sessionId));
 
-    // Record the copilot session id so the task can be resumed or revisited on
-    // this machine later. Best-effort: a failure here must not block a launch
-    // that is otherwise ready — provenance is recoverable, a wasted launch is
-    // not.
-    try {
+    // Record a new Copilot session before launch. Without this durable link a
+    // stopped task could not be resumed, so a write failure must abort launch.
+    // A resume already has the required recorded value.
+    if (!resuming) {
       await setTextField(this.cfg, this.meta, item.itemId, FIELD.sessionId, sessionId);
-    } catch (e) {
-      logErr(`could not record session-id for #${number} (continuing): ${e.message}`);
     }
 
     // 3. Pre-trust the workspace folder so the headed worker starts without an
@@ -1054,6 +1095,7 @@ class Runner {
       lastBadOutcome: null,
       finished: false,
     });
+    this.resumeWorkspaces.delete(number);
     log(`launched worker for #${number} in ${workingDir}${resuming ? ` (resuming session ${sessionId})` : ` (session ${sessionId})`}`);
   }
 
@@ -1254,7 +1296,7 @@ try { writeFileSync(marker, ''); } catch {}
 
 // Remove the marker on normal exit and on window-close signals, mirroring the
 // old bash \`trap\`. A hard kill (SIGKILL) cannot run handlers; the runner's
-// rehydration requeue and liveness grace still recover a truly-gone worker.
+// rehydration pause and liveness grace still recover a truly-gone worker.
 process.on('exit', cleanup);
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => { cleanup(); process.exit(130); });
@@ -1450,7 +1492,7 @@ child.on('exit', (code, signal) => {
     // liveness catches that. The startup grace prevents a false positive before
     // the launcher has written its pid, and we only vanish when result.json is
     // absent (a finished worker that wrote result.json is finalized above, not
-    // requeued).
+    // paused).
     //
     // On macOS the terminal is launched via `open`/`osascript` and on Windows
     // via `wt.exe`, but the generated `.pan/launch.mjs` writes its OWN pid to
@@ -1464,7 +1506,7 @@ child.on('exit', (code, signal) => {
       !existsSync(resultPath) &&
       !(existsSync(markerPath) && (await workerPidAlive(w.panDir)))
     ) {
-      await this.handleOperationalFailure(w, 'worker vanished (marker gone or PID dead)');
+      await this.pauseWorker(w, 'worker exited (marker gone or PID dead)');
       return;
     }
   }
@@ -1538,7 +1580,58 @@ child.on('exit', (code, signal) => {
     return true;
   }
 
-  /** Operational failure: return the task to `ready`; escalate after 3 in a row.
+  /** Release a started task whose worker stopped so its session and workspace
+   *  can be resumed on this machine. Unlike an operational launch failure,
+   *  worker exit is a lifecycle transition, not a retry strike. */
+  async pauseWorker(w, reason) {
+    const number = w.issueNumber;
+    let fresh;
+    try {
+      fresh = await readItemById(w.itemId);
+    } catch (e) {
+      logErr(`pause re-read failed for #${number}: ${e.message}`);
+      return false;
+    }
+
+    if (!fresh) {
+      this.active.delete(number);
+      return false;
+    }
+
+    const claimedBy = val(fresh, FIELD.claimedBy, '');
+    const status = statusOf(fresh);
+    if (claimedBy && claimedBy !== this.cfg.identity) {
+      this.active.delete(number);
+      logErr(`#${number} now claimed by "${claimedBy}"; not pausing a foreign worker`);
+      return false;
+    }
+    if (status !== 'in-progress') {
+      this.active.delete(number);
+      if (status === 'paused' && val(fresh, FIELD.machine, '') === this.cfg.machine && w.isolated && existsSync(w.workingDir)) {
+        this.resumeWorkspaces.set(number, w.workingDir);
+      }
+      return status === 'paused';
+    }
+
+    try {
+      await setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+      await setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+      await setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'paused');
+    } catch (e) {
+      logErr(`pause writes failed for #${number}: ${e.message}`);
+      return false;
+    }
+
+    this.active.delete(number);
+    if (w.isolated && existsSync(w.workingDir)) {
+      this.resumeWorkspaces.set(number, w.workingDir);
+    }
+    log(`#${number} paused: ${reason}`);
+    return true;
+  }
+
+  /** Operational failure: return the task to its pre-launch state; escalate
+   *  after 3 in a row.
    *  When `releaseFields` is false (e.g. a lost lease we no longer own), still
    *  count the failure and stop supervising, but never write the item's fields —
    *  another runner may now hold a valid claim we must not overwrite.
@@ -1548,7 +1641,7 @@ child.on('exit', (code, signal) => {
    *  owner (the strike is still counted). Absent positive evidence of a foreign
    *  owner (re-read shows our identity, an empty claim, or fails/returns null),
    *  the writes proceed as before. */
-  async handleOperationalFailure(w, reason, { releaseFields = true } = {}) {
+  async handleOperationalFailure(w, reason, { releaseFields = true, returnStatus = 'ready' } = {}) {
     const number = w.issueNumber;
     const count = (this.failCounts.get(number) || 0) + 1;
     this.failCounts.set(number, count);
@@ -1593,11 +1686,13 @@ child.on('exit', (code, signal) => {
         );
         log(`#${number} escalated to human attention after 3 failures`);
       } else {
-        // Return to ready with state intact.
+        // Restore the state from which this launch was attempted. A new task
+        // returns to ready; a failed resume remains paused so its established
+        // session/workspace are not discarded.
         await setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
         await setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
-        await setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'ready');
-        log(`#${number} returned to ready`);
+        await setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, returnStatus);
+        log(`#${number} returned to ${returnStatus}`);
       }
     } catch (e) {
       logErr(`failure-handling writes failed for #${number}: ${e.message}`);
@@ -1616,10 +1711,12 @@ child.on('exit', (code, signal) => {
    *   PID is a live process) and not finished, whose item is still claimed by
    *   us, is re-adopted for supervision.
    * - A workspace whose marker is gone — OR whose marker is present but whose
-   *   recorded PID is dead/missing (a vanished worker) — with the item still
-   *   ours and `in-progress`, is requeued to `ready` as bounded, safe cleanup.
+   *   recorded PID is dead/missing — with the item still ours and
+   *   `in-progress`, is retained and its item is transitioned to `paused`.
+   * - A retained workspace for a task already `paused` on this machine is
+   *   indexed for the next resume launch.
    * - An isolated workspace that is inert — no live worker AND no longer
-   *   owned/adoptable by this runner (finalized, released, requeued, missing
+   *   owned/adoptable by this runner (finalized, released, missing
    *   from the Project, or externally transitioned) — is pruned (its directory
    *   removed). Otherwise finished workspaces accumulate under workspaceRoot and
    *   are re-scanned and re-logged on every restart. Only workspaces confirmed
@@ -1659,15 +1756,18 @@ child.on('exit', (code, signal) => {
         throw e;
       }
     }
+    // Resolve liveness before processing so, if an older runner left duplicate
+    // workspaces for one Issue, a live worker always wins over a dead leftover.
+    const workspaces = [];
     for (const entry of entries) {
       const workingDir = path.join(this.cfg.workspaceRoot, entry);
       const panDir = path.join(workingDir, '.pan');
       const taskPath = path.join(panDir, 'task.json');
       const markerPath = path.join(panDir, 'worker.running');
       const resultPath = path.join(panDir, 'result.json');
-      const needsHumanPath = path.join(panDir, 'needs-human.json');
+      let st;
       try {
-        const st = await stat(workingDir);
+        st = await stat(workingDir);
         if (!st.isDirectory()) continue;
       } catch {
         continue;
@@ -1683,13 +1783,47 @@ child.on('exit', (code, signal) => {
         continue;
       }
       const number = task.number;
-      if (!number || this.active.has(number)) continue;
+      if (!number) continue;
 
       // Liveness of this workspace's worker: the marker must be present AND its
       // recorded PID must be a live process. Computed up front so the ownership
       // and finalization branches below can prune an inert leftover rather than
       // re-logging it on every restart.
       const alive = existsSync(markerPath) && (await workerPidAlive(panDir));
+      workspaces.push({
+        workingDir,
+        panDir,
+        resultPath,
+        task,
+        number,
+        alive,
+        hasResult: existsSync(resultPath),
+        mtimeMs: st.mtimeMs,
+      });
+    }
+
+    workspaces.sort((a, b) =>
+      Number(b.alive) - Number(a.alive)
+      || Number(b.hasResult) - Number(a.hasResult)
+      || b.mtimeMs - a.mtimeMs,
+    );
+
+    for (const workspace of workspaces) {
+      const {
+        workingDir,
+        panDir,
+        resultPath,
+        task,
+        number,
+        alive,
+      } = workspace;
+
+      if (this.active.has(number)) {
+        if (!alive) {
+          log(`#${number} has an older inactive duplicate workspace at ${workingDir}; leaving it untouched`);
+        }
+        continue;
+      }
 
       // Confirm the Project still shows this task claimed by us.
       const match = items.find((it) => it.issue?.number === number);
@@ -1699,7 +1833,27 @@ child.on('exit', (code, signal) => {
         if (!alive) await pruneWorkspace(workingDir, number, 'task not found on Project');
         continue;
       }
-      if (val(match, FIELD.claimedBy, '') !== this.cfg.identity) {
+      const projectStatus = statusOf(match);
+      const projectMachine = val(match, FIELD.machine, '');
+      const projectSessionId = val(match, FIELD.sessionId, '');
+      const claimedBy = val(match, FIELD.claimedBy, '');
+
+      // Paused work is intentionally unclaimed. Preserve its isolated
+      // workspace and make it available to launchWorker() instead of treating
+      // the empty claimed-by field as evidence that the directory is inert.
+      if (!alive && projectStatus === 'paused' && projectMachine === this.cfg.machine) {
+        const canonical = projectSessionId
+          ? path.resolve(path.join(this.cfg.workspaceRoot, `pan-${number}-${projectSessionId}`))
+          : null;
+        const remembered = this.resumeWorkspaces.get(number);
+        if (!remembered || (canonical && path.resolve(workingDir) === canonical)) {
+          this.resumeWorkspaces.set(number, workingDir);
+        }
+        log(`found paused workspace for #${number} at ${workingDir}`);
+        continue;
+      }
+
+      if (claimedBy !== this.cfg.identity) {
         // No longer ours: finalized (finalize clears claimed-by) or released to
         // another runner. With no live worker here, the workspace is an inert
         // leftover — prune it so it is not re-scanned and re-logged every
@@ -1709,7 +1863,7 @@ child.on('exit', (code, signal) => {
         } else {
           log(
             `#${number} no longer owned by this runner ` +
-              `(claimed-by=${JSON.stringify(val(match, FIELD.claimedBy, ''))}); ` +
+              `(claimed-by=${JSON.stringify(claimedBy)}); ` +
               `skipping adoption/finalization (rehydrate)`,
           );
         }
@@ -1726,6 +1880,7 @@ child.on('exit', (code, signal) => {
         workingDir,
         panDir,
         isolated: true,
+        sessionId: projectSessionId,
         startedAt: Date.now(),
         lastRenew: 0, // force an immediate lease renewal
         hadNeedsHuman: !!val(match, FIELD.needsHumanSince, ''),
@@ -1745,10 +1900,10 @@ child.on('exit', (code, signal) => {
       // returns false and we fall through to liveness handling rather than
       // dropping the workspace.
       if (existsSync(resultPath)) {
-        if (statusOf(match) !== 'in-progress') {
+        if (projectStatus !== 'in-progress') {
           log(
             `#${number} has a pending result but was externally transitioned ` +
-              `(status=${statusOf(match)}); skipping finalization (rehydrate)`,
+              `(status=${projectStatus}); skipping finalization (rehydrate)`,
           );
           // The worker already finished (it wrote result.json). If it is no
           // longer alive, the workspace is inert — prune it.
@@ -1759,29 +1914,17 @@ child.on('exit', (code, signal) => {
         if (finalized) continue;
       }
 
-      // A missing marker, or a marker whose PID is dead/gone, is a vanished
-      // worker: if the item is still ours and in-progress, requeue it to
-      // `ready` rather than adopting a corpse and renewing its lease forever
-      // (liveness was computed once, above).
+      // A missing marker, or a marker whose PID is dead/gone, means the worker
+      // stopped. Retain this workspace and transition the item to paused so the
+      // same machine can relaunch the recorded session here.
       if (!alive) {
-        if (statusOf(match) !== 'in-progress') {
-          // Not ours to requeue and no live worker: inert leftover — prune it.
-          await pruneWorkspace(workingDir, number, 'vanished worker, not in-progress');
+        if (projectStatus !== 'in-progress') {
+          // Not ours to pause and no live worker: inert leftover — prune it.
+          await pruneWorkspace(workingDir, number, 'stopped worker, not in-progress');
           continue;
         }
-        // Route through the same operational-failure path used elsewhere rather
-        // than releasing fields directly: it re-reads ownership first (so it
-        // won't stomp a claim a DIFFERENT runner has since taken), counts a
-        // consecutive-operational-failure strike, and applies 3-strikes
-        // escalation. This worker was never added to this.active, so the
-        // internal active.delete is a harmless no-op (no double-release).
-        await this.handleOperationalFailure(
-          { itemId: match.itemId, issueNumber: number, url: task.url, repo: task.repo || repoFromUrl(task.url) },
-          'worker vanished during downtime (marker gone or PID dead) (rehydrate)',
-        );
-        // The task has been requeued to `ready` (or escalated); its dead
-        // worker's workspace is now inert — prune it.
-        await pruneWorkspace(workingDir, number, 'worker vanished, requeued');
+        this.active.set(number, w);
+        await this.pauseWorker(w, 'worker exited while runner was offline');
         continue;
       }
 
@@ -1804,21 +1947,20 @@ child.on('exit', (code, signal) => {
     this.wakeController?.abort();
   }
 
-  /** Trigger a poll cycle immediately instead of waiting out the current
-   *  idle/backoff sleep. Bound to a keypress on the runner's terminal so an
-   *  operator who just added work does not have to wait for the next poll. It
-   *  only wakes the sleep — the loop top then runs a normal cycle — and is a
-   *  no-op while draining (no new claims are made then anyway). */
+  /** Queue a poll cycle immediately. Bound to a keypress on the runner's
+   *  terminal so an operator who just added work does not have to wait for the
+   *  next poll. The flag also covers keypresses received while no abortable
+   *  sleep exists. No-op while draining (no new claims are made then anyway). */
   pokeNow() {
     if (this.draining) return;
-    log('manual trigger: running a poll cycle now');
+    log('manual trigger: poll cycle queued');
+    this.pollRequested = true;
     this.wakeController?.abort();
   }
 
-  /** Sleep that can be aborted by requestDrain() so SIGINT/SIGTERM promptly
-   *  wakes the runner from an idle/backoff wait. A fresh controller is created
-   *  per sleep (an aborted controller stays aborted); AbortError just ends the
-   *  wait early rather than crashing. */
+  /** Sleep that can be aborted by shutdown or a manual poll request. A fresh
+   *  controller is created per sleep (an aborted controller stays aborted);
+   *  AbortError just ends the wait early rather than crashing. */
   async abortableSleep(ms) {
     this.wakeController = new AbortController();
     try {
@@ -1846,10 +1988,15 @@ child.on('exit', (code, signal) => {
     for (;;) {
       if (this.hardStop) break;
 
+      const requested = this.pollRequested;
       const pollDue = !this.draining
         && !(once && firstCycleDone)
-        && Date.now() >= nextPollAt;
+        && (requested || Date.now() >= nextPollAt);
       if (pollDue) {
+        // Consume only the request that made this cycle due. A keypress that
+        // arrives while pollAndClaim() is awaiting GitHub sets the flag again
+        // and queues one more cycle instead of being overwritten here.
+        if (requested) this.pollRequested = false;
         try {
           const { candidates, claimed } = await this.pollAndClaim();
           idleSeconds = claimed > 0 || candidates > 0
@@ -1874,6 +2021,10 @@ child.on('exit', (code, signal) => {
       // Exit conditions.
       if (once && this.activeCount() === 0) break;
       if (this.draining && this.activeCount() === 0) break;
+      // A keypress can arrive while superviseTick() is awaiting GitHub, when
+      // there is no sleep controller to abort. Do not enter a fresh sleep with
+      // that request already pending.
+      if (this.pollRequested) continue;
 
       // Sleep until the next poll is due, but while workers are active wake at
       // least every superviseTickSeconds so their status/leases are serviced
@@ -1997,7 +2148,7 @@ function enableManualTrigger(runner) {
     }
   });
 
-  log('press Enter or Space to trigger a poll cycle now; Ctrl+C to drain and exit');
+  log('press Enter or Space to queue a poll cycle now; Ctrl+C to drain and exit');
 }
 
 main()

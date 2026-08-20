@@ -96,13 +96,15 @@ itself keeps **no** scratch, log, or state files under any temp directory.
 
 ## How a task flows
 
-1. **Poll** — read the full Project item set (GraphQL cursor pagination) and keep
-   items with `owner=agent`, `Status=ready`, and a non-empty `playbook` this
-   machine runs, with spare capacity (global and per-playbook) and a free lease.
-   Order by `priority` (`urgent` > `high` > `normal` > `low`), preserving Project
+1. **Poll** — read the full Project item set (GraphQL cursor pagination), select
+   this machine's resumable `paused` items before new `ready` items, and keep
+   work with `owner=agent` and a non-empty `playbook` this machine runs, with
+   spare capacity (global and per-playbook) and a free lease. Order each group
+   by `priority` (`urgent` > `high` > `normal` > `low`), preserving Project
    order among ties.
-2. **Claim** — re-read the item to avoid races, then set `claimed-by`, `machine`
-   (this machine's name), `lease-until` (near-future UTC), and `Status=in-progress`.
+2. **Claim or resume** — re-read the item to avoid races, then set `claimed-by`,
+   `machine` (this machine's name), `lease-until` (near-future UTC), and
+   `Status=in-progress`.
    Immediately after writing, the runner **re-reads once more to confirm** it
    still owns the claim (`claimed-by` is still this runner and `lease-until` is
    exactly the value it wrote); if another runner won the race, it abandons the
@@ -110,16 +112,22 @@ itself keeps **no** scratch, log, or state files under any temp directory.
    concurrency (GitHub has no atomic compare-and-swap); the confirming re-read is
    the point. The lease is renewed periodically while the worker runs.
 3. **Launch** — prepare the working directory (fixed `workingDirectory` if set,
-   else an isolated workspace under `workspaceRoot`), write the task context into
-   `.pan/`, and open a headed `copilot` session in a visible terminal window under
+   else an isolated workspace under `workspaceRoot` whose path is stable for the
+   recorded Copilot session), write the task context into `.pan/`, and open a
+   headed `copilot` session in a visible terminal window under
    an explicit copilot session id (`--session-id`), recording that id in the
-   Issue's `session-id` field. A fresh UUID is minted for a new task; a task that
-   already carries a `session-id` recorded for this same `machine` is relaunched
-   with that id so copilot **resumes** the earlier session. If
+   Issue's `session-id` field. A fresh UUID is minted for a new task; a paused
+   task carrying a `session-id` recorded for this same `machine` is relaunched
+   in the same workspace with that id so Copilot **resumes** the earlier
+   session. If
    the resolved directory is a fixed `workingDirectory` already in use by another
    active worker, the runner does **not** launch: it returns the task to `ready`
    (a benign capacity collision, not an operational strike).
 4. **Supervise** — watch the `.pan/` signal files and relay them to the Issue.
+
+While the runner is looping, **Enter** or **Space** queues an immediate ordinary
+poll. The request remains pending even when the key is pressed during polling
+or supervision rather than during the idle sleep.
 
 ### `.pan/` file contract
 
@@ -170,7 +178,7 @@ Written by the runner after finalizing:
   worker session shuts down and closes its terminal window instead of lingering.
   It is not written while a worker is merely paused on `needs-human.json`.
 
-Before each launch the runner clears any stale `.pan/` signal files
+Before each launch or resume the runner clears any stale `.pan/` signal files
 (`result.json`, `needs-human.json`, `worker.running`, `worker.pid`,
 `worker.stop`) so a reused fixed `workingDirectory` cannot make a new task
 finalize on a prior task's signals.
@@ -182,12 +190,14 @@ runner can detect a closed terminal or vanished worker.
 
 ## Failure handling
 
-An operational failure (launch failed, terminal closed, or worker vanished)
-returns the task to `ready` with its state intact (clears
-`claimed-by`/`lease-until`, sets `Status=ready`). **Three consecutive**
-operational failures on the same task instead raise human attention: the runner
-clears the lease, sets `needs-human-since`, moves the item to `blocked`, and
-posts an explanatory Issue comment, so an unattended runner cannot retry forever.
+Closing or losing a worker releases its lease and moves the started task to
+`paused`, preserving `machine`, `session-id`, and its isolated workspace for
+resume. An operational launch failure restores the pre-launch state: a new task
+returns to `ready`, while a failed resume remains `paused`. **Three
+consecutive** operational failures on the same task instead raise human
+attention: the runner clears the lease, sets `needs-human-since`, moves the item
+to `blocked`, and posts an explanatory Issue comment, so an unattended runner
+cannot retry forever.
 At lease-renewal cadence the runner re-reads the item and, if the claim is no
 longer its own (`claimed-by`/`Status` changed out from under it — a **lost
 lease**), it stops supervising that worker and writes **nothing**: it no longer
@@ -226,15 +236,17 @@ lifetime; writes use `gh project item-edit`.
   is treated as alive only when its liveness marker is present **and** its
   recorded PID (`.pan/worker.pid`) is a live process (`process.kill(pid, 0)`); a
   missing marker, or a marker whose PID is dead/missing/unparseable, is a
-  **vanished** worker, and if its item is still `claimed-by` this runner and
-  `in-progress` it is requeued to `ready` (clearing `claimed-by`/`lease-until`)
-  as a bounded, safe cleanup — the runner never renews the lease of a dead PID
-  forever. Workers launched into a **fixed `workingDirectory`** are not
+  stopped worker, and if its item is still `claimed-by` this runner and
+  `in-progress` it is released to `paused` (clearing
+  `claimed-by`/`lease-until`) while retaining the workspace for resume — the
+  runner never renews the lease of a dead PID forever. Workers launched into a
+  **fixed `workingDirectory`** are not
   rediscovered (there is no persisted registry of launched handles), and the
   exact child process is not re-attached — only file-signal supervision and lease
-  renewal resume. An isolated workspace that is **inert** — no live worker and no
-  longer this runner's to supervise (finalized, released, requeued, missing from
-  the Project, or externally transitioned) — has its directory **pruned** during
+  renewal resume. A paused isolated workspace remains discoverable across runner
+  restarts. An isolated workspace that is **inert** — no live worker and no
+  longer this runner's to supervise (finalized, released, missing from the
+  Project, or externally transitioned) — has its directory **pruned** during
   rehydration, so finished workspaces do not accumulate under `workspaceRoot` and
   get re-scanned and re-logged on every restart. Only workspaces confirmed inert
   are removed; a live or still-owned-and-adoptable workspace is never touched.
@@ -242,7 +254,7 @@ lifetime; writes use `gh project item-edit`.
   worker through the generated `.pan/launch.mjs`, whose signal handlers remove
   `.pan/worker.running` on window close (`SIGINT`/`SIGTERM`/`SIGHUP`) and on
   normal exit. A **hard** kill (`SIGKILL` / force terminate) cannot run those
-  handlers, so the marker may linger; the runner's rehydration requeue and
+  handlers, so the marker may linger; the runner's rehydration pause and
   liveness grace still recover a truly-gone worker.
 - **`copilot` invocation.** The worker is started as
   `<copilotBin> [copilotArgs...] <prompt>` by `.pan/launch.mjs`, passing the
