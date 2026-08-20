@@ -23,12 +23,12 @@ node bin/pan-runner.js --help
   those workers finish, then exit.
 - `--validate-config` — validate the config **and** Domain access
   (every `playbooks/<machine>/<name>.md` in this machine's folder, and
-  the Project), then exit `0`. This also validates the Project **schema**: all 10
+  the Project), then exit `0`. This also validates the Project **schema**: all 11
   canonical fields must be present with the correct types (`Status`, `owner`,
-  `priority` as single-selects; `playbook`, `workstream`, `needs-human-since`,
-  `lease-until`, `claimed-by`, `machine`, `session-id` as text). Performs **no
-  polling**. Exits non-zero with a clear message on any failure (missing/wrong-typed
-  fields are all reported together).
+  `priority` as single-selects; `next-action-date` as a date; `playbook`,
+  `workstream`, `needs-human-since`, `lease-until`, `claimed-by`, `machine`,
+  `session-id` as text). Performs **no polling**. Exits non-zero with a clear
+  message on any failure (missing/wrong-typed fields are all reported together).
 - `--help` — print usage and exit `0`.
 
 Without `--once` the runner loops until interrupted (`SIGINT`/`SIGTERM`),
@@ -215,12 +215,12 @@ unaffected; a second interrupt exits immediately.
 
 The runner reads/writes exactly the fields in
 [`system/project-schema.md`](../system/project-schema.md): the built-in `Status`
-select, plus custom fields `owner`, `priority`, `playbook`, `workstream`,
-`needs-human-since`, `lease-until`, `claimed-by`, `machine`, `session-id`. Empty
-selects read as their documented defaults (`owner`→`unassigned`,
-`Status`→`untriaged`, `priority`→`normal`). Field ids and single-select option ids
-are resolved from the Project once via GraphQL and cached for the process
-lifetime; writes use `gh project item-edit`.
+select, plus custom fields `owner`, `priority`, `next-action-date`, `playbook`,
+`workstream`, `needs-human-since`, `lease-until`, `claimed-by`, `machine`,
+`session-id`. Empty selects read as their documented defaults
+(`owner`→`unassigned`, `Status`→`untriaged`, `priority`→`normal`). Field ids and
+single-select option ids are resolved from the Project once via GraphQL and
+cached for the process lifetime; writes use `gh project item-edit`.
 
 ## Known limitations / TODOs (v1)
 
