@@ -78,6 +78,10 @@ For each open task, decide and set:
 - `owner` — `human` or `agent` (or leave `unassigned` if genuinely unknown).
 - `priority` — weigh urgency, dates, dependencies, blockers, recent activity,
   comments, and workstream narrative.
+- `next-action-date` — for a human task, recommend the next day the user should
+  act after reading both the Issue and its related workstream. This schedules
+  attention rather than setting a deadline. Leave it empty when no defensible
+  day is available, and clear it when the task is not human-owned.
 - `playbook` — for `agent` tasks, the name of the playbook that fits (see
   [playbooks](playbooks.md)). Read `playbooks/*/*.md` (per-machine definitions)
   to choose.

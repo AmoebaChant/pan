@@ -17,6 +17,7 @@ reads as its documented default rather than as an error.
 | `owner` | single select | triage | `unassigned` \| `human` \| `agent`. Empty reads as `unassigned`. Separates the human queue from the agent queue; nothing else does. |
 | `Status` | single select | triage, then the runner | `untriaged` \| `needs-detail` \| `ready` \| `in-progress` \| `paused` \| `in-review` \| `done` \| `blocked`. Empty reads as `untriaged`. |
 | `priority` | single select | triage | `urgent` \| `high` \| `normal` \| `low`. Empty reads as `normal`. |
+| `next-action-date` | date | triage | The day a human task should next receive attention. Triage recommends it from the Issue and its workstream context. Empty means unscheduled; agent-owned tasks leave it empty. |
 | `playbook` | text | triage | The name of the playbook that should run this task (see [playbooks](playbooks.md)). Empty means no playbook has been chosen yet. |
 | `workstream` | text | triage | Optional path relative to `workstreams/`. Empty means the task has no workstream. |
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp. Non-empty means a live worker is waiting for the user right now. |
@@ -74,7 +75,8 @@ ran it resumes it (from `paused`) until triage deliberately un-pins it back to
 
 ## Ownership rules
 
-- **Triage owns** `owner`, `Status`, `priority`, `playbook`, and `workstream`.
+- **Triage owns** `owner`, `Status`, `priority`, `next-action-date`, `playbook`,
+  and `workstream`.
   As a deliberate exception, triage (or any runner's poll) may perform the
   passive visibility sweep below.
 - **The runner owns** `Status` transitions after it claims, plus `lease-until`

@@ -80,6 +80,7 @@ const FIELD = {
   status: 'Status',            // built-in Projects status field (capitalized)
   owner: 'owner',
   priority: 'priority',
+  nextActionDate: 'next-action-date',
   playbook: 'playbook',
   workstream: 'workstream',
   needsHumanSince: 'needs-human-since',
@@ -475,6 +476,7 @@ async function loadProjectMeta(cfg) {
         fields(first:50){ nodes{
           __typename
           ... on ProjectV2FieldCommon { id name }
+          ... on ProjectV2Field { dataType }
           ... on ProjectV2SingleSelectField { id name options{ id name } }
         } }
       }
@@ -493,32 +495,52 @@ async function loadProjectMeta(cfg) {
   const project = data.data[ownerType]?.projectV2;
   if (!project) throw new UserError(`Project ${cfg.project.owner}/${cfg.project.number} not found.`);
 
-  const fields = new Map(); // name -> { id, options: Map(optName->optId)|null }
+  const fields = new Map(); // name -> { id, dataType, options: Map(optName->optId)|null }
   for (const f of project.fields.nodes) {
     if (!f?.name) continue;
     const options = f.options ? new Map(f.options.map((o) => [o.name, o.id])) : null;
-    fields.set(f.name, { id: f.id, options });
+    const dataType = f.dataType ?? (options ? 'SINGLE_SELECT' : f.__typename);
+    fields.set(f.name, { id: f.id, dataType, options });
   }
   return { ownerType, projectId: project.id, fields };
 }
 
-/** Validate the resolved Project has the 10 canonical fields with correct types
- *  (see system/project-schema.md). Single-select fields must expose an options
- *  Map; text fields must have null options. Throws a single UserError naming
- *  ALL missing or wrong-typed fields. */
+/** Validate the resolved Project against the canonical field contract. */
 function validateProjectSchema(meta) {
   const singleSelects = ['Status', 'owner', 'priority'];
-  const textFields = ['playbook', 'workstream', 'needs-human-since', 'lease-until', 'claimed-by', 'machine', 'session-id'];
+  const textFields = [
+    'playbook',
+    'workstream',
+    'needs-human-since',
+    'lease-until',
+    'claimed-by',
+    'machine',
+    'session-id',
+  ];
+  const dateFields = ['next-action-date'];
   const problems = [];
   for (const name of singleSelects) {
     const f = meta.fields.get(name);
     if (!f) problems.push(`missing single-select field "${name}"`);
-    else if (!(f.options instanceof Map)) problems.push(`field "${name}" must be a single-select (found a non-select field)`);
+    else if (f.dataType !== 'SINGLE_SELECT' || !(f.options instanceof Map)) {
+      problems.push(
+        `field "${name}" must be a single-select (found ${f.dataType})`,
+      );
+    }
   }
   for (const name of textFields) {
     const f = meta.fields.get(name);
     if (!f) problems.push(`missing text field "${name}"`);
-    else if (f.options !== null) problems.push(`field "${name}" must be a text field (found a single-select field)`);
+    else if (f.dataType !== 'TEXT') {
+      problems.push(`field "${name}" must be a text field (found ${f.dataType})`);
+    }
+  }
+  for (const name of dateFields) {
+    const f = meta.fields.get(name);
+    if (!f) problems.push(`missing date field "${name}"`);
+    else if (f.dataType !== 'DATE') {
+      problems.push(`field "${name}" must be a date field (found ${f.dataType})`);
+    }
   }
   if (problems.length > 0) {
     throw new UserError(`Project schema is invalid:\n  - ${problems.join('\n  - ')}`);
@@ -532,6 +554,7 @@ const ITEM_FRAGMENT = `
     __typename
     ... on ProjectV2ItemFieldTextValue { text field{ ... on ProjectV2FieldCommon { name } } }
     ... on ProjectV2ItemFieldSingleSelectValue { name field{ ... on ProjectV2FieldCommon { name } } }
+    ... on ProjectV2ItemFieldDateValue { date field{ ... on ProjectV2FieldCommon { name } } }
   } }`;
 
 function parseItemNode(node) {
@@ -541,6 +564,7 @@ function parseItemNode(node) {
     if (!name) continue;
     if (typeof fv.text === 'string') fields[name] = fv.text;
     else if (typeof fv.name === 'string') fields[name] = fv.name;
+    else if (typeof fv.date === 'string') fields[name] = fv.date;
   }
   const issue = node.content?.__typename === 'Issue'
     ? {
@@ -2107,7 +2131,7 @@ async function main() {
     validateProjectSchema(meta);
     log(`config OK: domain=${cfg.domainRepoSlug} project=${cfg.project.owner}/${cfg.project.number} machine=${cfg.machine}`);
     log(`worker permissions: ${cfg.workerPermissions}${cfg.workerPermissions === 'yolo' ? ' (workers launch with --allow-all)' : ''}`);
-    log(`project schema OK: all 10 canonical fields present with correct types`);
+    log(`project schema OK: all 11 canonical fields present with correct types`);
     log(`playbooks this machine runs: ${[...playbooks.keys()].join(', ')}`);
     return 0;
   }
