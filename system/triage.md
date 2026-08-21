@@ -94,6 +94,10 @@ For each open task, decide and set:
   - `needs-detail` if the Issue lacks enough information to act;
   - `ready` when fully triaged. An `agent` + `ready` task **must** have a
     non-empty `playbook` that a machine runs, or no runner can ever claim it;
+  - recommend `rejected` when the Issue and workstream context indicate the work
+    should not be pursued. With approval, set `Status=rejected` and close the
+    Issue as not planned (`gh issue close --reason "not planned"`). Rejection is
+    terminal, not a substitute for work that is merely blocked or deferred;
   - leave `untriaged` only if you have not yet reviewed it.
 
 Preserve Project order as the user's precedence within the same priority.
@@ -131,9 +135,11 @@ operation. Re-read the target and report only confirmed effects.
 
 ## 7. What triage leaves alone
 
-- Closed Issues, once registered, are historical records. Routine triage does
-  not reclassify, reopen, or edit them unless the user explicitly asks about a
-  specific closed Issue.
+- Closed Issues correctly paired as `done` with a completed closure or
+  `rejected` with a not-planned closure are historical records. Routine triage
+  does not reclassify, reopen, or edit them unless the user explicitly asks
+  about a specific closed Issue. Surface any other Status/closure pairing as a
+  conflict rather than treating it as settled work.
 - Runner-owned lease fields (`claimed-by`, `lease-until`) are never written by
   triage. The worker's `needs-human-since` is likewise left alone in routine
   triage — the two deliberate exceptions are the passive `paused` sweep (a
