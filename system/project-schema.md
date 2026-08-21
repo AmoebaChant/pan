@@ -57,7 +57,8 @@ reads as its documented default rather than as an error.
   active or paused work. Setting `Status=done` and closing the Issue go
   together: whoever marks a task `done` also closes its Issue as completed
   (`gh issue close --reason completed`). A recurring task still completes this
-  way; its next occurrence is a separate Issue created and confirmed first.
+  way, but it is not settled until its separate successor is confirmed. Triage
+  reconciles the successor when another client closes the Issue first.
 - `rejected` — terminal work the user deliberately chose not to pursue. It is
   never dispatchable or completed work. Setting `Status=rejected` and closing
   the Issue as not planned (`gh issue close --reason "not planned"`) go
@@ -66,10 +67,12 @@ reads as its documented default rather than as an error.
   holding it. This is the *only* meaning of `blocked`.
 
 `done` with a completed closure and `rejected` with a not-planned closure are
-the only Status/Issue-state pairs for closed work. Any other closed-Status
-pairing, or an open Issue in `done` or `rejected`, is a state conflict: clients
-surface it for repair instead of filtering the task out or guessing which side
-is correct.
+the only Status/Issue-state pairs for closed work. A completed recurring Issue
+without a confirmed successor is pending automatic recurrence reconciliation,
+even if its Project item already says `done`. Any other closed-Status pairing,
+or an open Issue in `done` or `rejected`, is a state conflict: clients surface
+it for repair instead of filtering the task out or guessing which side is
+correct.
 
 ### Status transitions
 
@@ -80,7 +83,8 @@ paused --owning machine resumes--> in-progress
 in-progress / paused --> in-review / done   (normal completion)
 paused --triage clears resume info--> ready  (manual cross-machine handoff)
 untriaged / needs-detail / ready / paused / in-review / blocked --user declines--> rejected
-recurring human ready --rollover--> successor ready + current done
+recurring human --completed closure / rollover--> successor ready + current done
+recurring human --not-planned closure--> current rejected (series ends)
 ```
 
 Machine-pinning applies only to **resumes**: `ready` work is never pinned, so

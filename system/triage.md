@@ -15,10 +15,10 @@ current.
 Every Domain Issue is a task and belongs to the Project. Read the complete Issue
 set and the complete Project item set, join them by Issue URL, and add every
 missing Issue to the Project with `Status=untriaged` — including closed Issues,
-without editing or reopening them. This registration is one of two
-reconciliations that need no approval (the other is merged-PR completion in
-step 3), because each acts on an objective fact. Do not rewrite existing items or
-runner-owned fields.
+without editing or reopening them. This registration is one of three
+reconciliations that need no approval (the others are merged-PR completion and
+recurring-task rollover in steps 3 and 4), because each acts on durable facts.
+Do not rewrite existing items or runner-owned fields.
 
 Read completely. `gh issue list --limit <n>` and `gh project item-list -L <n>`
 are hard caps with no truncation signal: if the returned count equals the limit,
@@ -76,7 +76,35 @@ Like registration, this reconciliation acts on an objective fact (a merge) and
 needs no approval. It only advances items that carry a recorded, merged PR, and
 it never edits runner-owned fields.
 
-## 4. Classify and fill fields (with approval)
+## 4. Reconcile closed recurring tasks (automatic)
+
+Issue closure is the durable completion signal for a recurring task, regardless
+of whether Pan, the GitHub UI, or another client performed it. Inspect every
+closed Domain Issue with an exact `## Recurrence` section, including items
+already in a terminal Project status, until its closure has been reconciled.
+This is lifecycle reconciliation only: do not otherwise classify or edit closed
+Issues.
+
+Re-read each candidate's body, comments, `stateReason`, `closedAt`, and Project
+item immediately before acting:
+
+- **Completed closure** — follow [recurrence](recurrence.md#creating-or-reconciling-the-successor)
+  to create or repair exactly one successor. Use `closedAt` as the completion
+  day. After the successor and occurrence links are confirmed, preserve the
+  current `next-action-date` and set the closed item to `Status=done`.
+- **Not-planned closure** — this cancels the series. If no successor marker
+  exists, create no successor and set the item to `Status=rejected`. A
+  not-planned closure that already has a successor is contradictory; surface it
+  instead of deleting history or guessing whether the series should continue.
+- **Missing or ambiguous recurrence data** — do not create an Issue or change
+  terminal state. Surface the exact missing rule, current date, or conflicting
+  marker for the user.
+
+The completed closure plus the Issue's recurrence declaration is standing
+approval for the successor and lifecycle writes. The first-line previous/next
+markers make partial rollovers resumable and prevent duplicate Issues.
+
+## 5. Classify and fill fields (with approval)
 
 For each open task, decide and set:
 
@@ -109,14 +137,13 @@ Preserve Project order as the user's precedence within the same priority.
 ### Completing a recurring occurrence
 
 When the user explicitly completes a human task whose body contains
-`## Recurrence`, follow [the recurrence rollover](recurrence.md#completing-an-occurrence)
+`## Recurrence`, follow [the recurrence rollover](recurrence.md#creating-or-reconciling-the-successor)
 before marking the current task `done`. Create and confirm one ready successor,
 link the occurrence history, then close and confirm the current Issue before
-setting its `Status=done`. A closed recurring Issue with no confirmed successor
-is a state conflict to surface, not permission to infer or create one
-automatically.
+setting its `Status=done`. A client may instead close the Issue as completed;
+step 4 performs the same rollover automatically during the next triage.
 
-## 5. Recover started tasks (passive sweep and stale `paused`)
+## 6. Recover started tasks (passive sweep and stale `paused`)
 
 A **started** task is either `in-progress` (running now: valid lease) or
 `paused` (started but not running: expired lease), per the [project
@@ -137,7 +164,7 @@ schema](project-schema.md#status-meanings). Triage helps keep this honest:
   capable machine starts the task fresh. Handoff loses the paused session's
   transcript, so prefer resuming on the owning machine when it is available.
 
-## 6. Approval and mutation
+## 7. Approval and mutation
 
 Read, analyze, and recommend freely. An explicit user request for a specific
 change is approval for that change. Otherwise, present the proposed field
@@ -147,24 +174,27 @@ short summary of the relevant context — and get approval before writing.
 Apply the smallest `gh project item-edit` / `gh issue edit` / `gh issue comment`
 operation. Re-read the target and report only confirmed effects.
 
-## 7. What triage leaves alone
+## 8. What triage leaves alone
 
 - Closed Issues correctly paired as `done` with a completed closure or
   `rejected` with a not-planned closure are historical records. Routine triage
   does not reclassify, reopen, or edit them unless the user explicitly asks
-  about a specific closed Issue. Surface any other Status/closure pairing as a
-  conflict rather than treating it as settled work.
+  about a specific closed Issue. The only exception is step 4: a closed
+  recurring Issue is not settled until its required successor or cancellation
+  is confirmed. Surface any other Status/closure pairing as a conflict rather
+  than treating it as settled work.
 - Runner-owned lease fields (`claimed-by`, `lease-until`) are never written by
   triage. The worker's `needs-human-since` is likewise left alone in routine
   triage — the two deliberate exceptions are the passive `paused` sweep (a
-  `Status`-only write, §5) and an approved manual cross-machine handoff, which
+  `Status`-only write, §6) and an approved manual cross-machine handoff, which
   clears `machine`, `session-id`, and any `needs-human-since` to un-pin a stale
-  `paused` task back to `ready` (§5).
+  `paused` task back to `ready` (§6).
 - Never leave an `agent` + `ready` task with an empty `playbook`.
 
 ## Scheduled triage
 
-A recurring review runs the same live reads and the same automatic registration
-and merged-PR completion (steps 1–3). Beyond those automatic reconciliations, a
-scheduled pass stays read-only unless the user has given a standing policy to
-act. Do not create a separate scheduler or catch up work from an earlier session.
+A recurring review runs the same live reads and the same automatic
+registration, merged-PR completion, and recurring-task reconciliation (steps
+1–4). Beyond those automatic reconciliations, a scheduled pass stays read-only
+unless the user has given a standing policy to act. Do not create a separate
+scheduler or catch up work from an earlier session.

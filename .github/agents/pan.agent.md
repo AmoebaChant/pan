@@ -54,10 +54,11 @@ briefly and ask what they want to do.
 - Read, analyze, and recommend freely. Make changes the user explicitly asked
   for; otherwise show the proposed field changes (current vs. proposed, per
   Issue, with links) and get approval first.
-- Registering every missing Issue to the Project as `untriaged` and completing
-  an `in-review` task after confirming its recorded PR merged are the only
-  automatic reconciliations. Merged-PR completion closes and confirms the Issue
-  at the Project item's content repository before setting `Status=done`.
+- Registering every missing Issue, completing an `in-review` task after its
+  recorded PR is confirmed merged, and reconciling closed recurring Domain
+  Issues are the only automatic reconciliations. A recurring Issue closed as
+  completed gets one confirmed successor before `Status=done`; one closed as
+  not planned ends its series at `Status=rejected`.
 
 ## Presentation
 
