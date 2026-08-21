@@ -17,7 +17,7 @@ reads as its documented default rather than as an error.
 | `owner` | single select | triage | `unassigned` \| `human` \| `agent`. Empty reads as `unassigned`. Separates the human queue from the agent queue; nothing else does. |
 | `Status` | single select | triage, then the runner | `untriaged` \| `needs-detail` \| `ready` \| `in-progress` \| `paused` \| `in-review` \| `done` \| `rejected` \| `blocked`. Empty reads as `untriaged`. |
 | `priority` | single select | triage | `urgent` \| `high` \| `normal` \| `low`. Empty reads as `normal`. |
-| `next-action-date` | date | triage | The day a human task should next receive attention. Triage recommends it from the Issue and its workstream context. Empty means unscheduled; agent-owned tasks leave it empty. |
+| `next-action-date` | date | triage | The day the current human-task occurrence should receive attention. Triage recommends it from the Issue and its workstream context. Empty means unscheduled; agent-owned tasks leave it empty. Recurring tasks keep their cadence in the Issue body, not this field; see [recurrence](recurrence.md). |
 | `playbook` | text | triage | The name of the playbook that should run this task (see [playbooks](playbooks.md)). Empty means no playbook has been chosen yet. |
 | `workstream` | text | triage | Optional path relative to `workstreams/`. Empty means the task has no workstream. |
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp. Non-empty means a live worker is waiting for the user right now. |
@@ -56,7 +56,8 @@ reads as its documented default rather than as an error.
   playbook step including any post-merge gates. A merge alone never completes
   active or paused work. Setting `Status=done` and closing the Issue go
   together: whoever marks a task `done` also closes its Issue as completed
-  (`gh issue close --reason completed`).
+  (`gh issue close --reason completed`). A recurring task still completes this
+  way; its next occurrence is a separate Issue created and confirmed first.
 - `rejected` — terminal work the user deliberately chose not to pursue. It is
   never dispatchable or completed work. Setting `Status=rejected` and closing
   the Issue as not planned (`gh issue close --reason "not planned"`) go
@@ -79,6 +80,7 @@ paused --owning machine resumes--> in-progress
 in-progress / paused --> in-review / done   (normal completion)
 paused --triage clears resume info--> ready  (manual cross-machine handoff)
 untriaged / needs-detail / ready / paused / in-review / blocked --user declines--> rejected
+recurring human ready --rollover--> successor ready + current done
 ```
 
 Machine-pinning applies only to **resumes**: `ready` work is never pinned, so

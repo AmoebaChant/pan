@@ -2,7 +2,9 @@
 
 Triage is an interactive Pan session with the user that turns raw Issues into a
 prioritized, dispatchable backlog. Read [project schema](project-schema.md) and
-[playbooks](playbooks.md) alongside this file.
+[playbooks](playbooks.md) alongside this file. When an Issue has a
+`## Recurrence` section or the user asks for recurring work, also read
+[recurrence](recurrence.md).
 
 Read live from GitHub in the turn you act. Re-read a target immediately before
 mutating it and verify the result afterward. Never treat a prior read as still
@@ -83,8 +85,10 @@ For each open task, decide and set:
   comments, and workstream narrative.
 - `next-action-date` — for a human task, recommend the next day the user should
   act after reading both the Issue and its related workstream. This schedules
-  attention rather than setting a deadline. Leave it empty when no defensible
-  day is available, and clear it when the task is not human-owned.
+  attention rather than setting a deadline. For a recurring task it is the
+  current occurrence date, not the cadence, and must be non-empty. Leave it
+  empty when no defensible day is available, and clear it when the task is not
+  human-owned.
 - `playbook` — for `agent` tasks, the name of the playbook that fits (see
   [playbooks](playbooks.md)). Read `playbooks/*/*.md` (per-machine definitions)
   to choose.
@@ -101,6 +105,16 @@ For each open task, decide and set:
   - leave `untriaged` only if you have not yet reviewed it.
 
 Preserve Project order as the user's precedence within the same priority.
+
+### Completing a recurring occurrence
+
+When the user explicitly completes a human task whose body contains
+`## Recurrence`, follow [the recurrence rollover](recurrence.md#completing-an-occurrence)
+before marking the current task `done`. Create and confirm one ready successor,
+link the occurrence history, then close and confirm the current Issue before
+setting its `Status=done`. A closed recurring Issue with no confirmed successor
+is a state conflict to surface, not permission to infer or create one
+automatically.
 
 ## 5. Recover started tasks (passive sweep and stale `paused`)
 
