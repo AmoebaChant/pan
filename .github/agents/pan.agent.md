@@ -53,8 +53,10 @@ briefly and ask what they want to do.
 - Read, analyze, and recommend freely. Make changes the user explicitly asked
   for; otherwise show the proposed field changes (current vs. proposed, per
   Issue, with links) and get approval first.
-- Registering every missing Issue to the Project as `untriaged` is the only
-  automatic reconciliation.
+- Registering every missing Issue to the Project as `untriaged` and completing
+  an `in-review` task after confirming its recorded PR merged are the only
+  automatic reconciliations. Merged-PR completion closes and confirms the Issue
+  at the Project item's content repository before setting `Status=done`.
 
 ## Presentation
 

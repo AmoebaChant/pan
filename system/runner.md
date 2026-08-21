@@ -128,6 +128,11 @@ A crash the owning runner cannot report itself (the whole runner died) leaves an
 `in-progress` item with an expiring lease; the [poll-time sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)
 on any runner flips it to `paused` once the lease has expired.
 
+Every poll also clears stale `claimed-by` and `lease-until` values from terminal
+`in-review`, `done`, and `blocked` items after a confirming re-read. This
+finishes cleanup after a crash between non-atomic GitHub field writes without
+changing the terminal lifecycle state.
+
 An operational failure that is not a crash — launch failed, terminal could not
 open — restores the state from which launch was attempted: a new task returns
 to `ready`, while a failed resume remains `paused` so its established session
@@ -169,9 +174,10 @@ the worker's working directory.
 
 **Runner → worker (written before launch):**
 
-- `.pan/task.json` — the task: Issue number, title, body, URL, chosen
-  `playbook`, optional `workstream`, and any recorded answers. Read-only to the
-  worker.
+- `.pan/task.json` — the task: Project item id; Issue number, title, body, URL,
+  and repository; chosen `playbook`; optional `workstream`; and any recorded
+  answers. Read-only to the worker. The Project item id is the runner's
+  canonical identity because Issue numbers are repository-local.
 
 **Worker → runner:**
 
@@ -185,17 +191,26 @@ the worker's working directory.
   `{ "outcome": "done" | "needs-review", "summary": "…", "details": "…" }`.
   The runner records the summary/details on the Issue and moves the Project item
   to `done` (outcome `done`) or `in-review` (outcome `needs-review`). When it
-  sets `done` it also closes the Issue as completed, per the
+  sets `done` it first confirms the Issue is closed as completed, per the
   [project schema](project-schema.md) (`done` and a closed Issue go together).
-  For
-  pull-request work, the runner should confirm the merge from GitHub before
+  For pull-request work, the runner should confirm the merge from GitHub before
   setting `done`; in the current implementation this merge confirmation is
   best-effort and not yet enforced — a playbook that must not auto-complete
-  before merge should report `needs-review` rather than `done`. A **cross-repo**
-  PR (its Issue in the Domain repository, its PR in another) cannot be confirmed
-  this way at all, since GitHub links neither the PR nor the merge back to the
-  Issue; such a task stays `in-review` until [triage](triage.md) reconciles the
-  merge from the PR link the worker recorded on the Issue.
+  before merge should report `needs-review` rather than `done`.
+  A task reported as `needs-review` stays `in-review` until
+  [triage](triage.md) reconciles the merge from the PR link the worker recorded
+  on the Issue.
+  Completion writes are idempotent and retried with backoff without consuming
+  worker capacity. Three failures before the terminal Status is committed move
+  the task to `blocked` and post a durable escalation comment. If the terminal
+  Status was committed but lease cleanup was interrupted, the runner keeps
+  retrying only that cleanup and every poll independently repairs stale
+  terminal lease fields. Neither path sets `needs-human-since`, because no live
+  worker remains waiting at a terminal.
+  After a runner restart, an isolated workspace with a pending result and a
+  matching `done` or `in-review` Status (or this runner's `blocked` escalation)
+  is re-adopted long enough to confirm cleanup and write `worker.stop`; it is
+  not mistaken for an unrelated manual transition.
 
 **Runner → worker (written after finalizing):**
 

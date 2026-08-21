@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FIELD, preparePoll } from '../bin/pan-runner-poll.js';
+import {
+  cleanTerminalLeaseFields,
+  FIELD,
+  findProjectItemForTask,
+  pendingFinalizationKind,
+  preparePoll,
+} from '../bin/pan-runner-poll.js';
 
 const NOW = Date.parse('2026-08-21T16:00:00.000Z');
 const EXPIRED = '2026-08-21T15:00:00.000Z';
@@ -65,6 +71,159 @@ function pollOptions(items, overrides = {}) {
     },
   };
 }
+
+test('pending finalization recognizes active and partial terminal commits', () => {
+  const identity = 'runner-a';
+
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'in-progress',
+      pendingStatus: 'done',
+      claimedBy: identity,
+      identity,
+    }),
+    'active',
+  );
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'done',
+      pendingStatus: 'done',
+      claimedBy: '',
+      identity,
+    }),
+    'terminal',
+  );
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'blocked',
+      pendingStatus: 'done',
+      claimedBy: identity,
+      identity,
+    }),
+    'escalated',
+  );
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'in-review',
+      pendingStatus: 'done',
+      claimedBy: identity,
+      identity,
+    }),
+    null,
+  );
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'done',
+      pendingStatus: 'done',
+      claimedBy: 'runner-b',
+      identity,
+    }),
+    null,
+  );
+});
+
+test('workspace matching uses Project item or repository identity', () => {
+  const domain = projectItem({ id: 'domain-42', number: 42 });
+  domain.issue.repo = 'example/domain';
+  domain.issue.url = 'https://github.com/example/domain/issues/42';
+  const external = projectItem({ id: 'external-42', number: 42 });
+  external.issue.repo = 'example/external';
+  external.issue.url = 'https://github.com/example/external/issues/42';
+  const items = [domain, external];
+
+  assert.equal(
+    findProjectItemForTask(items, {
+      itemId: 'external-42',
+      number: 42,
+      url: domain.issue.url,
+      repo: domain.issue.repo,
+    }).itemId,
+    'external-42',
+  );
+  assert.equal(
+    findProjectItemForTask(items, {
+      number: 42,
+      url: external.issue.url,
+    }).itemId,
+    'external-42',
+  );
+  assert.equal(
+    findProjectItemForTask(items, {
+      number: 42,
+      repo: 'example/external',
+    }).itemId,
+    'external-42',
+  );
+  assert.equal(findProjectItemForTask(items, { number: 42 }), null);
+});
+
+test('active work suppresses only its exact Project item', async () => {
+  const first = projectItem({ id: 'domain-42', number: 42 });
+  first.fields[FIELD.status] = 'ready';
+  first.fields[FIELD.leaseUntil] = '';
+  first.fields[FIELD.claimedBy] = '';
+  const second = clone(first);
+  second.itemId = 'external-42';
+  second.issue.repo = 'example/external';
+  second.issue.url = 'https://github.com/example/external/issues/42';
+  const { options } = pollOptions([first, second], {
+    active: new Map([['domain-42', { itemId: 'domain-42' }]]),
+  });
+
+  const result = await preparePoll([first, second], options);
+
+  assert.deepEqual(
+    result.candidates.map((item) => item.itemId),
+    ['external-42'],
+  );
+});
+
+test('terminal tasks have stale lease fields cleared and confirmed', async () => {
+  const source = ['in-review', 'done', 'blocked'].map((status, index) => {
+    const item = projectItem({
+      id: `terminal-${status}`,
+      number: 20 + index,
+    });
+    item.fields[FIELD.status] = status;
+    return item;
+  });
+  const byId = new Map(source.map((item) => [item.itemId, clone(item)]));
+  const writes = [];
+
+  const cleaned = await cleanTerminalLeaseFields(source, {
+    readItem: async (itemId) => clone(byId.get(itemId)),
+    clearFields: async (itemId) => {
+      writes.push(itemId);
+      const item = byId.get(itemId);
+      item.fields[FIELD.claimedBy] = '';
+      item.fields[FIELD.leaseUntil] = '';
+    },
+  });
+
+  assert.deepEqual(writes, source.map((item) => item.itemId));
+  assert.deepEqual(cleaned.map((item) => item.itemId), writes);
+  for (const item of cleaned) {
+    assert.equal(item.fields[FIELD.claimedBy], '');
+    assert.equal(item.fields[FIELD.leaseUntil], '');
+  }
+});
+
+test('terminal cleanup does not touch work that became active on re-read', async () => {
+  const source = projectItem({ id: 'terminal-race', number: 23 });
+  source.fields[FIELD.status] = 'done';
+  let writes = 0;
+
+  const cleaned = await cleanTerminalLeaseFields([source], {
+    readItem: async () =>
+      projectItem({ id: 'terminal-race', number: 23, leaseUntil: VALID }),
+    clearFields: async () => {
+      writes += 1;
+    },
+  });
+
+  assert.equal(writes, 0);
+  assert.deepEqual(cleaned, []);
+});
 
 test('stale local fixed and isolated tasks are resumable in the same poll', async () => {
   const source = [
@@ -189,7 +348,7 @@ test('an expired task still supervised by this runner is not swept', async () =>
   const source = [projectItem({ id: 'supervised-item', number: 8 })];
   let reads = 0;
   const { options, writes } = pollOptions(source, {
-    active: new Map([[8, { itemId: 'supervised-item' }]]),
+    active: new Map([['supervised-item', { itemId: 'supervised-item' }]]),
     readItem: async () => {
       reads += 1;
       return clone(source[0]);
