@@ -57,24 +57,26 @@ runner.
 
 Each cycle:
 
-1. Read ready agent work from the Project: items with `owner=agent`,
-   `Status=ready`, and a non-empty `playbook` (the [dispatch
-   rule](project-schema.md#dispatch-rule)). Read the full item set; do not stop
-   at a default page.
-2. Keep only items whose `playbook` names a playbook in this machine's
-   `playbooks/<machine>/` folder with spare capacity (global and per-playbook),
-   and whose lease is free (`lease-until` empty or in the past, or `claimed-by`
-   is this runner).
-3. Order by `priority` (`urgent` > `high` > `normal` > `low`), preserving
-   Project order among ties. Claim from the top while capacity remains.
-4. **Resume this machine's paused tasks.** For items with `Status=paused` and
+1. Read the full Project item set; do not stop at a default page.
+2. **Sweep stale running tasks to `paused`.** For every item with
+   `Status=in-progress` and an expired lease that this runner is not itself
+   supervising, re-read it to confirm that the lease is still expired, then
+   change only `Status` to `paused` (see [the paused
+   sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)).
+   Active leases and malformed lease timestamps are left untouched. A local
+   item swept this way can be selected for resume in this same cycle.
+3. **Resume this machine's paused tasks.** For items with `Status=paused` and
    `machine` equal to this machine, resume them (see [resume](#lease-driven-resume)),
    subject to the same capacity limits, before or alongside claiming new `ready`
    work. Paused tasks pinned to another machine are left untouched.
-5. **Sweep stale running tasks to `paused`.** For any item that is
-   `in-progress` with an expired lease that this runner is not itself
-   supervising, flip it to `paused` (see [the paused sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)).
-   This is a safe, visibility-only write.
+4. Read ready agent work: items with `owner=agent`, `Status=ready`, and a
+   non-empty `playbook` (the [dispatch rule](project-schema.md#dispatch-rule)).
+5. Keep only items whose `playbook` names a playbook in this machine's
+   `playbooks/<machine>/` folder with spare capacity (global and per-playbook),
+   and whose lease is free (`lease-until` empty or in the past, or `claimed-by`
+   is this runner). Order by `priority` (`urgent` > `high` > `normal` > `low`),
+   preserving Project order among ties, and claim from the top while capacity
+   remains.
 6. Back off when idle, and handle GitHub rate limits with bounded retries.
 
 `--once` runs a single cycle and then supervises whatever it launched;

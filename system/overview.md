@@ -7,8 +7,9 @@ with work, and gets blocked agents back in front of you fast.
 Pan is defined almost entirely in Markdown. The behavior, conventions, and
 contracts in [`system/`](.) *are* the system: an agent that reads and follows
 them is Pan. The only program is a small [runner](runner.md) that polls for work
-and launches Pan worker sessions. There are no tests and no other machinery —
-if something is ambiguous, the fix is to make these documents clearer.
+and launches Pan worker sessions, with focused automated coverage for critical
+runner behavior. If something is ambiguous, the fix is to make these documents
+clearer.
 
 ## The pieces
 

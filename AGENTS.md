@@ -32,5 +32,5 @@ This is the public Pan tool repository and holds no user data. Read
 [CONTRIBUTING.md](CONTRIBUTING.md) first: work on a feature branch (never the
 default branch), keep the design MD-first (behavior and contracts live in
 `system/`, not in code), and never commit private Domain data, credentials, or
-user-specific paths. There are no tests — correctness is defined by the clarity
-of the `system/` contracts.
+user-specific paths. The `system/` contracts define correctness; run the
+focused runner tests under `test/` when changing covered behavior.
