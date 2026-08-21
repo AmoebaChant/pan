@@ -15,7 +15,7 @@ reads as its documented default rather than as an error.
 | Field | Type | Owned by | Meaning |
 | --- | --- | --- | --- |
 | `owner` | single select | triage | `unassigned` \| `human` \| `agent`. Empty reads as `unassigned`. Separates the human queue from the agent queue; nothing else does. |
-| `Status` | single select | triage, then the runner | `untriaged` \| `needs-detail` \| `ready` \| `in-progress` \| `paused` \| `in-review` \| `done` \| `blocked`. Empty reads as `untriaged`. |
+| `Status` | single select | triage, then the runner | `untriaged` \| `needs-detail` \| `ready` \| `in-progress` \| `paused` \| `in-review` \| `done` \| `rejected` \| `blocked`. Empty reads as `untriaged`. |
 | `priority` | single select | triage | `urgent` \| `high` \| `normal` \| `low`. Empty reads as `normal`. |
 | `next-action-date` | date | triage | The day a human task should next receive attention. Triage recommends it from the Issue and its workstream context. Empty means unscheduled; agent-owned tasks leave it empty. |
 | `playbook` | text | triage | The name of the playbook that should run this task (see [playbooks](playbooks.md)). Empty means no playbook has been chosen yet. |
@@ -57,14 +57,18 @@ reads as its documented default rather than as an error.
   active or paused work. Setting `Status=done` and closing the Issue go
   together: whoever marks a task `done` also closes its Issue as completed
   (`gh issue close --reason completed`).
+- `rejected` — terminal work the user deliberately chose not to pursue. It is
+  never dispatchable or completed work. Setting `Status=rejected` and closing
+  the Issue as not planned (`gh issue close --reason "not planned"`) go
+  together.
 - `blocked` — waiting on something outside the user's control, with no worker
   holding it. This is the *only* meaning of `blocked`.
 
-`done` is the only Status consistent with a closed Issue. A closed Issue in any
-other Status, or an open Issue in `done`, is a state conflict: clients surface
-it for repair instead of filtering the task out or guessing which side is
-correct. A `NOT_PLANNED` closure is never completion and cannot justify
-`Status=done`.
+`done` with a completed closure and `rejected` with a not-planned closure are
+the only Status/Issue-state pairs for closed work. Any other closed-Status
+pairing, or an open Issue in `done` or `rejected`, is a state conflict: clients
+surface it for repair instead of filtering the task out or guessing which side
+is correct.
 
 ### Status transitions
 
@@ -74,6 +78,7 @@ in-progress --lease expires (runner crash / force-close / graceful stop)--> paus
 paused --owning machine resumes--> in-progress
 in-progress / paused --> in-review / done   (normal completion)
 paused --triage clears resume info--> ready  (manual cross-machine handoff)
+untriaged / needs-detail / ready / paused / in-review / blocked --user declines--> rejected
 ```
 
 Machine-pinning applies only to **resumes**: `ready` work is never pinned, so

@@ -43,7 +43,9 @@ Create any missing custom fields exactly as [`project-schema.md`](../../system/p
 defines them — `owner` and `priority` (single-select with the listed options),
 `next-action-date` (date), and `playbook`, `workstream`, `needs-human-since`,
 `lease-until`, `claimed-by`, `machine`, `session-id` (text) — plus the built-in
-`Status` field's options. Never rename `Status`.
+`Status` field's full canonical option set, including `rejected`. When
+connecting an existing Project, add any missing canonical options without
+changing its existing options or assigned values. Never rename `Status`.
 Verify each field afterward.
 
 ## 4. Scaffold the Domain repository
