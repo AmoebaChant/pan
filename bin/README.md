@@ -136,7 +136,9 @@ or supervision rather than during the idle sleep.
 
 Written by the runner before launch:
 
-- `.pan/task.json` — `{ number, title, body, url, playbook, workstream, answers }`.
+- `.pan/task.json` —
+  `{ itemId, number, title, body, url, repo, playbook, workstream, answers }`.
+  `itemId` keys runner state because Issue numbers are repository-local.
 - `.pan/playbook.md` — the chosen playbook's instructions (fetched from the Domain).
 - `.pan/launch-prompt.txt` — the initial prompt handed to `copilot`.
 - `.pan/launch.mjs` — a generated Node launcher (ESM). Run with its CWD set to
@@ -165,13 +167,26 @@ Written by the worker:
   signal never posts a placeholder question.
 - `.pan/result.json` — `{ outcome: "done" | "needs-review", summary, details }`,
   written once when finished. The runner records it on the Issue and moves the
-  Project item to `done` or `in-review`. Only the exact outcomes `done` and
-  `needs-review` are accepted; a missing, misspelled, or otherwise invalid
-  outcome does **not** default to `done` — the runner logs the problem and leaves
-  the worker active (retried each tick). An invalid or unreadable `result.json`
-  does **not** disable supervision: the runner keeps supervising that worker the
-  same tick (human-attention relay, liveness check, and lease renewal all
-  continue) so the worker can correct its result without the task stalling.
+  Project item to `done` or `in-review`. For `done`, it closes and re-reads the
+  Issue before committing the Project status. Only the exact outcomes `done`
+  and `needs-review` are accepted; a missing, misspelled, or otherwise invalid
+  outcome does **not** default to `done` — the runner logs the problem and
+  leaves the worker active (retried each tick). An invalid or unreadable
+  `result.json` does **not** disable supervision: the runner keeps supervising
+  that worker the same tick (human-attention relay, liveness check, and lease
+  renewal all continue) so the worker can correct its result without the task
+  stalling.
+  Completion comments carry a durable marker so retries do not duplicate them.
+  Finalization retries use backoff without consuming worker capacity. Three
+  failures before the terminal Status is committed move the task to `blocked`
+  with a durable Issue comment. Partial terminal lease cleanup keeps retrying
+  and is independently repaired by each poll. The runner does not set
+  `needs-human-since` for either path because the finished worker is no longer
+  waiting at its terminal.
+  Rehydration recognizes pending results whose `done` or `in-review` Status was
+  committed before a crash, as well as this runner's partial `blocked`
+  escalation, and finishes cleanup plus `worker.stop` instead of orphaning a
+  live terminal.
 
 Written by the runner after finalizing:
 

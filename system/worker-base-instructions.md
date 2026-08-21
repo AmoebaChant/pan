@@ -11,9 +11,9 @@ Domain and the target repository your playbook names.
 
 ## Your inputs
 
-- `.pan/task.json` — the Issue (number, title, body, URL), your `playbook`, the
-  optional `workstream`, and any answers already recorded for you. This is your
-  source of truth for the task.
+- `.pan/task.json` — the Project item id; Issue number, title, body, URL, and
+  repository; your `playbook`; the optional `workstream`; and any answers
+  already recorded for you. This is your source of truth for the task.
 - Your playbook's instructions — how to set up, build, test, and deliver.
 - `.pan/pan.md` (when present) — the Domain's own instructions that extend the
   generic Pan system for this user's Domain. Read it and apply it alongside your
@@ -67,26 +67,28 @@ example, a pull request awaiting merge); use `done` when nothing further is
 needed. The runner records this on the Issue and sets the Project status
 accordingly. Do not edit any Project field yourself.
 
-### Cross-repo deliverables (record the PR link)
+### Pull-request deliverables (link without auto-closing)
 
-When your deliverable is a pull request in a repository **different from the one
-your Domain Issue lives in** — for example a `pan-dev` task whose Issue is in the
-Domain repository but whose PR targets `AmoebaChant/pan` — GitHub's native
-"Linked pull requests" field and `Closes #N` auto-close **do not work across
-repositories**. The Issue would show no linked PR and would never auto-close on
-merge. Make the linkage explicit and durable yourself:
+GitHub closing keywords bypass Pan's lifecycle and can hide work that remains
+after a merge. Pan, not the pull request, owns task completion:
 
-- **Record the PR on the Domain Issue.** Post a comment on the Domain Issue whose
-  first line is `Pan: pull request <PR URL>` (the full `https://github.com/…/pull/<n>`
-  URL). This one fixed marker makes the cross-repo link discoverable without
-  opening the target repository, and lets a later triage sweep find the PR to
-  reconcile its merge. Put the same URL in your `result.json` `details` too.
-- **Report `needs-review`, never `done`, for PR work.** A cross-repo PR is not
-  merged when you finish, so completion is not yours to declare. Reporting
-  `needs-review` leaves the task in `in-review` until the merge is reconciled.
-- **Do not close the Issue or mark it done yourself.** Completion happens when
-  the PR merges; triage reconciles the merge and closes the Issue then (see
-  [triage](triage.md)).
+- **Reference without closing.** Use `Refs #N` for an Issue in the pull
+  request's repository, or `Refs <full Issue URL>` across repositories. In pull
+  request descriptions and commit messages, never put any GitHub closing
+  keyword before a Pan task reference: `close`, `closes`, `closed`, `fix`,
+  `fixes`, `fixed`, `resolve`, `resolves`, or `resolved` (case-insensitive).
+- **Record every PR on the task Issue.** Post a comment whose first line is
+  `Pan: pull request <PR URL>` (the full `https://github.com/…/pull/<n>` URL).
+  This fixed marker gives triage one durable link for both same-repository and
+  cross-repository work. Put the same URL in your `result.json` `details`.
+- **Use `needs-review` when merge is all that remains.** This leaves the task
+  `in-review` so triage can confirm the merge, set `done`, and close the Issue.
+- **Stay active through post-merge work.** If the playbook requires rollout,
+  restart, verification, or any other step after merge, do not write
+  `result.json` at merge time. Finish those gates first, then report `done`.
+- **Never close the Issue yourself.** The runner closes it for a worker's
+  `done` result; triage closes an `in-review` task after confirming its recorded
+  PR merged.
 
 ## Improving Pan as you go
 

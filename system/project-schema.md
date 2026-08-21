@@ -51,12 +51,20 @@ reads as its documented default rather than as an error.
   means "waiting on the outside world."
 - `in-review` — the worker finished but a human should look before it is done
   (for example, a pull request awaiting merge).
-- `done` — complete and confirmed. For pull-request work, confirmed merged.
-  Setting `Status=done` and closing the Issue go together: whoever marks a task
-  `done` also closes its Issue as completed (`gh issue close --reason
-  completed`), and a task is never left `done` with its Issue still open.
+- `done` — complete and confirmed. Pull-request work reaches this only when an
+  `in-review` PR is confirmed merged, or when a live worker finishes every
+  playbook step including any post-merge gates. A merge alone never completes
+  active or paused work. Setting `Status=done` and closing the Issue go
+  together: whoever marks a task `done` also closes its Issue as completed
+  (`gh issue close --reason completed`).
 - `blocked` — waiting on something outside the user's control, with no worker
   holding it. This is the *only* meaning of `blocked`.
+
+`done` is the only Status consistent with a closed Issue. A closed Issue in any
+other Status, or an open Issue in `done`, is a state conflict: clients surface
+it for repair instead of filtering the task out or guessing which side is
+correct. A `NOT_PLANNED` closure is never completion and cannot justify
+`Status=done`.
 
 ### Status transitions
 
@@ -127,6 +135,10 @@ backlog reflects the truth even after a crash:
 - On **manual handoff** (triage), clearing `machine` and `session-id` (and any
   `needs-human-since`) and setting `Status=ready` drops the pin so another
   machine starts the task fresh.
+- On **terminal status cleanup**, any runner may clear stale `claimed-by` and
+  `lease-until` from `in-review`, `done`, or `blocked` after re-reading the
+  item. These statuses cannot have a live worker, so retaining a claim would be
+  false provenance rather than ownership.
 
 ## Dispatch rule
 

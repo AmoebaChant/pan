@@ -19,6 +19,48 @@ export const ownerOf = (item) => val(item, FIELD.owner, 'unassigned') || 'unassi
 export const statusOf = (item) => val(item, FIELD.status, 'untriaged') || 'untriaged';
 const priorityOf = (item) => val(item, FIELD.priority, 'normal') || 'normal';
 
+export function findProjectItemForTask(items, task) {
+  if (task.itemId) {
+    const byItemId = items.find((item) => item.itemId === task.itemId);
+    if (byItemId) return byItemId;
+  }
+  if (task.url) {
+    return items.find((item) => item.issue?.url === task.url) || null;
+  }
+  if (task.repo && task.number) {
+    return (
+      items.find(
+        (item) =>
+          item.issue?.repo === task.repo &&
+          item.issue?.number === task.number,
+      ) || null
+    );
+  }
+  return null;
+}
+
+export function pendingFinalizationKind({
+  projectStatus,
+  pendingStatus,
+  claimedBy,
+  identity,
+}) {
+  if (projectStatus === 'in-progress' && claimedBy === identity) return 'active';
+  if (
+    pendingStatus === projectStatus &&
+    (!claimedBy || claimedBy === identity)
+  ) {
+    return 'terminal';
+  }
+  if (
+    projectStatus === 'blocked' &&
+    (!claimedBy || claimedBy === identity)
+  ) {
+    return 'escalated';
+  }
+  return null;
+}
+
 function parseLeaseTimestamp(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/.exec(value);
   if (!match) return null;
@@ -56,6 +98,61 @@ function warnMalformedLease(item, consequence, warn) {
     `warning: unparseable ${FIELD.leaseUntil} value ` +
     `${JSON.stringify(val(item, FIELD.leaseUntil, ''))} on ${itemLabel(item)}; ${consequence}`,
   );
+}
+
+/** Remove stale ownership from work that can no longer have a live worker. */
+export async function cleanTerminalLeaseFields(
+  items,
+  {
+    readItem,
+    clearFields,
+    warn = () => {},
+  },
+) {
+  const terminalStatuses = new Set(['in-review', 'done', 'blocked']);
+  const cleaned = [];
+
+  for (const item of items) {
+    if (
+      !terminalStatuses.has(statusOf(item)) ||
+      (!val(item, FIELD.claimedBy, '') && !val(item, FIELD.leaseUntil, ''))
+    ) {
+      continue;
+    }
+
+    let fresh;
+    try {
+      fresh = await readItem(item.itemId);
+    } catch (error) {
+      warn(`terminal lease re-read failed for ${itemLabel(item)}: ${error.message}`);
+      continue;
+    }
+    if (
+      !fresh ||
+      !terminalStatuses.has(statusOf(fresh)) ||
+      (!val(fresh, FIELD.claimedBy, '') && !val(fresh, FIELD.leaseUntil, ''))
+    ) {
+      continue;
+    }
+
+    try {
+      await clearFields(fresh.itemId);
+      const confirmed = await readItem(fresh.itemId);
+      if (
+        !confirmed ||
+        !terminalStatuses.has(statusOf(confirmed)) ||
+        val(confirmed, FIELD.claimedBy, '') ||
+        val(confirmed, FIELD.leaseUntil, '')
+      ) {
+        throw new Error('GitHub did not confirm terminal lease cleanup.');
+      }
+      cleaned.push(confirmed);
+    } catch (error) {
+      warn(`terminal lease cleanup failed for ${itemLabel(fresh)}: ${error.message}`);
+    }
+  }
+
+  return cleaned;
 }
 
 /** Whether a claim can proceed without taking work from a live runner. */
@@ -139,7 +236,7 @@ function selectCandidates(items, cfg, playbooks, active, { now, warn }) {
     if (!playbook || !playbooks.has(playbook)) return false;
     if (playbooks.get(playbook).capacity <= 0) return false;
     if (!leaseIsFree(item, cfg.identity, { now, warn })) return false;
-    if (item.issue && active.has(item.issue.number)) return false;
+    if (active.has(item.itemId)) return false;
     return true;
   };
 
@@ -179,7 +276,7 @@ export async function preparePoll(
     now,
     readItem,
     setPaused,
-    isSupervised: (item) => !!item.issue && active.has(item.issue.number),
+    isSupervised: (item) => active.has(item.itemId),
     warn,
   });
   return {

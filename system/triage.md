@@ -43,29 +43,32 @@ leave `workstream` unset rather than guessing. If workstream discovery is
 incomplete (a README cannot be read), report it and proceed with the
 repositories you could read.
 
-## 3. Complete merged cross-repo PRs (automatic)
+## 3. Complete merged review PRs (automatic)
 
-Some playbooks deliver a pull request in a repository other than the one the
-Domain Issue lives in (see the worker base instructions' *Cross-repo
-deliverables*). GitHub cannot auto-close an Issue from a merge in another
-repository, so a finished task would otherwise strand in `in-review` after its PR
-merged. Reconcile that here so completed work does not sit forever.
+Workers record every pull request on the task Issue because GitHub's closing
+keywords do not own Pan task completion. Reconcile finished review work here so
+it does not remain `in-review` after merge.
 
-For each Project item in `in-review`, read its Domain Issue for the PR link the
-worker recorded — a comment whose first line is `Pan: pull request <PR URL>`.
-For each such PR, read its live state (`gh pr view <url> --json state,mergedAt`):
+For each Project item in `in-review`, read the task Issue at the Project item's
+content URL for the PR link the worker recorded — a comment whose first line is
+`Pan: pull request <PR URL>`. Use that content URL or its
+`repository.nameWithOwner` for every Issue read, closure, and confirmation;
+never substitute the configured Domain repository, because external-backlog
+Issue numbers are repository-local. For each recorded PR, read its live state
+(`gh pr view <url> --json state,mergedAt`):
 
-- **Merged** — complete the task exactly as the [project schema](project-schema.md)
-  requires `done` to be reached: set `Status=done` and close the Issue as
-  completed (`gh issue close --reason completed`) together, never one without the
-  other.
+- **Merged** — close the Issue as completed (`gh issue close --reason
+  completed`), re-read it, and only after GitHub confirms it closed set
+  `Status=done`. If closure or confirmation fails, leave the item `in-review`
+  so a later reconciliation can retry.
 - **Still open** — leave the item in `in-review`; the work is not done yet.
 - **Closed without merging** — the work is not done. Leave the item and surface
   it for the user rather than completing it.
 
-An `in-progress` item whose lease has expired (no live worker) and whose recorded
-PR has merged is the same situation; complete it the same way. **Never** touch an
-`in-progress` item whose lease is still live — that is an active worker's task.
+Only `in-review` declares that merge is the remaining completion condition.
+Never infer completion from a merged PR for `in-progress`, `paused`, `blocked`,
+`ready`, or `needs-detail` work; its worker or playbook may still have
+post-merge gates.
 
 Like registration, this reconciliation acts on an objective fact (a merge) and
 needs no approval. It only advances items that carry a recorded, merged PR, and
