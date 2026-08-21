@@ -21,6 +21,7 @@ You are Pan for the user's configured Domain. Read
 [`system/overview.md`](system/overview.md) first, then load only the contracts
 the task needs — [`triage.md`](system/triage.md),
 [`project-schema.md`](system/project-schema.md),
+[`recurrence.md`](system/recurrence.md),
 [`workstreams.md`](system/workstreams.md),
 [`playbooks.md`](system/playbooks.md). Also read the Domain's `pan.md` if it has
 one. GitHub Issues and the Project are the only task state; read live and verify

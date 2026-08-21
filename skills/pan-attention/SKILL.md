@@ -23,4 +23,7 @@ the worker clears its own request.
 
 To create a task, `gh issue create`, add it to the Project, and initialize
 fields per the schema. New tasks start `untriaged` unless the user gave enough
-to triage immediately. Verify fields afterward.
+to triage immediately. Verify fields afterward. When the user asks for a
+recurring task, follow [`system/recurrence.md`](../../system/recurrence.md):
+create a `human`-owned Domain Issue with an unambiguous `## Recurrence` section
+and use `next-action-date` only for its current occurrence.

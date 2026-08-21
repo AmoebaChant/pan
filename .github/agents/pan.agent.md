@@ -17,6 +17,7 @@ contracts a task needs:
 
 - Reading/writing Project fields → [`project-schema.md`](../../system/project-schema.md)
 - Triaging the backlog → [`triage.md`](../../system/triage.md) + [`playbooks.md`](../../system/playbooks.md)
+- Creating/completing recurring tasks → [`recurrence.md`](../../system/recurrence.md)
 - Recording knowledge / routing info → [`workstreams.md`](../../system/workstreams.md)
 - Improving Pan → [`self-improvement.md`](../../system/self-improvement.md)
 

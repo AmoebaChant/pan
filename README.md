@@ -45,7 +45,8 @@ See [`system/runner.md`](system/runner.md) for the full contract.
 The system is the documentation. Read [`system/overview.md`](system/overview.md)
 and the contracts it links: [domain](system/domain.md),
 [project schema](system/project-schema.md), [triage](system/triage.md),
-[workstreams](system/workstreams.md), [playbooks](system/playbooks.md),
+[recurrence](system/recurrence.md), [workstreams](system/workstreams.md),
+[playbooks](system/playbooks.md),
 [runner](system/runner.md),
 [worker base instructions](system/worker-base-instructions.md), and
 [self-improvement](system/self-improvement.md).

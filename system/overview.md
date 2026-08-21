@@ -58,6 +58,7 @@ Load only what the current job needs; skip the rest until you need it.
 | Working with the user's Domain | [domain](domain.md) |
 | Reading or writing Project fields | [project schema](project-schema.md) |
 | Triaging the backlog | [triage](triage.md) + [playbooks](playbooks.md) |
+| Creating or completing recurring tasks | [recurrence](recurrence.md) |
 | Recording knowledge / routing info | [workstreams](workstreams.md) |
 | Defining or choosing a playbook | [playbooks](playbooks.md) |
 | Building or debugging the runner | [runner](runner.md) |
