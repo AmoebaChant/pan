@@ -4,7 +4,8 @@ Pan is defined in Markdown. The behavior and contracts live in
 [`system/`](system/overview.md); the only code is the runner under `bin/`.
 Correctness is defined by the clarity and consistency of the `system/`
 contracts, so when you change behavior, change the relevant `system/` document
-in the same commit. There are no tests.
+in the same commit. Run `npm test` for the focused runner behaviors covered
+under `test/`.
 
 Keep the design MD-first: do not push behavior that belongs in a contract into
 the runner. The runner should only find work, coordinate leases, launch worker

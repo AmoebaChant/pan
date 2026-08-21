@@ -71,26 +71,19 @@ import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
+import {
+  FIELD,
+  leaseIsFree,
+  ownerOf,
+  preparePoll,
+  statusOf,
+  val,
+} from './pan-runner-poll.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const FIELD = {
-  status: 'Status',            // built-in Projects status field (capitalized)
-  owner: 'owner',
-  priority: 'priority',
-  nextActionDate: 'next-action-date',
-  playbook: 'playbook',
-  workstream: 'workstream',
-  needsHumanSince: 'needs-human-since',
-  leaseUntil: 'lease-until',
-  claimedBy: 'claimed-by',
-  machine: 'machine',
-  sessionId: 'session-id',
-};
-
-const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
 const DEFAULTS = {
   pollIntervalSeconds: 30,
   leaseMinutes: 15,
@@ -666,32 +659,6 @@ async function issueComment(repoSlug, number, bodyText) {
   await gh(['issue', 'comment', String(number), '--repo', repoSlug, '--body', bodyText]);
 }
 
-// ---------------------------------------------------------------------------
-// Field-value helpers with documented defaults
-// ---------------------------------------------------------------------------
-
-const val = (item, name, dflt = '') => (item.fields[name] ?? dflt);
-const ownerOf = (item) => val(item, FIELD.owner, 'unassigned') || 'unassigned';
-const statusOf = (item) => val(item, FIELD.status, 'untriaged') || 'untriaged';
-const priorityOf = (item) => val(item, FIELD.priority, 'normal') || 'normal';
-
-function leaseIsFree(item, identity) {
-  const until = val(item, FIELD.leaseUntil, '');
-  const claimedBy = val(item, FIELD.claimedBy, '');
-  if (claimedBy === identity) return true;
-  if (!until) return true;
-  const t = Date.parse(until);
-  // A non-empty lease-until that fails to parse is a corrupt value; per the
-  // schema a lease is free only when empty, in the past, or claimed by this
-  // runner. Treat an unparseable timestamp as OCCUPIED rather than free so a
-  // corrupt value can't hand the item to a second runner, and surface it.
-  if (Number.isNaN(t)) {
-    logErr(`warning: unparseable ${FIELD.leaseUntil} value "${until}" on item; treating lease as occupied`);
-    return false;
-  }
-  return t < Date.now();
-}
-
 /** Corroborate a `.pan/worker.running` marker by checking the recorded PID in
  *  `.pan/worker.pid` is actually a live process. Returns true only when the PID
  *  file is present, parseable, and `process.kill(pid, 0)` confirms the process
@@ -790,37 +757,19 @@ class Runner {
 
   async pollAndClaim() {
     const items = await readAllItems(this.cfg, this.meta);
-
-    const canRun = (it) => {
-      if (ownerOf(it) !== 'agent') return false;
-      const pb = val(it, FIELD.playbook, '');
-      if (!pb || !this.playbooks.has(pb)) return false;
-      if (this.playbooks.get(pb).capacity <= 0) return false;
-      if (!leaseIsFree(it, this.cfg.identity)) return false;
-      if (it.issue && this.active.has(it.issue.number)) return false;
-      return true;
-    };
-
-    const paused = items.filter((it) =>
-      statusOf(it) === 'paused'
-      && val(it, FIELD.machine, '') === this.cfg.machine
-      && !!val(it, FIELD.sessionId, '')
-      && canRun(it),
-    );
-    const ready = items.filter((it) => statusOf(it) === 'ready' && canRun(it));
-
-    // Sort by priority, preserving Project order (items array order) among ties.
-    const byPriority = (a, b) => {
-      const pa = PRIORITY_RANK[priorityOf(a)] ?? 2;
-      const pb = PRIORITY_RANK[priorityOf(b)] ?? 2;
-      if (pa !== pb) return pa - pb;
-      return items.indexOf(a) - items.indexOf(b);
-    };
-    paused.sort(byPriority);
-    ready.sort(byPriority);
-    // A paused task already owns local session/workspace state, so resume it
-    // before claiming new work at the same priority/capacity.
-    const candidates = [...paused, ...ready];
+    const { candidates, swept } = await preparePoll(items, {
+      cfg: this.cfg,
+      playbooks: this.playbooks,
+      active: this.active,
+      readItem: readItemById,
+      setPaused: (itemId) =>
+        setSelectField(this.cfg, this.meta, itemId, FIELD.status, 'paused'),
+      warn: logErr,
+    });
+    for (const item of swept) {
+      const label = item.issue?.number ? `#${item.issue.number}` : `Project item ${item.itemId}`;
+      log(`${label} paused: lease expired (passive sweep)`);
+    }
 
     let claimed = 0;
     for (const it of candidates) {
@@ -847,7 +796,7 @@ class Runner {
     const resuming = previousStatus === 'paused';
     if (ownerOf(fresh) !== 'agent' || (previousStatus !== 'ready' && !resuming)) return false;
     if (resuming && val(fresh, FIELD.machine, '') !== this.cfg.machine) return false;
-    if (!leaseIsFree(fresh, this.cfg.identity)) return false; // claim race — skip
+    if (!leaseIsFree(fresh, this.cfg.identity, { warn: logErr })) return false; // claim race — skip
     const pb = val(fresh, FIELD.playbook, '');
     if (!this.playbooks.has(pb)) return false;
 

@@ -3,6 +3,9 @@
   "version": "0.2.0",
   "description": "Markdown-defined personal chief-of-staff system with a small work runner.",
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "bin": {
     "pan-runner": "./bin/pan-runner.js"
   },

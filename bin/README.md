@@ -96,12 +96,15 @@ itself keeps **no** scratch, log, or state files under any temp directory.
 
 ## How a task flows
 
-1. **Poll** — read the full Project item set (GraphQL cursor pagination), select
-   this machine's resumable `paused` items before new `ready` items, and keep
-   work with `owner=agent` and a non-empty `playbook` this machine runs, with
-   spare capacity (global and per-playbook) and a free lease. Order each group
-   by `priority` (`urgent` > `high` > `normal` > `low`), preserving Project
-   order among ties.
+1. **Poll** — read the full Project item set (GraphQL cursor pagination),
+   passively sweep expired, unsupervised `in-progress` items to `paused`, then
+   select this machine's resumable `paused` items before new `ready` items. The
+   sweep re-reads each stale item and changes only `Status`; active or malformed
+   leases are untouched. A local item swept to `paused` is eligible in that
+   same poll. Candidate work must have `owner=agent`, a non-empty `playbook`
+   this machine runs, spare capacity (global and per-playbook), and a free
+   lease. Order each group by `priority` (`urgent` > `high` > `normal` > `low`),
+   preserving Project order among ties.
 2. **Claim or resume** — re-read the item to avoid races, then set `claimed-by`,
    `machine` (this machine's name), `lease-until` (near-future UTC), and
    `Status=in-progress`.
@@ -240,11 +243,13 @@ cached for the process lifetime; writes use `gh project item-edit`.
   `in-progress` it is released to `paused` (clearing
   `claimed-by`/`lease-until`) while retaining the workspace for resume — the
   runner never renews the lease of a dead PID forever. Workers launched into a
-  **fixed `workingDirectory`** are not
-  rediscovered (there is no persisted registry of launched handles), and the
-  exact child process is not re-attached — only file-signal supervision and lease
-  renewal resume. A paused isolated workspace remains discoverable across runner
-  restarts. An isolated workspace that is **inert** — no live worker and no
+  **fixed `workingDirectory`** are not rediscovered (there is no persisted
+  registry of launched handles), but their expired Project leases are swept to
+  `paused` during polling and the owning machine can relaunch them in that fixed
+  directory. The exact child process for an isolated workspace is not
+  re-attached — only file-signal supervision and lease renewal resume. A paused
+  isolated workspace remains discoverable across runner restarts. An isolated
+  workspace that is **inert** — no live worker and no
   longer this runner's to supervise (finalized, released, missing from the
   Project, or externally transitioned) — has its directory **pruned** during
   rehydration, so finished workspaces do not accumulate under `workspaceRoot` and

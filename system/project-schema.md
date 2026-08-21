@@ -106,15 +106,20 @@ backlog reflects the truth even after a crash:
   detects the worker PID is dead rather than waiting for expiry, collapsing the
   inconsistent state into `paused` immediately.
 - **Any runner's poll** (and **triage**, if it notices) performs a passive
-  sweep: `in-progress` + expired-lease → `paused`. This is safe, non-destructive,
-  and visibility-only, which is why a non-owner is permitted to write it.
+  sweep: `in-progress` + expired-lease → `paused`. It re-reads the item before
+  writing, changes only `Status`, and leaves active leases and malformed lease
+  timestamps untouched. This is safe, non-destructive, and visibility-only,
+  which is why a non-owner is permitted to write it.
 
 ### Field hygiene across pause and resume
 
-- On **pause**, keep durable provenance (`machine`, `session-id` — needed to
-  resume on the owning machine) and clear the lease-scoped fields (`lease-until`,
-  `claimed-by`). `needs-human-since` is left as it was; it is not a recovery
-  input.
+- On an **owner-initiated pause**, keep durable provenance (`machine`,
+  `session-id` — needed to resume on the owning machine) and clear the
+  lease-scoped fields (`lease-until`, `claimed-by`). `needs-human-since` is left
+  as it was; it is not a recovery input.
+- A **passive sweep** changes only `Status`. The expired `lease-until` and
+  historical `claimed-by` remain until the owning machine resumes and replaces
+  them with a fresh claim.
 - On **resume**, the owning runner (`machine == me AND Status == paused`) sets
   `Status=in-progress` with a fresh lease, reuses the recorded `session-id`, and
   clears `needs-human-since` so the worker re-raises the question if it still
