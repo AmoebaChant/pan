@@ -15,8 +15,9 @@ each agent task. Read live from GitHub with `gh`, read the complete Issue and
 Project item sets (fail closed on possible truncation), register every missing
 Issue as `untriaged` automatically, complete only `in-review` tasks whose
 recorded PR is confirmed merged by closing and confirming the Issue before
-setting `Status=done`, always targeting the Project item's content repository,
-and get approval before any other change.
+setting `Status=done`, and reconcile closed recurring Domain Issues from their
+live closure reason and occurrence markers. Always target the Project item's
+content repository, and get approval before any other change.
 
 Present recommendations with Issue links, current fields, and a clear
 current-vs-proposed table, and ask one focused question when live data is
