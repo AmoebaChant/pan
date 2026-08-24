@@ -64,7 +64,8 @@
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { readFile, mkdir, writeFile, readdir, stat, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
@@ -86,6 +87,10 @@ import {
   ensureIssueClosed,
   ensureIssueComment,
 } from './pan-issue-lifecycle.js';
+import {
+  CANONICAL_FIELD_COUNT,
+  schemaProblems,
+} from './pan-project-schema.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -474,82 +479,68 @@ async function resolveOwnerType(login) {
   throw new UserError(`Cannot resolve project owner "${login}" (got __typename=${t || 'none'}).`);
 }
 
-/** Resolve and cache project id, field ids, and single-select option ids. */
-async function loadProjectMeta(cfg) {
-  const ownerType = await resolveOwnerType(cfg.project.owner);
-  const query = `query($login:String!,$number:Int!){
-    ${ownerType}(login:$login){
-      projectV2(number:$number){
-        id
-        fields(first:50){ nodes{
-          __typename
-          ... on ProjectV2FieldCommon { id name }
-          ... on ProjectV2Field { dataType }
-          ... on ProjectV2SingleSelectField { id name options{ id name } }
-        } }
-      }
-    }
-  }`;
-  const data = await ghJson([
-    'api',
-    'graphql',
-    '-f',
-    `query=${query}`,
-    '-f',
-    `login=${cfg.project.owner}`,
-    '-F',
-    `number=${cfg.project.number}`,
-  ]);
-  const project = data.data[ownerType]?.projectV2;
-  if (!project) throw new UserError(`Project ${cfg.project.owner}/${cfg.project.number} not found.`);
-
-  const fields = new Map(); // name -> { id, dataType, options: Map(optName->optId)|null }
-  for (const f of project.fields.nodes) {
+/** Fold a page of Project field nodes into the runner's field map. */
+export function collectFieldNodes(nodes, fields = new Map()) {
+  for (const f of nodes || []) {
     if (!f?.name) continue;
     const options = f.options ? new Map(f.options.map((o) => [o.name, o.id])) : null;
     const dataType = f.dataType ?? (options ? 'SINGLE_SELECT' : f.__typename);
     fields.set(f.name, { id: f.id, dataType, options });
   }
-  return { ownerType, projectId: project.id, fields };
+  return fields;
+}
+
+/** Resolve project id, field ids, and single-select option ids. */
+export async function loadProjectMeta(cfg, deps = {}) {
+  const resolveOwner = deps.resolveOwnerType ?? resolveOwnerType;
+  const runJson = deps.ghJson ?? ghJson;
+  const ownerType = await resolveOwner(cfg.project.owner);
+  const query = `query($login:String!,$number:Int!,$cursor:String){
+    ${ownerType}(login:$login){
+      projectV2(number:$number){
+        id
+        fields(first:50, after:$cursor){
+          nodes{
+            __typename
+            ... on ProjectV2FieldCommon { id name }
+            ... on ProjectV2Field { dataType }
+            ... on ProjectV2SingleSelectField { id name options{ id name } }
+          }
+          pageInfo{ hasNextPage endCursor }
+        }
+      }
+    }
+  }`;
+  const fields = new Map(); // name -> { id, dataType, options: Map(optName->optId)|null }
+  let projectId = null;
+  let cursor = null;
+  for (;;) {
+    const args = [
+      'api',
+      'graphql',
+      '-f',
+      `query=${query}`,
+      '-f',
+      `login=${cfg.project.owner}`,
+      '-F',
+      `number=${cfg.project.number}`,
+    ];
+    if (cursor != null) args.push('-f', `cursor=${cursor}`);
+    const data = await runJson(args);
+    const project = data.data[ownerType]?.projectV2;
+    if (!project) throw new UserError(`Project ${cfg.project.owner}/${cfg.project.number} not found.`);
+    projectId = project.id;
+    collectFieldNodes(project.fields.nodes, fields);
+    const page = project.fields.pageInfo;
+    if (!page?.hasNextPage) break;
+    cursor = page.endCursor;
+  }
+  return { ownerType, projectId, fields };
 }
 
 /** Validate the resolved Project against the canonical field contract. */
 function validateProjectSchema(meta) {
-  const singleSelects = ['Status', 'owner', 'priority'];
-  const textFields = [
-    'playbook',
-    'workstream',
-    'needs-human-since',
-    'lease-until',
-    'claimed-by',
-    'machine',
-    'session-id',
-  ];
-  const dateFields = ['next-action-date'];
-  const problems = [];
-  for (const name of singleSelects) {
-    const f = meta.fields.get(name);
-    if (!f) problems.push(`missing single-select field "${name}"`);
-    else if (f.dataType !== 'SINGLE_SELECT' || !(f.options instanceof Map)) {
-      problems.push(
-        `field "${name}" must be a single-select (found ${f.dataType})`,
-      );
-    }
-  }
-  for (const name of textFields) {
-    const f = meta.fields.get(name);
-    if (!f) problems.push(`missing text field "${name}"`);
-    else if (f.dataType !== 'TEXT') {
-      problems.push(`field "${name}" must be a text field (found ${f.dataType})`);
-    }
-  }
-  for (const name of dateFields) {
-    const f = meta.fields.get(name);
-    if (!f) problems.push(`missing date field "${name}"`);
-    else if (f.dataType !== 'DATE') {
-      problems.push(`field "${name}" must be a date field (found ${f.dataType})`);
-    }
-  }
+  const problems = schemaProblems(meta.fields);
   if (problems.length > 0) {
     throw new UserError(`Project schema is invalid:\n  - ${problems.join('\n  - ')}`);
   }
@@ -2365,16 +2356,45 @@ async function main() {
   const meta = await loadProjectMeta(cfg);
   const playbooks = await loadPlaybooks(cfg);
 
+  return startAfterLoad({ cfg, meta, playbooks, args });
+}
+
+/**
+ * Surface actionable recovery guidance when a Project's schema has drifted, and
+ * report whether that drift must stop startup.
+ */
+export function reportSchemaDrift(problems, emit = logErr) {
+  if (problems.length === 0) return false;
+  emit('Project schema is out of date; the runner cannot poll safely.');
+  for (const problem of problems) emit(`  - ${problem}`);
+  emit('');
+  emit('Open Pan chat and run the "reconcile Project schema" action to bring the');
+  emit('Project up to date, then restart the runner. See system/project-schema.md');
+  emit('(Reconciling the Project schema) and system/runner.md.');
+  return true;
+}
+
+/** Decide startup from already-loaded state: validate, refuse on schema drift, or poll. */
+export async function startAfterLoad({
+  cfg,
+  meta,
+  playbooks,
+  args,
+  makeRunner = (c, m, p) => new Runner(c, m, p),
+}) {
   if (args['validate-config']) {
     validateProjectSchema(meta);
     log(`config OK: domain=${cfg.domainRepoSlug} project=${cfg.project.owner}/${cfg.project.number} machine=${cfg.machine}`);
     log(`worker permissions: ${cfg.workerPermissions}${cfg.workerPermissions === 'yolo' ? ' (workers launch with --allow-all)' : ''}`);
-    log(`project schema OK: all 11 canonical fields present with correct types`);
+    log(`project schema OK: all ${CANONICAL_FIELD_COUNT} canonical fields present with correct types and options`);
     log(`playbooks this machine runs: ${[...playbooks.keys()].join(', ')}`);
     return 0;
   }
 
-  const runner = new Runner(cfg, meta, playbooks);
+  // Refuse to poll a Project whose schema no longer satisfies the contract.
+  if (reportSchemaDrift(schemaProblems(meta.fields))) return 1;
+
+  const runner = makeRunner(cfg, meta, playbooks);
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => runner.requestDrain());
   }
@@ -2413,14 +2433,27 @@ function enableManualTrigger(runner) {
   log('press Enter or Space to queue a poll cycle now; Ctrl+C to drain and exit');
 }
 
-main()
-  .then((code) => process.exit(code ?? 0))
-  .catch((err) => {
-    if (err instanceof UserError) {
-      logErr(err.message);
-      process.stderr.write('\n' + USAGE);
-      process.exit(2);
-    }
-    logErr(`fatal: ${err?.stack || err}`);
-    process.exit(1);
-  });
+// Start the runner only when this file is the process entry point, not on import.
+function isCliEntryPoint() {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(invoked)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntryPoint()) {
+  main()
+    .then((code) => process.exit(code ?? 0))
+    .catch((err) => {
+      if (err instanceof UserError) {
+        logErr(err.message);
+        process.stderr.write('\n' + USAGE);
+        process.exit(2);
+      }
+      logErr(`fatal: ${err?.stack || err}`);
+      process.exit(1);
+    });
+}

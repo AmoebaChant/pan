@@ -26,6 +26,64 @@ reads as its documented default rather than as an error.
 | `machine` | text | the runner | Name of the machine whose runner ran the task (matches a `playbooks/<machine>/` folder). Durable provenance for machine-pinned resume: unlike the lease it survives pause. Empty means no runner has launched a worker for it yet. |
 | `session-id` | text | the runner | UUID of the copilot worker session the runner launched, so the work can be resumed or revisited later (`copilot --resume=<id>` / `--session-id=<id>`) on `machine`. Survives pause. Empty means no worker has been launched yet. |
 
+## Reconciling the Project schema
+
+The fields table above is the single source of truth for what a Project must
+provide, including each single-select's option set. Over time a Project can
+drift from it — most often when a new Pan version adds a field or a canonical
+option to an existing select. **Reconciling the Project schema** is the one
+documented, idempotent action that brings a Project back into line with this
+table. Setup runs it to provision a new Project, interactive Pan chat runs it to
+repair drift, and it is the action the runner points a user at when it refuses
+to poll a drifted Project. Because it is defined once here, no other document
+re-lists the fields or options; they all invoke this action.
+
+The action is **agent-only**: it mutates schema, so the unattended runner never
+performs it (see [runner](runner.md)). It is safe to rerun — a Project already
+in line is a no-op.
+
+Steps:
+
+1. **Read live.** Read the configured Project's current fields, their types, and
+   every existing single-select option from GitHub. The fields table above is
+   the canonical target.
+2. **Diff.** Compute only what is missing: canonical fields absent from the
+   Project, and canonical options absent from a single-select that already
+   exists. Ignore extra fields and extra options the Project already has — they
+   are never removed.
+3. **Detect unsafe conflicts.** If a field with a canonical name already exists
+   with an incompatible type (for example `playbook` as a number, or a canonical
+   single-select present as text), **stop and surface it** rather than mutating.
+   Renaming the built-in `Status` field is never allowed. Ask the user how to
+   proceed; do not guess.
+4. **Propose before mutating.** Present the exact mutations — each field to
+   create with its type and options, and each option to add to which select —
+   and obtain the usual confirmation before writing, exactly as any other
+   Project change. An explicit user request to reconcile still previews the
+   diff, but a clean diff is simply reported as "already up to date."
+5. **Create missing fields** with their exact canonical types and, for
+   single-selects, their full canonical option set. Use
+   `gh project field-create` (`--data-type SINGLE_SELECT|TEXT|DATE`, and
+   `--single-select-options` for a select's options).
+6. **Add missing options** to an existing single-select **without deleting,
+   reordering, or renaming** any existing option and **without changing any
+   assigned values**. `gh project field-create` cannot add options to an
+   existing field, so use the GitHub GraphQL `updateProjectV2Field` mutation.
+   Its option input **replaces** the field's option list, so build the complete
+   list from the field's current options — carrying each existing option's `id`,
+   `name`, `color`, and `description` through unchanged — and append only the
+   missing canonical options. Omitting an existing option's id would recreate it
+   and drop its assignments, so every retained option must carry its existing id.
+   Each `ProjectV2SingleSelectFieldOptionInput` requires a non-null `name`,
+   `color`, and `description`, but the canonical contract names options only.
+   Give every newly appended option a deterministic default so agents never
+   guess: `color` `GRAY` and an empty `description` (`""`). A human can restyle
+   an option in the Projects UI afterward; because reconciliation preserves
+   existing options untouched, that styling survives later runs.
+7. **Verify.** Re-read the Project and confirm every canonical field is present
+   with the correct type and that every canonical option now exists. Report the
+   confirmed result.
+
 ## Status meanings
 
 - `untriaged` — added to the Project but not yet reviewed. Registration of

@@ -23,16 +23,27 @@ node bin/pan-runner.js --help
   those workers finish, then exit.
 - `--validate-config` — validate the config **and** Domain access
   (every `playbooks/<machine>/<name>.md` in this machine's folder, and
-  the Project), then exit `0`. This also validates the Project **schema**: all 11
-  canonical fields must be present with the correct types (`Status`, `owner`,
-  `priority` as single-selects; `next-action-date` as a date; `playbook`,
-  `workstream`, `needs-human-since`, `lease-until`, `claimed-by`, `machine`,
-  `session-id` as text). Performs **no polling**. Exits non-zero with a clear
-  message on any failure (missing/wrong-typed fields are all reported together).
+  the Project), then exit `0`. This also validates the Project **schema**
+  against the canonical contract in
+  [`system/project-schema.md`](../system/project-schema.md): every canonical
+  field must be present with the correct type, and every canonical single-select
+  option must exist. Performs **no polling**. Exits non-zero with a clear
+  message on any failure (missing/wrong-typed fields and missing options are all
+  reported together).
 - `--help` — print usage and exit `0`.
 
 Without `--once` the runner loops until interrupted (`SIGINT`/`SIGTERM`),
 draining active workers on shutdown.
+
+**Startup schema check.** Every normal startup (not just `--validate-config`)
+validates the Project metadata it already loads against the canonical
+[`system/project-schema.md`](../system/project-schema.md) contract before it
+polls, adding no extra GitHub round trip. If a canonical field or single-select
+option is missing, the runner exits once, non-zero, with an actionable message
+to open Pan chat, run the
+[reconcile Project schema](../system/project-schema.md#reconciling-the-project-schema)
+action, and restart — rather than looping on per-poll claim writes that fail
+because the Project lacks a field. The runner never mutates the schema itself.
 
 ## Local config
 
@@ -231,14 +242,13 @@ unaffected; a second interrupt exits immediately.
 
 ## Project fields
 
-The runner reads/writes exactly the fields in
-[`system/project-schema.md`](../system/project-schema.md): the built-in `Status`
-select, plus custom fields `owner`, `priority`, `next-action-date`, `playbook`,
-`workstream`, `needs-human-since`, `lease-until`, `claimed-by`, `machine`,
-`session-id`. Empty selects read as their documented defaults
-(`owner`→`unassigned`, `Status`→`untriaged`, `priority`→`normal`). Field ids and
-single-select option ids are resolved from the Project once via GraphQL and
-cached for the process lifetime; writes use `gh project item-edit`.
+The runner reads and writes exactly the fields defined in
+[`system/project-schema.md`](../system/project-schema.md); that table is the
+single source of truth for their names, types, and single-select options. Empty
+selects read as their documented defaults. Field ids and single-select option
+ids are resolved from the Project once via GraphQL (paged when the Project has
+more than one page of fields) and cached for the process lifetime; writes use
+`gh project item-edit`.
 
 ## Known limitations / TODOs (v1)
 
