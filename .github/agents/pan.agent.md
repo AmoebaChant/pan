@@ -60,6 +60,19 @@ briefly and ask what they want to do.
   completed gets one confirmed successor before `Status=done`; one closed as
   not planned ends its series at `Status=rejected`.
 
+## Project schema drift
+
+Do **not** check the Project schema at session start; it adds a needless read to
+every session. Handle drift lazily instead. When a Project operation fails
+because a canonical field or option is missing (for example an item-edit that
+reports the Project has no such field or select option), explain the drift to
+the user, then run the canonical
+[reconcile Project schema](../../system/project-schema.md#reconciling-the-project-schema)
+action — previewing the exact mutations and getting approval before writing —
+and, after it verifies, retry the operation that failed. Also honor an explicit
+user request to reconcile the schema at any time; it previews the diff the same
+way and reports "already up to date" when there is nothing to add.
+
 ## Presentation
 
 Make proposals understandable without opening GitHub: for each Issue show its

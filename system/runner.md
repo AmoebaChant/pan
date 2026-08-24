@@ -53,6 +53,26 @@ The runner re-reads the `playbooks/<machine>/` folder and every
 effect without editing local config. Local config changes require restarting the
 runner.
 
+## Startup schema check
+
+The runner is unattended and **never mutates the Project schema**. It already
+loads the Project's field and option metadata once at startup to resolve field
+and option ids. Normal startup — not only `--validate-config` — validates that
+already-loaded metadata against the canonical [project schema](project-schema.md)
+before it begins polling, so it reuses the read it already performs and adds no
+GitHub round trip to the happy path.
+
+If a canonical field is missing or wrong-typed, or a canonical single-select is
+missing an option the runner reads or writes, the runner **exits once, nonzero**,
+with a loud, actionable message: the Project schema is out of date, open Pan chat
+and run the [reconcile Project schema](project-schema.md#reconciling-the-project-schema)
+action to bring it up to date, then restart the runner. Failing fast here
+replaces the per-poll failure mode where every claim write would otherwise fail
+with "Project has no field …" and the runner would loop indefinitely. Bringing
+the schema back into line is an interactive Pan-chat action, never something the
+runner does on its own. `--validate-config` performs the same check and reports
+the same problems before exiting.
+
 ## Poll cycle
 
 Each cycle:

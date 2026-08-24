@@ -39,14 +39,14 @@ Ask whether to **create a new** private Domain or **connect an existing** one.
 
 ## 3. Ensure the Project fields exist
 
-Create any missing custom fields exactly as [`project-schema.md`](../../system/project-schema.md)
-defines them — `owner` and `priority` (single-select with the listed options),
-`next-action-date` (date), and `playbook`, `workstream`, `needs-human-since`,
-`lease-until`, `claimed-by`, `machine`, `session-id` (text) — plus the built-in
-`Status` field's full canonical option set, including `rejected`. When
-connecting an existing Project, add any missing canonical options without
-changing its existing options or assigned values. Never rename `Status`.
-Verify each field afterward.
+Run the canonical **[reconcile Project schema](../../system/project-schema.md#reconciling-the-project-schema)**
+action against the Project. It creates any missing custom fields with their
+exact types and options and adds any missing canonical select options — for a
+new Project that provisions the whole schema, and for a connected Project it
+adds only what is absent without changing existing options or assigned values,
+and never renames the built-in `Status`. It previews the exact mutations for
+confirmation and verifies the Project afterward. Do not re-list the fields here;
+that action reads them from [`project-schema.md`](../../system/project-schema.md).
 
 ## 4. Scaffold the Domain repository
 
