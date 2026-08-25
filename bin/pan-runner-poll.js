@@ -1,3 +1,5 @@
+import { affinityMatchesMachine, splitAffinity } from './pan-runner-slots.js';
+
 const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
 
 export const FIELD = {
@@ -166,6 +168,80 @@ export function leaseIsFree(item, identity, { now = Date.now(), warn = () => {} 
   return state === 'missing' || state === 'expired';
 }
 
+/** The workspace slots occupied on this physical machine right now, scoped by
+ *  playbook. Composite machine affinity is only meaningful together with the
+ *  task's playbook (two playbooks may each define a `primary` slot pointing at
+ *  different directories), so occupancy is keyed by playbook: the return value
+ *  is a `Map<playbook, Set<slot id>>`. Use {@link occupiedSlotsForPlaybook} to
+ *  read (and, for same-poll reservations, accumulate into) one playbook's set.
+ *
+ *  A slot is occupied by (a) any in-memory active worker recorded in that slot
+ *  — including a finalization-pending worker whose directory is not yet free —
+ *  and (b) any live Project item that is `in-progress` with a composite
+ *  affinity for this machine and a lease that is not expired. A malformed lease
+ *  fails closed (occupies); an expired lease frees its slot. This is sufficient
+ *  for the one-runner-per-machine contract: it needs no process, PID, or
+ *  filesystem rehydration. The physical same-directory active guard at claim
+ *  time remains the final cross-playbook backstop. */
+export function computeMachineSlotOccupancy({
+  active,
+  items,
+  machine,
+  now = Date.now(),
+  warn = () => {},
+}) {
+  const occupied = new Map();
+  const mark = (playbook, slot) => {
+    if (!slot) return;
+    let set = occupied.get(playbook);
+    if (!set) {
+      set = new Set();
+      occupied.set(playbook, set);
+    }
+    set.add(slot);
+  };
+  for (const worker of active.values()) {
+    if (worker.slot) mark(worker.playbook, worker.slot);
+  }
+  for (const item of items) {
+    if (statusOf(item) !== 'in-progress') continue;
+    const { base, slot } = splitAffinity(val(item, FIELD.machine, ''));
+    if (slot == null || base !== machine) continue;
+    const state = leaseState(item, now);
+    if (state === 'expired') continue;
+    if (state === 'malformed') {
+      warnMalformedLease(item, 'treating its workspace slot as occupied', warn);
+    }
+    mark(val(item, FIELD.playbook, ''), slot);
+  }
+  return occupied;
+}
+
+/** One playbook's occupied-slot set within a machine occupancy map, creating and
+ *  storing an empty set when absent so same-poll reservations accumulate against
+ *  the same object across the claim loop. */
+export function occupiedSlotsForPlaybook(occupancy, playbook) {
+  let set = occupancy.get(playbook);
+  if (!set) {
+    set = new Set();
+    occupancy.set(playbook, set);
+  }
+  return set;
+}
+
+/** The confirming re-read after a claim write: we still own the item only when
+ *  claimed-by, lease-until, and machine are the exact values we wrote and the
+ *  Status is in-progress. Anything else means a foreign claim won the race. */
+export function claimConfirmed(item, { identity, lease, machine }) {
+  if (!item) return false;
+  return (
+    val(item, FIELD.claimedBy, '') === identity &&
+    val(item, FIELD.leaseUntil, '') === lease &&
+    val(item, FIELD.machine, '') === machine &&
+    statusOf(item) === 'in-progress'
+  );
+}
+
 /** Restore truthful visibility for abandoned running work. */
 async function sweepExpiredItems(
   items,
@@ -242,7 +318,7 @@ function selectCandidates(items, cfg, playbooks, active, { now, warn }) {
 
   const paused = items.filter((item) =>
     statusOf(item) === 'paused'
-    && val(item, FIELD.machine, '') === cfg.machine
+    && affinityMatchesMachine(val(item, FIELD.machine, ''), cfg.machine)
     && !!val(item, FIELD.sessionId, '')
     && canRun(item),
   );

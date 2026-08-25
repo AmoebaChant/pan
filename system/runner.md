@@ -165,9 +165,11 @@ human attention so an unattended runner cannot retry forever.
 For a claimed task the runner:
 
 1. Prepares the working directory. If the playbook's `workingDirectory` is set,
-   launch there and prepare no workspace. Otherwise create an isolated workspace
-   whose path is stable for the task's local Copilot session. A resumed task
-   reopens that same directory; it never creates a replacement workspace.
+   launch there and prepare no workspace. If the playbook declares
+   `workspaceSlots`, launch in the chosen slot's directory (see [workspace
+   slots](#workspace-slots)). Otherwise create an isolated workspace whose path
+   is stable for the task's local Copilot session. A resumed task reopens that
+   same directory; it never creates a replacement workspace.
 2. Writes the task context into a `.pan/` directory the worker will read (see
    the [file contract](#worker-file-contract)).
 3. Launches a **headed** `copilot` session in a visible terminal window, with an
@@ -186,6 +188,35 @@ For a claimed task the runner:
 
 The runner never edits task content, never pushes on the worker's behalf, and
 never bypasses the playbook.
+
+## Workspace slots
+
+A playbook may declare `workspaceSlots` instead of a single `workingDirectory`
+(see [playbooks](playbooks.md)): a fixed set of named, reusable directories that
+concurrent tasks of that playbook draw from, one task per slot. Because a task
+holds exactly one slot, the playbook's `capacity` may not exceed its slot count.
+
+The chosen slot becomes durable affinity: the runner writes the `machine` field
+as a composite `<machine>::<slot>` when it claims a slot-pooled task, and
+confirms that exact composite value (alongside `claimed-by`, `lease-until`, and
+`Status=in-progress`) on the post-claim re-read. A prior composite affinity
+belongs only to its base machine and that exact slot: a runner resumes it in the
+same slot and waits if that slot is busy, and skips an affinity for another
+machine or for a slot the live playbook no longer configures. New work — and a
+legacy exact-machine task migrating into this scheme for the first time — takes
+the first configured free slot deterministically.
+
+Each poll computes the slots occupied on this physical machine from its own
+in-memory active workers (including finalization-pending ones whose directory is
+not yet released) and from live Project items that are `in-progress` with a
+composite affinity for this machine and a lease that is not expired (a malformed
+lease fails closed and occupies; an expired lease frees its slot). A slot chosen
+this poll is reserved locally the moment its claim succeeds, so two claims in one
+cycle cannot take the same slot. This is sufficient for the
+**one-runner-per-machine** contract Pan assumes — occupancy is derived from
+Project lease state and this runner's own workers, not from scanning processes,
+PIDs, or the filesystem — and the same-resolved-directory active-worker guard
+remains the final backstop against launching two workers in one slot directory.
 
 ## Worker file contract
 
@@ -268,7 +299,9 @@ A started task that is not running is `Status=paused` (see [status
 transitions](project-schema.md#status-transitions)). Because the copilot
 `session-id` and the local workspace are machine-local, only the machine that
 ran the task can reuse them, so **paused tasks are machine-pinned**: a runner
-resumes only items where `machine` equals this machine and `Status` is `paused`.
+resumes only items whose `machine` base equals this machine and whose `Status`
+is `paused`. For a slot-pooled task the pin is a composite `<machine>::<slot>`
+value; the runner matches on the base machine and resumes in that exact slot.
 
 To resume such a task the runner, subject to its capacity limits:
 
