@@ -53,6 +53,23 @@ Front matter fields:
   responsible for preparing an isolated workspace as its instructions require.
   Because playbook files are per machine, this path is naturally
   machine-specific.
+- `workspaceSlots` (optional) — a mapping of named slot ids to absolute paths,
+  **mutually exclusive** with `workingDirectory`. It lets one playbook pool work
+  across a fixed set of reusable directories instead of a single one:
+
+  ```yaml
+  workspaceSlots:
+    primary: 'C:\Product'
+    secondary: 'C:\Product.2'
+  ```
+
+  Each running task occupies exactly one slot, so `capacity` **cannot exceed**
+  the slot count (`capacity: 0` still disables the playbook). Slot ids must be
+  non-empty and simple (letters, digits, `_`, `-`) and never contain the
+  reserved `::`; every path must be absolute; duplicate ids or paths in one
+  playbook, and a declared-but-empty mapping, are hard errors. New work takes
+  the first free slot; a task that has already run in a slot resumes in that
+  exact slot (see [runner](runner.md)).
 
 The instructions body carries everything else — how to isolate work, build,
 test, and deliver. There are no capability tokens and no `repo:` selector; the

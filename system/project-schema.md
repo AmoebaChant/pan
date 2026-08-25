@@ -23,7 +23,7 @@ reads as its documented default rather than as an error.
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp. Non-empty means a live worker is waiting for the user right now. |
 | `lease-until` | text | the runner | RFC 3339 UTC timestamp. When a claim expires. |
 | `claimed-by` | text | the runner | Stable identity of the runner holding the task. |
-| `machine` | text | the runner | Name of the machine whose runner ran the task (matches a `playbooks/<machine>/` folder). Durable provenance for machine-pinned resume: unlike the lease it survives pause. Empty means no runner has launched a worker for it yet. |
+| `machine` | text | the runner | Name of the machine whose runner ran the task (matches a `playbooks/<machine>/` folder). Durable provenance for machine-pinned resume: unlike the lease it survives pause. For a slot-pooled playbook it is a composite `<machine>::<slot>` value that also pins the exact workspace slot to resume in; the base before `::` is still the machine. A physical machine name may never contain `::`. Empty means no runner has launched a worker for it yet. |
 | `session-id` | text | the runner | UUID of the copilot worker session the runner launched, so the work can be resumed or revisited later (`copilot --resume=<id>` / `--session-id=<id>`) on `machine`. Survives pause. Empty means no worker has been launched yet. |
 
 ## Reconciling the Project schema

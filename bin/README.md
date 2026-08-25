@@ -82,6 +82,20 @@ the runner returns that task to `ready` (clearing `claimed-by`/`lease-until`)
 **without** counting an operational strike, so another cycle or runner can take
 it later. Isolated workspaces are per-task unique and never collide.
 
+A playbook may instead declare **`workspaceSlots`** — a mapping of named slot
+ids to absolute paths, mutually exclusive with `workingDirectory` — to pool work
+across a fixed set of reusable directories, one task per slot. Its `capacity`
+may not exceed the slot count. The chosen slot is recorded as a composite
+`<machine>::<slot>` value in the `machine` field, so a paused slot-pooled task
+resumes in the exact slot it ran in; new work takes the first free slot. Each
+poll derives the slots occupied on this physical machine from this runner's own
+active workers (finalization-pending included) and from live Project items that
+are `in-progress` with a composite affinity for this machine and a non-expired
+lease (a malformed lease fails closed; an expired one frees the slot). This
+matches Pan's **one-runner-per-machine** contract and needs no process, PID, or
+filesystem rehydration; the same-resolved-directory active-worker guard is the
+final backstop. A physical machine name in config may not contain `::`.
+
 When present, `pollIntervalSeconds` and `leaseMinutes` must be numbers greater
 than `0` (they cannot be `null`; omit them to use the default), and
 `maxConcurrent` must be an integer `>= 1` (or `null`/omitted for
@@ -94,9 +108,12 @@ equal to the filename basename, a non-empty `description`, and a
 **non-negative integer** `capacity` (`0` disables that playbook on this
 machine). A missing/mismatched `name`, a missing/empty `description`, a
 missing, non-numeric, fractional, or negative `capacity`, or a non-absolute
-`workingDirectory` is a hard error. The machine's runnable set is exactly the
-`.md` files in `playbooks/<machine>/`; an empty or missing folder is a hard
-error.
+`workingDirectory` is a hard error. For a playbook with `workspaceSlots`,
+setting `workingDirectory` too, a declared-but-empty mapping, a non-simple slot
+id or one containing `::`, a non-absolute slot path, duplicate slot ids or
+paths, or a `capacity` above the slot count are all hard errors. The machine's
+runnable set is exactly the `.md` files in `playbooks/<machine>/`; an empty or
+missing folder is a hard error.
 
 ### Note on temp directories
 
@@ -117,26 +134,29 @@ itself keeps **no** scratch, log, or state files under any temp directory.
    lease. Order each group by `priority` (`urgent` > `high` > `normal` > `low`),
    preserving Project order among ties.
 2. **Claim or resume** — re-read the item to avoid races, then set `claimed-by`,
-   `machine` (this machine's name), `lease-until` (near-future UTC), and
+   `machine` (this machine's name, or a composite `<machine>::<slot>` for a
+   slot-pooled playbook), `lease-until` (near-future UTC), and
    `Status=in-progress`.
    Immediately after writing, the runner **re-reads once more to confirm** it
-   still owns the claim (`claimed-by` is still this runner and `lease-until` is
-   exactly the value it wrote); if another runner won the race, it abandons the
-   item **without overwriting** the winner's fields. This is best-effort optimistic
-   concurrency (GitHub has no atomic compare-and-swap); the confirming re-read is
-   the point. The lease is renewed periodically while the worker runs.
+   still owns the claim (`claimed-by`, `lease-until`, and `machine` are exactly
+   the values it wrote and `Status` is `in-progress`); if another runner won the
+   race, it abandons the item **without overwriting** the winner's fields. This
+   is best-effort optimistic concurrency (GitHub has no atomic
+   compare-and-swap); the confirming re-read is the point. The lease is renewed
+   periodically while the worker runs.
 3. **Launch** — prepare the working directory (fixed `workingDirectory` if set,
-   else an isolated workspace under `workspaceRoot` whose path is stable for the
+   the chosen `workspaceSlots` slot directory for a slot-pooled playbook, else
+   an isolated workspace under `workspaceRoot` whose path is stable for the
    recorded Copilot session), write the task context into `.pan/`, and open a
    headed `copilot` session in a visible terminal window under
    an explicit copilot session id (`--session-id`), recording that id in the
    Issue's `session-id` field. A fresh UUID is minted for a new task; a paused
    task carrying a `session-id` recorded for this same `machine` is relaunched
-   in the same workspace with that id so Copilot **resumes** the earlier
-   session. If
-   the resolved directory is a fixed `workingDirectory` already in use by another
-   active worker, the runner does **not** launch: it returns the task to `ready`
-   (a benign capacity collision, not an operational strike).
+   in the same workspace (or exact slot) with that id so Copilot **resumes** the
+   earlier session. If
+   the resolved directory is a fixed `workingDirectory` or slot already in use by
+   another active worker, the runner does **not** launch: it returns the task to
+   `ready`/`paused` (a benign capacity collision, not an operational strike).
 4. **Supervise** — watch the `.pan/` signal files and relay them to the Issue.
 
 While the runner is looping, **Enter** or **Space** queues an immediate ordinary

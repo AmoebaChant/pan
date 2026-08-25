@@ -73,16 +73,29 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import {
+  claimConfirmed,
   cleanTerminalLeaseFields,
+  computeMachineSlotOccupancy,
   FIELD,
   findProjectItemForTask,
   leaseIsFree,
+  occupiedSlotsForPlaybook,
   ownerOf,
   pendingFinalizationKind,
   preparePoll,
   statusOf,
   val,
 } from './pan-runner-poll.js';
+import {
+  affinityMatchesMachine,
+  canonicalPathKey,
+  formatAffinity,
+  isSlotPooled,
+  machineHasSeparator,
+  parseWorkspaceSlots,
+  selectSlot,
+  splitAffinity,
+} from './pan-runner-slots.js';
 import {
   ensureIssueClosed,
   ensureIssueComment,
@@ -242,6 +255,12 @@ async function loadConfig(configPath) {
     }
   }
 
+  // The machine name is embedded in composite `<machine>::<slot>` affinities, so
+  // a name containing the reserved separator could not round-trip.
+  if (machineHasSeparator(json.machine)) {
+    throw new UserError('Config field "machine" must not contain "::" (it is reserved for workspace-slot affinities).');
+  }
+
   const domain = parseOwnerName(json.domainRepo, 'domainRepo');
   const project = parseProject(json.project);
 
@@ -346,18 +365,43 @@ async function readDomainFile(cfg, repoPath) {
   }
 }
 
-/** Split YAML front matter from a markdown document. */
-function splitFrontMatter(text) {
+/** Split YAML front matter from a markdown document.
+ *
+ *  Flat `key: value` scalars are parsed as before. Additionally, a single level
+ *  of nesting is supported for a mapping value: a key whose value is empty and
+ *  which is followed by indented `child: value` lines collects those children
+ *  as an ordered array of `[child, value]` pairs (order preserved so duplicate
+ *  child keys stay visible to validation). This is the narrow shape
+ *  `workspaceSlots` needs; existing flat front matter, which has no indented
+ *  lines, is unaffected. */
+export function splitFrontMatter(text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
   if (!m) return { front: {}, body: text };
   const front = {};
+  let pendingMapKey = null; // top-level key awaiting nested children
   for (const line of m[1].split(/\r?\n/)) {
+    if (line.trim() === '') continue;
+    const indented = /^\s/.test(line);
     const kv = /^\s*([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line);
-    if (!kv) continue;
+    if (!kv) {
+      pendingMapKey = null;
+      continue;
+    }
     let v = stripInlineComment(kv[2]).trim();
-    if (v === 'null' || v === '') v = null;
-    else v = v.replace(/^["']|["']$/g, '');
-    front[kv[1]] = v;
+    const isEmpty = v === 'null' || v === '';
+    if (indented && pendingMapKey) {
+      const childValue = isEmpty ? null : v.replace(/^["']|["']$/g, '');
+      if (!Array.isArray(front[pendingMapKey])) front[pendingMapKey] = [];
+      front[pendingMapKey].push([kv[1], childValue]);
+      continue;
+    }
+    if (isEmpty) {
+      front[kv[1]] = null;
+      pendingMapKey = kv[1]; // becomes a mapping only if indented children follow
+    } else {
+      front[kv[1]] = v.replace(/^["']|["']$/g, '');
+      pendingMapKey = null;
+    }
   }
   return { front, body: m[2] };
 }
@@ -405,9 +449,10 @@ async function listDomainDir(cfg, repoPath) {
 
 /** Read every playbook this machine runs from playbooks/<machine>/*.md.
  *  A machine runs exactly the playbooks present in its folder; each file
- *  self-describes its concurrency (`capacity`) and optional `workingDirectory`
- *  in its front matter. Fails loudly (UserError) on a malformed definition
- *  rather than silently dropping it. */
+ *  self-describes its concurrency (`capacity`) and either an optional fixed
+ *  `workingDirectory` or a `workspaceSlots` mapping in its front matter. Fails
+ *  loudly (UserError) on a malformed definition rather than silently dropping
+ *  it. */
 async function loadPlaybooks(cfg) {
   const dir = `playbooks/${cfg.machine}`;
   const entries = await listDomainDir(cfg, dir);
@@ -419,7 +464,7 @@ async function loadPlaybooks(cfg) {
     throw new UserError(`${dir}/ contains no playbooks (expected one or more <name>.md files).`);
   }
 
-  const playbooks = new Map(); // name -> { name, description, workingDirectory, capacity, body }
+  const playbooks = new Map(); // name -> { name, description, workingDirectory, slots, capacity, body }
   for (const file of files) {
     const name = file.replace(/\.md$/i, '');
     const pbText = await readDomainFile(cfg, `${dir}/${file}`);
@@ -447,10 +492,35 @@ async function loadPlaybooks(cfg) {
         `${dir}/${file} workingDirectory must be an absolute path, got: ${workingDirectory}`,
       );
     }
+
+    // Optional named workspace slots. Mutually exclusive with workingDirectory:
+    // a playbook either owns one fixed directory or pools work across a fixed
+    // set of slot directories, never both. Slot count bounds concurrency.
+    let slots = null;
+    if ('workspaceSlots' in front) {
+      if (workingDirectory !== null) {
+        throw new UserError(
+          `${dir}/${file} cannot set both workingDirectory and workspaceSlots; use one or the other.`,
+        );
+      }
+      try {
+        slots = parseWorkspaceSlots(front.workspaceSlots);
+      } catch (e) {
+        throw new UserError(`${dir}/${file} ${e.message}`);
+      }
+      if (cap > slots.length) {
+        throw new UserError(
+          `${dir}/${file} capacity ${cap} exceeds its ${slots.length} workspace slot(s); ` +
+            'a slot-pooled playbook cannot run more concurrent tasks than it has slots.',
+        );
+      }
+    }
+
     playbooks.set(name, {
       name,
       description: String(front.description).trim(),
       workingDirectory,
+      slots,
       capacity: cap,
       body,
     });
@@ -732,11 +802,21 @@ function logErr(msg) {
 // Runner
 // ---------------------------------------------------------------------------
 
-class Runner {
-  constructor(cfg, meta, playbooks) {
+export class Runner {
+  constructor(cfg, meta, playbooks, deps = {}) {
     this.cfg = cfg;
     this.meta = meta;
     this.playbooks = playbooks;
+    // GitHub boundary used by the poll/claim path. Defaults to the module-level
+    // `gh`-backed implementations; tests inject fakes to drive the real claim
+    // logic in-process without spawning `gh` or a worker terminal.
+    this.deps = {
+      readAllItems,
+      readItemById,
+      setTextField,
+      setSelectField,
+      ...deps,
+    };
     this.active = new Map();      // Project item id -> worker state
     this.failCounts = new Map();  // Project item id -> consecutive operational failures
     this.resumeWorkspaces = new Map(); // Project item id -> paused isolated workspace
@@ -771,18 +851,18 @@ class Runner {
   // ---- Poll + claim -------------------------------------------------------
 
   async pollAndClaim() {
-    const items = await readAllItems(this.cfg, this.meta);
+    const items = await this.deps.readAllItems(this.cfg, this.meta);
     const cleaned = await cleanTerminalLeaseFields(items, {
-      readItem: readItemById,
+      readItem: (itemId) => this.deps.readItemById(itemId),
       clearFields: async (itemId) => {
-        await setTextField(
+        await this.deps.setTextField(
           this.cfg,
           this.meta,
           itemId,
           FIELD.leaseUntil,
           '',
         );
-        await setTextField(
+        await this.deps.setTextField(
           this.cfg,
           this.meta,
           itemId,
@@ -802,9 +882,9 @@ class Runner {
       cfg: this.cfg,
       playbooks: this.playbooks,
       active: this.active,
-      readItem: readItemById,
+      readItem: (itemId) => this.deps.readItemById(itemId),
       setPaused: (itemId) =>
-        setSelectField(this.cfg, this.meta, itemId, FIELD.status, 'paused'),
+        this.deps.setSelectField(this.cfg, this.meta, itemId, FIELD.status, 'paused'),
       warn: logErr,
     });
     for (const item of swept) {
@@ -813,37 +893,87 @@ class Runner {
     }
 
     let claimed = 0;
+    // Slots occupied on this physical machine, scoped by playbook and computed
+    // once from current active state and live Project items, then updated as
+    // claims land this cycle so a second claim in the same poll cannot reuse a
+    // slot the first just took. Cross-playbook slot ids are independent: two
+    // playbooks may each use `primary` for different directories.
+    const occupiedByPlaybook = computeMachineSlotOccupancy({
+      active: this.active,
+      items,
+      machine: this.cfg.machine,
+      warn: logErr,
+    });
     for (const it of candidates) {
       if (this.draining) break;
       if (this.capacityCount() >= this.cfg.maxConcurrent) break;
       const pb = val(it, FIELD.playbook, '');
-      if (this.activeForPlaybook(pb) >= this.playbooks.get(pb).capacity) continue;
+      const pbObj = this.playbooks.get(pb);
+      if (this.activeForPlaybook(pb) >= pbObj.capacity) continue;
 
-      const ok = await this.claimAndLaunch(it);
-      if (ok) claimed += 1;
+      let slot = null;
+      if (isSlotPooled(pbObj)) {
+        const occupied = occupiedSlotsForPlaybook(occupiedByPlaybook, pb);
+        const decision = selectSlot({
+          slots: pbObj.slots,
+          machineField: val(it, FIELD.machine, ''),
+          machine: this.cfg.machine,
+          occupied,
+        });
+        if (!decision.ok) {
+          log(`#${it.issue?.number ?? it.itemId} waiting for a workspace slot (${decision.reason})`);
+          continue;
+        }
+        slot = decision.slot;
+      }
+
+      // claimAndLaunch may re-select a different slot from the fresh affinity
+      // than the poll chose, so reserve the slot it actually claimed (under the
+      // playbook it actually validated), never the stale poll-time hint. A
+      // failed claim/launch reserves nothing.
+      const result = await this.claimAndLaunch(it, slot, occupiedByPlaybook);
+      if (result) {
+        claimed += 1;
+        if (result.slot) {
+          occupiedSlotsForPlaybook(occupiedByPlaybook, result.playbook).add(result.slot);
+        }
+      }
     }
     return { candidates: candidates.length, claimed };
   }
 
-  /** Claim one item (re-read to avoid races), then launch its worker. */
-  async claimAndLaunch(item) {
+  /** Claim one item (re-read to avoid races), then launch its worker. For a
+   *  slot-pooled playbook `slot` is the workspace slot the poll selected.
+   *  `occupiedByPlaybook` is the poll's live `Map<playbook, Set<slot id>>` of
+   *  slots already occupied on this machine (Project leases, active workers, and
+   *  same-cycle reservations); the fresh re-selection below merges it with the
+   *  current active slots so a slot held only by another live Project lease is
+   *  not lost when occupancy is reconstructed from scratch.
+   *
+   *  Returns `false` on any skip/failure. On success it reports the slot it
+   *  actually claimed so the caller reserves the real occupancy, not the stale
+   *  poll-time hint: an ordinary (slotless) playbook returns `true` unchanged,
+   *  while a slot-pooled claim returns `{ ok: true, playbook, slot }` carrying
+   *  the freshly validated playbook and slot. */
+  async claimAndLaunch(item, slot = null, occupiedByPlaybook = null) {
     const number = item.issue?.number;
     if (!number) return false;
 
     // Re-read and re-confirm dispatchable + unleased.
-    const fresh = await readItemById(item.itemId);
+    const fresh = await this.deps.readItemById(item.itemId);
     if (!fresh || !fresh.issue) return false;
     const previousStatus = statusOf(fresh);
     const resuming = previousStatus === 'paused';
     if (ownerOf(fresh) !== 'agent' || (previousStatus !== 'ready' && !resuming)) return false;
-    if (resuming && val(fresh, FIELD.machine, '') !== this.cfg.machine) return false;
+    if (resuming && !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)) return false;
     if (!leaseIsFree(fresh, this.cfg.identity, { warn: logErr })) return false; // claim race — skip
     const pb = val(fresh, FIELD.playbook, '');
     if (!this.playbooks.has(pb)) return false;
+    const pbObj = this.playbooks.get(pb);
 
     // The playbook may have changed between poll and this re-read; revalidate
     // capacity against the freshly-read playbook before claiming.
-    const cap = this.playbooks.get(pb).capacity;
+    const cap = pbObj.capacity;
     if (cap <= 0) {
       log(`#${number} playbook changed to "${pb}" which is disabled on re-read; skipping`);
       return false;
@@ -857,16 +987,60 @@ class Runner {
       return false;
     }
 
+    // Re-run slot selection against the freshly-read `machine` value, the
+    // current configured slots, and current occupancy (active workers for this
+    // playbook on this machine). The poll's choice is only a hint: the fresh
+    // affinity is authoritative, so a task that now carries a foreign-machine or
+    // unconfigured affinity is skipped, one that now names a valid exact slot is
+    // honored (and waits if that slot is occupied) rather than being overwritten
+    // by the stale poll choice, and one still unassigned (or a legacy exact base)
+    // deterministically takes the current first free slot. `machine` is written
+    // as a composite `<machine>::<slot>` affinity for slot-pooled work, plain for
+    // the rest.
+    let machineValue = this.cfg.machine;
+    if (isSlotPooled(pbObj)) {
+      // Start from the poll's per-playbook occupancy (live Project leases,
+      // active workers, and same-cycle reservations from earlier claims this
+      // cycle) so a slot held only by another live Project lease still counts,
+      // then merge in the current active slots to revalidate against any change
+      // since the poll. A copy is taken so re-selection never mutates the shared
+      // reservation set — the caller adds the selected slot only after a
+      // successful claim. The candidate's own prior state is ready/paused (never
+      // in-progress), so it is absent from the Project occupancy and cannot
+      // spuriously mark its own slot as busy.
+      const occupied = new Set(
+        occupiedByPlaybook ? occupiedSlotsForPlaybook(occupiedByPlaybook, pb) : [],
+      );
+      for (const w of this.active.values()) {
+        if (w.playbook === pb && w.slot) occupied.add(w.slot);
+      }
+      const decision = selectSlot({
+        slots: pbObj.slots,
+        machineField: val(fresh, FIELD.machine, ''),
+        machine: this.cfg.machine,
+        occupied,
+      });
+      if (!decision.ok) {
+        log(`#${number} waiting for a workspace slot on re-read (${decision.reason}); skipping`);
+        return false;
+      }
+      slot = decision.slot;
+      machineValue = formatAffinity(this.cfg.machine, slot);
+    } else {
+      slot = null;
+    }
+
     // Record the claim: claimed-by, machine, lease-until, Status=in-progress.
-    // `machine` is durable provenance (which machine ran the work); unlike the
-    // lease it is not cleared on pause, so a stopped task can be resumed on
-    // the same machine (see session-id, written at launch).
+    // `machine` is durable provenance (which machine ran the work, and for
+    // slot-pooled work which slot); unlike the lease it is not cleared on pause,
+    // so a stopped task can be resumed on the same machine and slot (see
+    // session-id, written at launch).
     const leaseWritten = this.leaseTimestamp();
     try {
-      await setTextField(this.cfg, this.meta, item.itemId, FIELD.claimedBy, this.cfg.identity);
-      await setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, this.cfg.machine);
-      await setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, leaseWritten);
-      await setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, 'in-progress');
+      await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.claimedBy, this.cfg.identity);
+      await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, machineValue);
+      await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, leaseWritten);
+      await this.deps.setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, 'in-progress');
     } catch (e) {
       logErr(`claim write failed for #${number}: ${e.message}`);
       return false;
@@ -877,12 +1051,13 @@ class Runner {
     // Confirming re-read (best-effort optimistic concurrency — GitHub has no
     // atomic CAS). Another runner may have written its own claim between our
     // re-read above and our writes. Re-read now and verify we still own the
-    // item: claimed-by must still be us AND lease-until must be the exact value
-    // we wrote. If either changed, a foreign claim won — ABANDON without writing
-    // anything (do not stomp the winner's fields) and skip this item this cycle.
+    // item: claimed-by, lease-until, and machine must all be the exact values we
+    // wrote and Status must be in-progress. If any changed, a foreign claim
+    // won — ABANDON without writing anything (do not stomp the winner's fields)
+    // and skip this item this cycle.
     let confirm;
     try {
-      confirm = await readItemById(item.itemId);
+      confirm = await this.deps.readItemById(item.itemId);
     } catch (e) {
       // Unlike a foreign-claim loss (where the read SUCCEEDS and shows we lost),
       // a THROW here leaves the item in-progress with our lease but no worker,
@@ -898,53 +1073,55 @@ class Runner {
       );
       return false;
     }
-    const confirmClaimed = confirm ? val(confirm, FIELD.claimedBy, '') : '';
-    const confirmLease = confirm ? val(confirm, FIELD.leaseUntil, '') : '';
-    if (!confirm || confirmClaimed !== this.cfg.identity || confirmLease !== leaseWritten) {
+    if (!claimConfirmed(confirm, { identity: this.cfg.identity, lease: leaseWritten, machine: machineValue })) {
+      const confirmClaimed = confirm ? val(confirm, FIELD.claimedBy, '') : '';
       log(`#${number} claim lost to another runner (claimed-by=${JSON.stringify(confirmClaimed)}); abandoning without writing`);
       return false;
     }
 
-    // Guard against concurrent use of a shared FIXED workingDirectory. Two
-    // workers sharing one `.pan/` would clobber each other's signals and task
-    // context (the pre-launch stale-signal cleanup wipes the other's marker),
-    // so a worker could finalize the wrong task. Isolated workspaces are
-    // per-task unique and never collide. This is a benign capacity collision,
-    // not an operational failure: restore the just-written claim to its prior
-    // state and do NOT count a strike. We only reach here still owning the
-    // claim, so the restore cannot stomp another runner's winning claim.
-    const pbObj = this.playbooks.get(pb);
-    if (pbObj?.workingDirectory) {
-      const resolvedDir = path.resolve(pbObj.workingDirectory);
+    // Guard against concurrent use of a shared resolved directory — a fixed
+    // workingDirectory or a slot directory. Two workers sharing one `.pan/`
+    // would clobber each other's signals and task context (the pre-launch
+    // stale-signal cleanup wipes the other's marker), so a worker could finalize
+    // the wrong task. Isolated workspaces are per-task unique and never collide.
+    // This is a benign capacity collision, not an operational failure: restore
+    // the just-written claim to its prior state and do NOT count a strike. We
+    // only reach here still owning the claim, so the restore cannot stomp
+    // another runner's winning claim.
+    const fixedDir = pbObj?.workingDirectory
+      ? pbObj.workingDirectory
+      : (isSlotPooled(pbObj) ? pbObj.slots.find((s) => s.id === slot)?.dir : null);
+    if (fixedDir) {
+      const resolvedDir = canonicalPathKey(fixedDir);
       let collision = false;
       for (const w of this.active.values()) {
-        if (w.workingDir && path.resolve(w.workingDir) === resolvedDir) {
+        if (w.workingDir && canonicalPathKey(w.workingDir) === resolvedDir) {
           collision = true;
           break;
         }
       }
       if (collision) {
         try {
-          await setTextField(this.cfg, this.meta, item.itemId, FIELD.claimedBy, '');
+          await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.claimedBy, '');
           // Restore `machine` to its pre-claim value: no worker ran here, so the
           // just-written claim must not leave stale provenance that would later
           // pair this machine with another machine's `session-id` and trigger a
           // bogus "resume".
-          await setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, val(fresh, FIELD.machine, ''));
-          await setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, '');
-          await setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, previousStatus);
+          await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, val(fresh, FIELD.machine, ''));
+          await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, '');
+          await this.deps.setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, previousStatus);
         } catch (e) {
           logErr(`revert-to-${previousStatus} writes failed for #${number}: ${e.message}`);
         }
         log(
-          `#${number} skipped: fixed workingDirectory ${resolvedDir} already in use by an active worker; returned to ${previousStatus}`,
+          `#${number} skipped: working directory ${resolvedDir} already in use by an active worker; returned to ${previousStatus}`,
         );
         return false;
       }
     }
 
     try {
-      await this.launchWorker(fresh, pb);
+      await this.launchWorker(fresh, pb, slot);
     } catch (e) {
       logErr(`launch failed for #${number}: ${e.message}`);
       await this.handleOperationalFailure(
@@ -957,7 +1134,7 @@ class Runner {
     this.failCounts.delete(item.itemId);
     if (resuming) {
       try {
-        await setTextField(this.cfg, this.meta, item.itemId, FIELD.needsHumanSince, '');
+        await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.needsHumanSince, '');
         const worker = this.active.get(item.itemId);
         if (worker) worker.hadNeedsHuman = false;
       } catch (e) {
@@ -965,12 +1142,12 @@ class Runner {
         logErr(`could not clear needs-human-since while resuming #${number}: ${e.message}`);
       }
     }
-    return true;
+    return slot ? { ok: true, playbook: pb, slot } : true;
   }
 
   // ---- Launch -------------------------------------------------------------
 
-  async launchWorker(item, playbookName) {
+  async launchWorker(item, playbookName, slot = null) {
     const pb = this.playbooks.get(playbookName);
     const number = item.issue.number;
 
@@ -980,19 +1157,32 @@ class Runner {
     // (its transcript and state re-adopted) instead of started from scratch.
     // Otherwise mint a fresh UUID. Passing the id via `copilot --session-id`
     // both creates the session on first launch and resumes it on a later one.
+    // A slot-pooled task's `machine` is a composite `<machine>::<slot>` value,
+    // so match on the base machine.
     const previousStatus = statusOf(item);
     const recordedSessionId = val(item, FIELD.sessionId, '');
     const recordedMachine = val(item, FIELD.machine, '');
     const resuming = previousStatus === 'paused';
-    if (resuming && (!recordedSessionId || recordedMachine !== this.cfg.machine)) {
+    if (resuming && (!recordedSessionId || !affinityMatchesMachine(recordedMachine, this.cfg.machine))) {
       throw new Error(`cannot resume #${number}: recorded session or machine is missing/mismatched`);
     }
     const sessionId = resuming ? recordedSessionId : randomUUID();
 
-    // 1. Working directory: fixed workingDirectory, else isolated workspace.
+    // 1. Working directory: fixed workingDirectory, a chosen workspace slot, or
+    //    an isolated workspace. Fixed and slot directories are shared/reused
+    //    (not isolated); an isolated workspace is per-task unique.
     let workingDir;
     let isolated = false;
-    if (pb.workingDirectory) {
+    let workerSlot = null;
+    if (isSlotPooled(pb)) {
+      workerSlot = slot ?? splitAffinity(recordedMachine).slot;
+      const slotDef = pb.slots.find((s) => s.id === workerSlot);
+      if (!slotDef) {
+        throw new Error(`cannot launch #${number}: workspace slot ${JSON.stringify(workerSlot)} is not configured`);
+      }
+      workingDir = slotDef.dir;
+      await mkdir(workingDir, { recursive: true });
+    } else if (pb.workingDirectory) {
       workingDir = pb.workingDirectory;
       await mkdir(workingDir, { recursive: true });
     } else {
@@ -1018,8 +1208,9 @@ class Runner {
     await mkdir(panDir, { recursive: true });
 
     // Clear any stale signal files from a previous task. This matters for a
-    // fixed workingDirectory whose `.pan/` is reused; an isolated workspace is
-    // already fresh, but clearing unconditionally is simplest and harmless.
+    // reused fixed or slot directory whose `.pan/` is reused; an isolated
+    // workspace is already fresh, but clearing unconditionally is simplest and
+    // harmless.
     await Promise.all(
       ['result.json', 'needs-human.json', 'worker.running', 'worker.pid', 'worker.stop', 'pan.md'].map((f) =>
         rm(path.join(panDir, f), { force: true }),
@@ -1103,6 +1294,7 @@ class Runner {
       workingDir,
       panDir,
       isolated,
+      slot: workerSlot,
       sessionId,
       startedAt: Date.now(),
       lastRenew: Date.now(),
@@ -1843,7 +2035,7 @@ child.on('exit', (code, signal) => {
     }
     if (status !== 'in-progress') {
       this.active.delete(w.itemId);
-      if (status === 'paused' && val(fresh, FIELD.machine, '') === this.cfg.machine && w.isolated && existsSync(w.workingDir)) {
+      if (status === 'paused' && affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine) && w.isolated && existsSync(w.workingDir)) {
         this.resumeWorkspaces.set(w.itemId, w.workingDir);
       }
       return status === 'paused';

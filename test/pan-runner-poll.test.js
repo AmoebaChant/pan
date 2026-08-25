@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  claimConfirmed,
   cleanTerminalLeaseFields,
+  computeMachineSlotOccupancy,
   FIELD,
   findProjectItemForTask,
+  occupiedSlotsForPlaybook,
   pendingFinalizationKind,
   preparePoll,
 } from '../bin/pan-runner-poll.js';
@@ -361,4 +364,132 @@ test('an expired task still supervised by this runner is not swept', async () =>
   assert.deepEqual(writes, []);
   assert.deepEqual(result.swept, []);
   assert.deepEqual(result.candidates, []);
+});
+
+// --- workspace slot occupancy ---------------------------------------------
+
+function compositeItem({ id, number, machine = 'machine-a', slot = 'primary', leaseUntil = VALID, playbook = 'pooled' }) {
+  const item = projectItem({ id, number, leaseUntil, playbook });
+  item.fields[FIELD.machine] = slot ? `${machine}::${slot}` : machine;
+  return item;
+}
+
+test('active and finalization-pending workers occupy their recorded slots', () => {
+  const active = new Map([
+    ['a', { itemId: 'a', slot: 'primary', playbook: 'pooled' }],
+    ['b', { itemId: 'b', slot: 'secondary', finalizationPending: true, playbook: 'pooled' }],
+    ['c', { itemId: 'c', slot: null, playbook: 'pooled' }],
+  ]);
+  const occupied = computeMachineSlotOccupancy({
+    active,
+    items: [],
+    machine: 'machine-a',
+    now: NOW,
+  });
+  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'pooled')].sort(), ['primary', 'secondary']);
+});
+
+test('Project in-progress composite affinities occupy by lease state', () => {
+  const warnings = [];
+  const items = [
+    compositeItem({ id: 'valid', number: 1, slot: 'primary', leaseUntil: VALID }),
+    compositeItem({ id: 'expired', number: 2, slot: 'secondary', leaseUntil: EXPIRED }),
+    compositeItem({ id: 'malformed', number: 3, slot: 'tertiary', leaseUntil: 'not-a-time' }),
+    compositeItem({ id: 'other-machine', number: 4, machine: 'machine-b', slot: 'primary', leaseUntil: VALID }),
+    compositeItem({ id: 'exact', number: 5, slot: null, leaseUntil: VALID }),
+  ];
+  const occupied = computeMachineSlotOccupancy({
+    active: new Map(),
+    items,
+    machine: 'machine-a',
+    now: NOW,
+    warn: (message) => warnings.push(message),
+  });
+
+  // Valid and malformed (fail-closed) occupy; expired frees; another machine
+  // and an exact-machine (non-slot) value are ignored.
+  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'pooled')].sort(), ['primary', 'tertiary']);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /unparseable lease-until/);
+});
+
+test('active workers and Project items combine into one occupied set', () => {
+  const occupied = computeMachineSlotOccupancy({
+    active: new Map([['a', { itemId: 'a', slot: 'primary', playbook: 'pooled' }]]),
+    items: [compositeItem({ id: 'valid', number: 1, slot: 'secondary', leaseUntil: VALID })],
+    machine: 'machine-a',
+    now: NOW,
+  });
+  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'pooled')].sort(), ['primary', 'secondary']);
+});
+
+test('two playbooks that share a slot id do not block each other', () => {
+  const occupied = computeMachineSlotOccupancy({
+    active: new Map([['a', { itemId: 'a', slot: 'primary', playbook: 'alpha' }]]),
+    items: [compositeItem({ id: 'b', number: 1, slot: 'primary', playbook: 'beta', leaseUntil: VALID })],
+    machine: 'machine-a',
+    now: NOW,
+  });
+  // Each playbook's `primary` is tracked independently across active and Project
+  // sources, so neither sees the other's slot as occupied.
+  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'alpha')], ['primary']);
+  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'beta')], ['primary']);
+});
+
+test('the same playbook using the same slot id blocks itself', () => {
+  const occupied = computeMachineSlotOccupancy({
+    active: new Map([['a', { itemId: 'a', slot: 'primary', playbook: 'pooled' }]]),
+    items: [compositeItem({ id: 'b', number: 1, slot: 'primary', playbook: 'pooled', leaseUntil: VALID })],
+    machine: 'machine-a',
+    now: NOW,
+  });
+  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'pooled')], ['primary']);
+});
+
+test('occupiedSlotsForPlaybook accumulates serial same-poll reservations per playbook', () => {
+  const occupied = computeMachineSlotOccupancy({
+    active: new Map(),
+    items: [],
+    machine: 'machine-a',
+    now: NOW,
+  });
+  const alpha = occupiedSlotsForPlaybook(occupied, 'alpha');
+  alpha.add('primary');
+  // A later read of the same playbook sees the reservation; a different playbook
+  // starts empty.
+  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'alpha')], ['primary']);
+  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'beta')], []);
+});
+
+// --- claim confirmation tuple ---------------------------------------------
+
+test('claimConfirmed requires the exact claimed-by, lease, machine, and in-progress status', () => {
+  const base = {
+    fields: {
+      [FIELD.claimedBy]: 'runner-a',
+      [FIELD.leaseUntil]: VALID,
+      [FIELD.machine]: 'machine-a::primary',
+      [FIELD.status]: 'in-progress',
+    },
+  };
+  const want = { identity: 'runner-a', lease: VALID, machine: 'machine-a::primary' };
+
+  assert.equal(claimConfirmed(base, want), true);
+  assert.equal(claimConfirmed(null, want), false);
+  assert.equal(
+    claimConfirmed({ fields: { ...base.fields, [FIELD.claimedBy]: 'runner-b' } }, want),
+    false,
+  );
+  assert.equal(
+    claimConfirmed({ fields: { ...base.fields, [FIELD.leaseUntil]: EXPIRED } }, want),
+    false,
+  );
+  assert.equal(
+    claimConfirmed({ fields: { ...base.fields, [FIELD.machine]: 'machine-a::secondary' } }, want),
+    false,
+  );
+  assert.equal(
+    claimConfirmed({ fields: { ...base.fields, [FIELD.status]: 'paused' } }, want),
+    false,
+  );
 });
