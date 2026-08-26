@@ -51,19 +51,23 @@
  *   "pollIntervalSeconds": 30,                // idle poll cadence (default 30)
  *   "leaseMinutes": 15,                       // lease duration (default 15)
  *   "maxConcurrent": null,                    // optional global capacity cap
- *   "workspaceRoot": "/tmp/pan-workspaces"    // isolated worker workspaces;
+ *   "workspaceRoot": "/tmp/pan-workspaces"    // per-session state roots (and
+ *                                             // isolated worker workspaces);
  *                                             // default os.tmpdir()/pan-workspaces
  * }
  *
- * The worker's isolated workspaces under workspaceRoot are a product feature and
- * are the ONLY place under a temp directory this program writes. The runner
- * keeps no scratch/state files of its own on disk.
+ * Every launched task gets a per-session state root under workspaceRoot that
+ * holds all Pan-owned control and signal files (its `.pan/` directory). A
+ * playbook with a fixed `workingDirectory` or `workspaceSlots` runs the worker
+ * in that real checkout, yet its Pan state still lives under workspaceRoot —
+ * never inside the repository. A playbook without either uses its session root
+ * as the worker's workspace too. The runner keeps no other on-disk state.
  * ---------------------------------------------------------------------------
  */
 
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
-import { readFile, mkdir, writeFile, readdir, stat, rm } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, readdir, lstat, rm } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -78,6 +82,7 @@ import {
   computeMachineSlotOccupancy,
   FIELD,
   findProjectItemForTask,
+  leaseExpiredOrMissing,
   leaseIsFree,
   occupiedSlotsForPlaybook,
   ownerOf,
@@ -234,7 +239,7 @@ function detectTerminalKind() {
   return null;
 }
 
-async function loadConfig(configPath) {
+export async function loadConfig(configPath) {
   if (!configPath) throw new UserError('--config <path> is required.');
   let raw;
   try {
@@ -338,7 +343,7 @@ async function loadConfig(configPath) {
     pollIntervalSeconds,
     leaseMinutes,
     maxConcurrent,
-    workspaceRoot: json.workspaceRoot || path.join(os.tmpdir(), 'pan-workspaces'),
+    workspaceRoot: path.resolve(json.workspaceRoot || path.join(os.tmpdir(), 'pan-workspaces')),
     copilotConfigPath:
       json.copilotConfigPath || path.join(os.homedir(), '.copilot', 'config.json'),
   };
@@ -761,18 +766,178 @@ async function workerPidAlive(panDir) {
   }
 }
 
-/** Best-effort removal of an inert isolated workspace directory. Only ever
- *  called during rehydrate for a directory under `workspaceRoot` (which holds
- *  only runner-created isolated workspaces) that has been confirmed inert — no
- *  live worker AND no longer owned/adoptable by this runner. Removing it stops
- *  finished workspaces from accumulating and being re-scanned and re-logged on
- *  every restart. A failure is logged but never fatal. */
-async function pruneWorkspace(workingDir, number, why) {
+/** The exact shape of the v4 UUID `randomUUID()` mints for a session id. A
+ *  resumed `session-id` is read back from the Project, where it could have been
+ *  tampered with; requiring this exact shape rejects anything containing a path
+ *  separator or `..` before it is ever interpolated into a directory name, so a
+ *  crafted value can neither alias another session's root nor create a nested
+ *  root that a flat rehydrate scan could not discover. */
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidSessionId(id) {
+  return typeof id === 'string' && SESSION_ID_RE.test(id);
+}
+
+/** Parse a directory name into the canonical `{ number, sessionId }` a runner
+ *  state root encodes (`pan-<issue>-<minted session UUID>`), or null when it is
+ *  not that exact shape. Any non-canonical name is never treated as a session
+ *  root, and rehydration binds this parsed identity against task.json,
+ *  launch.json, and the live Project item before acting. */
+function parseSessionRootName(entry) {
+  const m = /^pan-(\d+)-(.+)$/.exec(entry);
+  if (!m) return null;
+  const number = Number(m[1]);
+  const sessionId = m[2];
+  if (!Number.isInteger(number) || number <= 0) return null;
+  if (!isValidSessionId(sessionId)) return null;
+  return { number, sessionId };
+}
+
+/** Whether `child` resolves to a strict descendant of `parent`. Used to keep a
+ *  session state root confined to `workspaceRoot`: a resumed `session-id` comes
+ *  from the Project, so a value carrying path separators or `..` must not let the
+ *  computed root escape the workspace and have Pan write control files elsewhere. */
+function isPathInside(child, parent) {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/** A canonical key that resolves symlinks on whatever part of `dir` already
+ *  exists, so two spellings of one directory — including a symlinked alias —
+ *  compare equal. Not-yet-created leaves still benefit from resolving their
+ *  existing ancestors. Falls back to the lexical {@link canonicalPathKey} when
+ *  nothing on the path exists. Used for the launch-time overlap guard, where a
+ *  purely lexical compare could miss an aliased fixed/slot checkout. */
+function canonicalRealKey(dir) {
+  let resolved = path.resolve(dir);
+  let probe = resolved;
+  for (;;) {
+    try {
+      const real = realpathSync(probe);
+      const rest = path.relative(probe, resolved);
+      resolved = rest ? path.join(real, rest) : real;
+      break;
+    } catch {
+      const parent = path.dirname(probe);
+      if (parent === probe) break; // reached the filesystem root; nothing exists
+      probe = parent;
+    }
+  }
+  return canonicalPathKey(resolved);
+}
+
+/** Whether two directories overlap: identical, or one contains the other. Uses
+ *  realpath-resolved keys so a symlinked alias is caught where the paths exist.
+ *  A fixed/slot working directory and the session state root must never overlap,
+ *  or Pan's `.pan/` would land inside the repository. */
+function directoriesOverlap(a, b) {
+  const ka = canonicalRealKey(a);
+  const kb = canonicalRealKey(b);
+  if (ka === kb) return true;
+  const relAB = path.relative(ka, kb);
+  if (relAB && !relAB.startsWith('..') && !path.isAbsolute(relAB)) return true;
+  const relBA = path.relative(kb, ka);
+  if (relBA && !relBA.startsWith('..') && !path.isAbsolute(relBA)) return true;
+  return false;
+}
+
+/** The `version` tag every runner-written launch marker carries; a differing
+ *  version is treated as invalid so a format change can't be mis-read as valid. */
+const LAUNCH_MARKER_VERSION = 1;
+
+/** Read `.pan/launch.json` as `{ present, marker }`. Absence (only `ENOENT`) is
+ *  the legacy-isolated compatibility path; a present-but-unreadable/unparseable
+ *  file is `{ present: true, marker: null }` so it fails closed rather than being
+ *  mistaken for a legacy absent marker. */
+async function readLaunchMarker(panDir) {
+  let raw;
   try {
-    await rm(workingDir, { recursive: true, force: true });
-    log(`#${number} pruned stale workspace ${workingDir} (${why}) (rehydrate)`);
+    raw = await readFile(path.join(panDir, 'launch.json'), 'utf8');
   } catch (e) {
-    logErr(`could not prune stale workspace ${workingDir} for #${number}: ${e.message}`);
+    // Only a genuinely missing file is "absent"; any other read error (EISDIR,
+    // EACCES, ENOTDIR, …) is a present-but-unreadable marker that must fail closed.
+    if (e && e.code === 'ENOENT') return { present: false, marker: null };
+    return { present: true, marker: null };
+  }
+  try {
+    return { present: true, marker: JSON.parse(raw) };
+  } catch {
+    return { present: true, marker: null };
+  }
+}
+
+/** Whether a present launch marker completely matches this runner and this
+ *  session/task — the precondition for adopting, finalizing, resuming, or
+ *  deleting a root that carries a `launch.json`. Any missing or mismatched field
+ *  (foreign machine/identity, wrong version, or an ill-formed workspace kind/slot)
+ *  fails closed. Marker absence is handled separately (the legacy path). */
+function launchMarkerValid(marker, { machine, identity, sessionId, number, itemId }) {
+  if (!marker || typeof marker !== 'object') return false;
+  if (marker.panRunner !== true) return false;
+  if (marker.version !== LAUNCH_MARKER_VERSION) return false;
+  if (!machine || marker.machine !== machine) return false;
+  if (!identity || marker.identity !== identity) return false;
+  if (marker.itemId !== itemId) return false;
+  if (marker.number !== number) return false;
+  if (marker.sessionId !== sessionId) return false;
+  if (typeof marker.isolated !== 'boolean') return false;
+  if (marker.isolated) {
+    if (marker.slot != null) return false;
+  } else if (marker.slot != null && typeof marker.slot !== 'string') {
+    return false;
+  }
+  return true;
+}
+
+/** Whether `sessionRoot` is a real, direct child directory of `workspaceRoot`
+ *  and not a symlink/junction, so a read/write/removal addressed by name cannot
+ *  escape `workspaceRoot`. Fail-closed on any error, link, or containment
+ *  mismatch. */
+async function sessionRootLinkSafe(workspaceRoot, sessionRoot) {
+  let st;
+  try {
+    st = await lstat(sessionRoot);
+  } catch {
+    return false;
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) return false;
+  try {
+    const realParent = realpathSync(path.dirname(sessionRoot));
+    const realWs = realpathSync(workspaceRoot);
+    return canonicalPathKey(realParent) === canonicalPathKey(realWs);
+  } catch {
+    return false;
+  }
+}
+
+/** Best-effort removal of an inert session state root during rehydrate. Removes
+ *  only the state root, never a fixed/slot repository. The target is re-derived
+ *  from `workspaceRoot` and the canonical name (never a worker-writable field)
+ *  and re-verified as a real, direct, non-linked child before `rm`, so a corrupt
+ *  marker can only cause a refusal, never a delete outside the root. A failure is
+ *  logged, never fatal. */
+async function pruneWorkspace(workspaceRoot, entry, number, why) {
+  const parsed = parseSessionRootName(entry);
+  if (!parsed) {
+    logErr(`refusing to prune non-canonical entry ${JSON.stringify(entry)} for #${number}`);
+    return;
+  }
+  const sessionRoot = path.join(workspaceRoot, entry);
+  // Re-check identity and link-safety here to close any TOCTOU window between
+  // discovery and removal.
+  if (path.dirname(path.resolve(sessionRoot)) !== path.resolve(workspaceRoot)) {
+    logErr(`refusing to prune ${sessionRoot}: not a direct child of workspaceRoot`);
+    return;
+  }
+  if (!(await sessionRootLinkSafe(workspaceRoot, sessionRoot))) {
+    logErr(`refusing to prune ${sessionRoot}: not a real direct-child directory (symlink/junction or escaped)`);
+    return;
+  }
+  try {
+    await rm(sessionRoot, { recursive: true, force: true });
+    log(`#${number} pruned stale state root ${sessionRoot} (${why}) (rehydrate)`);
+  } catch (e) {
+    logErr(`could not prune stale state root ${sessionRoot} for #${number}: ${e.message}`);
   }
 }
 
@@ -807,14 +972,18 @@ export class Runner {
     this.cfg = cfg;
     this.meta = meta;
     this.playbooks = playbooks;
-    // GitHub boundary used by the poll/claim path. Defaults to the module-level
-    // `gh`-backed implementations; tests inject fakes to drive the real claim
-    // logic in-process without spawning `gh` or a worker terminal.
+    // GitHub boundary for the poll/claim AND finalize paths. Defaults to the
+    // module-level `gh`-backed implementations; tests inject fakes (including the
+    // issue-lifecycle/`gh` seams) to exercise finalize without a real Issue.
     this.deps = {
       readAllItems,
       readItemById,
       setTextField,
       setSelectField,
+      readDomainFile,
+      gh,
+      ensureIssueComment,
+      ensureIssueClosed,
       ...deps,
     };
     this.active = new Map();      // Project item id -> worker state
@@ -1166,11 +1335,27 @@ export class Runner {
     if (resuming && (!recordedSessionId || !affinityMatchesMachine(recordedMachine, this.cfg.machine))) {
       throw new Error(`cannot resume #${number}: recorded session or machine is missing/mismatched`);
     }
+    // Issue numbers and session ids are interpolated into the session root's
+    // directory name, so both must be safe path components before any path is
+    // built. The number comes from GitHub (an integer) and a fresh session id is
+    // a minted UUID, but a resumed session id is read back from the Project and
+    // could have been tampered with — require the exact UUID shape so a value
+    // carrying separators or `..` is rejected here, not after it has aliased or
+    // nested a directory.
+    if (!Number.isInteger(number) || number <= 0) {
+      throw new Error(`cannot launch #${number}: issue number is not a positive integer`);
+    }
+    if (resuming && !isValidSessionId(recordedSessionId)) {
+      throw new Error(`cannot resume #${number}: recorded session-id is not a valid Pan session id`);
+    }
     const sessionId = resuming ? recordedSessionId : randomUUID();
 
-    // 1. Working directory: fixed workingDirectory, a chosen workspace slot, or
-    //    an isolated workspace. Fixed and slot directories are shared/reused
-    //    (not isolated); an isolated workspace is per-task unique.
+    // 1. Resolve two distinct locations. The session state root always lives
+    //    under workspaceRoot and holds every Pan-owned control/signal file (its
+    //    `.pan/`); it is never inside a repository. The working directory is the
+    //    worker's CWD: a fixed `workingDirectory` or chosen slot is a real
+    //    in-place checkout, while a playbook with neither uses its session root
+    //    as the workspace as well.
     let workingDir;
     let isolated = false;
     let workerSlot = null;
@@ -1181,43 +1366,126 @@ export class Runner {
         throw new Error(`cannot launch #${number}: workspace slot ${JSON.stringify(workerSlot)} is not configured`);
       }
       workingDir = slotDef.dir;
-      await mkdir(workingDir, { recursive: true });
     } else if (pb.workingDirectory) {
       workingDir = pb.workingDirectory;
-      await mkdir(workingDir, { recursive: true });
     } else {
       isolated = true;
-      const stablePath = path.join(this.cfg.workspaceRoot, `pan-${number}-${sessionId}`);
-      workingDir = resuming
-        ? (this.resumeWorkspaces.get(item.itemId) || stablePath)
-        : stablePath;
-      if (resuming) {
-        if (!existsSync(workingDir)) {
-          throw new Error(`cannot resume #${number}: isolated workspace is missing (${workingDir})`);
-        }
-      } else {
-        await mkdir(this.cfg.workspaceRoot, { recursive: true });
-        if (existsSync(workingDir)) {
-          throw new Error(`new isolated workspace already exists (${workingDir})`);
-        }
-        await mkdir(workingDir);
-      }
     }
 
-    const panDir = path.join(workingDir, '.pan');
+    // The session root's name is stable for the recorded Copilot session, so a
+    // resume reopens the same directory. An isolated resume reuses the directory
+    // rehydrate remembered (its checkout lives there); a fixed/slot session root
+    // holds only regenerable state, so it is derived purely from the stable name.
+    let sessionRoot = path.join(this.cfg.workspaceRoot, `pan-${number}-${sessionId}`);
+    if (isolated && resuming) {
+      sessionRoot = this.resumeWorkspaces.get(item.itemId) || sessionRoot;
+    }
+    // Fail closed if the resolved root is not strictly inside workspaceRoot. A
+    // resumed session-id comes from the Project; a value with path separators or
+    // `..` must never let Pan write its control files outside the workspace.
+    if (!isPathInside(sessionRoot, this.cfg.workspaceRoot)) {
+      throw new Error(`cannot launch #${number}: session state directory escapes workspaceRoot (${sessionRoot})`);
+    }
+    // The session state root must never overlap the fixed/slot working directory,
+    // or Pan's `.pan/` would land in the repository (catches a workspaceRoot that
+    // equals or lives beneath a checkout, incl. a symlinked alias). Isolated tasks
+    // intentionally use their root as the workspace, so this applies to fixed/slot.
+    if (!isolated && directoriesOverlap(sessionRoot, workingDir)) {
+      throw new Error(
+        `cannot launch #${number}: session state directory (${sessionRoot}) overlaps the working directory ` +
+          `(${workingDir}); workspaceRoot must be outside every fixed workingDirectory and workspaceSlots path`,
+      );
+    }
+    await mkdir(this.cfg.workspaceRoot, { recursive: true });
+    if (resuming) {
+      if (isolated && !existsSync(sessionRoot)) {
+        throw new Error(`cannot resume #${number}: isolated workspace is missing (${sessionRoot})`);
+      }
+      if (existsSync(sessionRoot)) {
+        // Never follow a symlink/junction masquerading as the session root, and
+        // never write into a root that does not resolve inside workspaceRoot.
+        if (!(await sessionRootLinkSafe(this.cfg.workspaceRoot, sessionRoot))) {
+          throw new Error(`cannot resume #${number}: state root ${sessionRoot} is not a real directory inside workspaceRoot`);
+        }
+        // A present marker must be this runner's complete, matching marker, or
+        // the derived path aliases another session's root; a missing marker is
+        // the legacy path, allowed only for an isolated resume. The recorded
+        // workspace kind/slot (and, for a slot, its checkout path) must match the
+        // resume target so an established session is never moved or reinterpreted.
+        const { present, marker } = await readLaunchMarker(path.join(sessionRoot, '.pan'));
+        if (present) {
+          if (!launchMarkerValid(marker, {
+            machine: this.cfg.machine,
+            identity: this.cfg.identity,
+            sessionId,
+            number,
+            itemId: item.itemId,
+          })) {
+            throw new Error(`cannot resume #${number}: existing state root ${sessionRoot} has an invalid/foreign marker`);
+          }
+          if (marker.isolated !== isolated || (marker.slot ?? null) !== (workerSlot ?? null)) {
+            throw new Error(
+              `cannot resume #${number}: recorded workspace kind/slot ` +
+                `(${marker.isolated ? 'isolated' : (marker.slot ?? 'fixed')}) does not match the resume target ` +
+                `(${isolated ? 'isolated' : (workerSlot ?? 'fixed')})`,
+            );
+          }
+          // A slot's recorded checkout must still be the one the playbook maps it
+          // to, so a same-slot-id remap refuses rather than relaunching elsewhere.
+          if (workerSlot != null && marker.workingDir
+            && canonicalRealKey(marker.workingDir) !== canonicalRealKey(workingDir)) {
+            throw new Error(
+              `cannot resume #${number}: slot ${JSON.stringify(workerSlot)} now maps to a different checkout ` +
+                `(${workingDir}) than the recorded session (${marker.workingDir})`,
+            );
+          }
+        } else if (!isolated) {
+          throw new Error(`cannot resume #${number}: fixed/slot state root ${sessionRoot} has no runner marker`);
+        }
+      }
+      await mkdir(sessionRoot, { recursive: true });
+    } else {
+      if (existsSync(sessionRoot)) {
+        throw new Error(`new session state directory already exists (${sessionRoot})`);
+      }
+      await mkdir(sessionRoot);
+    }
+    // After creation/resume the session root must be a real directory that is a
+    // direct child of workspaceRoot — never a symlink/junction — so every
+    // subsequent read/write is confined to the workspace.
+    if (!(await sessionRootLinkSafe(this.cfg.workspaceRoot, sessionRoot))) {
+      throw new Error(`cannot launch #${number}: session state directory ${sessionRoot} is not a real directory inside workspaceRoot`);
+    }
+
+    if (isolated) {
+      // An isolated worker's checkout lives inside its own session root.
+      workingDir = sessionRoot;
+    } else {
+      await mkdir(workingDir, { recursive: true });
+    }
+
+    const panDir = path.join(sessionRoot, '.pan');
     await mkdir(panDir, { recursive: true });
 
-    // Clear any stale signal files from a previous task. This matters for a
-    // reused fixed or slot directory whose `.pan/` is reused; an isolated
-    // workspace is already fresh, but clearing unconditionally is simplest and
-    // harmless.
+    // Never clear an unprocessed result on resume: a leftover result.json means a
+    // finished worker was never finalized, so fail closed (leaving the task
+    // paused with its result intact for rehydrate) rather than deleting it below.
+    if (resuming && existsSync(path.join(panDir, 'result.json'))) {
+      throw new Error(
+        `cannot resume #${number}: an unprocessed result.json is present in ${panDir}; ` +
+          `refusing to clear a finished worker's result`,
+      );
+    }
+
+    // Clear any stale signal files. A fresh session root has none; a resumed one
+    // may still carry a dead worker's liveness/pid markers.
     await Promise.all(
       ['result.json', 'needs-human.json', 'worker.running', 'worker.pid', 'worker.stop', 'pan.md'].map((f) =>
         rm(path.join(panDir, f), { force: true }),
       ),
     );
 
-    // 2. Task context files.
+    // 2. Task context files (always under the session root, never the repo).
     const task = {
       itemId: item.itemId,
       number,
@@ -1234,13 +1502,37 @@ export class Runner {
     await writeFile(path.join(panDir, 'task.json'), JSON.stringify(task, null, 2));
     await writeFile(path.join(panDir, 'playbook.md'), pb.body);
 
+    // Runner-owned launch metadata AND ownership marker (not a worker contract):
+    // records the real working directory for restart supervision, and its
+    // identity fields prove this runner created this root for this task — the
+    // precondition for any later adopt/finalize/resume/delete.
+    await writeFile(
+      path.join(panDir, 'launch.json'),
+      JSON.stringify(
+        {
+          panRunner: true,
+          version: 1,
+          machine: this.cfg.machine,
+          identity: this.cfg.identity,
+          itemId: item.itemId,
+          number,
+          sessionId,
+          isolated,
+          workingDir,
+          slot: workerSlot,
+        },
+        null,
+        2,
+      ),
+    );
+
     // Domain-specific instructions live in the Domain repo's pan.md and must
     // reach the worker (playbooks and worker-base-instructions alone don't
     // carry them). Fetch it live, best-effort: a Domain without a pan.md simply
     // gets no file, and a transient read failure must not block the launch.
     let hasDomainPan = false;
     try {
-      const domainPan = await readDomainFile(this.cfg, 'pan.md');
+      const domainPan = await this.deps.readDomainFile(this.cfg, 'pan.md');
       await writeFile(path.join(panDir, 'pan.md'), domainPan);
       hasDomainPan = true;
     } catch (e) {
@@ -1248,7 +1540,7 @@ export class Runner {
     }
 
     const systemDir = path.join(this.cfg.panCheckout, 'system');
-    const prompt = this.buildPrompt(systemDir, playbookName, hasDomainPan);
+    const prompt = this.buildPrompt(systemDir, playbookName, panDir, hasDomainPan);
     await writeFile(path.join(panDir, 'launch-prompt.txt'), prompt);
 
     // Stable, human-readable window title so the user can tell at a glance
@@ -1256,26 +1548,31 @@ export class Runner {
     // launcher bakes it in to keep re-asserting it against copilot (see below).
     const windowTitle = workerWindowTitle(number, item.issue.title);
 
-    // Generate the Node launcher. It runs with its CWD set to workingDir and
-    // passes the prompt to copilot as a single argv element, so no shell ever
-    // re-parses the (domain-controlled) prompt text on any platform. The
-    // session id is baked in as `--session-id` so the worker's copilot session
-    // is the one recorded on the Issue, making the task resumable.
-    await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource(windowTitle, sessionId));
+    // Generate the Node launcher. It runs with its CWD set to workingDir but
+    // reads and writes every control/signal file by its absolute path under the
+    // session state root, so a fixed/slot worker's repository never gains a
+    // `.pan/`. The prompt is passed to copilot as a single argv element (no
+    // shell re-parses it), and `--session-id` binds the worker to the recorded
+    // session so the task is resumable.
+    await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource(windowTitle, sessionId, panDir));
 
     // Record a new Copilot session before launch. Without this durable link a
     // stopped task could not be resumed, so a write failure must abort launch.
     // A resume already has the required recorded value.
     if (!resuming) {
-      await setTextField(this.cfg, this.meta, item.itemId, FIELD.sessionId, sessionId);
+      await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.sessionId, sessionId);
     }
 
-    // 3. Pre-trust the workspace folder so the headed worker starts without an
-    // interactive "trust this folder?" prompt. copilot's --allow-all covers
-    // tools/paths/URLs but NOT the per-folder trust gate, which is governed
-    // only by trustedFolders in ~/.copilot/config.json. Best-effort: on any
-    // failure the worker at worst shows the prompt as before.
+    // 3. Pre-trust both the working directory and the session state directory so
+    // the headed worker starts without an interactive "trust this folder?"
+    // prompt. copilot's --allow-all covers tools/paths/URLs but NOT the
+    // per-folder trust gate, which is governed only by trustedFolders in
+    // ~/.copilot/config.json. Best-effort: on any failure the worker at worst
+    // shows the prompt as before.
     await this.trustWorkspace(workingDir);
+    if (canonicalPathKey(sessionRoot) !== canonicalPathKey(workingDir)) {
+      await this.trustWorkspace(sessionRoot);
+    }
 
     // 4. Launch a headed copilot session in a visible terminal window. The
     // window title is set by the launcher's watchdog (baked in above); the
@@ -1292,6 +1589,7 @@ export class Runner {
       repo: item.issue.repo || repoFromUrl(item.issue.url),
       playbook: playbookName,
       workingDir,
+      sessionRoot,
       panDir,
       isolated,
       slot: workerSlot,
@@ -1308,17 +1606,22 @@ export class Runner {
     log(`launched worker for #${number} in ${workingDir}${resuming ? ` (resuming session ${sessionId})` : ` (session ${sessionId})`}`);
   }
 
-  buildPrompt(systemDir, playbookName, hasDomainPan = false) {
+  buildPrompt(systemDir, playbookName, panDir, hasDomainPan = false) {
     // Single line: some terminal launchers only read the first line of the file.
+    // Every Pan file is named by its absolute path in the session state
+    // directory, which is NOT the worker's repository working directory — a
+    // fixed/slot worker's CWD is its checkout, so relative `.pan/...` paths would
+    // wrongly resolve inside the repository.
     return [
       `You are a Pan worker doing exactly one task.`,
       `Read and follow ${path.join(systemDir, 'worker-base-instructions.md')}.`,
       `The Pan system documents are in ${systemDir}.`,
+      `Your Pan state directory is ${panDir} (also in the PAN_STATE_DIR environment variable); every Pan control and signal file lives there, not in your working directory, and you must not create a .pan directory in your working directory.`,
       hasDomainPan
-        ? `Read .pan/pan.md in this working directory for Domain-specific instructions and apply them.`
+        ? `Read ${path.join(panDir, 'pan.md')} for Domain-specific instructions and apply them.`
         : ``,
-      `Your task is in .pan/task.json and your playbook "${playbookName}" is in .pan/playbook.md, both in this working directory.`,
-      `Signal that you need the user by writing .pan/needs-human.json (delete it once resolved), and write .pan/result.json exactly once when finished.`,
+      `Your task is in ${path.join(panDir, 'task.json')} and your playbook "${playbookName}" is in ${path.join(panDir, 'playbook.md')}.`,
+      `Signal that you need the user by writing ${path.join(panDir, 'needs-human.json')} (delete it once resolved), and write ${path.join(panDir, 'result.json')} exactly once when finished.`,
       `Do not edit any GitHub Project field yourself. Begin.`,
     ].filter(Boolean).join(' ');
   }
@@ -1372,15 +1675,20 @@ export class Runner {
   }
 
   /**
-   * Source for the generated `.pan/launch.mjs`. Run with CWD = the worker
-   * working directory, it maintains the liveness marker and pid, then spawns
-   * copilot with the prompt as a single argv element (never re-parsed by any
-   * shell). copilotBin/copilotArgs are baked in as JSON literals so the
-   * launcher reads no config at runtime. Permission flags derived from
-   * workerPermissions are prepended to copilotArgs, and `--session-id <id>` is
-   * appended so the worker runs under the exact session id recorded on the
-   * Issue — creating that session on first launch and resuming it on a later
-   * one (see system/runner.md, "Restart and rehydration").
+   * Source for the generated `launch.mjs`. It runs with CWD = the worker's
+   * repository working directory, but it reads and writes every control/signal
+   * file by its absolute path under the session state directory (baked in as
+   * `panDir`), so a fixed/slot worker's repository never gains a `.pan/`. It
+   * maintains the liveness marker and pid, then spawns copilot with the prompt
+   * as a single argv element (never re-parsed by any shell). copilotBin and the
+   * argument list are baked in as JSON literals so the launcher reads no config
+   * at runtime. Permission flags derived from workerPermissions come first, then
+   * `--add-dir <panDir>` so copilot may access the out-of-tree state directory,
+   * then any configured copilotArgs, then `--session-id <id>` so the worker runs
+   * under the exact session id recorded on the Issue — creating that session on
+   * first launch and resuming it on a later one (see system/runner.md,
+   * "Lease-driven resume"). PAN_STATE_DIR and PAN_WORKING_DIRECTORY are exported
+   * to the worker so its signalling can name the state directory robustly.
    *
    * The launcher also runs a title watchdog: copilot rewrites the terminal
    * title (`OSC 0`) repeatedly during a session with its own AI-generated
@@ -1390,37 +1698,46 @@ export class Runner {
    * title escape never touches copilot's alt-screen content — with at most a
    * brief flicker to copilot's title after each of its (infrequent) updates.
    *
-   * Finally, the launcher watches for `.pan/worker.stop`, which the runner
-   * writes once it has finalized the task. On that signal the launcher stops
-   * copilot and closes its own terminal window so finished worker windows do
-   * not accumulate: on macOS it asks Terminal.app to close the window matching
-   * its tty; on Windows it simply exits 0 and Windows Terminal auto-closes the
-   * tab. On macOS the launcher runs via `exec node` (it replaced the login
-   * shell), so when it exits the tab has no running process and Terminal closes
-   * it without its "terminate running processes in this window?" prompt.
+   * Finally, the launcher watches for `worker.stop` in the state directory,
+   * which the runner writes once it has finalized the task. On that signal the
+   * launcher stops copilot and closes its own terminal window so finished worker
+   * windows do not accumulate: on macOS it asks Terminal.app to close the window
+   * matching its tty; on Windows it simply exits 0 and Windows Terminal
+   * auto-closes the tab. On macOS the launcher runs via `exec node` (it replaced
+   * the login shell), so when it exits the tab has no running process and
+   * Terminal closes it without its "terminate running processes in this window?"
+   * prompt.
    */
-  buildLauncherSource(windowTitle = '', sessionId = '') {
+  buildLauncherSource(windowTitle = '', sessionId = '', panDir = '') {
     const copilotBin = JSON.stringify(this.cfg.copilotBin);
     const sessionArgs = sessionId ? ['--session-id', sessionId] : [];
+    // Grant copilot file access to the out-of-tree state directory; it holds the
+    // task context the worker must read and the signal files it must write.
+    const addDirArgs = panDir ? ['--add-dir', panDir] : [];
     // copilot has no positional prompt argument: the initial prompt must be the
     // VALUE of -i/--interactive (see `copilot --help`). The launcher appends
     // `--interactive <promptText>` at spawn time, so strip any bare interactive
     // flag a config may still carry, otherwise it would consume the prompt as
     // its value and leave the real prompt as a rejected positional argument.
-    const baseArgs = [...this.cfg.permissionArgs, ...this.cfg.copilotArgs, ...sessionArgs]
+    const baseArgs = [...this.cfg.permissionArgs, ...addDirArgs, ...this.cfg.copilotArgs, ...sessionArgs]
       .filter((a) => a !== '--interactive' && a !== '-i');
     const copilotArgs = JSON.stringify(baseArgs);
     const title = JSON.stringify(windowTitle || '');
+    const panDirLit = JSON.stringify(panDir);
     return `import { spawn, execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Baked in by the runner; the launcher reads no config at runtime.
 const copilotBin = ${copilotBin};
 const copilotArgs = ${copilotArgs};
 const windowTitle = ${title};
+// Absolute session state directory. Every control/signal file is addressed
+// under it, so the launcher never depends on its CWD (the repository checkout).
+const panDir = ${panDirLit};
 
-const marker = '.pan/worker.running';
-const stopSignal = '.pan/worker.stop';
+const marker = join(panDir, 'worker.running');
+const stopSignal = join(panDir, 'worker.stop');
 let cleaned = false;
 let titleTimer = null;
 let stopTimer = null;
@@ -1486,10 +1803,11 @@ function closeWindow() {
   } catch {}
 }
 
-// The runner writes .pan/worker.stop after it finalizes the task (records the
-// result and updates the Project). That is our cue to shut copilot down and
-// close this window so finished worker windows don't pile up. We exit 0 so
-// Windows Terminal auto-closes the tab; the detached closer handles macOS.
+// The runner writes worker.stop into the state directory after it finalizes the
+// task (records the result and updates the Project). That is our cue to shut
+// copilot down and close this window so finished worker windows don't pile up.
+// We exit 0 so Windows Terminal auto-closes the tab; the detached closer handles
+// macOS.
 function shutdownForStop() {
   if (stopping) return;
   stopping = true;
@@ -1500,7 +1818,7 @@ function shutdownForStop() {
   setTimeout(() => process.exit(0), 400);
 }
 
-try { writeFileSync('.pan/worker.pid', String(process.pid)); } catch {}
+try { writeFileSync(join(panDir, 'worker.pid'), String(process.pid)); } catch {}
 try { writeFileSync(marker, ''); } catch {}
 
 // Remove the marker on normal exit and on window-close signals, mirroring the
@@ -1511,10 +1829,15 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => { cleanup(); process.exit(130); });
 }
 
-const promptText = readFileSync('.pan/launch-prompt.txt', 'utf8');
+const promptText = readFileSync(join(panDir, 'launch-prompt.txt'), 'utf8');
 // The prompt is the value of copilot's -i/--interactive flag, never a bare
 // positional argument (copilot has no positional prompt and would reject it).
-const child = spawn(copilotBin, [...copilotArgs, '--interactive', promptText], { stdio: 'inherit' });
+// PAN_STATE_DIR / PAN_WORKING_DIRECTORY let the worker name its state directory
+// (and confirm its checkout) without re-deriving either from the prompt.
+const child = spawn(copilotBin, [...copilotArgs, '--interactive', promptText], {
+  stdio: 'inherit',
+  env: { ...process.env, PAN_STATE_DIR: panDir, PAN_WORKING_DIRECTORY: process.cwd() },
+});
 setWindowTitle();
 titleTimer = setInterval(setWindowTitle, 2000);
 if (typeof titleTimer.unref === 'function') titleTimer.unref();
@@ -1530,12 +1853,13 @@ child.on('exit', (code, signal) => {
   }
 
   async spawnMacTerminal(workingDir, panDir, title) {
-    // The Node launcher (.pan/launch.mjs) owns the liveness marker and pid; we
-    // only cd into the working dir and run it. No prompt text flows through the
-    // shell — the sole shell-quoted values are the controlled working-dir path
-    // and nodeBin.
-    void panDir;
+    // The Node launcher owns the liveness marker and pid; we only cd into the
+    // repository working dir (the worker's CWD) and run the launcher by its
+    // absolute path in the out-of-tree state directory. No prompt text flows
+    // through the shell — the sole shell-quoted values are the controlled
+    // working-dir path, nodeBin, and the launcher path.
     const nodeBin = this.cfg.nodeBin;
+    const launcher = path.join(panDir, 'launch.mjs');
     // `exec` replaces the login shell (`-zsh`) with the Node launcher so the
     // tab has exactly one process — node — and no leftover interactive shell.
     // That matters when the launcher closes its own window on completion: once
@@ -1543,7 +1867,7 @@ child.on('exit', (code, signal) => {
     // so Terminal.app closes it silently instead of showing its "Do you want to
     // terminate running processes in this window?" prompt for the idle shell
     // (see buildLauncherSource / closeWindow).
-    const doScript = `cd ${shQuote(workingDir)} && exec ${shQuote(nodeBin)} .pan/launch.mjs`;
+    const doScript = `cd ${shQuote(workingDir)} && exec ${shQuote(nodeBin)} ${shQuote(launcher)}`;
     // Capture the tab returned by `do script` and set an initial title on it.
     // This is only the title shown before copilot loads: copilot rewrites the
     // window title (OSC 0) during the session and that overrides Terminal.app's
@@ -1567,20 +1891,21 @@ child.on('exit', (code, signal) => {
   }
 
   async spawnWindowsTerminal(workingDir, panDir, title) {
-    // Launch the Node launcher (.pan/launch.mjs) via an argv array with no cmd
-    // prompt expansion. `-d workingDir` sets the CWD so the launcher's relative
-    // `.pan/...` paths resolve. The launcher maintains the liveness marker
+    // Launch the Node launcher via an argv array with no cmd prompt expansion.
+    // `-d workingDir` sets the CWD to the worker's repository checkout; the
+    // launcher itself is referenced by its absolute path in the out-of-tree
+    // state directory and addresses every signal file there, so no `.pan/` is
+    // created under the repository. The launcher maintains the liveness marker
     // (including on window-close signals), so no batch file is needed.
     // `--title` plus `--suppressApplicationTitle` pin a stable task name that
     // Windows Terminal will not let the running program overwrite. (The
     // launcher's title watchdog also runs, but its OSC titles are ignored here
     // for the same reason — belt-and-suspenders with the macOS path.)
-    void panDir;
     const ntArgs = ['-w', '0', 'nt'];
     if (title) {
       ntArgs.push('--title', title, '--suppressApplicationTitle');
     }
-    ntArgs.push('-d', workingDir, this.cfg.nodeBin, path.join('.pan', 'launch.mjs'));
+    ntArgs.push('-d', workingDir, this.cfg.nodeBin, path.join(panDir, 'launch.mjs'));
     await spawnOk('wt.exe', ntArgs, { detached: true });
   }
 
@@ -1590,6 +1915,18 @@ child.on('exit', (code, signal) => {
     for (const [itemId, w] of [...this.active.entries()]) {
       if (w.finished) {
         this.active.delete(itemId);
+        continue;
+      }
+      // Occupancy-only entries reserve a live-but-not-ours worker's directory so
+      // no duplicate launches into it; we must not supervise or write its
+      // Project fields (that would steal it from its owner). Drop the entry once
+      // its worker exits, freeing the directory without any Project write.
+      if (w.occupancyOnly) {
+        const markerPath = path.join(w.panDir, 'worker.running');
+        if (!(existsSync(markerPath) && (await workerPidAlive(w.panDir)))) {
+          this.active.delete(itemId);
+          log(`#${w.issueNumber} occupancy-only worker exited; releasing its reserved directory`);
+        }
         continue;
       }
       try {
@@ -1703,11 +2040,11 @@ child.on('exit', (code, signal) => {
     // paused).
     //
     // On macOS the terminal is launched via `open`/`osascript` and on Windows
-    // via `wt.exe`, but the generated `.pan/launch.mjs` writes its OWN pid to
-    // `.pan/worker.pid`, so the tracked PID is the real local launcher node
-    // process and `process.kill(pid, 0)` is reliable for BOTH terminal kinds.
-    // If a future terminal kind cannot yield a trackable local PID, the
-    // marker-only presence check remains the fallback.
+    // via `wt.exe`, but the generated launcher writes its OWN pid to
+    // `worker.pid` in the session state directory, so the tracked PID is the
+    // real local launcher node process and `process.kill(pid, 0)` is reliable
+    // for BOTH terminal kinds. If a future terminal kind cannot yield a
+    // trackable local PID, the marker-only presence check remains the fallback.
     const age = Date.now() - w.startedAt;
     if (
       age > DEFAULTS.workerStartGraceSeconds * 1000 &&
@@ -1764,7 +2101,7 @@ child.on('exit', (code, signal) => {
 
     let fresh;
     try {
-      fresh = await readItemById(w.itemId);
+      fresh = await this.deps.readItemById(w.itemId);
     } catch (e) {
       return this.handleFinalizationFailure(w, e, status);
     }
@@ -1778,6 +2115,25 @@ child.on('exit', (code, signal) => {
 
     const currentStatus = statusOf(fresh);
     const claimedBy = val(fresh, FIELD.claimedBy, '');
+    const freshSessionId = val(fresh, FIELD.sessionId, '');
+    const freshMachine = val(fresh, FIELD.machine, '');
+
+    // Revalidate the live item against this worker before ANY write, so a stale
+    // snapshot can never commit onto drifted state: require a non-empty session-id
+    // still equal to this worker's and a matching machine/slot affinity.
+    const sessionMatches = !!w.sessionId && freshSessionId === w.sessionId;
+    const affinityMatches = affinityMatchesMachine(freshMachine, this.cfg.machine)
+      && (w.slot == null || splitAffinity(freshMachine).slot === w.slot);
+    if (!sessionMatches || !affinityMatches) {
+      logErr(
+        `finalization for #${w.issueNumber} stopped: live session/affinity no longer ` +
+          `matches this worker (session=${JSON.stringify(freshSessionId)}, ` +
+          `machine=${JSON.stringify(freshMachine)}); stopping without writes`,
+      );
+      await this.stopFinalizedWorker(w);
+      return true;
+    }
+
     if (w.finalizationEscalated && currentStatus === 'blocked') {
       try {
         await this.clearAndConfirmTerminalFields(w, 'blocked');
@@ -1796,11 +2152,19 @@ child.on('exit', (code, signal) => {
       await this.stopFinalizedWorker(w);
       return true;
     }
+    // Finalize a passively-swept paused item only when it is still our finished
+    // worker: a lapsed lease and our surviving claim on a still-paused item (an
+    // unclaimed pause is a manual pause). Only the rehydrate swept path sets this
+    // flag, so normal supervision is unaffected.
+    const sweptPausedOurs = w.finalizeFromPausedSweep
+      && currentStatus === 'paused'
+      && claimedBy === this.cfg.identity
+      && leaseExpiredOrMissing(fresh);
     if (
       (claimedBy && claimedBy !== this.cfg.identity) ||
       (currentStatus === 'in-progress' &&
         claimedBy !== this.cfg.identity) ||
-      (currentStatus !== 'in-progress' && currentStatus !== status)
+      (currentStatus !== 'in-progress' && currentStatus !== status && !sweptPausedOurs)
     ) {
       logErr(
         `finalization for #${w.issueNumber} lost ownership ` +
@@ -1812,19 +2176,19 @@ child.on('exit', (code, signal) => {
     }
 
     try {
-      await ensureIssueComment(
-        gh,
+      await this.deps.ensureIssueComment(
+        this.deps.gh,
         this.issueRepoOf(w),
         w.issueNumber,
         `<!-- pan-result:${w.sessionId} -->`,
         comment,
       );
       // Clear any lingering human-attention signal on completion (idempotent).
-      await setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, '');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, '');
       if (outcome === 'done') {
-        await ensureIssueClosed(gh, this.issueRepoOf(w), w.issueNumber);
+        await this.deps.ensureIssueClosed(this.deps.gh, this.issueRepoOf(w), w.issueNumber);
       }
-      await setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, status);
+      await this.deps.setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, status);
       await this.clearAndConfirmTerminalFields(w, status);
     } catch (e) {
       return this.handleFinalizationFailure(w, e, status);
@@ -1854,9 +2218,9 @@ child.on('exit', (code, signal) => {
   }
 
   async clearAndConfirmTerminalFields(w, expectedStatus) {
-    await setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
-    await setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
-    const confirmed = await readItemById(w.itemId);
+    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+    const confirmed = await this.deps.readItemById(w.itemId);
     if (
       !confirmed ||
       statusOf(confirmed) !== expectedStatus ||
@@ -1887,7 +2251,7 @@ child.on('exit', (code, signal) => {
 
     let fresh;
     try {
-      fresh = await readItemById(w.itemId);
+      fresh = await this.deps.readItemById(w.itemId);
     } catch (e) {
       w.nextFinalizeAttemptAt = Date.now() + 60000;
       logErr(
@@ -1937,7 +2301,7 @@ child.on('exit', (code, signal) => {
 
     w.finalizationEscalated = true;
     try {
-      await setSelectField(
+      await this.deps.setSelectField(
         this.cfg,
         this.meta,
         w.itemId,
@@ -1986,8 +2350,8 @@ child.on('exit', (code, signal) => {
   }
 
   async recordFinalizationEscalation(w, reason, resolution) {
-    await ensureIssueComment(
-      gh,
+    await this.deps.ensureIssueComment(
+      this.deps.gh,
       this.issueRepoOf(w),
       w.issueNumber,
       `<!-- pan-finalization-failed:${w.sessionId} -->`,
@@ -2127,33 +2491,102 @@ child.on('exit', (code, signal) => {
     }
   }
 
+  /**
+   * Decide whether a live worker discovered at restart can be safely (re-)adopted
+   * for supervision. The startup snapshot is stale, so this re-reads the item
+   * immediately: it adopts an already-`in-progress`+ours item as-is, restores a
+   * claim only for the exact passive-sweep state (with a confirming re-read), and
+   * otherwise returns false so the caller reserves the directory occupancy-only
+   * rather than overwriting newer Project state. Fail-closed against any session,
+   * machine, or ownership drift.
+   */
+  async reAdoptLiveWorker(w) {
+    let fresh;
+    try {
+      fresh = await this.deps.readItemById(w.itemId);
+    } catch (e) {
+      logErr(`live re-adopt re-read failed for #${w.issueNumber}: ${e.message}`);
+      return false;
+    }
+    if (!fresh) return false;
+
+    const status = statusOf(fresh);
+    const claimedBy = val(fresh, FIELD.claimedBy, '');
+    const machine = val(fresh, FIELD.machine, '');
+    const sessionId = val(fresh, FIELD.sessionId, '');
+
+    // The live item must still be the same session on our machine, or this is no
+    // longer the worker we think it is.
+    if (!sessionId || sessionId !== w.sessionId || !affinityMatchesMachine(machine, this.cfg.machine)) {
+      return false;
+    }
+
+    // Already in-progress and ours: adopt without touching the Project.
+    if (status === 'in-progress' && claimedBy === this.cfg.identity) {
+      w.lastRenew = 0; // force an immediate renewal on the next tick
+      return true;
+    }
+
+    // The only drift we restore is the exact passive-sweep state (paused, our
+    // claim intact, lapsed lease); anything else is left for reservation.
+    const restorable = status === 'paused'
+      && claimedBy === this.cfg.identity
+      && leaseExpiredOrMissing(fresh);
+    if (!restorable) return false;
+
+    const lease = this.leaseTimestamp();
+    try {
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, this.cfg.identity);
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, lease);
+      await this.deps.setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'in-progress');
+    } catch (e) {
+      logErr(`could not restore claim for live #${w.issueNumber} on rehydrate: ${e.message}`);
+      return false;
+    }
+
+    // Confirming re-read: another actor may have raced our writes. Require the
+    // exact values we wrote plus the unchanged session/machine binding.
+    let confirm;
+    try {
+      confirm = await this.deps.readItemById(w.itemId);
+    } catch (e) {
+      logErr(`live re-adopt confirm re-read failed for #${w.issueNumber}: ${e.message}`);
+      return false;
+    }
+    if (
+      !confirm ||
+      statusOf(confirm) !== 'in-progress' ||
+      val(confirm, FIELD.claimedBy, '') !== this.cfg.identity ||
+      val(confirm, FIELD.leaseUntil, '') !== lease ||
+      val(confirm, FIELD.sessionId, '') !== w.sessionId ||
+      !affinityMatchesMachine(val(confirm, FIELD.machine, ''), this.cfg.machine)
+    ) {
+      logErr(`live re-adopt not confirmed for #${w.issueNumber}; reserving directory instead`);
+      return false;
+    }
+    w.lastRenew = Date.now();
+    log(`#${w.issueNumber} live worker: restored in-progress claim from a passive sweep (rehydrate)`);
+    return true;
+  }
+
   // ---- Rehydration (best-effort) -----------------------------------------
 
   /**
-   * Best-effort restart adoption: scan workspaceRoot for isolated workspaces.
+   * Best-effort restart adoption: scan workspaceRoot for per-session state roots
+   * and reconcile each against the live Project.
    *
-   * - A workspace with a pending `.pan/result.json` (produced while the runner
-   *   was down) whose item is still claimed by us is finalized through the
-   *   normal result path, so a completed task is not left stuck in-progress.
-   * - A workspace whose worker is still alive (marker present AND its recorded
-   *   PID is a live process) and not finished, whose item is still claimed by
-   *   us, is re-adopted for supervision.
-   * - A workspace whose marker is gone — OR whose marker is present but whose
-   *   recorded PID is dead/missing — with the item still ours and
-   *   `in-progress`, is retained and its item is transitioned to `paused`.
-   * - A retained workspace for a task already `paused` on this machine is
-   *   indexed for the next resume launch.
-   * - An isolated workspace that is inert — no live worker AND no longer
-   *   owned/adoptable by this runner (finalized, released, missing
-   *   from the Project, or externally transitioned) — is pruned (its directory
-   *   removed). Otherwise finished workspaces accumulate under workspaceRoot and
-   *   are re-scanned and re-logged on every restart. Only workspaces confirmed
-   *   inert are removed; a live or still-owned-and-adoptable workspace is never
-   *   touched.
+   * Invariant: every adoption, finalization, or deletion requires the state root
+   * to bind to the live Project item (canonical name, task.json, a complete valid
+   * launch.json marker, and the item agreeing on issue/itemId/machine/session and,
+   * for a slot, the slot id and its checkout path). A live worker's directory is
+   * always kept reserved so no duplicate launches; a stopped in-progress worker is
+   * released to paused; an inert root is pruned only when its marker validates.
+   * Anything short of full binding is preserved untouched, never finalized or
+   * deleted. See bin/README.md for the detailed contract.
    *
-   * LIMITATION: playbooks with a fixed workingDirectory are not discovered here
-   * (there is no persisted registry of launched handles), and a worker's exact
-   * child process cannot be re-attached. See bin/README.md.
+   * LIMITATION: a task whose `.pan/` predates this state-separation is not under
+   * workspaceRoot and is not discovered here (its expired lease is still swept to
+   * `paused` at poll time), and a worker's exact child process is not re-attached.
    */
   async rehydrate() {
     if (!existsSync(this.cfg.workspaceRoot)) return;
@@ -2170,7 +2603,7 @@ child.on('exit', (code, signal) => {
     let attempt = 0;
     for (;;) {
       try {
-        items = await readAllItems(this.cfg, this.meta);
+        items = await this.deps.readAllItems(this.cfg, this.meta);
         break;
       } catch (e) {
         if (attempt < DEFAULTS.ghMaxRetries) {
@@ -2185,19 +2618,36 @@ child.on('exit', (code, signal) => {
       }
     }
     // Resolve liveness before processing so, if an older runner left duplicate
-    // workspaces for one Project item, a live worker wins over a dead leftover.
+    // state roots for one Project item, a live worker wins over a dead leftover.
     const workspaces = [];
     for (const entry of entries) {
-      const workingDir = path.join(this.cfg.workspaceRoot, entry);
-      const panDir = path.join(workingDir, '.pan');
+      // Only directories named exactly `pan-<issue>-<minted session UUID>` are
+      // runner state roots. Anything else under workspaceRoot — a user's
+      // checkout, a legacy/fake name — never parses, so rehydrate can never
+      // adopt, finalize, or prune it. The parsed `{ number, sessionId }` is the
+      // first of the four sources (name, task.json, launch.json, Project item)
+      // whose exact agreement gates every action below.
+      const parsedName = parseSessionRootName(entry);
+      if (!parsedName) continue;
+      const sessionRoot = path.join(this.cfg.workspaceRoot, entry);
+      const panDir = path.join(sessionRoot, '.pan');
       const taskPath = path.join(panDir, 'task.json');
       const markerPath = path.join(panDir, 'worker.running');
       const resultPath = path.join(panDir, 'result.json');
+      // lstat (not stat): never follow a symlink/junction, or a linked "session
+      // root" could make rehydrate read/write/remove outside workspaceRoot.
       let st;
       try {
-        st = await stat(workingDir);
-        if (!st.isDirectory()) continue;
+        st = await lstat(sessionRoot);
       } catch {
+        continue;
+      }
+      if (st.isSymbolicLink() || !st.isDirectory()) {
+        logErr(`rehydrate: ignoring non-directory or linked session root ${sessionRoot}`);
+        continue;
+      }
+      if (!(await sessionRootLinkSafe(this.cfg.workspaceRoot, sessionRoot))) {
+        logErr(`rehydrate: ignoring session root ${sessionRoot} that does not resolve inside workspaceRoot`);
         continue;
       }
       // Only skip when the task context is missing; a present result.json must
@@ -2213,18 +2663,56 @@ child.on('exit', (code, signal) => {
       const number = task.number;
       if (!number) continue;
 
-      // Liveness of this workspace's worker: the marker must be present AND its
-      // recorded PID must be a live process. Computed up front so the ownership
-      // and finalization branches below can prune an inert leftover rather than
-      // re-logging it on every restart.
+      // launch.json is launch metadata AND an ownership marker. An absent marker
+      // is the legacy-isolated path; a present marker must be fully valid (see
+      // launchMarkerValid) or it authorizes nothing.
+      let workingDir = sessionRoot;
+      let isolated = true;
+      let launchSlot = null;
+      const { present: markerPresent, marker } = await readLaunchMarker(panDir);
+      if (marker) {
+        if (typeof marker.workingDir === 'string' && marker.workingDir) {
+          workingDir = marker.workingDir;
+        }
+        // Only an explicit `isolated: false` marks a fixed/slot task.
+        isolated = marker.isolated !== false;
+        launchSlot = marker.slot ?? null;
+      }
+      const markerValid = markerPresent && launchMarkerValid(marker, {
+        machine: this.cfg.machine,
+        identity: this.cfg.identity,
+        sessionId: parsedName.sessionId,
+        number: parsedName.number,
+        itemId: task.itemId,
+      });
+      // Bindable (adoptable/finalizable/resumable) requires name↔task agreement
+      // plus a valid marker OR a genuine legacy root with no marker; a
+      // present-but-invalid marker is never bindable. Deletion requires the
+      // stricter valid marker (`owned`).
+      const nameTaskAgree = number === parsedName.number;
+      const markerAbsent = !markerPresent;
+      const bindable = nameTaskAgree && (markerValid || markerAbsent);
+      const owned = markerValid;
+
+      // Alive = liveness marker present AND its recorded PID is a live process.
       const alive = existsSync(markerPath) && (await workerPidAlive(panDir));
       workspaces.push({
+        entry,
+        sessionRoot,
         workingDir,
+        isolated,
+        slot: launchSlot,
         panDir,
         resultPath,
         task,
         number,
+        nameNumber: parsedName.number,
+        nameSessionId: parsedName.sessionId,
+        markerPresent,
+        markerValid,
+        bindable,
         alive,
+        owned,
         hasResult: existsSync(resultPath),
         mtimeMs: st.mtimeMs,
       });
@@ -2238,49 +2726,91 @@ child.on('exit', (code, signal) => {
 
     for (const workspace of workspaces) {
       const {
+        entry,
+        sessionRoot,
         workingDir,
+        isolated,
+        slot: launchSlot,
         panDir,
         resultPath,
         task,
         number,
+        nameNumber,
+        nameSessionId,
+        markerPresent,
+        markerValid,
+        bindable,
         alive,
+        owned,
       } = workspace;
+
+      // Deletion is fail-closed on ownership (`owned` = a fully valid marker). The
+      // target is re-derived inside pruneWorkspace from workspaceRoot + the
+      // canonical name and re-checked for symlink/containment safety.
+      const pruneIfOwned = async (why) => {
+        if (owned) {
+          await pruneWorkspace(this.cfg.workspaceRoot, entry, number, why);
+        } else {
+          log(
+            `#${number} leaving state root ${sessionRoot} untouched ` +
+              `(${why}); no valid runner ownership marker (rehydrate)`,
+          );
+        }
+      };
 
       const match = findProjectItemForTask(items, task);
       if (!match) {
-        // The task is no longer on the Project. If no worker is alive here, the
-        // isolated workspace is an inert leftover — prune it.
-        if (!alive) await pruneWorkspace(workingDir, number, 'task not found on Project');
+        // Gone from the Project: an inert leftover if no worker is alive here.
+        if (!alive) await pruneIfOwned('task not found on Project');
         continue;
       }
 
       if (this.active.has(match.itemId)) {
         if (!alive) {
-          log(`#${number} has an older inactive duplicate workspace at ${workingDir}; leaving it untouched`);
+          log(`#${number} has an older inactive duplicate state root at ${sessionRoot}; leaving it untouched`);
         }
         continue;
       }
 
-      // Confirm the Project still shows this task claimed by us.
+      // A present-but-invalid marker authorizes nothing; leave the root untouched.
+      // (An absent marker is the legacy path, handled below via `bindable`.)
+      if (markerPresent && !markerValid) {
+        logErr(
+          `#${number} has an invalid/foreign launch marker at ${sessionRoot}; ` +
+            `leaving it untouched (no adopt/finalize/prune) (rehydrate)`,
+        );
+        continue;
+      }
+
       const projectStatus = statusOf(match);
       const projectMachine = val(match, FIELD.machine, '');
       const projectSessionId = val(match, FIELD.sessionId, '');
       const claimedBy = val(match, FIELD.claimedBy, '');
 
-      // Paused work is intentionally unclaimed. Preserve its isolated
-      // workspace and make it available to launchWorker() instead of treating
-      // the empty claimed-by field as evidence that the directory is inert.
-      if (!alive && projectStatus === 'paused' && projectMachine === this.cfg.machine) {
-        const canonical = projectSessionId
-          ? path.resolve(path.join(this.cfg.workspaceRoot, `pan-${number}-${projectSessionId}`))
-          : null;
-        const remembered = this.resumeWorkspaces.get(match.itemId);
-        if (!remembered || (canonical && path.resolve(workingDir) === canonical)) {
-          this.resumeWorkspaces.set(match.itemId, workingDir);
-        }
-        log(`found paused workspace for #${number} at ${workingDir}`);
-        continue;
+      // Bind the root to the live Project item so a stale session-A root can never
+      // act on the current session B: issue number, itemId, machine, session-id,
+      // and — for a slot — the composite slot AND its recorded checkout path
+      // (the playbook must still map that slot id to the same directory), so an
+      // established session is never moved between slot checkouts.
+      const projectSlot = splitAffinity(projectMachine).slot;
+      let slotPathBound = true;
+      if (launchSlot != null) {
+        const pb = this.playbooks.get(task.playbook);
+        const slotDef = pb && isSlotPooled(pb) ? pb.slots.find((s) => s.id === launchSlot) : null;
+        slotPathBound = !!slotDef && canonicalRealKey(slotDef.dir) === canonicalRealKey(workingDir);
       }
+      const sessionBound = bindable
+        && match.issue?.number === nameNumber
+        && match.itemId === task.itemId
+        && projectSessionId === nameSessionId
+        && affinityMatchesMachine(projectMachine, this.cfg.machine)
+        && projectSlot === (launchSlot ?? null)
+        && slotPathBound;
+
+      // A pending result is finalizable only when it is our finished worker:
+      // session-bound with a lapsed lease (the surviving-claim check is in
+      // pendingFinalizationKind). Anything else leaves the result untouched.
+      const sweptEligible = sessionBound && leaseExpiredOrMissing(match);
 
       const w = {
         itemId: match.itemId,
@@ -2290,8 +2820,10 @@ child.on('exit', (code, signal) => {
         repo: task.repo || repoFromUrl(task.url),
         playbook: task.playbook,
         workingDir,
+        sessionRoot,
         panDir,
-        isolated: true,
+        isolated,
+        slot: launchSlot,
         sessionId: projectSessionId,
         startedAt: Date.now(),
         lastRenew: 0, // force an immediate lease renewal
@@ -2302,10 +2834,17 @@ child.on('exit', (code, signal) => {
         finished: false,
       };
 
-      // Pending results may have committed their terminal Status before a
-      // runner crash. Adopt normal in-progress finalization, a matching
-      // done/in-review partial commit, or this runner's blocked escalation so
-      // lease cleanup and worker.stop are completed after restart.
+      // Reserve a live worker's fixed/slot directory without adopting it, so no
+      // second worker is ever launched into the same checkout when we cannot
+      // safely take over the live process.
+      const reserveLiveOccupancy = (why) => {
+        w.occupancyOnly = true;
+        this.active.set(match.itemId, w);
+        logErr(`#${number} reserving its working directory without adopting (${why}) (rehydrate)`);
+      };
+
+      // Process a pending result before any paused handling, so a passive sweep
+      // to paused cannot strand — and a later resume cannot clear — the outcome.
       if (existsSync(resultPath)) {
         let pendingStatus = null;
         try {
@@ -2315,66 +2854,105 @@ child.on('exit', (code, signal) => {
         } catch {
           pendingStatus = null;
         }
-        const finalizationKind = pendingFinalizationKind({
-          projectStatus,
-          pendingStatus,
-          claimedBy,
-          identity: this.cfg.identity,
-        });
+        // Only a valid result drives a finalize/skip decision; a partial/garbage
+        // one falls through to the alive/paused handling below.
+        if (pendingStatus) {
+          // Never finalize against a result whose session does not bind to the
+          // item's current one. Preserve it, and reserve the directory if a
+          // launcher is still alive.
+          if (!sessionBound) {
+            log(
+              `#${number} pending result is not bound to the current Project session ` +
+                `(root ${nameSessionId} vs item ${JSON.stringify(projectSessionId)}); ` +
+                `leaving the result untouched (rehydrate)`,
+            );
+            if (alive) reserveLiveOccupancy('unbound live result');
+            continue;
+          }
 
-        if (!finalizationKind) {
-          log(
-            `#${number} has a pending result but was externally transitioned ` +
-              `(status=${projectStatus}); skipping finalization (rehydrate)`,
-          );
-          // The worker already finished (it wrote result.json). If it is no
-          // longer alive, the workspace is inert — prune it.
-          if (!alive) await pruneWorkspace(workingDir, number, 'pending result, externally transitioned');
-          continue;
+          const finalizationKind = pendingFinalizationKind({
+            projectStatus,
+            pendingStatus,
+            claimedBy,
+            identity: this.cfg.identity,
+            sweptEligible,
+          });
+
+          if (!finalizationKind) {
+            // Externally transitioned (foreign claim, manual pause, or moved).
+            // Never prune — that would discard an unprocessed result — and
+            // reserve the directory if a launcher is still alive.
+            log(
+              `#${number} has a pending result but is not this runner's to finalize ` +
+                `(status=${projectStatus}, claimed-by=${JSON.stringify(claimedBy)}); ` +
+                `leaving the result untouched (rehydrate)`,
+            );
+            if (alive) reserveLiveOccupancy('unfinalizable external result');
+            continue;
+          }
+          w.finalizationEscalated = finalizationKind === 'escalated';
+          w.finalizeFromPausedSweep = finalizationKind === 'swept';
+          const finalized = await this.finalize(w, resultPath);
+          if (finalized) continue;
+          if (w.finalizationPending) {
+            this.active.set(match.itemId, w);
+            log(`rehydrated pending finalization for #${number} from ${sessionRoot}`);
+            continue;
+          }
+          // finalize returned false (transient); fall through to liveness handling.
         }
-        w.finalizationEscalated = finalizationKind === 'escalated';
-        const finalized = await this.finalize(w, resultPath);
-        if (finalized) continue;
-        if (w.finalizationPending) {
+      }
+
+      // A live worker keeps its directory reserved so no duplicate launches. It
+      // is only (re-)adopted for supervision when it still binds to this session
+      // and a fresh, confirmed re-read shows it is ours.
+      if (alive) {
+        const adopted = sessionBound && (await this.reAdoptLiveWorker(w));
+        if (adopted) {
           this.active.set(match.itemId, w);
-          log(`rehydrated pending finalization for #${number} from ${workingDir}`);
+          log(`re-adopted live worker for #${number} in ${workingDir} (state ${sessionRoot})`);
           continue;
         }
+        reserveLiveOccupancy(
+          sessionBound
+            ? `claimed by ${JSON.stringify(claimedBy)} or restore not confirmed`
+            : 'session not bound to the Project item',
+        );
+        continue;
+      }
+
+      // From here the worker is stopped (no live process). Paused work is
+      // intentionally unclaimed; preserve its state root (never read the empty
+      // claimed-by field as evidence it is inert). Only the root whose session
+      // binds to the Project item is indexed for the next resume — a stale
+      // session's root must never become the resume target for the current one.
+      if (projectStatus === 'paused' && affinityMatchesMachine(projectMachine, this.cfg.machine)) {
+        if (isolated && sessionBound) {
+          this.resumeWorkspaces.set(match.itemId, sessionRoot);
+        }
+        log(`found paused ${isolated ? 'workspace' : 'session state'} for #${number} at ${sessionRoot}`);
+        continue;
       }
 
       if (claimedBy !== this.cfg.identity) {
         // No longer ours: finalized (finalize clears claimed-by) or released to
-        // another runner. With no live worker here, the workspace is an inert
-        // leftover — prune it so it is not re-scanned and re-logged every
-        // restart. If a worker is somehow still alive, leave it untouched.
-        if (!alive) {
-          await pruneWorkspace(workingDir, number, 'no longer owned by this runner');
-        } else {
-          log(
-            `#${number} no longer owned by this runner ` +
-              `(claimed-by=${JSON.stringify(claimedBy)}); ` +
-              `skipping adoption/finalization (rehydrate)`,
-          );
-        }
+        // another runner. With no live worker here, the state root is an inert
+        // leftover — prune the root only (never the repo), gated on ownership.
+        await pruneIfOwned('no longer owned by this runner');
         continue;
       }
 
-      // A missing marker, or a marker whose PID is dead/gone, means the worker
-      // stopped. Retain this workspace and transition the item to paused so the
-      // same machine can relaunch the recorded session here.
-      if (!alive) {
-        if (projectStatus !== 'in-progress') {
-          // Not ours to pause and no live worker: inert leftover — prune it.
-          await pruneWorkspace(workingDir, number, 'stopped worker, not in-progress');
-          continue;
-        }
-        this.active.set(match.itemId, w);
-        await this.pauseWorker(w, 'worker exited while runner was offline');
+      // Still ours but the worker stopped. Retain this state root and transition
+      // the item to paused so the same machine can relaunch the recorded session
+      // here.
+      if (projectStatus !== 'in-progress') {
+        // Not ours to pause and no live worker: inert leftover — prune the root
+        // only, gated on ownership.
+        await pruneIfOwned('stopped worker, not in-progress');
         continue;
       }
-
       this.active.set(match.itemId, w);
-      log(`rehydrated worker for #${number} from ${workingDir}`);
+      await this.pauseWorker(w, 'worker exited while runner was offline');
     }
   }
 

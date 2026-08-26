@@ -35,13 +35,13 @@ The runner is given, from local machine config written at onboarding:
   Windows, Terminal.app on macOS).
 
 Regardless of `workerPermissions`, the runner pre-authorizes each worker's
-workspace folder before launch by adding it to copilot's `trustedFolders`
+folders before launch by adding them to copilot's `trustedFolders`
 (`~/.copilot/config.json`, overridable via `copilotConfigPath`). copilot's
 `--allow-all` covers tools, paths, and URLs but not the separate per-folder
-trust gate. Each newly started task gets its own temporary directory and later
-resumes reuse it; without this step every worker would stop on an interactive
-"trust this folder?" prompt. The write is best-effort — on any failure the
-worker simply falls back to prompting.
+trust gate. It trusts both the worker's working directory and its session state
+directory (they differ for a fixed/slot playbook); without this step every
+worker would stop on an interactive "trust this folder?" prompt. The write is
+best-effort — on any failure the worker simply falls back to prompting.
 
 Each worker window is given a stable, human-readable title (`#<number> <short
 title>`) so the user can tell at a glance which task each spawned window is
@@ -162,16 +162,31 @@ human attention so an unattended runner cannot retry forever.
 
 ## Launching a worker
 
-For a claimed task the runner:
+Every launched task has two distinct locations. Its **session state directory**
+always lives under `workspaceRoot` and holds all Pan-owned control and signal
+files (its `.pan/`); it is never created inside a repository, and it is always
+confined to `workspaceRoot` (a resumed `session-id`, which comes from the
+Project, that is not the exact UUID shape the runner mints — or that would
+resolve outside `workspaceRoot` — is refused before any path is built). Its
+**working directory** is the worker's terminal CWD. `workspaceRoot` must lie
+outside every fixed `workingDirectory` and `workspaceSlots` checkout; the runner
+refuses to launch when the resolved session state directory would fall inside the
+working directory, so a misconfiguration cannot put `.pan/` back into a
+repository. For a claimed task the runner:
 
-1. Prepares the working directory. If the playbook's `workingDirectory` is set,
-   launch there and prepare no workspace. If the playbook declares
-   `workspaceSlots`, launch in the chosen slot's directory (see [workspace
-   slots](#workspace-slots)). Otherwise create an isolated workspace whose path
-   is stable for the task's local Copilot session. A resumed task reopens that
-   same directory; it never creates a replacement workspace.
-2. Writes the task context into a `.pan/` directory the worker will read (see
-   the [file contract](#worker-file-contract)).
+1. Resolves the two locations. If the playbook's `workingDirectory` is set, or it
+   declares `workspaceSlots` (see [workspace slots](#workspace-slots)), the
+   working directory is that real in-place checkout — the runner launches the
+   worker there and never creates a Git worktree for it. Otherwise the task is
+   isolated and its working directory is the session state directory itself, so
+   the worker's own checkout lives alongside `.pan/`. The state directory's name
+   is stable for the task's local Copilot session, so a resume reopens the same
+   directory rather than creating a replacement.
+2. Writes the task context into the `.pan/` directory inside the session state
+   directory the worker will read (see the [file contract](#worker-file-contract)).
+   Because that directory is out of the repository tree for a fixed/slot task,
+   the worker is told its absolute path (in the launch prompt and in the
+   `PAN_STATE_DIR` environment variable) and copilot is granted access to it.
 3. Launches a **headed** `copilot` session in a visible terminal window, with an
    initial prompt that tells the worker to follow
    [`system/worker-base-instructions.md`](worker-base-instructions.md), its
@@ -221,7 +236,12 @@ remains the final backstop against launching two workers in one slot directory.
 ## Worker file contract
 
 The runner and worker communicate through files in the `.pan/` directory inside
-the worker's working directory.
+the task's **session state directory** (under `workspaceRoot`). For an isolated
+playbook that directory is also the worker's working directory; for a fixed
+`workingDirectory` or `workspaceSlots` playbook it is a separate directory
+outside the repository, so the worker addresses these files by the absolute path
+given in its prompt (also exported as `PAN_STATE_DIR`), never as a `.pan/`
+created inside the repository.
 
 **Runner → worker (written before launch):**
 
@@ -229,6 +249,17 @@ the worker's working directory.
   and repository; chosen `playbook`; optional `workstream`; and any recorded
   answers. Read-only to the worker. The Project item id is the runner's
   canonical identity because Issue numbers are repository-local.
+- `.pan/launch.json` — runner-owned launch metadata **and ownership marker**
+  (not part of the worker contract): the recorded working directory, whether the
+  task is isolated, the chosen slot, the session id, and this runner's `machine`,
+  `identity`, and the task's item id. It lets a restart re-adopt the worker and
+  supervise it against the correct working directory when that directory is not
+  the session state directory, and its identity fields prove this runner created
+  this root for this task — a precondition for ever adopting, finalizing,
+  resuming, or pruning the root. Because it is worker-writable, a marker that is
+  present must validate completely (tag, version, this machine and identity, the
+  exact session/task tuple, and workspace kind/slot) or it authorizes nothing;
+  its absence is the narrow legacy-isolated compatibility path.
 
 **Worker → runner:**
 
@@ -307,27 +338,80 @@ To resume such a task the runner, subject to its capacity limits:
 
 1. Re-reads the item and confirms it is still `paused` and pinned to this
    machine. If another cycle or machine changed it, skip.
-2. Reuses the local workspace the task ran in and relaunches copilot with the
-   recorded `session-id`, so the worker picks up the earlier session's
-   transcript and state instead of starting over. A `session-id` recorded for a
-   different machine is never reused.
+2. Reuses the same session state directory (stable by session id) and, for a
+   fixed/slot task, its recorded working directory, then relaunches copilot with
+   the recorded `session-id`, so the worker picks up the earlier session's
+   transcript and state instead of starting over. An isolated task also reopens
+   the checkout that lives in its session state directory. A `session-id`
+   recorded for a different machine is never reused.
 3. Sets `Status=in-progress`, a fresh `lease-until`, and `claimed-by` to this
    runner, and **clears `needs-human-since`**. A human-attention question is not
    a recovery input; if it still stands the worker re-raises it, and because it
    is surfaced on the Issue the user sees it wherever it resumes.
 
+A resume never discards a finished worker's result. If a state directory still
+holds an unprocessed `.pan/result.json` when a resume would begin, the runner
+refuses the relaunch (leaving the task `paused` with its result intact) so the
+outcome is finalized rather than cleared by the pre-launch signal cleanup.
+
 If the runner restarts while a worker is still alive, it re-adopts that live
 worker against its saved `.pan/` context and resumes lease renewal and signal
-watching. A worker it cannot verify as alive is not duplicated; its task simply
-shows up as `paused` (once its lease has expired or the runner releases it) and
-is resumed through the normal poll-time path above.
+watching — but only after binding the state root to the live Project item and
+confirming ownership. Every restart action (adopt, finalize, or delete) requires
+exact agreement across the canonical root name `pan-<issue>-<minted session
+UUID>`, its `task.json`, its `launch.json`, and the live Project item on issue
+number, item id, base machine, `session-id`, and — for a slot-pooled session —
+the composite slot, so an established session is never moved between slot
+checkouts. The marker is worker-writable, so it is treated as
+corruption/ownership evidence only and every check fails closed: an **absent**
+marker is the legacy-isolated compatibility path, but a **present** marker must
+be a complete, matching runner marker (tag, version, this machine and identity,
+the exact tuple, and workspace kind/slot) or it authorizes nothing. Each session
+root is `lstat`-checked so a symlink or Windows junction is never followed for a
+read, write, or removal, and a root that does not resolve to a real direct child
+of `workspaceRoot` is ignored. A stale session-A root therefore never finalizes
+or deletes the item now running session B — its result is preserved untouched.
+Because a live worker's fixed/slot checkout must never receive a second worker,
+restart reconciliation keeps that directory reserved: a still-ours live worker is
+re-adopted only after an immediate re-read confirms it is `in-progress`+ours or
+the exact passive-sweep state (`paused`, our claim, an expired lease), which is
+restored with a fresh claim/lease/`in-progress` and a confirming re-read; on any
+mismatch, concurrent transition, or foreign claim the worker is reserved without
+being adopted so newer Project state is never overwritten. A pending result on a
+still-ours item swept to `paused` — our surviving claim plus an expired lease — is
+finalized rather than stranded, while an unclaimed (manual) pause is left alone.
+Finalization itself re-reads the item immediately before any Issue or Project
+write and re-validates the exact session-id and machine/slot affinity (and, for a
+swept finalization, the still-paused, still-claimed, still-lapsed state), so a
+startup snapshot can never authorize a write onto drifted state. A worker it
+cannot verify as alive is not duplicated; its task simply shows up as `paused`
+(once its lease has expired or the runner releases it) and is resumed through the
+normal poll-time path above.
 
 ### Workspace hygiene
 
-A runner-created isolated workspace whose task is no longer this runner's to
+A runner-created session state root whose task is no longer this runner's to
 supervise — finalized, released to `ready`, missing from the Project, or
 externally transitioned — and which has no live worker and is not a paused task
-pinned to this machine awaiting resume, is **inert**, and the runner removes its
-directory. Without this, finished workspaces pile up under the workspace root.
-Only workspaces confirmed inert are removed; a workspace with a live worker, or
-one holding a paused task this machine will resume, is never touched.
+pinned to this machine awaiting resume, is **inert**, and the runner removes it.
+Pruning only ever deletes the session state root under `workspaceRoot`; a fixed
+`workingDirectory` or `workspaceSlots` repository is a real checkout the runner
+never created and never removes. Deletion is **fail-closed on ownership**: the
+runner removes a root only when its `.pan/launch.json` marker proves this
+`machine` created it for that task, so an unmarked or legacy root — including a
+directory a user placed under `workspaceRoot` — is preserved (still adoptable),
+never deleted on the strength of its `pan-<number>-<sessionId>` name and
+`task.json` alone. Without this, finished state roots pile up under the workspace
+root. Only roots confirmed inert **and** owned are removed; one with a live
+worker, or one holding a paused task this machine will resume, is never touched.
+
+### Migrating a repository that already tracked a `.pan/`
+
+A runner predating this state separation wrote `.pan/` into a fixed/slot
+repository, and one such `.pan/` may already be committed. The runner never
+migrates or deletes those in place — an active worker predating the change still
+depends on them, and one checkout tracks them in Git. Clean them up operationally
+once no worker is using the repository: stop the runner, remove the tracked
+`.pan/` from the repository (and from Git history/tracking as appropriate), and
+restart. New launches write only under `workspaceRoot`, so the repository stays
+clean thereafter.

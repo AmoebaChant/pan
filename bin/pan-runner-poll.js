@@ -46,6 +46,7 @@ export function pendingFinalizationKind({
   pendingStatus,
   claimedBy,
   identity,
+  sweptEligible = false,
 }) {
   if (projectStatus === 'in-progress' && claimedBy === identity) return 'active';
   if (
@@ -59,6 +60,18 @@ export function pendingFinalizationKind({
     (!claimedBy || claimedBy === identity)
   ) {
     return 'escalated';
+  }
+  // A paused item's pending result is finalizable only when it is unambiguously
+  // our finished worker: a passive sweep leaves our claim intact, whereas an
+  // unclaimed paused item is a manual pause. `sweptEligible` is the caller's
+  // stronger session/machine/lease evidence that rules out a stray pause.
+  if (
+    projectStatus === 'paused' &&
+    pendingStatus &&
+    claimedBy === identity &&
+    sweptEligible
+  ) {
+    return 'swept';
   }
   return null;
 }
@@ -89,6 +102,14 @@ function leaseState(item, now) {
   const expiresAt = parseLeaseTimestamp(until);
   if (expiresAt == null) return 'malformed';
   return expiresAt < now ? 'expired' : 'active';
+}
+
+/** Whether an item's lease is unambiguously gone — missing or expired. A
+ *  malformed value fails closed (returns false), so a restore/finalize gated on
+ *  lease expiry never acts on a value it cannot read. */
+export function leaseExpiredOrMissing(item, now = Date.now()) {
+  const state = leaseState(item, now);
+  return state === 'missing' || state === 'expired';
 }
 
 function itemLabel(item) {
