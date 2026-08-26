@@ -6,6 +6,7 @@ import {
   computeMachineSlotOccupancy,
   FIELD,
   findProjectItemForTask,
+  leaseExpiredOrMissing,
   occupiedSlotsForPlaybook,
   pendingFinalizationKind,
   preparePoll,
@@ -120,6 +121,83 @@ test('pending finalization recognizes active and partial terminal commits', () =
       pendingStatus: 'done',
       claimedBy: 'runner-b',
       identity,
+    }),
+    null,
+  );
+});
+
+test('leaseExpiredOrMissing distinguishes gone leases from held and unreadable ones', () => {
+  const at = (leaseUntil) => ({ fields: { [FIELD.leaseUntil]: leaseUntil } });
+  // Missing and expired leases are unambiguously gone.
+  assert.equal(leaseExpiredOrMissing(at(''), NOW), true);
+  assert.equal(leaseExpiredOrMissing(at(EXPIRED), NOW), true);
+  // A still-valid lease is held.
+  assert.equal(leaseExpiredOrMissing(at(VALID), NOW), false);
+  // A malformed timestamp fails closed (treated as still-held, not gone), so a
+  // restore/finalize that gates on lease expiry never acts on a value it cannot
+  // read.
+  assert.equal(leaseExpiredOrMissing(at('not-a-timestamp'), NOW), false);
+});
+
+test('pending finalization recognizes only a claimed, swept-eligible paused item', () => {
+  const identity = 'runner-a';
+
+  // A passive sweep leaves our claim intact; only OUR surviving claim plus the
+  // caller's stronger evidence (session/machine bound, lease expired) is a swept
+  // worker we may finalize.
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'paused',
+      pendingStatus: 'done',
+      claimedBy: identity,
+      identity,
+      sweptEligible: true,
+    }),
+    'swept',
+  );
+  // Unclaimed paused is an ambiguous/manual pause and must NOT be finalized,
+  // even when it is pinned to this machine and otherwise eligible.
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'paused',
+      pendingStatus: 'in-review',
+      claimedBy: '',
+      identity,
+      sweptEligible: true,
+    }),
+    null,
+  );
+  // Our claim survived, but the caller's evidence did not (session mismatch,
+  // active lease, …) → not a swept worker.
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'paused',
+      pendingStatus: 'done',
+      claimedBy: identity,
+      identity,
+      sweptEligible: false,
+    }),
+    null,
+  );
+  // A foreign claim is never ours to finalize.
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'paused',
+      pendingStatus: 'done',
+      claimedBy: 'runner-b',
+      identity,
+      sweptEligible: true,
+    }),
+    null,
+  );
+  // Paused with no usable result is not a finalization.
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'paused',
+      pendingStatus: null,
+      claimedBy: identity,
+      identity,
+      sweptEligible: true,
     }),
     null,
   );

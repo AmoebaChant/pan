@@ -48,14 +48,20 @@ Front matter fields:
 - `capacity` (required) — a non-negative integer: the number of concurrent
   tasks this machine will run for this playbook. `0` disables the playbook on
   this machine without removing its file.
-- `workingDirectory` (optional) — an absolute path the worker is launched in
-  when this playbook owns its own workspace. When omitted, the runner is
-  responsible for preparing an isolated workspace as its instructions require.
-  Because playbook files are per machine, this path is naturally
-  machine-specific.
+- `workingDirectory` (optional) — an absolute path that becomes the worker's
+  **in-place working directory** (its terminal CWD) when this playbook operates
+  on a real checkout. It selects only where work happens; Pan's own control and
+  signal files never live inside it — they go in a per-session state directory
+  under the runner's `workspaceRoot` (see [runner](runner.md)). The runner does
+  not create a Git worktree for this path. When omitted, the task is isolated and
+  the runner prepares a session directory the worker also uses as its workspace,
+  as its instructions require. Because playbook files are per machine, this path
+  is naturally machine-specific.
 - `workspaceSlots` (optional) — a mapping of named slot ids to absolute paths,
-  **mutually exclusive** with `workingDirectory`. It lets one playbook pool work
-  across a fixed set of reusable directories instead of a single one:
+  **mutually exclusive** with `workingDirectory`. Like `workingDirectory`, each
+  slot selects an in-place working directory and never the Pan state location. It
+  lets one playbook pool work across a fixed set of reusable directories instead
+  of a single one:
 
   ```yaml
   workspaceSlots:
