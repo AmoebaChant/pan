@@ -56,8 +56,15 @@ content URL for the PR link the worker recorded — a comment whose first line i
 `Pan: pull request <PR URL>`. Use that content URL or its
 `repository.nameWithOwner` for every Issue read, closure, and confirmation;
 never substitute the configured Domain repository, because external-backlog
-Issue numbers are repository-local. For each recorded PR, read its live state
-(`gh pr view <url> --json state,mergedAt`):
+Issue numbers are repository-local. For a recorded GitHub PR
+(`https://github.com/.../pull/<n>`), read its live state
+(`gh pr view <url> --json state,mergedAt`). A canonical PR URL for another
+provider is owned by that provider's Domain guidance: follow those live-state
+and completion instructions instead of passing the URL to `gh pr view`. If no
+provider guidance exists, leave the item `in-review` and surface the missing
+completion contract.
+
+For each recorded GitHub PR:
 
 - **Merged** — close the Issue as completed (`gh issue close --reason
   completed`), re-read it, and only after GitHub confirms it closed set

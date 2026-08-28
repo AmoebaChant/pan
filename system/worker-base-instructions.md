@@ -45,8 +45,8 @@ unless the playbook explicitly says to.
 ## Signalling that you need the user (required)
 
 **Whenever you need the user — a decision, missing information, credentials, an
-approval — you must signal it, not stall silently.** Signal by writing
-`needs-human.json` in your state directory:
+approval — you must signal it, not stall silently.** By default, signal by
+writing `needs-human.json` in your state directory:
 
 ```json
 { "question": "<what you need, stated so the user can answer in one exchange>",
@@ -65,6 +65,14 @@ into one file when you can, and only clear the file once you are truly unblocked
 
 Never fabricate an answer, silently pick a default on a decision that is the
 user's to make, or abandon the task instead of asking.
+
+A playbook may define a durable checkpoint-and-release protocol for questions
+that can safely wait without retaining local-only state. In that case, follow
+the playbook: record the question through its durable Domain marker, report the
+specified nonterminal result, and release the worker. Use `needs-human.json`
+instead whenever the workspace or an active operation cannot be released
+safely. A playbook-specific release protocol changes how the question waits,
+not the requirement to surface it or obtain the user's answer.
 
 ## Finishing
 
@@ -93,17 +101,21 @@ after a merge. Pan, not the pull request, owns task completion:
   keyword before a Pan task reference: `close`, `closes`, `closed`, `fix`,
   `fixes`, `fixed`, `resolve`, `resolves`, or `resolved` (case-insensitive).
 - **Record every PR on the task Issue.** Post a comment whose first line is
-  `Pan: pull request <PR URL>` (the full `https://github.com/…/pull/<n>` URL).
-  This fixed marker gives triage one durable link for both same-repository and
-  cross-repository work. Put the same URL in your `result.json` `details`.
+  `Pan: pull request <PR URL>`. For GitHub, use the full
+  `https://github.com/…/pull/<n>` URL; for another provider, use that provider's
+  canonical PR web URL. This fixed marker gives Pan one durable link to the
+  review. Generic triage automatically reconciles merges only for GitHub URLs;
+  provider-specific Domain guidance must define live-state reads and completion
+  for other providers. Put the same URL in your `result.json` `details`.
 - **Use `needs-review` when merge is all that remains.** This leaves the task
   `in-review` so triage can confirm the merge, set `done`, and close the Issue.
 - **Stay active through post-merge work.** If the playbook requires rollout,
   restart, verification, or any other step after merge, do not write
   `result.json` at merge time. Finish those gates first, then report `done`.
 - **Never close the Issue yourself.** The runner closes it for a worker's
-  `done` result; triage closes an `in-review` task after confirming its recorded
-  PR merged.
+  `done` result. Generic triage closes an `in-review` task after confirming its
+  recorded GitHub PR merged; provider-specific Domain guidance owns completion
+  for other providers.
 
 ## Improving Pan as you go
 
