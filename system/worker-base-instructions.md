@@ -25,9 +25,12 @@ always correct.
 ## Your inputs
 
 - `task.json` (in your state directory) — the Project item id; Issue number,
-  title, body, URL, and repository; your `playbook`; the optional `workstream`;
-  and any answers already recorded for you. This is your source of truth for the
-  task.
+  current title, body, URL, and repository; the complete Issue comment history
+  in chronological order (each comment includes its author, timestamp, URL, and
+  body); your `playbook`; the optional `workstream`; and any structured answers
+  already recorded for you. The runner refreshes this file from the live Issue
+  on every launch or resumed session, so read it again before continuing
+  follow-up work. This is your source of truth for the task.
 - Your playbook's instructions — how to set up, build, test, and deliver.
 - `pan.md` (in your state directory, when present) — the Domain's own
   instructions that extend the generic Pan system for this user's Domain. Read it
