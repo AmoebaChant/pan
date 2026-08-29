@@ -182,22 +182,25 @@ repository. For a claimed task the runner:
    the worker's own checkout lives alongside `.pan/`. The state directory's name
    is stable for the task's local Copilot session, so a resume reopens the same
    directory rather than creating a replacement.
-2. Writes the task context into the `.pan/` directory inside the session state
-   directory the worker will read (see the [file contract](#worker-file-contract)).
-   Because that directory is out of the repository tree for a fixed/slot task,
-   the worker is told its absolute path (in the launch prompt and in the
+2. Immediately before each launch or relaunch, re-reads the live Issue and
+   rewrites the task context in the `.pan/` directory inside the session state
+   directory (see the [file contract](#worker-file-contract)). The payload
+   includes the current body and complete chronological comment history, while
+   retaining structured recorded answers from the existing session. Because
+   that directory is out of the repository tree for a fixed/slot task, the
+   worker is told its absolute path (in the launch prompt and in the
    `PAN_STATE_DIR` environment variable) and copilot is granted access to it.
 3. Launches a **headed** `copilot` session in a visible terminal window, with an
    initial prompt that tells the worker to follow
    [`system/worker-base-instructions.md`](worker-base-instructions.md), its
    playbook, and the task context in `.pan/`. The session runs under an explicit
-   copilot session id (`copilot --session-id <id>`); the runner records that id
+   copilot session id (`copilot --session-id <id>`). The runner records that id
    in the Issue's `session-id` field so the work can be resumed or revisited
-   later. On the first launch it mints a fresh UUID; on a re-launch of a task
-   that already carries a `session-id` recorded for this same `machine`, it
-   reuses that id so copilot resumes the earlier session rather than starting
-   over. copilot sessions are local to a machine, so a `session-id` recorded for
-   a different machine is never reused.
+   later. On any later launch with a session id recorded for this machine, it
+   reuses that id — including `in-review` work returned to `ready` — so copilot
+   resumes the earlier session rather than starting over. Copilot sessions are
+   local to a machine, so a `session-id` recorded for a different machine is
+   never reused.
 4. Watches `.pan/` for the human-attention and result signals below, and renews
    the lease while the worker runs.
 
@@ -245,10 +248,13 @@ created inside the repository.
 
 **Runner → worker (written before launch):**
 
-- `.pan/task.json` — the task: Project item id; Issue number, title, body, URL,
-  and repository; chosen `playbook`; optional `workstream`; and any recorded
-  answers. Read-only to the worker. The Project item id is the runner's
-  canonical identity because Issue numbers are repository-local.
+- `.pan/task.json` — the task: Project item id; Issue number, current title,
+  body, URL, and repository; every Issue comment in chronological order as
+  `{ author, timestamp, url, body }`; chosen `playbook`; optional `workstream`;
+  and any structured recorded answers. Read-only to the worker. The runner
+  refreshes this file from the live Issue on every launch or relaunch. The
+  Project item id is the runner's canonical identity because Issue numbers are
+  repository-local.
 - `.pan/launch.json` — runner-owned launch metadata **and ownership marker**
   (not part of the worker contract): the recorded working directory, whether the
   task is isolated, the chosen slot, the session id, and this runner's `machine`,
@@ -326,6 +332,11 @@ Recovery of a started task is driven by the lease at poll time, not by scanning
 the filesystem and not only at startup. It replaces the earlier startup-only,
 workspace-scanning `rehydrate()` recovery.
 
+Session reuse is not limited to `paused`. Whenever a dispatchable task already
+has a `session-id` for this machine, the runner reuses that id and refreshes
+`task.json` before relaunch. This includes review feedback that moves an
+`in-review` task back to `ready`.
+
 A started task that is not running is `Status=paused` (see [status
 transitions](project-schema.md#status-transitions)). Because the copilot
 `session-id` and the local workspace are machine-local, only the machine that
@@ -394,6 +405,9 @@ A runner-created session state root whose task is no longer this runner's to
 supervise — finalized, released to `ready`, missing from the Project, or
 externally transitioned — and which has no live worker and is not a paused task
 pinned to this machine awaiting resume, is **inert**, and the runner removes it.
+The runner also preserves a fully bound stopped `in-review` or `ready` root when
+it carries a recorded session, so follow-up work can reuse the transcript and
+isolated checkout.
 Pruning only ever deletes the session state root under `workspaceRoot`; a fixed
 `workingDirectory` or `workspaceSlots` repository is a real checkout the runner
 never created and never removes. Deletion is **fail-closed on ownership**: the
@@ -403,7 +417,8 @@ directory a user placed under `workspaceRoot` — is preserved (still adoptable)
 never deleted on the strength of its `pan-<number>-<sessionId>` name and
 `task.json` alone. Without this, finished state roots pile up under the workspace
 root. Only roots confirmed inert **and** owned are removed; one with a live
-worker, or one holding a paused task this machine will resume, is never touched.
+worker, or one holding a paused or follow-up task this machine will resume, is
+never touched.
 
 ### Migrating a repository that already tracked a `.pan/`
 

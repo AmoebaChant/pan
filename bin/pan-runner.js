@@ -692,6 +692,59 @@ async function readItemById(itemId) {
   return node ? parseItemNode(node) : null;
 }
 
+/** Read the complete live Issue context workers need to act on current intent. */
+export async function readIssue(issueRef, runGh = gh) {
+  const repoSlug = issueRef?.repo || repoFromUrl(issueRef?.url);
+  const number = issueRef?.number;
+  if (!repoSlug || !Number.isInteger(number) || number <= 0) {
+    throw new Error(`cannot read live Issue: invalid repository or number (${repoSlug || 'unknown'}#${number})`);
+  }
+  const { owner, name } = parseOwnerName(repoSlug, 'Issue repository');
+  const query = `query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+    repository(owner:$owner,name:$name){
+      issue(number:$number){
+        number title body url
+        comments(first:100,after:$cursor){
+          pageInfo{ hasNextPage endCursor }
+          nodes{ author{ login } createdAt url body }
+        }
+      }
+    }
+  }`;
+  const comments = [];
+  let cursor = null;
+  let liveIssue = null;
+  for (;;) {
+    const args = [
+      'api', 'graphql', '-f', `query=${query}`,
+      '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${number}`,
+    ];
+    if (cursor) args.push('-f', `cursor=${cursor}`);
+    const data = JSON.parse(await runGh(args));
+    liveIssue = data.data.repository?.issue || null;
+    if (!liveIssue) throw new Error(`live Issue not found: ${repoSlug}#${number}`);
+    for (const comment of liveIssue.comments?.nodes || []) {
+      comments.push({
+        author: comment.author?.login || null,
+        timestamp: comment.createdAt,
+        url: comment.url,
+        body: comment.body,
+      });
+    }
+    if (!liveIssue.comments?.pageInfo?.hasNextPage) break;
+    cursor = liveIssue.comments.pageInfo.endCursor;
+  }
+  comments.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+  return {
+    number: liveIssue.number,
+    title: liveIssue.title,
+    body: liveIssue.body,
+    url: liveIssue.url,
+    repo: repoSlug,
+    comments,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Project writes (gh project item-edit)
 // ---------------------------------------------------------------------------
@@ -776,6 +829,28 @@ const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 function isValidSessionId(id) {
   return typeof id === 'string' && SESSION_ID_RE.test(id);
+}
+
+/** Preserve structured answers while replacing stale task context with live data. */
+async function readRecordedAnswers(taskPath) {
+  let raw;
+  try {
+    raw = await readFile(taskPath, 'utf8');
+  } catch (e) {
+    if (e?.code === 'ENOENT') return [];
+    throw e;
+  }
+  let prior;
+  try {
+    prior = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`cannot refresh ${taskPath}: existing task.json is invalid JSON (${e.message})`);
+  }
+  if (prior.answers == null) return [];
+  if (!Array.isArray(prior.answers)) {
+    throw new Error(`cannot refresh ${taskPath}: existing answers are not an array`);
+  }
+  return prior.answers;
 }
 
 /** Parse a directory name into the canonical `{ number, sessionId }` a runner
@@ -978,6 +1053,7 @@ export class Runner {
     this.deps = {
       readAllItems,
       readItemById,
+      readIssue,
       setTextField,
       setSelectField,
       readDomainFile,
@@ -1134,11 +1210,32 @@ export class Runner {
     const previousStatus = statusOf(fresh);
     const resuming = previousStatus === 'paused';
     if (ownerOf(fresh) !== 'agent' || (previousStatus !== 'ready' && !resuming)) return false;
-    if (resuming && !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)) return false;
-    if (!leaseIsFree(fresh, this.cfg.identity, { warn: logErr })) return false; // claim race — skip
+    const recordedSessionId = val(fresh, FIELD.sessionId, '');
+    const recordedMachine = val(fresh, FIELD.machine, '');
+    if (recordedSessionId) {
+      if (!isValidSessionId(recordedSessionId)) {
+        throw new Error(`cannot resume #${number}: recorded session-id is not a valid Pan session id`);
+      }
+      if (!affinityMatchesMachine(recordedMachine, this.cfg.machine)) {
+        throw new Error(`cannot resume #${number}: recorded session belongs to a different machine`);
+      }
+    } else if (resuming) {
+      throw new Error(`cannot resume #${number}: recorded session or machine is missing/mismatched`);
+    }
     const pb = val(fresh, FIELD.playbook, '');
     if (!this.playbooks.has(pb)) return false;
     const pbObj = this.playbooks.get(pb);
+    if (recordedSessionId) {
+      const recordedSlot = splitAffinity(recordedMachine).slot;
+      if (isSlotPooled(pbObj)) {
+        if (recordedSlot == null || !pbObj.slots.some((candidate) => candidate.id === recordedSlot)) {
+          throw new Error(`cannot resume #${number}: recorded session slot is missing or not configured`);
+        }
+      } else if (recordedSlot != null) {
+        throw new Error(`cannot resume #${number}: recorded session slot does not match the selected playbook`);
+      }
+    }
+    if (!leaseIsFree(fresh, this.cfg.identity, { warn: logErr })) return false; // claim race — skip
 
     // The playbook may have changed between poll and this re-read; revalidate
     // capacity against the freshly-read playbook before claiming.
@@ -1320,21 +1417,13 @@ export class Runner {
     const pb = this.playbooks.get(playbookName);
     const number = item.issue.number;
 
-    // Copilot session id for resumability. Copilot sessions live on the local
-    // machine, so only reuse a previously recorded session id when it was
-    // created on THIS machine — then a task whose worker died can be resumed
-    // (its transcript and state re-adopted) instead of started from scratch.
-    // Otherwise mint a fresh UUID. Passing the id via `copilot --session-id`
-    // both creates the session on first launch and resumes it on a later one.
-    // A slot-pooled task's `machine` is a composite `<machine>::<slot>` value,
-    // so match on the base machine.
+    // A compatible recorded Copilot session is reused whenever the task is
+    // launched again, including ready follow-up work after review.
     const previousStatus = statusOf(item);
     const recordedSessionId = val(item, FIELD.sessionId, '');
     const recordedMachine = val(item, FIELD.machine, '');
-    const resuming = previousStatus === 'paused';
-    if (resuming && (!recordedSessionId || !affinityMatchesMachine(recordedMachine, this.cfg.machine))) {
-      throw new Error(`cannot resume #${number}: recorded session or machine is missing/mismatched`);
-    }
+    const paused = previousStatus === 'paused';
+    const resuming = !!recordedSessionId;
     // Issue numbers and session ids are interpolated into the session root's
     // directory name, so both must be safe path components before any path is
     // built. The number comes from GitHub (an integer) and a fresh session id is
@@ -1347,6 +1436,12 @@ export class Runner {
     }
     if (resuming && !isValidSessionId(recordedSessionId)) {
       throw new Error(`cannot resume #${number}: recorded session-id is not a valid Pan session id`);
+    }
+    if (resuming && !affinityMatchesMachine(recordedMachine, this.cfg.machine)) {
+      throw new Error(`cannot resume #${number}: recorded session belongs to a different machine`);
+    }
+    if (paused && !resuming) {
+      throw new Error(`cannot resume #${number}: recorded session or machine is missing/mismatched`);
     }
     const sessionId = resuming ? recordedSessionId : randomUUID();
 
@@ -1370,6 +1465,9 @@ export class Runner {
       workingDir = pb.workingDirectory;
     } else {
       isolated = true;
+    }
+    if (resuming && splitAffinity(recordedMachine).slot !== workerSlot) {
+      throw new Error(`cannot resume #${number}: recorded session slot does not match the launch target`);
     }
 
     // The session root's name is stable for the recorded Copilot session, so a
@@ -1467,39 +1565,42 @@ export class Runner {
     const panDir = path.join(sessionRoot, '.pan');
     await mkdir(panDir, { recursive: true });
 
-    // Never clear an unprocessed result on resume: a leftover result.json means a
-    // finished worker was never finalized, so fail closed (leaving the task
-    // paused with its result intact for rehydrate) rather than deleting it below.
-    if (resuming && existsSync(path.join(panDir, 'result.json'))) {
+    // Never clear an unprocessed result on a paused resume.
+    if (paused && existsSync(path.join(panDir, 'result.json'))) {
       throw new Error(
         `cannot resume #${number}: an unprocessed result.json is present in ${panDir}; ` +
           `refusing to clear a finished worker's result`,
       );
     }
 
-    // Clear any stale signal files. A fresh session root has none; a resumed one
-    // may still carry a dead worker's liveness/pid markers.
+    const taskPath = path.join(panDir, 'task.json');
+    const answers = resuming ? await readRecordedAnswers(taskPath) : [];
+
+    // Clear stale runtime signals before creating or continuing the session.
     await Promise.all(
       ['result.json', 'needs-human.json', 'worker.running', 'worker.pid', 'worker.stop', 'pan.md'].map((f) =>
         rm(path.join(panDir, f), { force: true }),
       ),
     );
 
-    // 2. Task context files (always under the session root, never the repo).
+    // 2. Re-read the Issue at the launch boundary and replace task.json with its
+    //    complete current context. This happens on first launch and every reuse,
+    //    so feedback added after a prior worker run is never hidden by transcript
+    //    continuity.
+    const liveIssue = await this.deps.readIssue(item.issue);
     const task = {
       itemId: item.itemId,
       number,
-      title: item.issue.title,
-      body: item.issue.body,
-      url: item.issue.url,
-      repo: item.issue.repo || repoFromUrl(item.issue.url),
+      title: liveIssue.title,
+      body: liveIssue.body,
+      comments: liveIssue.comments,
+      url: liveIssue.url,
+      repo: liveIssue.repo || item.issue.repo || repoFromUrl(liveIssue.url),
       playbook: playbookName,
       workstream: val(item, FIELD.workstream, '') || null,
-      // No durable answer store exists yet; answers arrive live in the terminal.
-      // TODO: seed prior recorded answers here when a store is introduced.
-      answers: [],
+      answers,
     };
-    await writeFile(path.join(panDir, 'task.json'), JSON.stringify(task, null, 2));
+    await writeFile(taskPath, JSON.stringify(task, null, 2));
     await writeFile(path.join(panDir, 'playbook.md'), pb.body);
 
     // Runner-owned launch metadata AND ownership marker (not a worker contract):
@@ -1546,19 +1647,18 @@ export class Runner {
     // Stable, human-readable window title so the user can tell at a glance
     // which task each spawned window is working on. Computed here because the
     // launcher bakes it in to keep re-asserting it against copilot (see below).
-    const windowTitle = workerWindowTitle(number, item.issue.title);
+    const windowTitle = workerWindowTitle(number, liveIssue.title);
 
     // Generate the Node launcher. It runs with its CWD set to workingDir but
     // reads and writes every control/signal file by its absolute path under the
     // session state root, so a fixed/slot worker's repository never gains a
     // `.pan/`. The prompt is passed to copilot as a single argv element (no
-    // shell re-parses it), and `--session-id` binds the worker to the recorded
-    // session so the task is resumable.
+    // shell re-parses it), and `--session-id` binds the worker to the task's
+    // recorded session.
     await writeFile(path.join(panDir, 'launch.mjs'), this.buildLauncherSource(windowTitle, sessionId, panDir));
 
-    // Record a new Copilot session before launch. Without this durable link a
-    // stopped task could not be resumed, so a write failure must abort launch.
-    // A resume already has the required recorded value.
+    // Persist the session selected for new work; compatible recorded sessions
+    // are already durable Project state.
     if (!resuming) {
       await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.sessionId, sessionId);
     }
@@ -1584,9 +1684,9 @@ export class Runner {
     this.active.set(item.itemId, {
       itemId: item.itemId,
       issueNumber: number,
-      title: item.issue.title,
-      url: item.issue.url,
-      repo: item.issue.repo || repoFromUrl(item.issue.url),
+      title: liveIssue.title,
+      url: liveIssue.url,
+      repo: liveIssue.repo || item.issue.repo || repoFromUrl(liveIssue.url),
       playbook: playbookName,
       workingDir,
       sessionRoot,
@@ -1685,10 +1785,9 @@ export class Runner {
    * at runtime. Permission flags derived from workerPermissions come first, then
    * `--add-dir <panDir>` so copilot may access the out-of-tree state directory,
    * then any configured copilotArgs, then `--session-id <id>` so the worker runs
-   * under the exact session id recorded on the Issue — creating that session on
-   * first launch and resuming it on a later one (see system/runner.md,
-   * "Lease-driven resume"). PAN_STATE_DIR and PAN_WORKING_DIRECTORY are exported
-   * to the worker so its signalling can name the state directory robustly.
+   * under the exact session id recorded on the Issue. PAN_STATE_DIR and
+   * PAN_WORKING_DIRECTORY are exported to the worker so its signalling can name
+   * the state directory robustly.
    *
    * The launcher also runs a title watchdog: copilot rewrites the terminal
    * title (`OSC 0`) repeatedly during a session with its own AI-generated
@@ -2931,6 +3030,16 @@ child.on('exit', (code, signal) => {
           this.resumeWorkspaces.set(match.itemId, sessionRoot);
         }
         log(`found paused ${isolated ? 'workspace' : 'session state'} for #${number} at ${sessionRoot}`);
+        continue;
+      }
+
+      // Review feedback can return a completed task to ready without changing
+      // its recorded local session. Preserve a fully bound stopped root while
+      // it is in review or already ready so that relaunch continues the same
+      // transcript and, for isolated work, the same checkout.
+      if (sessionBound && (projectStatus === 'in-review' || projectStatus === 'ready')) {
+        if (isolated) this.resumeWorkspaces.set(match.itemId, sessionRoot);
+        log(`found reusable ${isolated ? 'workspace' : 'session state'} for #${number} at ${sessionRoot}`);
         continue;
       }
 

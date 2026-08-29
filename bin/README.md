@@ -152,17 +152,17 @@ state files of its own on disk.
 3. **Launch** — resolve the session state directory (always under
    `workspaceRoot`, holding `.pan/`) and the working directory (a fixed
    `workingDirectory`, the chosen `workspaceSlots` slot, else the session
-   directory itself for an isolated task), write the task context into `.pan/`,
-   and open a headed `copilot` session in a visible terminal window under an
-   explicit copilot session id (`--session-id`), recording that id in the Issue's
-   `session-id` field. The launcher runs with its CWD set to the working
+   directory itself for an isolated task), refresh `.pan/task.json` from the
+   current Issue body and complete comment history, and open a headed `copilot`
+   session in a visible terminal window under an explicit session id
+   (`--session-id`), recording that id in the Issue's `session-id` field. The
+   launcher runs with its CWD set to the working
    directory but addresses every control/signal file by its absolute path in the
    state directory, and copilot is granted access to that directory with
    `--add-dir`, so a fixed/slot repository never gains a `.pan/`. A fresh UUID is
-   minted for a new task; a paused task carrying a `session-id` recorded for this
-   same `machine` is relaunched with the same state directory (and exact slot)
-   and that id so Copilot **resumes** the earlier session. If the resolved
-   working directory is a fixed `workingDirectory` or slot already in use by
+   minted for new work; a compatible recorded id is reused on later launches,
+   including review follow-up returned to `ready`. If the resolved working
+   directory is a fixed `workingDirectory` or slot already in use by
    another active worker, the runner does **not** launch: it returns the task to
    `ready`/`paused` (a benign capacity collision, not an operational strike).
 4. **Supervise** — watch the `.pan/` signal files and relay them to the Issue.
@@ -182,7 +182,10 @@ path in the launch prompt and in the `PAN_STATE_DIR` environment variable
 Written by the runner before launch:
 
 - `.pan/task.json` —
-  `{ itemId, number, title, body, url, repo, playbook, workstream, answers }`.
+  `{ itemId, number, title, body, comments, url, repo, playbook, workstream, answers }`.
+  `comments` contains the complete chronological Issue history as
+  `{ author, timestamp, url, body }` entries. The runner refreshes Issue content
+  before every launch and retains existing structured answers.
   `itemId` keys runner state because Issue numbers are repository-local.
 - `.pan/launch.json` — runner-owned launch metadata **and ownership marker**
   `{ panRunner, version, machine, identity, itemId, number, sessionId, isolated, workingDir, slot }`
@@ -369,7 +372,8 @@ more than one page of fields) and cached for the process lifetime; writes use
   or a foreign claim — the worker is reserved occupancy-only rather than adopted,
   so newer Project state is never overwritten. The exact child process is not
   re-attached — only file-signal supervision and lease renewal resume. A paused
-  state root remains discoverable across runner restarts. A state root that is
+  state root remains discoverable across runner restarts, as does a bound
+  `in-review` or `ready` root that may be relaunched. A state root that is
   **inert** — no live worker and no longer this runner's to supervise (finalized,
   released, missing from the Project, or externally transitioned) — is **pruned**
   during rehydration, so finished roots do not accumulate under `workspaceRoot`
@@ -405,6 +409,5 @@ more than one page of fields) and cached for the process lifetime; writes use
   (e.g. `["--allow-all", "--interactive"]`) — the runner appends the prompt as
   its value. Adjust `copilotBin`/`copilotArgs` if your build seeds a session
   differently.
-- **Recorded answers.** `.pan/task.json` currently ships an empty `answers`
-  array; there is no durable answer store yet, so answers arrive live in the
-  worker's terminal.
+- **Recorded answers.** A first launch starts with an empty `answers` array.
+  Later launches retain any structured answers already in `.pan/task.json`.

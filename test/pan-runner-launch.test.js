@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { Runner, loadConfig } from '../bin/pan-runner.js';
+import { Runner, loadConfig, readIssue } from '../bin/pan-runner.js';
 import { FIELD } from '../bin/pan-runner-poll.js';
 import { canonicalPathKey } from '../bin/pan-runner-slots.js';
 
@@ -44,7 +44,16 @@ function baseCfg(sb, overrides = {}) {
   };
 }
 
-function item({ itemId = 'item-1', number = 1, status = 'in-progress', machine = '', sessionId = '', title = 'Fix the thing' } = {}) {
+function item({
+  itemId = 'item-1',
+  number = 1,
+  status = 'in-progress',
+  owner = 'agent',
+  playbook = 'fixed',
+  machine = '',
+  sessionId = '',
+  title = 'Fix the thing',
+} = {}) {
   return {
     itemId,
     issue: {
@@ -56,8 +65,12 @@ function item({ itemId = 'item-1', number = 1, status = 'in-progress', machine =
     },
     fields: {
       [FIELD.status]: status,
+      [FIELD.owner]: owner,
+      [FIELD.playbook]: playbook,
       [FIELD.machine]: machine,
       [FIELD.sessionId]: sessionId,
+      [FIELD.claimedBy]: '',
+      [FIELD.leaseUntil]: '',
       [FIELD.workstream]: '',
       [FIELD.needsHumanSince]: '',
     },
@@ -76,12 +89,17 @@ function isolatedPlaybook() {
 
 // A Runner with a real launchWorker but faked IO: the GitHub boundary is stubbed
 // and the terminal spawn is captured instead of opening a window.
-function makeLaunchRunner(sb, playbooks, { domainPan = null } = {}) {
+function makeLaunchRunner(sb, playbooks, { domainPan = null, issueReader = null } = {}) {
   const spawned = [];
   const writes = [];
+  const issueReads = [];
   const deps = {
     readAllItems: async () => [],
     readItemById: async () => null,
+    readIssue: async (issue) => {
+      issueReads.push({ ...issue });
+      return issueReader ? issueReader(issue, issueReads.length) : { ...issue, comments: [] };
+    },
     setTextField: async (_cfg, _meta, id, field, value) => { writes.push({ id, field, value }); },
     setSelectField: async (_cfg, _meta, id, field, value) => { writes.push({ id, field, value }); },
     readDomainFile: async () => {
@@ -91,7 +109,7 @@ function makeLaunchRunner(sb, playbooks, { domainPan = null } = {}) {
   };
   const runner = new Runner(baseCfg(sb), { fields: new Map() }, playbooks, deps);
   runner.spawnTerminal = async (workingDir, panDir, title) => { spawned.push({ workingDir, panDir, title }); };
-  return { runner, spawned, writes };
+  return { runner, spawned, writes, issueReads };
 }
 
 function stateRootFor(sb, number, sessionId) {
@@ -104,6 +122,48 @@ function trustedFolders(sb) {
 
 function includesPath(list, target) {
   return list.some((p) => canonicalPathKey(p) === canonicalPathKey(target));
+}
+
+function launcherArgs(panDir) {
+  const source = readFileSync(path.join(panDir, 'launch.mjs'), 'utf8');
+  return launcherSourceArgs(source);
+}
+
+function launcherSourceArgs(source) {
+  const match = /^const copilotArgs = (.+);$/m.exec(source);
+  assert.ok(match, 'generated launcher must bake the Copilot argument list');
+  return JSON.parse(match[1]);
+}
+
+function issueGraphqlPage({
+  number,
+  title,
+  body,
+  comments,
+  hasNextPage = false,
+  endCursor = null,
+}) {
+  return JSON.stringify({
+    data: {
+      repository: {
+        issue: {
+          number,
+          title,
+          body,
+          url: `https://github.com/example/domain/issues/${number}`,
+          comments: {
+            pageInfo: { hasNextPage, endCursor },
+            nodes: comments.map((comment) => ({
+              author: comment.author == null ? null : { login: comment.author },
+              createdAt: comment.timestamp,
+              url: comment.url,
+              body: comment.body,
+            })),
+          },
+        },
+      },
+    },
+  });
 }
 
 test('fixed workingDirectory: no .pan under the repo, state under workspaceRoot, terminal CWD is the repo', async () => {
@@ -133,6 +193,8 @@ test('fixed workingDirectory: no .pan under the repo, state under workspaceRoot,
       assert.ok(existsSync(path.join(panDir, f)), `expected ${f} in the state dir`);
     }
     assert.equal(readFileSync(path.join(panDir, 'playbook.md'), 'utf8'), 'FIXED BODY');
+    const firstLaunchArgs = launcherArgs(panDir);
+    assert.deepEqual(firstLaunchArgs.slice(-2), ['--session-id', w.sessionId]);
 
     // Runner-owned metadata records the real working directory for rehydration.
     const launch = JSON.parse(readFileSync(path.join(panDir, 'launch.json'), 'utf8'));
@@ -153,6 +215,166 @@ test('fixed workingDirectory: no .pan under the repo, state under workspaceRoot,
     const trusted = trustedFolders(sb);
     assert.ok(includesPath(trusted, repoDir));
     assert.ok(includesPath(trusted, stateRoot));
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('first ready launch records a session and ready follow-up reuses it with refreshed Issue context', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const graphqlResponses = [
+      issueGraphqlPage({
+        number: 121,
+        title: 'Initial live title',
+        body: 'Initial live body',
+        comments: [
+          { author: 'reviewer', timestamp: '2026-01-02T00:00:00Z', url: 'https://github.com/example/domain/issues/121#issuecomment-2', body: 'Second chronologically' },
+        ],
+        hasNextPage: true,
+        endCursor: 'initial-next',
+      }),
+      issueGraphqlPage({
+        number: 121,
+        title: 'Initial live title',
+        body: 'Initial live body',
+        comments: [
+          { author: 'worker', timestamp: '2026-01-01T00:00:00Z', url: 'https://github.com/example/domain/issues/121#issuecomment-1', body: 'First chronologically' },
+        ],
+      }),
+      issueGraphqlPage({
+        number: 121,
+        title: 'Updated live title',
+        body: 'Updated live body with feedback',
+        comments: [
+          { author: 'reviewer', timestamp: '2026-01-03T00:00:00Z', url: 'https://github.com/example/domain/issues/121#issuecomment-3', body: 'Please validate interactively' },
+          { author: 'worker', timestamp: '2026-01-01T00:00:00Z', url: 'https://github.com/example/domain/issues/121#issuecomment-1', body: 'First chronologically' },
+        ],
+        hasNextPage: true,
+        endCursor: 'updated-next',
+      }),
+      issueGraphqlPage({
+        number: 121,
+        title: 'Updated live title',
+        body: 'Updated live body with feedback',
+        comments: [
+          { author: 'reviewer', timestamp: '2026-01-02T00:00:00Z', url: 'https://github.com/example/domain/issues/121#issuecomment-2', body: 'Second chronologically' },
+        ],
+      }),
+    ];
+    const graphqlCalls = [];
+    const { runner, writes, issueReads } = makeLaunchRunner(sb, fixedPlaybook(repoDir), {
+      issueReader: async (issue) => readIssue(issue, async (args) => {
+        graphqlCalls.push(args);
+        const response = graphqlResponses.shift();
+        assert.ok(response, 'unexpected extra GraphQL page read');
+        return response;
+      }),
+    });
+    const first = item({ itemId: 'item-121', number: 121, status: 'ready' });
+
+    await runner.launchWorker(first, 'fixed');
+
+    const firstWorker = runner.active.get('item-121');
+    const sessionId = firstWorker.sessionId;
+    const panDir = firstWorker.panDir;
+    const firstTask = JSON.parse(readFileSync(path.join(panDir, 'task.json'), 'utf8'));
+    assert.equal(firstTask.body, 'Initial live body');
+    assert.deepEqual(firstTask.comments.map((comment) => comment.body), [
+      'First chronologically',
+      'Second chronologically',
+    ]);
+    assert.deepEqual(launcherArgs(panDir).slice(-2), ['--session-id', sessionId]);
+
+    const recordedAnswers = [{ question: 'Which environment?', answer: 'Production-like staging' }];
+    writeFileSync(path.join(panDir, 'task.json'), JSON.stringify({ ...firstTask, answers: recordedAnswers }));
+    runner.active.delete('item-121');
+
+    const reviewed = item({
+      itemId: 'item-121',
+      number: 121,
+      status: 'in-review',
+      machine: MACHINE,
+      sessionId,
+      title: 'Stale Project title',
+    });
+    const followUp = structuredClone(reviewed);
+    followUp.fields[FIELD.status] = 'ready';
+    await runner.launchWorker(followUp, 'fixed');
+
+    const resumed = runner.active.get('item-121');
+    assert.equal(resumed.sessionId, sessionId);
+    assert.equal(issueReads.length, 2, 'the live Issue is read on every launch');
+    assert.equal(
+      writes.filter((write) => write.field === FIELD.sessionId).length,
+      1,
+      'the existing Project session-id is never overwritten',
+    );
+    const refreshed = JSON.parse(readFileSync(path.join(panDir, 'task.json'), 'utf8'));
+    assert.equal(refreshed.title, 'Updated live title');
+    assert.equal(refreshed.body, 'Updated live body with feedback');
+    assert.deepEqual(refreshed.answers, recordedAnswers);
+    assert.deepEqual(refreshed.comments, [
+      { author: 'worker', timestamp: '2026-01-01T00:00:00Z', url: 'https://github.com/example/domain/issues/121#issuecomment-1', body: 'First chronologically' },
+      { author: 'reviewer', timestamp: '2026-01-02T00:00:00Z', url: 'https://github.com/example/domain/issues/121#issuecomment-2', body: 'Second chronologically' },
+      { author: 'reviewer', timestamp: '2026-01-03T00:00:00Z', url: 'https://github.com/example/domain/issues/121#issuecomment-3', body: 'Please validate interactively' },
+    ]);
+    assert.deepEqual(
+      graphqlCalls.map((args) => args.find((arg) => String(arg).startsWith('cursor=')) || null),
+      [null, 'cursor=initial-next', null, 'cursor=updated-next'],
+      'each launch must read every raw GraphQL comment page from a fresh cursor',
+    );
+    assert.deepEqual(launcherArgs(panDir).slice(-2), ['--session-id', sessionId]);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('ready claim rejects an incompatible recorded session before writing or spawning', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner, writes, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    const candidate = item({ status: 'ready', machine: 'other-box', sessionId: randomUUID() });
+    runner.deps.readItemById = async () => structuredClone(candidate);
+
+    await assert.rejects(
+      runner.claimAndLaunch(candidate),
+      /recorded session belongs to a different machine/,
+    );
+
+    assert.deepEqual(writes, [], 'claim affinity and session-id must remain untouched');
+    assert.equal(spawned.length, 0);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('paused launch still reuses its recorded session', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner, writes } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+
+    await runner.launchWorker(item({ itemId: 'item-22', number: 22 }), 'fixed');
+    const sessionId = runner.active.get('item-22').sessionId;
+    runner.active.delete('item-22');
+
+    await runner.launchWorker(item({
+      itemId: 'item-22',
+      number: 22,
+      status: 'paused',
+      machine: MACHINE,
+      sessionId,
+    }), 'fixed');
+
+    assert.equal(runner.active.get('item-22').sessionId, sessionId);
+    assert.equal(writes.filter((write) => write.field === FIELD.sessionId).length, 1);
+    assert.deepEqual(launcherArgs(runner.active.get('item-22').panDir).slice(-2), ['--session-id', sessionId]);
   } finally {
     sb.cleanup();
   }
@@ -386,6 +608,36 @@ test('rehydrate preserves a paused slot-pooled state root and its repository', a
     // Fixed/slot resume re-derives its working directory, so it is not indexed
     // as a resumable isolated workspace.
     assert.equal(runner.resumeWorkspaces.has('item-2'), false);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('rehydrate preserves an in-review isolated workspace for a future ready follow-up', async () => {
+  const sb = makeSandbox();
+  try {
+    const { stateRoot, sessionId } = seedStateRoot(sb, {
+      number: 12,
+      itemId: 'item-12',
+      workingDir: null,
+      isolated: true,
+      alive: false,
+      playbook: 'isolated',
+    });
+    const inReview = projectItem({
+      itemId: 'item-12',
+      number: 12,
+      status: 'in-review',
+      machine: MACHINE,
+      sessionId,
+    });
+    const runner = makeRehydrateRunner(sb, [inReview], isolatedPlaybook());
+
+    await runner.rehydrate();
+
+    assert.equal(existsSync(stateRoot), true);
+    assert.equal(runner.resumeWorkspaces.get('item-12'), stateRoot);
+    assert.equal(runner.active.has('item-12'), false);
   } finally {
     sb.cleanup();
   }
