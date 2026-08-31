@@ -141,6 +141,29 @@ For each open task, decide and set:
 
 Preserve Project order as the user's precedence within the same priority.
 
+### Domain-designated human task manager
+
+The default is for every task to remain a GitHub Issue represented in the
+Project. A Domain may override that default in its `pan.md` by naming one
+external human task manager and defining its contract. When that mode is
+enabled:
+
+- `owner=agent` tasks continue to use GitHub Issues and the Project and remain
+  the only tasks eligible for runner dispatch.
+- `owner=human` tasks are managed in the named external system and need not
+  remain Project items after migration.
+- A migration must preserve the source Issue URL, repository, Issue number,
+  title, description, deadline, recurrence, comments, and any other data the
+  Domain policy requires before removing the GitHub task.
+- Triage reads the external human queue live and verifies every external write
+  just as it does GitHub writes. The Domain policy defines field mappings,
+  duplicate detection, assignee exclusions, and any task types that must remain
+  in GitHub for lifecycle or audit reasons.
+- A Domain policy may require a dry run and explicit approval before bulk
+  migration or deletion. It must never delete an external-backlog Issue that
+  the Domain does not own unless the owning repository's policy explicitly
+  permits it.
+
 ### Completing a recurring occurrence
 
 When the user explicitly completes a human task whose body contains

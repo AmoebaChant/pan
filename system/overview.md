@@ -22,13 +22,16 @@ clearer.
   playbook lists, and any domain-specific agent instructions. See
   [domain](domain.md).
 - **The runner** — one small Node script per machine. It polls the Domain
-  Project for ready work matching the playbooks that machine runs, claims it,
-  and launches a Pan worker session to do it. See [runner](runner.md).
+  Project for ready agent work matching the playbooks that machine runs, claims
+  it, and launches a Pan worker session to do it. See [runner](runner.md).
 - **Pan worker sessions** — headed `copilot` sessions the runner launches to
   perform a claimed task, following that task's playbook. See
   [worker base instructions](worker-base-instructions.md).
 
-Pan works with exactly **one** Domain at a time.
+Pan works with exactly **one** Domain at a time. The default task system is
+GitHub Issues plus the connected Project. A Domain may explicitly opt into an
+external human task manager in its `pan.md`; in that mode, human-owned tasks
+live in that system while the GitHub Project remains the agent queue.
 
 ## The loop
 
@@ -39,14 +42,15 @@ Pan works with exactly **one** Domain at a time.
    Issue has enough detail, fills in its Project fields, and picks the
    **playbook** that should run it. See [triage](triage.md).
 3. **Runners** on the user's machines poll the Project. When a machine has the
-   named playbook and spare capacity, it claims a ready task and launches a
-   worker. See [runner](runner.md).
+   named playbook and spare capacity, it claims a ready agent task and launches
+   a worker. See [runner](runner.md).
 4. The **worker** does the task using the playbook's instructions, the full Pan
    system context, and the Issue contents. If it needs the user, it signals the
    runner, which records that on the Issue. See
    [worker base instructions](worker-base-instructions.md).
 5. Findings and decisions are written back to **workstreams**; task lifecycle
-   lives on the Project. See [workstreams](workstreams.md).
+   lives on the Project or, for a Domain-designated human task manager, in that
+   external system. See [workstreams](workstreams.md).
 
 ## Reading these documents
 
@@ -67,7 +71,9 @@ Load only what the current job needs; skip the rest until you need it.
 
 ## State rules
 
-GitHub Issues and the Project are the only task state. Workstream Markdown is the
-only durable narrative. Conversation history is not a record of anything. Never
-build a second queue, cache the backlog, or treat a prior read as current: read
-live from GitHub in the turn you act, and verify writes afterward.
+By default, GitHub Issues and the Project are the only task state. A Domain that
+explicitly enables an external human task manager may keep human-owned task
+state there; workstream Markdown remains the only durable narrative.
+Conversation history is not a record of anything. Never build an undeclared
+second queue, cache the backlog, or treat a prior read as current: read live
+from each declared task system in the turn you act, and verify writes afterward.
