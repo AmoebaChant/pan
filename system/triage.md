@@ -156,12 +156,13 @@ A **started** task is either `in-progress` (running now: valid lease) or
 `paused` (started but not running: expired lease), per the [project
 schema](project-schema.md#status-meanings). Triage helps keep this honest:
 
-- **Passive `paused` sweep.** When you notice an item that is `in-progress` with
-  an **expired lease**, flip it to `paused`. This is the documented
-  visibility-only non-owner write (see [the paused
+- **Passive `paused` sweep.** When you notice an **agent-owned** item that is
+  `in-progress` with an **expired lease**, flip it to `paused`. This is the
+  documented visibility-only non-owner write (see [the paused
   sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)); it
-  changes only `Status` and needs no separate approval. Never touch a valid
-  lease — that task is running.
+  changes only `Status` and needs no separate approval. Never sweep a
+  human-owned `in-progress` item: it has no runner lease by design. Never touch
+  a valid agent lease — that task is running.
 - **Flag stale `paused` tasks.** A `paused` task is machine-pinned: it resumes
   only when its owning `machine`'s runner next polls. If one has been `paused`
   well beyond a normal restart window, surface it and offer two paths: (a) start

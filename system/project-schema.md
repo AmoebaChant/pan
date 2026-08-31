@@ -94,13 +94,14 @@ Steps:
   deliberately un-pinned for a fresh start). Any capable machine may claim it.
   For an `agent`-owned task this requires a non-empty `playbook`. For a
   `human`-owned task it just means the user can pick it up.
-- `in-progress` — started and **running right now**: a runner holds a valid
-  lease and its worker is being supervised. A valid lease is the single liveness
-  signal — a live runner renews an active worker's lease every ~1/3 of
-  `leaseMinutes`, so `lease valid` ⟺ the owning runner is alive and supervising.
-  This includes a worker that is **alive but waiting on the user**
-  (`needs-human-since` set): the worker still holds its lease and slot, so it is
-  running.
+- `in-progress` — started and actively being worked. For an `agent`-owned task,
+  this means a runner holds a valid lease and its worker is being supervised.
+  For a `human`-owned task, it means the user has started work; no runner lease
+  is expected. A valid lease remains the single liveness signal for agent work:
+  a live runner renews an active worker's lease every ~1/3 of `leaseMinutes`, so
+  `lease valid` ⟺ the owning runner is alive and supervising. This includes a
+  worker that is **alive but waiting on the user** (`needs-human-since` set):
+  the worker still holds its lease and slot, so it is running.
 - `paused` — started but **not running right now**: the lease has expired, so no
   runner is supervising it. The task is **machine-pinned** — it awaits resume on
   its owning `machine` (recorded in `machine` and `session-id`), which alone can
@@ -135,8 +136,8 @@ correct.
 ### Status transitions
 
 ```
-ready --claim--> in-progress
-in-progress --lease expires (runner crash / force-close / graceful stop)--> paused
+ready --claim (agent) / start (human)--> in-progress
+agent in-progress --lease expires (runner crash / force-close / graceful stop)--> paused
 paused --owning machine resumes--> in-progress
 in-progress / paused --> in-review / done   (normal completion)
 paused --triage clears resume info--> ready  (manual cross-machine handoff)
@@ -174,19 +175,22 @@ ran it resumes it (from `paused`) until triage deliberately un-pins it back to
 
 ### The `paused` sweep (documented non-owner write)
 
-`in-progress` + an expired lease is the one inconsistent state — it claims to be
-running while no runner supervises it. It must be flipped to `paused` so the
-backlog reflects the truth even after a crash:
+For an `agent`-owned task, `in-progress` + an expired lease is the one
+inconsistent state — it claims to be running while no runner supervises it. It
+must be flipped to `paused` so the backlog reflects the truth even after a
+crash. A human-owned `in-progress` task has no lease by design and is never part
+of this sweep:
 
 - **The owning runner** sets its active tasks to `paused` on graceful
   shutdown/drain, and should **proactively release the lease** the moment it
   detects the worker PID is dead rather than waiting for expiry, collapsing the
   inconsistent state into `paused` immediately.
 - **Any runner's poll** (and **triage**, if it notices) performs a passive
-  sweep: `in-progress` + expired-lease → `paused`. It re-reads the item before
-  writing, changes only `Status`, and leaves active leases and malformed lease
-  timestamps untouched. This is safe, non-destructive, and visibility-only,
-  which is why a non-owner is permitted to write it.
+  sweep for agent-owned items: `owner=agent` + `in-progress` + expired-lease →
+  `paused`. It re-reads the item before writing, changes only `Status`, and
+  leaves active leases and malformed lease timestamps untouched. This is safe,
+  non-destructive, and visibility-only, which is why a non-owner is permitted
+  to write it.
 
 ### Field hygiene across pause and resume
 
