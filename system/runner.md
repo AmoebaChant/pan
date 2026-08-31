@@ -78,7 +78,7 @@ the same problems before exiting.
 Each cycle:
 
 1. Read the full Project item set; do not stop at a default page.
-2. **Sweep stale running tasks to `paused`.** For every item with
+2. **Sweep stale running tasks to `paused`.** For every `owner=agent` item with
    `Status=in-progress` and an expired lease that this runner is not itself
    supervising, re-read it to confirm that the lease is still expired, then
    change only `Status` to `paused` (see [the paused
