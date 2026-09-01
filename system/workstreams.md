@@ -9,6 +9,32 @@ Workstreams are knowledge, not task state. Issues track actionable tasks; the
 Project tracks their lifecycle. A workstream may link to Issues, but its README
 is the story that outlives any single task and informs prioritization.
 
+## Portfolio metadata
+
+Each workstream README starts with YAML frontmatter that describes how the
+workstream appears in portfolio views:
+
+```yaml
+---
+title: Friendly Workstream Name
+state: active
+portfolio-order: 100
+---
+```
+
+- **`title`** is the friendly display name. The folder path remains the stable
+  workstream identifier used by Project items.
+- **`state`** is one of `active`, `monitoring`, `back-burner`, or `closed`.
+  Readers may accept legacy capitalization and map legacy `Exploring` to
+  `monitoring`, but every write uses the canonical lowercase value.
+- **`portfolio-order`** is a non-negative integer defining global workstream
+  precedence across all states. Writers should leave gaps between values, such
+  as `100`, `200`, and `300`, so most reorders update only the moved workstream.
+  Rebalance all values only when no integer remains between adjacent items.
+
+Portfolio metadata is planning and presentation state. It does not change task
+lifecycle, runner eligibility, dispatch, ownership, or leases.
+
 ## Reading and writing
 
 Access workstreams through the GitHub Contents API — never require a Domain
@@ -18,6 +44,7 @@ checkout.
   proposed Markdown, and get approval unless the user asked for that exact
   change. Write to the default branch and re-read to confirm. Never force-update
   a changed SHA.
+- Metadata-only updates preserve all unrelated frontmatter and Markdown.
 - After saving, scan for action items and ask whether any should become task
   Issues. List candidates; never create them silently.
 
