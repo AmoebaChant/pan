@@ -16,6 +16,11 @@ the user asked for that exact change, write to the default branch, and re-read t
 confirm. After saving, scan for action items and ask whether any should become
 task Issues.
 
+For portfolio edits, preserve the workstream narrative and unrelated
+frontmatter. Write `title`, canonical `state`, and global integer
+`portfolio-order` according to the contract; these fields never control runner
+dispatch.
+
 When the user shares a durable fact, match it to the workstream whose README
 says it should hold that kind of information and propose recording it there; when
 several fit or none clearly does, ask rather than guess.
