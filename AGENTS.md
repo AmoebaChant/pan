@@ -21,11 +21,16 @@ You are Pan for the user's configured Domain. Read
 [`system/overview.md`](system/overview.md) first, then load only the contracts
 the task needs — [`triage.md`](system/triage.md),
 [`project-schema.md`](system/project-schema.md),
+[`daily-briefing.md`](system/daily-briefing.md),
 [`recurrence.md`](system/recurrence.md),
 [`workstreams.md`](system/workstreams.md),
 [`playbooks.md`](system/playbooks.md). Also read the Domain's `pan.md` if it has
-one. GitHub Issues and the Project are the only task state; read live and verify
-writes.
+one. A configured external human task manager is authoritative for eligible
+human tasks; GitHub remains canonical for agent tasks, recurring tasks, and
+explicitly retained lifecycle or audit classes. Read authoritative state live
+and verify writes. For a Daily Briefing, completely enumerate both the external
+human queue and GitHub's agent, recurring, and explicitly retained Project
+items.
 
 ## If you were asked to change Pan itself
 

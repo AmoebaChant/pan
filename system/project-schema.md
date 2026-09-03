@@ -17,7 +17,7 @@ reads as its documented default rather than as an error.
 | `owner` | single select | triage | `unassigned` \| `human` \| `agent`. Empty reads as `unassigned`. Separates the human queue from the agent queue; nothing else does. |
 | `Status` | single select | triage, then the runner | `untriaged` \| `needs-detail` \| `ready` \| `in-progress` \| `paused` \| `in-review` \| `done` \| `rejected` \| `blocked`. Empty reads as `untriaged`. |
 | `priority` | single select | triage | `urgent` \| `high` \| `normal` \| `low`. Empty reads as `normal`. |
-| `next-action-date` | date | triage | The day the current human-task occurrence should receive attention. Triage recommends it from the Issue and its workstream context. Empty means unscheduled; agent-owned tasks leave it empty. Recurring tasks keep their cadence in the Issue body, not this field; see [recurrence](recurrence.md). |
+| `next-action-date` | date | triage, Daily Briefing, reconciliation | The sole nonterminal human planning signal: past means overdue or punted, today means selected in the agreed daily plan, future records a prior deferral, and empty means unscheduled. It schedules attention rather than a deadline. Agent-owned and terminal human tasks leave it empty. Recurring tasks keep cadence and their nominal occurrence in the Issue body; moving this field does not move the recurrence and requires a valid occurrence marker. See [Daily Briefing](daily-briefing.md) and [recurrence](recurrence.md). |
 | `playbook` | text | triage | The name of the playbook that should run this task (see [playbooks](playbooks.md)). Empty means no playbook has been chosen yet. |
 | `workstream` | text | triage | Optional path relative to `workstreams/`. Empty means the task has no workstream. |
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp. Non-empty means a live worker is waiting for the user right now. |
@@ -115,23 +115,76 @@ Steps:
   playbook step including any post-merge gates. A merge alone never completes
   active or paused work. Setting `Status=done` and closing the Issue go
   together: whoever marks a task `done` also closes its Issue as completed
-  (`gh issue close --reason completed`). A recurring task still completes this
+  (`gh issue close --reason completed`). The terminal-write protocol below
+  clears and verifies `next-action-date` before closure and makes
+  `Status=done` the final Project write of the transition. Recurring history
+  remains in its Issue occurrence marker. A recurring task still completes this
   way, but it is not settled until its separate successor is confirmed. Triage
   reconciles the successor when another client closes the Issue first.
 - `rejected` — terminal work the user deliberately chose not to pursue. It is
   never dispatchable or completed work. Setting `Status=rejected` and closing
   the Issue as not planned (`gh issue close --reason "not planned"`) go
-  together.
+  together under the terminal-write protocol.
 - `blocked` — waiting on something outside the user's control, with no worker
   holding it. This is the *only* meaning of `blocked`.
 
 `done` with a completed closure and `rejected` with a not-planned closure are
-the only Status/Issue-state pairs for closed work. A completed recurring Issue
-without a confirmed successor is pending automatic recurrence reconciliation,
-even if its Project item already says `done`. Any other closed-Status pairing,
-or an open Issue in `done` or `rejected`, is a state conflict: clients surface
-it for repair instead of filtering the task out or guessing which side is
-correct.
+the only settled Status/Issue-state pairs for closed work. A completed recurring
+Issue without a confirmed successor is pending automatic recurrence
+reconciliation, even if its Project item already says `done`. A completed
+merged-PR Issue still in `in-review`, or a closed recurring Issue still in a
+nonterminal status, is a recoverable partial transition handled by triage's
+automatic scans. Any other closed-Status pairing, or an open Issue in `done` or
+`rejected`, is a state conflict: clients surface it for repair instead of
+filtering the task out or guessing which side is correct.
+
+At a reconciled resting state, every terminal human task has an empty
+`next-action-date`. Today and future planning dates belong only to nonterminal
+human work. A recurring task's terminal item keeps its nominal occurrence in
+the Issue marker, never in the planning field.
+
+### Human terminal-write protocol
+
+Every transition of a human task to `done` or `rejected`, and every merged-PR
+completion, uses this order. An already-empty `next-action-date` satisfies the
+date step without a write:
+
+1. Re-read the Issue and Project item and confirm that the requested or
+   automatically reconciled terminal outcome still applies.
+2. Complete and verify any prerequisite durable work that does not make the
+   current item terminal, such as creating and linking a recurring successor.
+3. Clear `next-action-date` if it is non-empty, then re-read and verify it is
+   empty. If the clear or verification fails, do not close an Issue that Pan
+   still controls and leave the Project status nonterminal.
+4. Close an open Issue with the matching reason and verify the closure. If
+   another client already closed it, require the matching closure reason
+   instead of reopening or rewriting it.
+5. Re-read the Project item, require the date to remain empty and the expected
+   nonterminal status to remain current, then set the terminal `Status`. That
+   status is the final Project write of the terminal transition; re-read it
+   only to verify. Independent runner-owned cleanup described below is not part
+   of that transition.
+
+If Issue closure succeeds but the final Status write fails, preserve the
+closed Issue and nonterminal Project status. Automatic merged-PR and recurrence
+scans include those partial states and retry from live evidence. Other partial
+terminal pairs are surfaced for an explicitly approved repair; they are never
+treated as settled or guessed from conversation history.
+
+An already-terminal item with a stale date predates or violated this ordering.
+It is objective field hygiene rather than daily planning. Re-read the Issue and
+Project item. Require a settled pair: `Status=done` with a completed Issue
+closure, or `Status=rejected` with a not-planned closure. An open Issue or any
+mismatch is a lifecycle conflict; surface it and make no cleanup write. A
+recurring item also requires a valid occurrence marker or successful inference
+and verification under
+[recurrence backward compatibility](recurrence.md#backward-compatibility)
+while `next-action-date` remains intact. If inference is ambiguous or an
+existing marker is unusable, Pan preserves the date, makes no terminal cleanup
+write until resolved, and surfaces the conflict. Once the closure and recurrence
+preconditions are satisfied, Pan clears only `next-action-date`, re-reads, and
+verifies it is empty. This repair never changes or reasserts Status, changes
+Issue closure, or writes another field.
 
 ### Status transitions
 
@@ -153,8 +206,10 @@ ran it resumes it (from `paused`) until triage deliberately un-pins it back to
 
 ## Ownership rules
 
-- **Triage owns** `owner`, `Status`, `priority`, `next-action-date`, `playbook`,
-  and `workstream`.
+- **Triage owns** `owner`, `Status`, `priority`, `playbook`, and `workstream`,
+  and initializes or recommends `next-action-date`. **Daily Briefing** owns
+  agreed daily planning changes to `next-action-date`; see
+  [Daily Briefing](daily-briefing.md).
   As a deliberate exception, triage (or any runner's poll) may perform the
   passive visibility sweep below.
 - **The runner owns** `Status` transitions after it claims, plus `lease-until`

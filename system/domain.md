@@ -14,8 +14,13 @@ in the Domain.
   pan.md                         domain-specific Pan instructions (optional)
 ```
 
-- **Issues** in this repository are the tasks. Every Issue is a task and belongs
-  to the connected Project.
+- **Issues** in this repository are the tasks. By default every Issue belongs
+  to the connected Project. A Domain-configured external human task manager may
+  move an eligible verified human task out of the Project under the contract
+  below. Agent work, every recurring human task, and explicitly retained audit
+  or lifecycle task types stay in GitHub. An external manager may mirror or
+  link recurring work only when its contract defines that behavior; the Domain
+  Issue and Project remain canonical for recurrence lifecycle and history.
 - **The Project** holds each task's lifecycle and fields. See
   [project schema](project-schema.md).
 - **Workstreams** are the durable narrative for each area of work. See
@@ -27,7 +32,9 @@ in the Domain.
 - **`pan.md`** (optional) holds domain-specific instructions that extend the
   generic system — for example, "during triage, also add any new open Issues
   from `owner/other-repo` to the backlog." Pan reads it at the start of a
-  session and applies it alongside the generic system.
+  session and applies it alongside the generic system. It may include a
+  `## Daily Briefing` section naming extra read-only planning considerations or
+  sources and how to inspect them; see [Daily Briefing](daily-briefing.md).
 
 ## How Pan reaches the Domain
 
@@ -57,10 +64,63 @@ interactive Pan sessions read it to learn their Domain, so an interactive sessio
 never needs the Domain injected into its opening prompt — it discovers the
 binding from this file at startup.
 
+## External human task manager contract
+
+A Domain may make one external system authoritative for eligible human-owned
+tasks by declaring it in `pan.md`. The declaration must provide:
+
+- a stable, user-agnostic manager key and the exact syntax of that manager's
+  durable task identifiers;
+- complete live queue enumeration, task lookup, field mappings, terminal-state
+  mappings, access, and write verification;
+- a durable location on the external task that stores the canonical source
+  Issue URL;
+- the data that makes a migration complete, including every source field,
+  comment, or other value the Domain requires;
+- a live task-type classification rule and the explicit task types that must
+  remain GitHub Project items for audit or lifecycle reasons (an explicit empty
+  list is valid; an omitted rule or list is incomplete). Recurring human tasks
+  are always retained independently of this list; and
+- duplicate handling, assignee exclusions, and any approval or deletion policy.
+
+Only human work outside every mandatory GitHub-retained class is eligible for
+migration. After creating an external task for eligible work and verifying its
+complete data and source Issue URL, migration records a dedicated comment on
+the source Issue whose first line is:
+
+```text
+Pan: external human task <manager-key> <stable-task-id>
+```
+
+The manager key and identifier must resolve through the current `pan.md`
+contract without interpretation. The external task must point back to that
+exact Issue URL. Only this reciprocal, live-verified pair proves that a human
+task was migrated; the Issue comment alone is not sufficient. Write and verify
+the receipt before removing the Project item. For a recurring or otherwise
+GitHub-retained task, an external record may be only a mirror or link when the
+contract permits it; a receipt never authorizes Project removal or transfers
+canonical lifecycle.
+
+This receipt is a cross-system pointer, not another queue or a cache of task
+state. Pan reads the source Issue, current Domain contract, and authoritative
+external task live whenever it uses the receipt. Before doing so for
+registration, Pan first determines from live durable evidence whether the Issue
+is conclusively agent-owned or belongs to a mandatory GitHub-retained class,
+including recurrence. Those Issues are always represented in the Project even
+when a receipt is malformed, conflicting, or present. Only an Issue that could
+legitimately be migrated human work is decided by its receipt. For such an
+Issue, a missing external record, malformed or conflicting receipt, backlink
+mismatch, incomplete migrated data, or indeterminate classification makes the
+migration evidence ambiguous: make no registration, removal, or planning write
+for that Issue, report the gap, and do not claim a complete queue.
+
 ## Boundaries
 
 - Operate only within the configured Domain. Do not blend data from other
   Domains unless the user explicitly asks.
+- Domain instructions remain subordinate to the generic Pan contracts. A
+  `## Daily Briefing` section does not authorize discretionary task mutations;
+  those still require agreement or a separate existing standing policy.
 - Product-context repositories a session may be pointed at are read-only
   reference. They grant no authority to modify anything.
 - The one exception is the Pan tool repository itself, for self-improvement
