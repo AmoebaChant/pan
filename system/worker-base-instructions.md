@@ -11,15 +11,17 @@ Domain and the target repository your playbook names.
 
 ## Your state directory vs. your working directory
 
-Pan keeps its own files in a dedicated **state directory** whose absolute path is
-in your launch prompt and in the `PAN_STATE_DIR` environment variable. This is
-**not** your working directory: when your playbook gives you a real checkout
+Pan gives each launch its own dedicated **state directory** whose absolute path
+is in your launch prompt and in the `PAN_STATE_DIR` environment variable. This
+attempt directory belongs only to this launcher; never read, write, or clean a
+sibling launch directory. It is **not** your working directory: when your playbook gives you a real checkout
 (`workingDirectory` or a `workspaceSlots` slot), your working directory is that
 repository and the state directory is a separate directory outside it. Every
 `.pan/...` file named below lives in the state directory — read and write it
 there (by its absolute path or under `$PAN_STATE_DIR`). **Never create a `.pan`
 directory inside your working directory.** For an isolated task the two happen to
-be the same directory, but addressing Pan files through the state directory is
+share the same stable basename under different configured roots, but they are
+still separate directories. Addressing Pan files through the state directory is
 always correct.
 
 ## Your inputs

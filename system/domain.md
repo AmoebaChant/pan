@@ -64,6 +64,14 @@ interactive Pan sessions read it to learn their Domain, so an interactive sessio
 never needs the Domain injected into its opening prompt — it discovers the
 binding from this file at startup.
 
+The runner may also configure `stateRoot` and `workspaceRoot`. `stateRoot`
+contains authoritative local session and launch-generation records and defaults
+to the platform's durable per-user application/state location. `workspaceRoot`
+contains disposable isolated code workspaces and may remain under the system
+temporary directory. They must not overlap. Moving or cleaning
+`workspaceRoot` must never remove the ownership record that prevents duplicate
+workers.
+
 ## External human task manager contract
 
 A Domain may make one external system authoritative for eligible human-owned

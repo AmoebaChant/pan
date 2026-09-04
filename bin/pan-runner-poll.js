@@ -251,14 +251,16 @@ export function occupiedSlotsForPlaybook(occupancy, playbook) {
 }
 
 /** The confirming re-read after a claim write: we still own the item only when
- *  claimed-by, lease-until, and machine are the exact values we wrote and the
- *  Status is in-progress. Anything else means a foreign claim won the race. */
-export function claimConfirmed(item, { identity, lease, machine }) {
+ *  claimed-by, lease-until, machine, and session-id are the exact values we
+ *  wrote and the Status is in-progress. Anything else means a foreign claim won
+ *  the race. */
+export function claimConfirmed(item, { identity, lease, machine, sessionId }) {
   if (!item) return false;
   return (
     val(item, FIELD.claimedBy, '') === identity &&
     val(item, FIELD.leaseUntil, '') === lease &&
     val(item, FIELD.machine, '') === machine &&
+    val(item, FIELD.sessionId, '') === sessionId &&
     statusOf(item) === 'in-progress'
   );
 }

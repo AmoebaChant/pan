@@ -547,10 +547,16 @@ test('claimConfirmed requires the exact claimed-by, lease, machine, and in-progr
       [FIELD.claimedBy]: 'runner-a',
       [FIELD.leaseUntil]: VALID,
       [FIELD.machine]: 'machine-a::primary',
+      [FIELD.sessionId]: '11111111-1111-4111-8111-111111111111',
       [FIELD.status]: 'in-progress',
     },
   };
-  const want = { identity: 'runner-a', lease: VALID, machine: 'machine-a::primary' };
+  const want = {
+    identity: 'runner-a',
+    lease: VALID,
+    machine: 'machine-a::primary',
+    sessionId: '11111111-1111-4111-8111-111111111111',
+  };
 
   assert.equal(claimConfirmed(base, want), true);
   assert.equal(claimConfirmed(null, want), false);
@@ -564,6 +570,10 @@ test('claimConfirmed requires the exact claimed-by, lease, machine, and in-progr
   );
   assert.equal(
     claimConfirmed({ fields: { ...base.fields, [FIELD.machine]: 'machine-a::secondary' } }, want),
+    false,
+  );
+  assert.equal(
+    claimConfirmed({ fields: { ...base.fields, [FIELD.sessionId]: '22222222-2222-4222-8222-222222222222' } }, want),
     false,
   );
   assert.equal(
