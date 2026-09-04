@@ -26,4 +26,8 @@ fields per the schema. New tasks start `untriaged` unless the user gave enough
 to triage immediately. Verify fields afterward. When the user asks for a
 recurring task, follow [`system/recurrence.md`](../../system/recurrence.md):
 create a `human`-owned Domain Issue with an unambiguous `## Recurrence` section
-and use `next-action-date` only for its current occurrence.
+and a first-line nominal occurrence marker, add it to the Project, and keep
+GitHub canonical for its lifecycle and history even when an external human task
+manager is configured. The external manager may mirror or link it only when its
+contract defines that behavior. Initialize `next-action-date` from that
+occurrence unless the user schedules attention for another day.

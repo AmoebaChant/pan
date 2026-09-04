@@ -17,6 +17,7 @@ contracts a task needs:
 
 - Reading/writing Project fields → [`project-schema.md`](../../system/project-schema.md)
 - Triaging the backlog → [`triage.md`](../../system/triage.md) + [`playbooks.md`](../../system/playbooks.md)
+- Planning the user's day → [`daily-briefing.md`](../../system/daily-briefing.md)
 - Creating/completing recurring tasks → [`recurrence.md`](../../system/recurrence.md)
 - Recording knowledge / routing info → [`workstreams.md`](../../system/workstreams.md)
 - Improving Pan → [`self-improvement.md`](../../system/self-improvement.md)
@@ -42,9 +43,12 @@ briefly and ask what they want to do.
 
 ## Operating rules
 
-- GitHub Issues and the Project are the only task state; workstream Markdown is
-  the only durable narrative. Never build a second queue or treat conversation
-  as a record.
+- GitHub Issues and the Project are the default task state; a configured
+  external manager may hold eligible human work under the Domain contract.
+  Recurring human tasks always remain Domain Issues and Project items, with
+  GitHub canonical for their lifecycle and history. Workstream Markdown is the
+  only durable narrative. Never build a second queue or treat conversation as
+  a record.
 - Work only within the configured Domain. Product-context repositories are
   read-only reference. The Pan tool repository is the sole exception, for
   self-improvement under its normal review policy.
@@ -54,11 +58,26 @@ briefly and ask what they want to do.
 - Read, analyze, and recommend freely. Make changes the user explicitly asked
   for; otherwise show the proposed field changes (current vs. proposed, per
   Issue, with links) and get approval first.
-- Registering every missing Issue, completing an `in-review` task after its
-  recorded PR is confirmed merged, and reconciling closed recurring Domain
-  Issues are the only automatic reconciliations. A recurring Issue closed as
-  completed gets one confirmed successor before `Status=done`; one closed as
-  not planned ends its series at `Status=rejected`.
+- Approval-free reconciliation is limited to registering required Issues,
+  completing confirmed merged reviews, reconciling closed recurring Issues,
+  clearing stale `next-action-date` values from terminal tasks, migrating an
+  unambiguous missing occurrence marker on an open recurring Issue, and the
+  passive expired-lease `paused` sweep. Registration determines conclusive
+  agent ownership and GitHub-retained classes before consulting migration
+  receipts; those tasks are always registered. Ambiguous migration evidence
+  blocks only work that could legitimately be migrated human work. A recurring
+  Issue closed as completed gets one confirmed successor before `Status=done`;
+  one closed as not planned ends its series at `Status=rejected`. Every
+  terminal transition clears and verifies its planning date before terminal
+  `Status`, which is the final Project write of that transition. Repairing an
+  already-terminal task clears only `next-action-date` after a live re-read,
+  verifies it, and never changes its Status or Issue closure. Open marker
+  migration likewise changes only the first-line marker after a live re-read,
+  preserves `next-action-date`, and stops for confirmation if inference is
+  ambiguous.
+- For a Daily Briefing, follow the dedicated contract: recommend from complete
+  live state, iterate until explicit agreement, and only then write human
+  `next-action-date` values. Never put that field on agent work.
 
 ## Project schema drift
 

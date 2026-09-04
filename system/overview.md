@@ -27,11 +27,19 @@ clearer.
 - **Pan worker sessions** — headed `copilot` sessions the runner launches to
   perform a claimed task, following that task's playbook. See
   [worker base instructions](worker-base-instructions.md).
+- **Daily Briefing** — an interactive review that turns complete live Domain
+  state into an agreed, realistically sized plan for the user's day. See
+  [Daily Briefing](daily-briefing.md).
 
 Pan works with exactly **one** Domain at a time. The default task system is
 GitHub Issues plus the connected Project. A Domain may explicitly opt into an
 external human task manager in its `pan.md`; in that mode, human-owned tasks
-live in that system while the GitHub Project remains the agent queue.
+eligible for migration live in that system while the GitHub Project remains
+the agent dispatch queue. Recurring human tasks and any other human audit or
+lifecycle classes the Domain explicitly retains stay as Domain Issues and
+Project items. GitHub remains canonical for recurring lifecycle and history;
+an external manager may only mirror or link recurring work when its contract
+says how.
 
 ## The loop
 
@@ -41,16 +49,20 @@ live in that system while the GitHub Project remains the agent queue.
 2. **Triage** (an interactive Pan session with the user) decides whether each
    Issue has enough detail, fills in its Project fields, and picks the
    **playbook** that should run it. See [triage](triage.md).
-3. **Runners** on the user's machines poll the Project. When a machine has the
+3. **Daily Briefing** reviews the live portfolio and workstream context,
+   recommends a plan, and, after agreement, dates exactly the selected human
+   tasks for today. See [Daily Briefing](daily-briefing.md).
+4. **Runners** on the user's machines poll the Project. When a machine has the
    named playbook and spare capacity, it claims a ready agent task and launches
    a worker. See [runner](runner.md).
-4. The **worker** does the task using the playbook's instructions, the full Pan
+5. The **worker** does the task using the playbook's instructions, the full Pan
    system context, and the Issue contents. If it needs the user, it signals the
    runner, which records that on the Issue. See
    [worker base instructions](worker-base-instructions.md).
-5. Findings and decisions are written back to **workstreams**; task lifecycle
-   lives on the Project or, for a Domain-designated human task manager, in that
-   external system. See [workstreams](workstreams.md).
+6. Findings and decisions are written back to **workstreams**; task lifecycle
+   lives on the Project or, for eligible human work under a Domain-designated
+   human task manager, in that external system. Recurring lifecycle always
+   remains in GitHub. See [workstreams](workstreams.md).
 
 ## Reading these documents
 
@@ -62,6 +74,7 @@ Load only what the current job needs; skip the rest until you need it.
 | Working with the user's Domain | [domain](domain.md) |
 | Reading or writing Project fields | [project schema](project-schema.md) |
 | Triaging the backlog | [triage](triage.md) + [playbooks](playbooks.md) |
+| Planning the user's day | [Daily Briefing](daily-briefing.md) |
 | Creating or completing recurring tasks | [recurrence](recurrence.md) |
 | Recording knowledge / routing info | [workstreams](workstreams.md) |
 | Defining or choosing a playbook | [playbooks](playbooks.md) |
@@ -73,7 +86,17 @@ Load only what the current job needs; skip the rest until you need it.
 
 By default, GitHub Issues and the Project are the only task state. A Domain that
 explicitly enables an external human task manager may keep human-owned task
-state there; workstream Markdown remains the only durable narrative.
+state there except for recurring tasks and other explicitly GitHub-retained
+classes; workstream Markdown remains the only durable narrative.
 Conversation history is not a record of anything. Never build an undeclared
 second queue, cache the backlog, or treat a prior read as current: read live
 from each declared task system in the turn you act, and verify writes afterward.
+
+Approval-free task-state writes are limited to the automatic reconciliations
+defined by [triage](triage.md): required-Issue registration, confirmed
+merged-review completion, closed-recurrence rollover, terminal stale-date
+clearing, unambiguous open occurrence-marker migration, and the passive
+expired-lease `paused` sweep. Terminal stale-date repair clears only
+`next-action-date` after a live re-read and never changes Status or Issue
+closure. Open marker migration changes only the first-line marker, preserves
+`next-action-date`, and requires confirmation whenever inference is ambiguous.
