@@ -1,12 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
-import os from 'node:os';
+import {
+  existsSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Runner, loadConfig, readIssue } from '../bin/pan-runner.js';
 import { FIELD } from '../bin/pan-runner-poll.js';
 import { canonicalPathKey } from '../bin/pan-runner-slots.js';
+import {
+  atomicWriteJson,
+  createAttempt,
+  inspectProcess,
+  scanAttempts,
+} from '../bin/pan-runner-runtime.js';
 
 // These tests drive the real launchWorker / rehydrate path so they prove actual
 // path construction, not a stubbed launch. Only the GitHub boundary and the
@@ -19,11 +37,13 @@ const IDENTITY = 'box-runner-1';
 const VALID_LEASE = '2999-01-01T00:00:00.000Z';
 
 function makeSandbox() {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'pan-launch-'));
+  const dir = mkdtempSync(path.join(process.cwd(), '.pan-launch-test-'));
+  const stateRoot = path.join(dir, 'state');
   const workspaceRoot = path.join(dir, 'workspaces');
   const copilotConfigPath = path.join(dir, 'copilot-config.json');
+  mkdirSync(stateRoot, { recursive: true });
   mkdirSync(workspaceRoot, { recursive: true });
-  return { dir, workspaceRoot, copilotConfigPath, cleanup() { rmSync(dir, { recursive: true, force: true }); } };
+  return { dir, stateRoot, workspaceRoot, copilotConfigPath, cleanup() { rmSync(dir, { recursive: true, force: true }); } };
 }
 
 function baseCfg(sb, overrides = {}) {
@@ -33,6 +53,7 @@ function baseCfg(sb, overrides = {}) {
     leaseMinutes: 15,
     maxConcurrent: 10,
     panCheckout: sb.dir,
+    stateRoot: sb.stateRoot,
     workspaceRoot: sb.workspaceRoot,
     copilotConfigPath: sb.copilotConfigPath,
     copilotBin: 'copilot',
@@ -107,13 +128,28 @@ function makeLaunchRunner(sb, playbooks, { domainPan = null, issueReader = null 
       return domainPan;
     },
   };
+  deps.inspectProcess = async (pid) => (
+    pid === process.pid
+      ? { state: 'live', identity: 'test-process-start', command: 'node launch.mjs' }
+      : { state: 'dead', reason: 'test process absent' }
+  );
   const runner = new Runner(baseCfg(sb), { fields: new Map() }, playbooks, deps);
-  runner.spawnTerminal = async (workingDir, panDir, title) => { spawned.push({ workingDir, panDir, title }); };
+  runner.spawnTerminal = async (workingDir, panDir, title) => {
+    spawned.push({ workingDir, panDir, title });
+    const attempt = JSON.parse(readFileSync(path.join(panDir, 'attempt.json'), 'utf8'));
+    writeFileSync(path.join(panDir, 'owner.json'), JSON.stringify({
+      panRunnerOwner: true,
+      version: 1,
+      launchId: attempt.launchId,
+      pid: process.pid,
+      processStart: 'test-process-start',
+    }));
+  };
   return { runner, spawned, writes, issueReads };
 }
 
 function stateRootFor(sb, number, sessionId) {
-  return path.join(sb.workspaceRoot, `pan-${number}-${sessionId}`);
+  return path.join(sb.stateRoot, `pan-${number}-${sessionId}`);
 }
 
 function trustedFolders(sb) {
@@ -133,6 +169,47 @@ function launcherSourceArgs(source) {
   const match = /^const copilotArgs = (.+);$/m.exec(source);
   assert.ok(match, 'generated launcher must bake the Copilot argument list');
   return JSON.parse(match[1]);
+}
+
+function waitForExit(child, timeoutMs = 10000) {
+  if (child.exitCode != null || child.signalCode != null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`child ${child.pid} did not exit`)), timeoutMs);
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function waitForFile(filePath, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(filePath)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${filePath}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function markAttemptExited(worker) {
+  writeFileSync(path.join(worker.attemptDir, 'owner.json'), JSON.stringify({
+    panRunnerOwner: true,
+    version: 1,
+    launchId: worker.launchId,
+    pid: 999999,
+    processStart: 'dead-test-process',
+  }));
+  writeFileSync(path.join(worker.attemptDir, 'exit.json'), JSON.stringify({
+    panRunnerExit: true,
+    version: 1,
+    launchId: worker.launchId,
+    exitedAt: new Date().toISOString(),
+  }));
 }
 
 function issueGraphqlPage({
@@ -188,12 +265,31 @@ test('fixed workingDirectory: no .pan under the repo, state under workspaceRoot,
     // Every Pan file lives under the per-session state root in workspaceRoot.
     const stateRoot = stateRootFor(sb, 7, w.sessionId);
     const panDir = path.join(stateRoot, '.pan');
-    assert.equal(canonicalPathKey(w.panDir), canonicalPathKey(panDir));
-    for (const f of ['task.json', 'playbook.md', 'launch.json', 'launch.mjs', 'launch-prompt.txt', 'pan.md']) {
-      assert.ok(existsSync(path.join(panDir, f)), `expected ${f} in the state dir`);
+    assert.equal(canonicalPathKey(w.sessionPanDir), canonicalPathKey(panDir));
+    assert.equal(canonicalPathKey(w.panDir), canonicalPathKey(path.join(panDir, 'runs', w.launchId)));
+    for (const f of ['task.json', 'playbook.md', 'launch.json', 'pan.md']) {
+      assert.ok(existsSync(path.join(panDir, f)), `expected ${f} in the durable session state`);
+    }
+    for (const f of ['attempt.json', 'owner.json', 'task.json', 'playbook.md', 'launch.mjs', 'launch-prompt.txt', 'pan.md']) {
+      assert.ok(existsSync(path.join(w.panDir, f)), `expected ${f} in the launch attempt`);
+    }
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(stateRoot).mode & 0o777, 0o700);
+      assert.equal(statSync(panDir).mode & 0o777, 0o700);
+      assert.equal(statSync(w.panDir).mode & 0o777, 0o700);
+      for (const file of [
+        path.join(panDir, 'task.json'),
+        path.join(panDir, 'playbook.md'),
+        path.join(panDir, 'launch.json'),
+        path.join(w.panDir, 'attempt.json'),
+        path.join(w.panDir, 'launch.mjs'),
+        path.join(w.panDir, 'launch-prompt.txt'),
+      ]) {
+        assert.equal(statSync(file).mode & 0o777, 0o600, file);
+      }
     }
     assert.equal(readFileSync(path.join(panDir, 'playbook.md'), 'utf8'), 'FIXED BODY');
-    const firstLaunchArgs = launcherArgs(panDir);
+    const firstLaunchArgs = launcherArgs(w.panDir);
     assert.deepEqual(firstLaunchArgs.slice(-2), ['--session-id', w.sessionId]);
 
     // Runner-owned metadata records the real working directory for rehydration.
@@ -205,7 +301,7 @@ test('fixed workingDirectory: no .pan under the repo, state under workspaceRoot,
     // The terminal is opened with CWD = repo and the absolute state dir.
     assert.equal(spawned.length, 1);
     assert.equal(canonicalPathKey(spawned[0].workingDir), canonicalPathKey(repoDir));
-    assert.equal(canonicalPathKey(spawned[0].panDir), canonicalPathKey(panDir));
+    assert.equal(canonicalPathKey(spawned[0].panDir), canonicalPathKey(w.panDir));
     assert.match(spawned[0].title, /#7/);
 
     // The session id was recorded on the Issue for resumability.
@@ -290,6 +386,7 @@ test('first ready launch records a session and ready follow-up reuses it with re
 
     const recordedAnswers = [{ question: 'Which environment?', answer: 'Production-like staging' }];
     writeFileSync(path.join(panDir, 'task.json'), JSON.stringify({ ...firstTask, answers: recordedAnswers }));
+    markAttemptExited(firstWorker);
     runner.active.delete('item-121');
 
     const reviewed = item({
@@ -312,7 +409,7 @@ test('first ready launch records a session and ready follow-up reuses it with re
       1,
       'the existing Project session-id is never overwritten',
     );
-    const refreshed = JSON.parse(readFileSync(path.join(panDir, 'task.json'), 'utf8'));
+    const refreshed = JSON.parse(readFileSync(path.join(resumed.panDir, 'task.json'), 'utf8'));
     assert.equal(refreshed.title, 'Updated live title');
     assert.equal(refreshed.body, 'Updated live body with feedback');
     assert.deepEqual(refreshed.answers, recordedAnswers);
@@ -326,7 +423,7 @@ test('first ready launch records a session and ready follow-up reuses it with re
       [null, 'cursor=initial-next', null, 'cursor=updated-next'],
       'each launch must read every raw GraphQL comment page from a fresh cursor',
     );
-    assert.deepEqual(launcherArgs(panDir).slice(-2), ['--session-id', sessionId]);
+    assert.deepEqual(launcherArgs(resumed.panDir).slice(-2), ['--session-id', sessionId]);
   } finally {
     sb.cleanup();
   }
@@ -353,6 +450,77 @@ test('ready claim rejects an incompatible recorded session before writing or spa
   }
 });
 
+test('a crash at the in-progress claim boundary leaves a durable resumable session id', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const candidate = item({
+      itemId: 'item-claim-crash',
+      number: 23,
+      status: 'ready',
+      machine: '',
+      sessionId: '',
+    });
+    candidate.fields[FIELD.claimedBy] = '';
+    candidate.fields[FIELD.leaseUntil] = '';
+    let live = structuredClone(candidate);
+    const writes = [];
+    const deps = {
+      readItemById: async () => structuredClone(live),
+      readIssue: async (issue) => ({ ...issue, comments: [] }),
+      readDomainFile: async () => { throw new Error('none'); },
+      setTextField: async (_cfg, _meta, _id, field, value) => {
+        writes.push([field, value]);
+        live.fields[field] = value;
+      },
+      setSelectField: async (_cfg, _meta, _id, field, value) => {
+        writes.push([field, value]);
+        live.fields[field] = value;
+        if (field === FIELD.status && value === 'in-progress') {
+          throw new Error('simulated process termination after status persisted');
+        }
+      },
+      inspectProcess: async (pid) => (
+        pid === process.pid
+          ? { state: 'live', identity: 'test-process-start', command: 'node launch.mjs' }
+          : { state: 'dead', reason: 'gone' }
+      ),
+    };
+    const first = new Runner(baseCfg(sb), { fields: new Map() }, fixedPlaybook(repoDir), deps);
+
+    assert.equal(await first.claimAndLaunch(candidate), false);
+    const sessionId = live.fields[FIELD.sessionId];
+    assert.match(sessionId, /^[0-9a-f-]{36}$/);
+    assert.equal(live.fields[FIELD.status], 'in-progress');
+    assert.ok(
+      writes.findIndex(([field]) => field === FIELD.sessionId)
+        < writes.findIndex(([field]) => field === FIELD.status),
+      'session-id must persist before Status can become in-progress',
+    );
+    const sessionPanDir = path.join(stateRootFor(sb, 23, sessionId), '.pan');
+    assert.ok(existsSync(path.join(sessionPanDir, 'launch.json')));
+    assert.deepEqual(
+      JSON.parse(readFileSync(path.join(sessionPanDir, 'attempts.json'), 'utf8')).attempts,
+      [],
+      'the pre-launch durable manifest proves no worker generation was started',
+    );
+
+    // Any runner's expired-lease sweep changes only Status to paused. The
+    // owning machine can then resume the provisioned session without minting a
+    // replacement id or requiring a missing workspace.
+    live.fields[FIELD.status] = 'paused';
+    const { runner: recovery, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    await recovery.launchWorker(structuredClone(live), 'fixed');
+    const worker = recovery.active.get('item-claim-crash');
+    assert.ok(worker);
+    assert.equal(worker.sessionId, sessionId);
+    assert.equal(spawned.length, 1);
+  } finally {
+    sb.cleanup();
+  }
+});
+
 test('paused launch still reuses its recorded session', async () => {
   const sb = makeSandbox();
   try {
@@ -361,7 +529,9 @@ test('paused launch still reuses its recorded session', async () => {
     const { runner, writes } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
 
     await runner.launchWorker(item({ itemId: 'item-22', number: 22 }), 'fixed');
-    const sessionId = runner.active.get('item-22').sessionId;
+    const firstWorker = runner.active.get('item-22');
+    const sessionId = firstWorker.sessionId;
+    markAttemptExited(firstWorker);
     runner.active.delete('item-22');
 
     await runner.launchWorker(item({
@@ -399,7 +569,8 @@ test('workspace slot: no .pan under the slot repo, state under workspaceRoot, te
     assert.equal(canonicalPathKey(w.workingDir), canonicalPathKey(slotDir));
 
     const panDir = path.join(stateRootFor(sb, 8, w.sessionId), '.pan');
-    assert.equal(canonicalPathKey(w.panDir), canonicalPathKey(panDir));
+    assert.equal(canonicalPathKey(w.sessionPanDir), canonicalPathKey(panDir));
+    assert.equal(canonicalPathKey(w.panDir), canonicalPathKey(path.join(panDir, 'runs', w.launchId)));
     assert.ok(existsSync(path.join(panDir, 'task.json')));
     const launch = JSON.parse(readFileSync(path.join(panDir, 'launch.json'), 'utf8'));
     assert.equal(canonicalPathKey(launch.workingDir), canonicalPathKey(slotDir));
@@ -412,7 +583,7 @@ test('workspace slot: no .pan under the slot repo, state under workspaceRoot, te
   }
 });
 
-test('isolated playbook: the session root is both the state dir and the worker workspace', async () => {
+test('isolated playbook: durable state and disposable worker workspace are separate', async () => {
   const sb = makeSandbox();
   try {
     const { runner, spawned } = makeLaunchRunner(sb, isolatedPlaybook());
@@ -421,18 +592,17 @@ test('isolated playbook: the session root is both the state dir and the worker w
 
     const w = runner.active.get('item-1');
     const stateRoot = stateRootFor(sb, 5, w.sessionId);
+    const workspace = path.join(sb.workspaceRoot, `pan-5-${w.sessionId}`);
     assert.equal(w.isolated, true);
-    // The isolated worker's CWD is its own session root, so playbook conventions
-    // that treat the launch directory as their workspace (e.g. a linked worktree
-    // at <root>/repo) keep working exactly as before.
-    assert.equal(canonicalPathKey(w.workingDir), canonicalPathKey(stateRoot));
-    assert.equal(canonicalPathKey(spawned[0].workingDir), canonicalPathKey(stateRoot));
+    assert.equal(canonicalPathKey(w.workingDir), canonicalPathKey(workspace));
+    assert.equal(canonicalPathKey(spawned[0].workingDir), canonicalPathKey(workspace));
+    assert.notEqual(canonicalPathKey(workspace), canonicalPathKey(stateRoot));
 
     const panDir = path.join(stateRoot, '.pan');
     assert.ok(existsSync(path.join(panDir, 'task.json')));
     const launch = JSON.parse(readFileSync(path.join(panDir, 'launch.json'), 'utf8'));
     assert.equal(launch.isolated, true);
-    assert.equal(canonicalPathKey(launch.workingDir), canonicalPathKey(stateRoot));
+    assert.equal(canonicalPathKey(launch.workingDir), canonicalPathKey(workspace));
   } finally {
     sb.cleanup();
   }
@@ -443,11 +613,11 @@ test('generated launcher addresses state files by absolute path and grants Copil
   try {
     const repoDir = path.join(sb.dir, 'repo');
     mkdirSync(repoDir, { recursive: true });
-    const { runner } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    const { runner, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
 
     await runner.launchWorker(item({ number: 9 }), 'fixed');
     const w = runner.active.get('item-1');
-    const panDir = path.join(stateRootFor(sb, 9, w.sessionId), '.pan');
+    const panDir = w.panDir;
     const src = readFileSync(path.join(panDir, 'launch.mjs'), 'utf8');
 
     // The absolute state dir is baked in and every signal file is addressed
@@ -457,6 +627,7 @@ test('generated launcher addresses state files by absolute path and grants Copil
     assert.ok(src.includes("join(panDir, 'worker.running')"));
     assert.ok(src.includes("join(panDir, 'worker.stop')"));
     assert.ok(src.includes("join(panDir, 'worker.pid')"));
+    assert.ok(src.includes("join(panDir, 'owner.json')") || src.includes("atomicJson('owner.json'"));
     assert.ok(src.includes("join(panDir, 'launch-prompt.txt')"));
     assert.doesNotMatch(src, /'\.pan\/worker\.running'/);
     assert.doesNotMatch(src, /'\.pan\/launch-prompt\.txt'/);
@@ -473,6 +644,514 @@ test('generated launcher addresses state files by absolute path and grants Copil
   }
 });
 
+test('generated launcher dynamically uses absolute state paths and private files', () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo-dynamic-launcher');
+    const panDir = path.join(sb.stateRoot, 'dynamic-attempt');
+    mkdirSync(repoDir, { recursive: true });
+    mkdirSync(panDir, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(panDir, 'launch-prompt.txt'), 'dynamic prompt', { mode: 0o600 });
+
+    const fakeScript = path.join(sb.dir, 'fake-copilot.cjs');
+    writeFileSync(fakeScript, [
+      "const { writeFileSync } = require('node:fs');",
+      "const path = require('node:path');",
+      "writeFileSync(path.join(process.env.PAN_STATE_DIR, 'capture.json'), JSON.stringify({",
+      '  argv: process.argv.slice(2),',
+      '  cwd: process.cwd(),',
+      '  state: process.env.PAN_STATE_DIR,',
+      '  working: process.env.PAN_WORKING_DIRECTORY,',
+      '}));',
+    ].join('\n'));
+    let fakeCopilot;
+    if (process.platform === 'win32') {
+      fakeCopilot = path.join(sb.dir, 'fake-copilot.cmd');
+      writeFileSync(fakeCopilot, `@\"${process.execPath}\" \"${fakeScript}\" %*\r\n`);
+    } else {
+      fakeCopilot = path.join(sb.dir, 'fake-copilot');
+      writeFileSync(fakeCopilot, `#!${process.execPath}\nimport ${JSON.stringify(fakeScript)};\n`);
+      chmodSync(fakeCopilot, 0o700);
+    }
+
+    const launchId = randomUUID();
+    const runner = new Runner(
+      baseCfg(sb, {
+        copilotBin: fakeCopilot,
+        permissionArgs: [],
+        copilotArgs: ['--fake-option'],
+      }),
+      { fields: new Map() },
+      new Map(),
+      {},
+    );
+    const launcher = path.join(panDir, 'launch.mjs');
+    writeFileSync(
+      launcher,
+      runner.buildLauncherSource('dynamic', randomUUID(), panDir, launchId),
+      { mode: 0o600 },
+    );
+    const executed = spawnSync(process.execPath, [launcher], {
+      cwd: repoDir,
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(executed.status, 0, executed.stderr);
+
+    const capture = JSON.parse(readFileSync(path.join(panDir, 'capture.json'), 'utf8'));
+    assert.equal(canonicalPathKey(capture.cwd), canonicalPathKey(repoDir));
+    assert.equal(canonicalPathKey(capture.state), canonicalPathKey(panDir));
+    assert.equal(canonicalPathKey(capture.working), canonicalPathKey(repoDir));
+    assert.deepEqual(capture.argv.slice(-2), ['--interactive', 'dynamic prompt']);
+    assert.ok(capture.argv.includes('--add-dir'));
+    assert.ok(capture.argv.includes(panDir));
+    assert.equal(existsSync(path.join(repoDir, '.pan')), false);
+    assert.equal(existsSync(path.join(panDir, 'worker.running')), false);
+    assert.equal(JSON.parse(readFileSync(path.join(panDir, 'owner.json'), 'utf8')).launchId, launchId);
+    assert.equal(JSON.parse(readFileSync(path.join(panDir, 'exit.json'), 'utf8')).launchId, launchId);
+    if (process.platform !== 'win32') {
+      for (const name of ['owner.json', 'exit.json', 'worker.pid']) {
+        assert.equal(statSync(path.join(panDir, name)).mode & 0o777, 0o600, name);
+      }
+    }
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('duplicate launcher handoff admits one owner and one Copilot child', async () => {
+  const sb = makeSandbox();
+  const children = [];
+  try {
+    const repoDir = path.join(sb.dir, 'repo-duplicate-launcher');
+    const sessionPanDir = path.join(sb.stateRoot, 'duplicate-session', '.pan');
+    mkdirSync(repoDir, { recursive: true });
+    mkdirSync(sessionPanDir, { recursive: true });
+    const metadata = {
+      sessionId: randomUUID(),
+      itemId: 'item-duplicate-launcher',
+      number: 109,
+      machine: MACHINE,
+      identity: IDENTITY,
+      isolated: false,
+      workingDir: repoDir,
+      slot: null,
+    };
+    const attempt = await createAttempt(sessionPanDir, metadata);
+    writeFileSync(path.join(attempt.attemptDir, 'launch-prompt.txt'), 'duplicate prompt');
+
+    const invocationPath = path.join(attempt.attemptDir, 'copilot-invocations.txt');
+    const fakeScript = path.join(sb.dir, 'slow-fake-copilot.cjs');
+    writeFileSync(fakeScript, [
+      "const { writeFileSync } = require('node:fs');",
+      `writeFileSync(${JSON.stringify(invocationPath)}, process.pid + '\\n', { flag: 'a' });`,
+      'setTimeout(() => process.exit(0), 750);',
+    ].join('\n'));
+    let fakeCopilot;
+    if (process.platform === 'win32') {
+      fakeCopilot = path.join(sb.dir, 'slow-fake-copilot.cmd');
+      writeFileSync(fakeCopilot, `@\"${process.execPath}\" \"${fakeScript}\" %*\r\n`);
+    } else {
+      fakeCopilot = path.join(sb.dir, 'slow-fake-copilot');
+      writeFileSync(fakeCopilot, `#!${process.execPath}\nimport ${JSON.stringify(fakeScript)};\n`);
+      chmodSync(fakeCopilot, 0o700);
+    }
+
+    const runner = new Runner(
+      baseCfg(sb, { copilotBin: fakeCopilot, permissionArgs: [], copilotArgs: [] }),
+      { fields: new Map() },
+      new Map(),
+      {},
+    );
+    const launcher = path.join(attempt.attemptDir, 'launch.mjs');
+    writeFileSync(
+      launcher,
+      runner.buildLauncherSource(
+        'duplicate',
+        metadata.sessionId,
+        attempt.attemptDir,
+        attempt.launchId,
+      ),
+    );
+
+    children.push(
+      spawn(process.execPath, [launcher], { cwd: repoDir, stdio: ['ignore', 'ignore', 'pipe'] }),
+      spawn(process.execPath, [launcher], { cwd: repoDir, stdio: ['ignore', 'ignore', 'pipe'] }),
+    );
+    await waitForFile(path.join(attempt.attemptDir, 'owner.json'));
+
+    const owner = JSON.parse(readFileSync(path.join(attempt.attemptDir, 'owner.json'), 'utf8'));
+    const observed = await inspectProcess(owner.pid);
+    assert.equal(observed.state, 'live');
+    assert.equal(owner.processStart, observed.identity);
+    const scan = await scanAttempts(sessionPanDir, metadata);
+    assert.equal(scan.currentLaunchId, attempt.launchId);
+    assert.equal(scan.live.length, 1);
+    assert.equal(scan.live[0].owner.processStart, scan.live[0].observed.identity);
+
+    const outcomes = await Promise.all(children.map((child) => waitForExit(child)));
+    assert.deepEqual(outcomes.map((outcome) => outcome.code).sort(), [0, 1]);
+    assert.equal(
+      readFileSync(invocationPath, 'utf8').trim().split('\n').filter(Boolean).length,
+      1,
+      'only the exclusive owner may start Copilot',
+    );
+  } finally {
+    for (const child of children) {
+      if (child.exitCode == null && child.signalCode == null) child.kill('SIGKILL');
+    }
+    sb.cleanup();
+  }
+});
+
+test('generated launcher preserves a pre-existing owner claim and starts no child', () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo-owner-failure');
+    const panDir = path.join(sb.stateRoot, 'owner-failure-attempt');
+    mkdirSync(repoDir, { recursive: true });
+    mkdirSync(panDir, { recursive: true, mode: 0o700 });
+    mkdirSync(path.join(panDir, 'owner.json'));
+    writeFileSync(path.join(panDir, 'launch-prompt.txt'), 'unused', { mode: 0o600 });
+
+    const launchId = randomUUID();
+    const runner = new Runner(
+      baseCfg(sb, { copilotBin: path.join(sb.dir, 'must-not-run') }),
+      { fields: new Map() },
+      new Map(),
+      {},
+    );
+    const launcher = path.join(panDir, 'launch.mjs');
+    writeFileSync(
+      launcher,
+      runner.buildLauncherSource('failure', randomUUID(), panDir, launchId),
+      { mode: 0o600 },
+    );
+    const executed = spawnSync(process.execPath, [launcher], {
+      cwd: repoDir,
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(executed.status, 1);
+    assert.match(executed.stderr, /refused duplicate ownership/i);
+    assert.equal(statSync(path.join(panDir, 'owner.json')).isDirectory(), true);
+    assert.equal(existsSync(path.join(panDir, 'worker.running')), false);
+    assert.equal(existsSync(path.join(panDir, 'exit.json')), false);
+    assert.deepEqual(
+      readdirSync(panDir).filter((name) => name.endsWith('.new')),
+      [],
+      'owner and exit staging files must be cleaned',
+    );
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('losing worker.running does not make an owned live attempt disappear', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    await runner.launchWorker(item({ number: 10 }), 'fixed');
+    const worker = runner.active.get('item-1');
+
+    rmSync(path.join(worker.panDir, 'worker.running'), { force: true });
+    await runner.superviseWorker(worker);
+
+    assert.equal(runner.active.get('item-1'), worker);
+    assert.notEqual(worker.attemptConflict, true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('a relaunch request adopts the one confirmed live attempt instead of spawning', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    await runner.launchWorker(item({ itemId: 'item-10', number: 10 }), 'fixed');
+    const first = runner.active.get('item-10');
+    runner.active.delete('item-10');
+
+    await runner.launchWorker(item({
+      itemId: 'item-10',
+      number: 10,
+      status: 'paused',
+      machine: MACHINE,
+      sessionId: first.sessionId,
+    }), 'fixed');
+
+    const adopted = runner.active.get('item-10');
+    assert.equal(spawned.length, 1);
+    assert.equal(adopted.launchId, first.launchId);
+    assert.equal(adopted.panDir, first.panDir);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('overlapping live attempts fail closed and keep their signals isolated', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    await runner.launchWorker(item({ number: 11 }), 'fixed');
+    const first = runner.active.get('item-1');
+    writeFileSync(path.join(first.panDir, 'needs-human.json'), JSON.stringify({ question: 'first' }));
+
+    const second = await createAttempt(first.sessionPanDir, {
+      sessionId: first.sessionId,
+      itemId: first.itemId,
+      number: first.issueNumber,
+      machine: MACHINE,
+      identity: IDENTITY,
+      isolated: false,
+      workingDir: repoDir,
+      slot: null,
+    });
+    await atomicWriteJson(path.join(second.attemptDir, 'owner.json'), {
+      panRunnerOwner: true,
+      version: 1,
+      launchId: second.launchId,
+      pid: process.pid,
+      processStart: 'test-process-start',
+    });
+    writeFileSync(path.join(second.attemptDir, 'result.json'), JSON.stringify({
+      outcome: 'done',
+      summary: 'second',
+    }));
+
+    await runner.superviseWorker(first);
+
+    const blocked = runner.active.get('item-1');
+    assert.equal(blocked.attemptConflict, true);
+    assert.match(blocked.conflictReason, /multiple live launch attempts/);
+    assert.equal(existsSync(path.join(first.panDir, 'needs-human.json')), true);
+    assert.equal(existsSync(path.join(second.attemptDir, 'result.json')), true);
+
+    runner.active.delete('item-1');
+    await runner.launchWorker(item({
+      number: 11,
+      status: 'paused',
+      machine: MACHINE,
+      sessionId: first.sessionId,
+    }), 'fixed');
+    assert.equal(spawned.length, 1, 'duplicate-live detection must not spawn a third worker');
+    assert.equal(runner.active.get('item-1').attemptConflict, true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('a renamed owned attempt fails closed and cannot trigger a relaunch', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    await runner.launchWorker(item({ itemId: 'item-renamed', number: 14 }), 'fixed');
+    const worker = runner.active.get('item-renamed');
+    runner.active.delete('item-renamed');
+    renameSync(worker.attemptDir, `${worker.attemptDir}-corrupt`);
+
+    await runner.launchWorker(item({
+      itemId: 'item-renamed',
+      number: 14,
+      status: 'paused',
+      machine: MACHINE,
+      sessionId: worker.sessionId,
+    }), 'fixed');
+
+    assert.equal(spawned.length, 1, 'no replacement terminal is opened');
+    const conflict = runner.active.get('item-renamed');
+    assert.equal(conflict.attemptConflict, true);
+    assert.equal(conflict.launchId, worker.launchId, 'the manifest retains the lost owned generation');
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('an obsolete attempt cleanup cannot remove a newer attempt liveness or signals', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    await runner.launchWorker(item({ itemId: 'item-12', number: 12 }), 'fixed');
+    const oldWorker = runner.active.get('item-12');
+    markAttemptExited(oldWorker);
+    runner.active.delete('item-12');
+
+    await runner.launchWorker(item({
+      itemId: 'item-12',
+      number: 12,
+      status: 'paused',
+      machine: MACHINE,
+      sessionId: oldWorker.sessionId,
+    }), 'fixed');
+    const newer = runner.active.get('item-12');
+    writeFileSync(path.join(newer.panDir, 'worker.running'), '');
+    writeFileSync(path.join(newer.panDir, 'needs-human.json'), JSON.stringify({ question: 'newer' }));
+    newer.needsHumanRelayed = true;
+
+    rmSync(path.join(oldWorker.panDir, 'worker.running'), { force: true });
+    rmSync(path.join(oldWorker.panDir, 'needs-human.json'), { force: true });
+    rmSync(path.join(oldWorker.panDir, 'worker.stop'), { force: true });
+
+    assert.equal(existsSync(path.join(newer.panDir, 'worker.running')), true);
+    assert.equal(existsSync(path.join(newer.panDir, 'needs-human.json')), true);
+    await runner.superviseWorker(newer);
+    assert.equal(runner.active.get('item-12').launchId, newer.launchId);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('a stale result never finalizes or changes ownership of a newer generation', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    await runner.launchWorker(item({ itemId: 'item-13', number: 13 }), 'fixed');
+    const stale = runner.active.get('item-13');
+    markAttemptExited(stale);
+    runner.active.delete('item-13');
+
+    await runner.launchWorker(item({
+      itemId: 'item-13',
+      number: 13,
+      status: 'paused',
+      machine: MACHINE,
+      sessionId: stale.sessionId,
+    }), 'fixed');
+    const current = runner.active.get('item-13');
+    assert.notEqual(current.launchId, stale.launchId);
+    writeFileSync(path.join(stale.panDir, 'result.json'), JSON.stringify({
+      outcome: 'done',
+      summary: 'stale generation',
+    }));
+
+    let finalized = false;
+    let paused = false;
+    runner.finalize = async () => { finalized = true; return true; };
+    runner.pauseWorker = async () => { paused = true; };
+
+    await runner.superviseWorker(current);
+    assert.equal(finalized, false, 'a stale result is ignored while the owned generation is live');
+    assert.equal(current.launchId === stale.launchId, false, 'ownership never changes to the stale result');
+
+    markAttemptExited(current);
+    await runner.superviseWorker(current);
+    assert.equal(finalized, false, 'a stale result is not adopted after the owned generation exits');
+    assert.equal(paused, true, 'the result-less owned generation is paused normally');
+    assert.equal(existsSync(path.join(stale.panDir, 'result.json')), true, 'stale evidence is preserved');
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('launchWorker restart repairs the same ordinary attempt at every creation boundary', async () => {
+  for (const boundary of [
+    'before-manifest',
+    'after-manifest',
+    'after-attempt-directory',
+    'after-attempt-metadata',
+  ]) {
+    const sb = makeSandbox();
+    try {
+      const repoDir = path.join(sb.dir, `repo-${boundary}`);
+      mkdirSync(repoDir, { recursive: true });
+      const firstHarness = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+      const task = item({ itemId: `item-${boundary}`, number: 110 });
+      await firstHarness.runner.launchWorker(task, 'fixed');
+      const first = firstHarness.runner.active.get(task.itemId);
+      markAttemptExited(first);
+      firstHarness.runner.active.delete(task.itemId);
+
+      const resumed = item({
+        itemId: task.itemId,
+        number: task.issue.number,
+        status: 'paused',
+        machine: MACHINE,
+        sessionId: first.sessionId,
+      });
+      firstHarness.runner.deps.attemptCreationCheckpoint = async (current) => {
+        if (current === boundary) throw new Error(`crash at ${boundary}`);
+      };
+      await assert.rejects(
+        firstHarness.runner.launchWorker(resumed, 'fixed'),
+        new RegExp(`crash at ${boundary}`),
+      );
+
+      const recovery = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+      await recovery.runner.launchWorker(resumed, 'fixed');
+      const recovered = recovery.runner.active.get(task.itemId);
+      const manifest = JSON.parse(readFileSync(path.join(first.sessionPanDir, 'attempts.json'), 'utf8'));
+      assert.equal(recovery.spawned.length, 1);
+      assert.equal(manifest.currentLaunchId, recovered.launchId);
+      assert.equal(manifest.attempts.length, 2);
+      assert.equal(manifest.attempts[1].creationKey, 'launch:2');
+      assert.equal(manifest.attempts[1].kind, 'launch');
+    } finally {
+      sb.cleanup();
+    }
+  }
+});
+
+test('manifest advance quarantines stale result, attention, and stop signals', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo-manifest-advance');
+    mkdirSync(repoDir, { recursive: true });
+    const { runner } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    await runner.launchWorker(item({ itemId: 'item-advance', number: 111 }), 'fixed');
+    const stale = runner.active.get('item-advance');
+    for (const [name, value] of [
+      ['result.json', JSON.stringify({ outcome: 'done', summary: 'stale' })],
+      ['needs-human.json', JSON.stringify({ question: 'stale question' })],
+      ['worker.stop', ''],
+    ]) {
+      writeFileSync(path.join(stale.panDir, name), value);
+    }
+
+    const current = await createAttempt(stale.sessionPanDir, {
+      sessionId: stale.sessionId,
+      itemId: stale.itemId,
+      number: stale.issueNumber,
+      machine: MACHINE,
+      identity: IDENTITY,
+      isolated: false,
+      workingDir: repoDir,
+      slot: null,
+    });
+    await atomicWriteJson(path.join(current.attemptDir, 'owner.json'), {
+      panRunnerOwner: true,
+      version: 1,
+      launchId: current.launchId,
+      pid: 999999,
+      processStart: 'dead-current-owner',
+    });
+
+    let finalized = false;
+    runner.finalize = async () => { finalized = true; return true; };
+    await runner.superviseWorker(stale);
+
+    assert.equal(finalized, false);
+    assert.equal(stale.attemptConflict, true);
+    assert.match(stale.conflictReason, /superseded/);
+    for (const name of ['result.json', 'needs-human.json', 'worker.stop']) {
+      assert.equal(existsSync(path.join(stale.panDir, name)), true, `${name} is preserved as evidence`);
+    }
+  } finally {
+    sb.cleanup();
+  }
+});
+
 // ---- Rehydration / cleanup safety --------------------------------------------
 
 // A Runner whose Project reads are stubbed, for driving rehydrate() offline.
@@ -483,6 +1162,11 @@ function makeRehydrateRunner(sb, items, playbooks = new Map()) {
     setTextField: async () => {},
     setSelectField: async () => {},
     readDomainFile: async () => { throw new Error('no Domain pan.md'); },
+    inspectProcess: async (pid) => (
+      pid === process.pid
+        ? { state: 'live', identity: 'test-process-start', command: 'node launch.mjs' }
+        : { state: 'dead', reason: 'test process absent' }
+    ),
   };
   return new Runner(baseCfg(sb), { fields: new Map() }, playbooks, deps);
 }
@@ -513,6 +1197,11 @@ function makeRehydrateRunnerRW(sb, items) {
       if (byId.has(id)) byId.get(id).fields[field] = value;
     },
     readDomainFile: async () => { throw new Error('no Domain pan.md'); },
+    inspectProcess: async (pid) => (
+      pid === process.pid
+        ? { state: 'live', identity: 'test-process-start', command: 'node launch.mjs' }
+        : { state: 'dead', reason: 'test process absent' }
+    ),
   };
   const runner = new Runner(baseCfg(sb), { fields: new Map() }, new Map(), deps);
   return { runner, writes };
@@ -524,8 +1213,8 @@ function makeRehydrateRunnerRW(sb, items) {
 // bind the matching Project item's session-id to it.
 function seedStateRoot(sb, { number, sessionId = randomUUID(), itemId, workingDir, isolated, alive, result = null, owned = true, machine = MACHINE, markerSessionId = sessionId, slot = null, playbook = 'fixed' }) {
   const stateRoot = stateRootFor(sb, number, sessionId);
-  const panDir = path.join(stateRoot, '.pan');
-  mkdirSync(panDir, { recursive: true });
+  const sessionPanDir = path.join(stateRoot, '.pan');
+  mkdirSync(sessionPanDir, { recursive: true });
   const task = {
     itemId,
     number,
@@ -534,19 +1223,61 @@ function seedStateRoot(sb, { number, sessionId = randomUUID(), itemId, workingDi
     repo: 'example/domain',
     playbook,
   };
-  writeFileSync(path.join(panDir, 'task.json'), JSON.stringify(task));
+  writeFileSync(path.join(sessionPanDir, 'task.json'), JSON.stringify(task));
   const launch = owned
-    ? { panRunner: true, version: 1, machine, identity: IDENTITY, itemId, number, sessionId: markerSessionId, isolated, workingDir, slot }
+    ? { panRunner: true, version: 2, machine, identity: IDENTITY, itemId, number, sessionId: markerSessionId, isolated, workingDir, slot }
     : { sessionId: markerSessionId, isolated, workingDir, slot };
-  writeFileSync(path.join(panDir, 'launch.json'), JSON.stringify(launch));
+  writeFileSync(path.join(sessionPanDir, 'launch.json'), JSON.stringify(launch));
+  const launchId = randomUUID();
+  const panDir = path.join(sessionPanDir, 'runs', launchId);
+  mkdirSync(panDir, { recursive: true });
+  writeFileSync(path.join(sessionPanDir, 'attempts.json'), JSON.stringify({
+    panRunnerAttemptManifest: true,
+    version: 1,
+    sessionId,
+    itemId,
+    number,
+    machine: MACHINE,
+    identity: IDENTITY,
+    attempts: [{ launchId, createdAt: new Date().toISOString() }],
+    currentLaunchId: launchId,
+  }));
+  writeFileSync(path.join(panDir, 'attempt.json'), JSON.stringify({
+    panRunnerAttempt: true,
+    version: 1,
+    launchId,
+    sessionId,
+    itemId,
+    number,
+    machine: MACHINE,
+    identity: IDENTITY,
+    isolated,
+    workingDir: workingDir || stateRoot,
+    slot,
+    createdAt: new Date().toISOString(),
+  }));
+  writeFileSync(path.join(panDir, 'exit.json'), JSON.stringify({
+    panRunnerExit: true,
+    version: 1,
+    launchId,
+    exitedAt: new Date().toISOString(),
+  }));
   if (alive) {
+    rmSync(path.join(panDir, 'exit.json'));
+    writeFileSync(path.join(panDir, 'owner.json'), JSON.stringify({
+      panRunnerOwner: true,
+      version: 1,
+      launchId,
+      pid: process.pid,
+      processStart: 'test-process-start',
+    }));
     writeFileSync(path.join(panDir, 'worker.running'), '');
     writeFileSync(path.join(panDir, 'worker.pid'), String(process.pid));
   }
   if (result != null) {
     writeFileSync(path.join(panDir, 'result.json'), JSON.stringify(result));
   }
-  return { stateRoot, panDir, sessionId };
+  return { stateRoot, sessionPanDir, panDir, sessionId, launchId };
 }
 
 function projectItem({ itemId, number, status, machine, sessionId, claimedBy = '', leaseUntil = '' }) {
@@ -569,6 +1300,421 @@ function projectItem({ itemId, number, status, machine, sessionId, claimedBy = '
     },
   };
 }
+
+test('rehydrate migrates and adopts multiple live legacy workers without touching them', async () => {
+  const sb = makeSandbox();
+  try {
+    const items = [];
+    const legacy = [];
+    for (const [number, pid] of [[20, 20020], [24, 20024]]) {
+      const sessionId = randomUUID();
+      const repoDir = path.join(sb.dir, `repo-${number}`);
+      mkdirSync(repoDir, { recursive: true });
+      const legacyRoot = path.join(sb.workspaceRoot, `pan-${number}-${sessionId}`);
+      const legacyPanDir = path.join(legacyRoot, '.pan');
+      mkdirSync(legacyPanDir, { recursive: true });
+      writeFileSync(path.join(legacyPanDir, 'task.json'), JSON.stringify({
+        itemId: `item-${number}`,
+        number,
+        title: `Task ${number}`,
+        url: `https://github.com/example/domain/issues/${number}`,
+        repo: 'example/domain',
+        playbook: 'fixed',
+      }));
+      writeFileSync(path.join(legacyPanDir, 'launch.json'), JSON.stringify({
+        panRunner: true,
+        version: 1,
+        machine: MACHINE,
+        identity: IDENTITY,
+        itemId: `item-${number}`,
+        number,
+        sessionId,
+        isolated: false,
+        workingDir: repoDir,
+        slot: null,
+      }));
+      // Deliberately no worker.running: this reproduces the marker-loss incident.
+      writeFileSync(path.join(legacyPanDir, 'worker.pid'), String(pid));
+      writeFileSync(path.join(legacyPanDir, 'launch.mjs'), '// legacy launcher');
+      items.push(projectItem({
+        itemId: `item-${number}`,
+        number,
+        status: 'in-progress',
+        machine: MACHINE,
+        sessionId,
+        claimedBy: IDENTITY,
+        leaseUntil: VALID_LEASE,
+      }));
+      legacy.push({ number, pid, sessionId, legacyRoot, legacyPanDir });
+    }
+
+    const byId = new Map(items.map((entry) => [entry.itemId, entry]));
+    const runner = new Runner(baseCfg(sb), { fields: new Map() }, fixedPlaybook(path.join(sb.dir, 'unused')), {
+      readAllItems: async () => items,
+      readItemById: async (id) => byId.get(id) || null,
+      setTextField: async () => {},
+      setSelectField: async () => {},
+      readDomainFile: async () => { throw new Error('none'); },
+      inspectProcess: async (pid) => {
+        const found = legacy.find((entry) => entry.pid === pid);
+        return found
+          ? {
+            state: 'live',
+            identity: `legacy-start-${pid}`,
+            command: `node ${path.join(found.legacyPanDir, 'launch.mjs')}`,
+          }
+          : { state: 'dead', reason: 'gone' };
+      },
+    });
+
+    await runner.rehydrate();
+
+    assert.equal(runner.active.size, 2);
+    for (const entry of legacy) {
+      const worker = runner.active.get(`item-${entry.number}`);
+      assert.ok(worker);
+      assert.equal(canonicalPathKey(worker.panDir), canonicalPathKey(entry.legacyPanDir));
+      assert.equal(worker.attemptDir.startsWith(sb.stateRoot), true);
+      assert.equal(existsSync(path.join(entry.legacyPanDir, 'worker.pid')), true);
+      assert.equal(existsSync(path.join(entry.legacyPanDir, 'worker.running')), false);
+      assert.equal(
+        existsSync(path.join(stateRootFor(sb, entry.number, entry.sessionId), '.pan', 'task.json')),
+        true,
+      );
+    }
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('configured legacy launcher PID adopts a live worker whose temporary state vanished', async () => {
+  const sb = makeSandbox();
+  try {
+    const number = 27;
+    const pid = 27027;
+    const sessionId = randomUUID();
+    const rootName = `pan-${number}-${sessionId}`;
+    const missingLauncher = path.join(sb.workspaceRoot, rootName, '.pan', 'launch.mjs');
+    const live = projectItem({
+      itemId: 'item-27',
+      number,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    live.fields[FIELD.playbook] = 'fixed';
+    const repoDir = path.join(sb.dir, 'repo-27');
+    mkdirSync(repoDir, { recursive: true });
+    const runner = new Runner(
+      baseCfg(sb, { legacyLauncherPids: [pid] }),
+      { fields: new Map() },
+      fixedPlaybook(repoDir),
+      {
+        readAllItems: async () => [live],
+        readItemById: async () => live,
+        setTextField: async () => {},
+        setSelectField: async () => {},
+        readDomainFile: async () => { throw new Error('none'); },
+        inspectProcess: async (candidate) => (
+          candidate === pid
+            ? {
+              state: 'live',
+              identity: 'legacy-missing-start',
+              command: `node ${missingLauncher}`,
+            }
+            : { state: 'dead', reason: 'gone' }
+        ),
+      },
+    );
+
+    await runner.rehydrate();
+
+    const worker = runner.active.get('item-27');
+    assert.ok(worker);
+    assert.equal(worker.launchId != null, true);
+    assert.equal(canonicalPathKey(worker.panDir), canonicalPathKey(path.dirname(missingLauncher)));
+    assert.equal(existsSync(path.join(worker.attemptDir, 'owner.json')), true);
+    assert.equal(existsSync(path.dirname(missingLauncher)), false, 'migration must not recreate vanished temp state');
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('unverifiable configured legacy PID persists fail-closed occupancy across restart', async () => {
+  const sb = makeSandbox();
+  try {
+    const pid = 27028;
+    const deps = {
+      readAllItems: async () => [],
+      inspectProcess: async (candidate) => (
+        candidate === pid
+          ? { state: 'unknown', reason: 'access denied while reading process identity' }
+          : { state: 'dead', reason: 'gone' }
+      ),
+    };
+    const first = new Runner(
+      baseCfg(sb, { legacyLauncherPids: [pid] }),
+      { fields: new Map() },
+      new Map(),
+      deps,
+    );
+    await assert.rejects(
+      first.rehydrate(),
+      /durably fail-closed.*access denied while reading process identity/i,
+    );
+
+    const occupancyPath = path.join(
+      sb.stateRoot,
+      'legacy-launcher-occupancy',
+      `${pid}.json`,
+    );
+    const occupancy = JSON.parse(readFileSync(occupancyPath, 'utf8'));
+    assert.equal(occupancy.pid, pid);
+    assert.equal(occupancy.status, 'uncertain');
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(occupancyPath).mode & 0o777, 0o600);
+    }
+
+    const restartedWithoutConfig = new Runner(
+      baseCfg(sb, { legacyLauncherPids: [] }),
+      { fields: new Map() },
+      new Map(),
+      { readAllItems: async () => [] },
+    );
+    await assert.rejects(
+      restartedWithoutConfig.rehydrate(),
+      /remains durably uncertain.*remove the record explicitly/i,
+    );
+    assert.equal(existsSync(occupancyPath), true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('configured legacy migration is serialized and idempotent by PID plus process start', async () => {
+  const sb = makeSandbox();
+  try {
+    const number = 28;
+    const pid = 28028;
+    const sessionId = randomUUID();
+    const rootName = `pan-${number}-${sessionId}`;
+    const missingLauncher = path.join(sb.workspaceRoot, rootName, '.pan', 'launch.mjs');
+    const live = projectItem({
+      itemId: 'item-28',
+      number,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    live.fields[FIELD.playbook] = 'fixed';
+    const repoDir = path.join(sb.dir, 'repo-28');
+    mkdirSync(repoDir, { recursive: true });
+    const deps = {
+      readAllItems: async () => [live],
+      readItemById: async () => live,
+      setTextField: async () => {},
+      setSelectField: async () => {},
+      readDomainFile: async () => { throw new Error('none'); },
+      inspectProcess: async (candidate) => {
+        if (candidate === pid) {
+          return {
+            state: 'live',
+            identity: 'legacy-start-28',
+            command: `node ${missingLauncher}`,
+          };
+        }
+        if (candidate === process.pid) {
+          return { state: 'live', identity: 'runner-start', command: 'node test' };
+        }
+        return { state: 'dead', reason: 'gone' };
+      },
+    };
+    const makeRunner = () => new Runner(
+      baseCfg(sb, { legacyLauncherPids: [pid] }),
+      { fields: new Map() },
+      fixedPlaybook(repoDir),
+      deps,
+    );
+
+    await Promise.all([makeRunner().rehydrate(), makeRunner().rehydrate()]);
+    const sessionPanDir = path.join(stateRootFor(sb, number, sessionId), '.pan');
+    let runIds = readdirSync(path.join(sessionPanDir, 'runs'));
+    assert.equal(runIds.length, 1, 'concurrent and repeated startup records one migration attempt');
+    rmSync(path.join(sessionPanDir, 'runs', runIds[0], 'owner.json'));
+
+    await makeRunner().rehydrate();
+
+    runIds = readdirSync(path.join(sessionPanDir, 'runs'));
+    assert.equal(runIds.length, 1, 'repairing an interrupted owner write does not add an attempt');
+    assert.equal(existsSync(path.join(sessionPanDir, 'runs', runIds[0], 'owner.json')), true);
+    const attempt = JSON.parse(
+      readFileSync(path.join(sessionPanDir, 'runs', runIds[0], 'attempt.json'), 'utf8'),
+    );
+    assert.equal(attempt.legacyPid, pid);
+    assert.equal(attempt.legacyProcessStart, 'legacy-start-28');
+    const manifest = JSON.parse(readFileSync(path.join(sessionPanDir, 'attempts.json'), 'utf8'));
+    assert.deepEqual(manifest.attempts.map((entry) => entry.launchId), runIds);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('configured and discovered legacy migration share one live attempt across restarts', async () => {
+  const sb = makeSandbox();
+  try {
+    const number = 29;
+    const pid = 29029;
+    const processStart = 'legacy-start-29';
+    const sessionId = randomUUID();
+    const legacyRoot = path.join(sb.workspaceRoot, `pan-${number}-${sessionId}`);
+    const legacyPanDir = path.join(legacyRoot, '.pan');
+    const launcher = path.join(legacyPanDir, 'launch.mjs');
+    const repoDir = path.join(sb.dir, 'repo-29');
+    mkdirSync(legacyPanDir, { recursive: true });
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(path.join(legacyPanDir, 'task.json'), JSON.stringify({
+      itemId: 'item-29',
+      number,
+      title: 'Task 29',
+      url: 'https://github.com/example/domain/issues/29',
+      repo: 'example/domain',
+      playbook: 'fixed',
+    }));
+    writeFileSync(path.join(legacyPanDir, 'launch.json'), JSON.stringify({
+      panRunner: true,
+      version: 1,
+      machine: MACHINE,
+      identity: IDENTITY,
+      itemId: 'item-29',
+      number,
+      sessionId,
+      isolated: false,
+      workingDir: repoDir,
+      slot: null,
+    }));
+    writeFileSync(path.join(legacyPanDir, 'worker.pid'), String(pid));
+    writeFileSync(launcher, '// legacy launcher');
+
+    const live = projectItem({
+      itemId: 'item-29',
+      number,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    live.fields[FIELD.playbook] = 'fixed';
+    const deps = {
+      readAllItems: async () => [live],
+      readItemById: async () => live,
+      setTextField: async () => {},
+      setSelectField: async () => {},
+      readDomainFile: async () => { throw new Error('none'); },
+      inspectProcess: async (candidate) => (
+        candidate === pid
+          ? { state: 'live', identity: processStart, command: `node ${launcher}` }
+          : { state: 'dead', reason: 'gone' }
+      ),
+    };
+    const makeRunner = () => new Runner(
+      baseCfg(sb, { legacyLauncherPids: [pid] }),
+      { fields: new Map() },
+      fixedPlaybook(repoDir),
+      deps,
+    );
+    const assertSingleOwner = (runner) => {
+      const sessionPanDir = path.join(stateRootFor(sb, number, sessionId), '.pan');
+      const runIds = readdirSync(path.join(sessionPanDir, 'runs'));
+      assert.equal(runIds.length, 1, 'both migration paths must share one attempt');
+      const attemptPath = path.join(sessionPanDir, 'runs', runIds[0], 'attempt.json');
+      const owner = JSON.parse(
+        readFileSync(path.join(sessionPanDir, 'runs', runIds[0], 'owner.json'), 'utf8'),
+      );
+      assert.equal(owner.pid, pid);
+      assert.equal(owner.processStart, processStart);
+      assert.equal(runner.active.size, 1);
+      const worker = runner.active.get('item-29');
+      assert.ok(worker);
+      assert.notEqual(worker.attemptConflict, true);
+      return attemptPath;
+    };
+
+    const first = makeRunner();
+    await first.rehydrate();
+    const attemptPath = assertSingleOwner(first);
+
+    const priorFormat = JSON.parse(readFileSync(attemptPath, 'utf8'));
+    priorFormat.configuredLegacyPid = priorFormat.legacyPid;
+    priorFormat.configuredLegacyProcessStart = priorFormat.legacyProcessStart;
+    delete priorFormat.legacyPid;
+    delete priorFormat.legacyProcessStart;
+    writeFileSync(attemptPath, JSON.stringify(priorFormat));
+
+    const restarted = makeRunner();
+    await restarted.rehydrate();
+    assertSingleOwner(restarted);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('rehydrate migrates a paused legacy isolated workspace for safe resume', async () => {
+  const sb = makeSandbox();
+  try {
+    const number = 26;
+    const sessionId = randomUUID();
+    const legacyRoot = path.join(sb.workspaceRoot, `pan-${number}-${sessionId}`);
+    const legacyPanDir = path.join(legacyRoot, '.pan');
+    mkdirSync(legacyPanDir, { recursive: true });
+    writeFileSync(path.join(legacyRoot, 'checkout.txt'), 'preserve me');
+    writeFileSync(path.join(legacyPanDir, 'task.json'), JSON.stringify({
+      itemId: 'item-26',
+      number,
+      title: 'Paused legacy',
+      url: 'https://github.com/example/domain/issues/26',
+      repo: 'example/domain',
+      playbook: 'isolated',
+      answers: [{ question: 'q', answer: 'a' }],
+    }));
+    writeFileSync(path.join(legacyPanDir, 'launch.json'), JSON.stringify({
+      panRunner: true,
+      version: 1,
+      machine: MACHINE,
+      identity: IDENTITY,
+      itemId: 'item-26',
+      number,
+      sessionId,
+      isolated: true,
+      workingDir: legacyRoot,
+      slot: null,
+    }));
+    const paused = projectItem({
+      itemId: 'item-26',
+      number,
+      status: 'paused',
+      machine: MACHINE,
+      sessionId,
+    });
+    const runner = makeRehydrateRunner(sb, [paused], isolatedPlaybook());
+
+    await runner.rehydrate();
+
+    const durableTask = JSON.parse(readFileSync(
+      path.join(stateRootFor(sb, number, sessionId), '.pan', 'task.json'),
+      'utf8',
+    ));
+    assert.deepEqual(durableTask.answers, [{ question: 'q', answer: 'a' }]);
+    assert.equal(canonicalPathKey(runner.resumeWorkspaces.get('item-26')), canonicalPathKey(legacyRoot));
+    assert.equal(readFileSync(path.join(legacyRoot, 'checkout.txt'), 'utf8'), 'preserve me');
+  } finally {
+    sb.cleanup();
+  }
+});
 
 test('rehydrate prunes an inert state root but never the fixed/slot repository', async () => {
   const sb = makeSandbox();
@@ -682,6 +1828,18 @@ test('rehydrate treats a legacy state root without launch.json as isolated', asy
     writeFileSync(path.join(panDir, 'task.json'), JSON.stringify({
       itemId: 'item-4', number: 4, title: 'Task 4',
       url: 'https://github.com/example/domain/issues/4', repo: 'example/domain', playbook: 'isolated',
+    }));
+    mkdirSync(path.join(panDir, 'runs'));
+    writeFileSync(path.join(panDir, 'attempts.json'), JSON.stringify({
+      panRunnerAttemptManifest: true,
+      version: 1,
+      sessionId,
+      itemId: 'item-4',
+      number: 4,
+      machine: MACHINE,
+      identity: IDENTITY,
+      attempts: [],
+      currentLaunchId: null,
     }));
 
     const paused = projectItem({ itemId: 'item-4', number: 4, status: 'paused', machine: MACHINE, sessionId });
@@ -811,17 +1969,17 @@ test('launchWorker refuses when the session state root would fall inside the wor
     const repoDir = path.join(sb.dir, 'repo');
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(path.join(repoDir, 'README.md'), 'repo sentinel');
-    // Misconfiguration: workspaceRoot lives *inside* the fixed checkout, so the
+    // Misconfiguration: stateRoot lives *inside* the fixed checkout, so the
     // session state root (and its .pan/) would land in the repository.
-    const badWorkspaceRoot = path.join(repoDir, 'pan-state');
-    mkdirSync(badWorkspaceRoot, { recursive: true });
+    const badStateRoot = path.join(repoDir, 'pan-state');
+    mkdirSync(badStateRoot, { recursive: true });
 
     const deps = {
       readAllItems: async () => [], readItemById: async () => null,
       setTextField: async () => {}, setSelectField: async () => {},
       readDomainFile: async () => { throw new Error('none'); },
     };
-    const runner = new Runner(baseCfg(sb, { workspaceRoot: badWorkspaceRoot }), { fields: new Map() }, fixedPlaybook(repoDir), deps);
+    const runner = new Runner(baseCfg(sb, { stateRoot: badStateRoot }), { fields: new Map() }, fixedPlaybook(repoDir), deps);
     runner.spawnTerminal = async () => {};
 
     await assert.rejects(
@@ -849,6 +2007,45 @@ test('loadConfig resolves a relative workspaceRoot to an absolute path', async (
     const cfg = await loadConfig(cfgPath);
     assert.equal(path.isAbsolute(cfg.workspaceRoot), true, 'a relative workspaceRoot must be resolved absolute');
     assert.equal(cfg.workspaceRoot, path.resolve(path.join('relative', 'ws')));
+    assert.equal(path.isAbsolute(cfg.stateRoot), true);
+    assert.notEqual(canonicalPathKey(cfg.stateRoot), canonicalPathKey(cfg.workspaceRoot));
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('loadConfig accepts an explicit durable stateRoot and rejects overlap with workspaceRoot', async () => {
+  const sb = makeSandbox();
+  try {
+    const cfgPath = path.join(sb.dir, 'config.json');
+    const base = {
+      domainRepo: 'owner/domain',
+      project: 'owner/7',
+      machine: 'box',
+      identity: 'box-1',
+      panCheckout: sb.dir,
+      terminal: { kind: 'windows-terminal' },
+      stateRoot: path.join(sb.dir, 'durable'),
+      workspaceRoot: path.join(sb.dir, 'disposable'),
+      legacyLauncherPids: [41001, 41002],
+    };
+    writeFileSync(cfgPath, JSON.stringify(base));
+    const cfg = await loadConfig(cfgPath);
+    assert.equal(cfg.stateRoot, path.resolve(base.stateRoot));
+    assert.equal(cfg.workspaceRoot, path.resolve(base.workspaceRoot));
+    assert.deepEqual(cfg.legacyLauncherPids, [41001, 41002]);
+
+    writeFileSync(cfgPath, JSON.stringify({
+      ...base,
+      stateRoot: path.join(base.workspaceRoot, 'state'),
+    }));
+    await assert.rejects(loadConfig(cfgPath), /must not overlap/);
+
+    writeFileSync(cfgPath, JSON.stringify({
+      ...base,
+      legacyLauncherPids: [41001, 41001],
+    }));
+    await assert.rejects(loadConfig(cfgPath), /unique positive integer PIDs/);
   } finally {
     sb.cleanup();
   }
@@ -994,6 +2191,11 @@ test('rehydrate reserves a live worker when the item transitions out from under 
       setTextField: async (_c, _m, id, field, value) => { writes.push({ id, field, value }); },
       setSelectField: async (_c, _m, id, field, value) => { writes.push({ id, field, value }); },
       readDomainFile: async () => { throw new Error('no Domain pan.md'); },
+      inspectProcess: async (pid) => (
+        pid === process.pid
+          ? { state: 'live', identity: 'test-process-start', command: 'node launch.mjs' }
+          : { state: 'dead', reason: 'test process absent' }
+      ),
     };
     const runner = new Runner(baseCfg(sb), { fields: new Map() }, new Map(), deps);
     await runner.rehydrate();
@@ -1029,6 +2231,11 @@ test('rehydrate reserves a live worker when the restore cannot be confirmed', as
       setTextField: async (_c, _m, id, field, value) => { writes.push({ id, field, value }); },
       setSelectField: async (_c, _m, id, field, value) => { writes.push({ id, field, value }); },
       readDomainFile: async () => { throw new Error('no Domain pan.md'); },
+      inspectProcess: async (pid) => (
+        pid === process.pid
+          ? { state: 'live', identity: 'test-process-start', command: 'node launch.mjs' }
+          : { state: 'dead', reason: 'test process absent' }
+      ),
     };
     const runner = new Runner(baseCfg(sb), { fields: new Map() }, new Map(), deps);
     await runner.rehydrate();
@@ -1109,7 +2316,7 @@ test('rehydrate does NOT finalize a result whose session no longer binds to the 
     const repoDir = path.join(sb.dir, 'repo');
     mkdirSync(repoDir, { recursive: true });
     // A stale session-A root (with a finished result) for item-50.
-    const { panDir, stateRoot } = seedStateRoot(sb, {
+    const { panDir, sessionPanDir, stateRoot } = seedStateRoot(sb, {
       number: 50, itemId: 'item-50', workingDir: repoDir,
       isolated: false, alive: false, result: { outcome: 'done', summary: 'session A' },
     });
@@ -1158,6 +2365,59 @@ test('rehydrate: a stale result root that sorts first never finalizes the curren
     assert.equal(finalized, false, 'the stale result root must not finalize the current session even sorted first');
     assert.equal(existsSync(path.join(panA, 'result.json')), true, 'the stale result is preserved');
     assert.equal(existsSync(rootA), true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('rehydrate accepts a result only from the manifest-owned generation', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const seeded = seedStateRoot(sb, {
+      number: 53,
+      itemId: 'item-53',
+      workingDir: repoDir,
+      isolated: false,
+      alive: false,
+      result: { outcome: 'done', summary: 'stale generation' },
+    });
+    const current = await createAttempt(seeded.sessionPanDir, {
+      sessionId: seeded.sessionId,
+      itemId: 'item-53',
+      number: 53,
+      machine: MACHINE,
+      identity: IDENTITY,
+      isolated: false,
+      workingDir: repoDir,
+      slot: null,
+    });
+    await atomicWriteJson(path.join(current.attemptDir, 'exit.json'), {
+      panRunnerExit: true,
+      version: 1,
+      launchId: current.launchId,
+      exitedAt: new Date().toISOString(),
+    });
+
+    const swept = projectItem({
+      itemId: 'item-53',
+      number: 53,
+      status: 'paused',
+      machine: MACHINE,
+      sessionId: seeded.sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: '',
+    });
+    const runner = makeRehydrateRunner(sb, [swept]);
+    let finalized = false;
+    runner.finalize = async () => { finalized = true; return true; };
+
+    await runner.rehydrate();
+
+    assert.equal(finalized, false, 'the older result cannot finalize the newer current generation');
+    assert.equal(existsSync(path.join(seeded.panDir, 'result.json')), true);
+    assert.equal(runner.resumeWorkspaces.has('item-53'), false);
   } finally {
     sb.cleanup();
   }
@@ -1263,11 +2523,11 @@ test('rehydrate does not adopt or finalize a root whose marker names another mac
     const repoDir = path.join(sb.dir, 'repo');
     mkdirSync(repoDir, { recursive: true });
     // A complete marker, but for a DIFFERENT machine → foreign → authorizes nothing.
-    const { panDir, stateRoot } = seedStateRoot(sb, {
+    const { panDir, sessionPanDir, stateRoot } = seedStateRoot(sb, {
       number: 62, itemId: 'item-62', workingDir: repoDir, isolated: false,
       alive: true, machine: 'other-box', result: { outcome: 'done', summary: 'done' },
     });
-    const readSessionId = JSON.parse(readFileSync(path.join(panDir, 'launch.json'), 'utf8')).sessionId;
+    const readSessionId = JSON.parse(readFileSync(path.join(sessionPanDir, 'launch.json'), 'utf8')).sessionId;
     const foreignMarked = projectItem({
       itemId: 'item-62', number: 62, status: 'in-progress', machine: MACHINE,
       sessionId: readSessionId, claimedBy: IDENTITY, leaseUntil: VALID_LEASE,
@@ -1289,12 +2549,17 @@ test('rehydrate does not adopt or finalize a root whose marker names another mac
 // ---- finalize revalidates the fresh read before any write ----------
 
 // A Runner whose finalize I/O is recorded, for driving finalize() directly.
-function makeFinalizeRunner(sb, { fresh, reflect = false } = {}) {
+function makeFinalizeRunner(sb, { fresh, reflect = false, onRead = null } = {}) {
   const calls = [];
   let live = fresh;
+  let readCount = 0;
   const deps = {
     readAllItems: async () => [],
-    readItemById: async () => live,
+    readItemById: async () => {
+      readCount += 1;
+      if (onRead) await onRead(readCount);
+      return live;
+    },
     setTextField: async (_c, _m, _id, field, value) => {
       calls.push(['setText', field, value]);
       if (reflect && live) live.fields[field] = value ?? '';
@@ -1307,18 +2572,51 @@ function makeFinalizeRunner(sb, { fresh, reflect = false } = {}) {
     gh: async () => { calls.push(['gh']); return ''; },
     ensureIssueComment: async () => { calls.push(['comment']); },
     ensureIssueClosed: async () => { calls.push(['close']); },
+    inspectProcess: async () => ({
+      state: 'live',
+      identity: 'test-finalize-process-start',
+      command: 'node launch.mjs',
+    }),
   };
   const runner = new Runner(baseCfg(sb), { fields: new Map() }, new Map(), deps);
   return { runner, calls };
 }
 
-function finalizeWorker(sb, { number, itemId, sessionId, slot = null, isolated = false }) {
+async function finalizeWorker(sb, { number, itemId, sessionId, slot = null, isolated = false }) {
   const stateRoot = stateRootFor(sb, number, sessionId);
-  const panDir = path.join(stateRoot, '.pan');
-  mkdirSync(panDir, { recursive: true });
-  writeFileSync(path.join(panDir, 'result.json'), JSON.stringify({ outcome: 'done', summary: 'done' }));
+  const sessionPanDir = path.join(stateRoot, '.pan');
+  mkdirSync(sessionPanDir, { recursive: true });
+  const attempt = await createAttempt(sessionPanDir, {
+    sessionId,
+    itemId,
+    number,
+    machine: MACHINE,
+    identity: IDENTITY,
+    isolated,
+    workingDir: stateRoot,
+    slot,
+  });
+  await atomicWriteJson(path.join(attempt.attemptDir, 'owner.json'), {
+    panRunnerOwner: true,
+    version: 1,
+    launchId: attempt.launchId,
+    pid: process.pid,
+    processStart: 'test-finalize-process-start',
+  });
+  writeFileSync(
+    path.join(attempt.attemptDir, 'result.json'),
+    JSON.stringify({ outcome: 'done', summary: 'done' }),
+  );
   return {
-    itemId, issueNumber: number, sessionId, slot, isolated, panDir,
+    itemId,
+    issueNumber: number,
+    sessionId,
+    slot,
+    isolated,
+    panDir: attempt.attemptDir,
+    attemptDir: attempt.attemptDir,
+    sessionPanDir,
+    launchId: attempt.launchId,
     workingDir: stateRoot, url: `https://github.com/example/domain/issues/${number}`, repo: 'example/domain',
   };
 }
@@ -1327,7 +2625,7 @@ test('finalize writes nothing when the live session-id no longer matches', async
   const sb = makeSandbox();
   try {
     const sessionId = randomUUID();
-    const w = finalizeWorker(sb, { number: 63, itemId: 'item-63', sessionId });
+    const w = await finalizeWorker(sb, { number: 63, itemId: 'item-63', sessionId });
     // The live item is now a DIFFERENT session (a concurrent relaunch).
     const raced = projectItem({
       itemId: 'item-63', number: 63, status: 'in-progress', machine: MACHINE,
@@ -1348,7 +2646,7 @@ test('finalize writes nothing when the live slot affinity drifted', async () => 
   const sb = makeSandbox();
   try {
     const sessionId = randomUUID();
-    const w = finalizeWorker(sb, { number: 64, itemId: 'item-64', sessionId, slot: 'primary' });
+    const w = await finalizeWorker(sb, { number: 64, itemId: 'item-64', sessionId, slot: 'primary' });
     // Same session, but the composite slot moved primary → secondary.
     const raced = projectItem({
       itemId: 'item-64', number: 64, status: 'in-progress', machine: `${MACHINE}::secondary`,
@@ -1368,7 +2666,7 @@ test('finalize from a paused sweep writes nothing when the lease is still active
   const sb = makeSandbox();
   try {
     const sessionId = randomUUID();
-    const w = finalizeWorker(sb, { number: 65, itemId: 'item-65', sessionId });
+    const w = await finalizeWorker(sb, { number: 65, itemId: 'item-65', sessionId });
     w.finalizeFromPausedSweep = true;
     // Paused + ours + same session, but the lease is NOT expired → not a sweep.
     const raced = projectItem({
@@ -1389,7 +2687,7 @@ test('finalize commits the terminal status when the fresh read still matches', a
   const sb = makeSandbox();
   try {
     const sessionId = randomUUID();
-    const w = finalizeWorker(sb, { number: 66, itemId: 'item-66', sessionId });
+    const w = await finalizeWorker(sb, { number: 66, itemId: 'item-66', sessionId });
     const live = projectItem({
       itemId: 'item-66', number: 66, status: 'in-progress', machine: MACHINE,
       sessionId, claimedBy: IDENTITY, leaseUntil: VALID_LEASE,
@@ -1402,6 +2700,65 @@ test('finalize commits the terminal status when the fresh read still matches', a
     assert.ok(calls.some((c) => c[0] === 'setSelect' && c[1] === FIELD.status && c[2] === 'done'));
     assert.ok(calls.some((c) => c[0] === 'setText' && c[1] === FIELD.claimedBy && c[2] === ''));
     assert.equal(w.finished, true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('finalize rechecks the manifest under the task lock before any Project mutation', async () => {
+  const sb = makeSandbox();
+  try {
+    const sessionId = randomUUID();
+    const w = await finalizeWorker(sb, {
+      number: 67,
+      itemId: 'item-67',
+      sessionId,
+    });
+    const live = projectItem({
+      itemId: 'item-67',
+      number: 67,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    let advanced = false;
+    const { runner, calls } = makeFinalizeRunner(sb, {
+      fresh: live,
+      reflect: true,
+      onRead: async (readCount) => {
+        if (readCount !== 1 || advanced) return;
+        advanced = true;
+        const next = await createAttempt(w.sessionPanDir, {
+          sessionId,
+          itemId: w.itemId,
+          number: w.issueNumber,
+          machine: MACHINE,
+          identity: IDENTITY,
+          isolated: w.isolated,
+          workingDir: w.workingDir,
+          slot: w.slot,
+        });
+        await atomicWriteJson(path.join(next.attemptDir, 'owner.json'), {
+          panRunnerOwner: true,
+          version: 1,
+          launchId: next.launchId,
+          pid: 999999,
+          processStart: 'dead-racing-generation',
+        });
+      },
+    });
+
+    const finalized = await runner.finalize(w, path.join(w.panDir, 'result.json'));
+
+    assert.equal(finalized, false);
+    assert.equal(advanced, true);
+    assert.deepEqual(calls, [], 'the stale result causes no Issue or Project mutation');
+    assert.equal(w.attemptConflict, true);
+    assert.match(w.conflictReason, /superseded/);
+    assert.equal(existsSync(path.join(w.panDir, 'result.json')), true);
+    assert.equal(existsSync(path.join(w.panDir, 'worker.stop')), false);
   } finally {
     sb.cleanup();
   }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import path from 'node:path';
 import {
   affinityBase,
   affinityMatchesMachine,
@@ -13,6 +14,9 @@ import {
   splitAffinity,
 } from '../bin/pan-runner-slots.js';
 import { splitFrontMatter } from '../bin/pan-runner.js';
+
+const SLOT_PATH_A = path.resolve('slot-a');
+const SLOT_PATH_B = path.resolve('slot-b');
 
 // --- machine affinity helpers ---------------------------------------------
 
@@ -52,12 +56,12 @@ test('isSlotPooled distinguishes slot-pooled from ordinary playbooks', () => {
 
 test('parseWorkspaceSlots accepts a valid ordered mapping', () => {
   const slots = parseWorkspaceSlots([
-    ['primary', 'C:\\Product'],
-    ['secondary', 'C:\\Product.2'],
+    ['primary', SLOT_PATH_A],
+    ['secondary', SLOT_PATH_B],
   ]);
   assert.deepEqual(slots, [
-    { id: 'primary', dir: 'C:\\Product' },
-    { id: 'secondary', dir: 'C:\\Product.2' },
+    { id: 'primary', dir: SLOT_PATH_A },
+    { id: 'secondary', dir: SLOT_PATH_B },
   ]);
 });
 
@@ -80,11 +84,11 @@ test('parseWorkspaceSlots rejects missing or relative paths', () => {
 
 test('parseWorkspaceSlots rejects duplicate ids and duplicate paths', () => {
   assert.throws(
-    () => parseWorkspaceSlots([['a', 'C:\\x'], ['a', 'C:\\y']]),
+    () => parseWorkspaceSlots([['a', SLOT_PATH_A], ['a', SLOT_PATH_B]]),
     /duplicate slot id "a"/,
   );
   assert.throws(
-    () => parseWorkspaceSlots([['a', 'C:\\x'], ['b', 'C:\\x']]),
+    () => parseWorkspaceSlots([['a', SLOT_PATH_A], ['b', SLOT_PATH_A]]),
     /repeats path/,
   );
 });

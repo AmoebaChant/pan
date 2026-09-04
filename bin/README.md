@@ -65,7 +65,9 @@ launch preferences. See [`example-config.json`](example-config.json).
 | `pollIntervalSeconds` | no | Idle poll cadence. Default `30`. |
 | `leaseMinutes` | no | Lease duration; renewed at one-third of this interval. Default `15`. |
 | `maxConcurrent` | no | Optional global cap on concurrent workers. Default unlimited. |
-| `workspaceRoot` | no | Root for per-session state directories (and, for isolated playbooks, the worker workspace). Resolved to an absolute path, and **must be outside every fixed `workingDirectory` and `workspaceSlots` path** (the runner refuses to launch otherwise, so Pan's `.pan/` can never land inside a repository). Default `os.tmpdir()/pan-workspaces`. |
+| `stateRoot` | no | Durable authoritative session/runtime state. Defaults to `%LOCALAPPDATA%\Pan\<runner>` (Windows), `~/Library/Application Support/Pan/<runner>` (macOS), or `$XDG_STATE_HOME/pan/<runner>` / `~/.local/state/pan/<runner>` (Linux). |
+| `workspaceRoot` | no | Disposable isolated code workspaces. Default `os.tmpdir()/pan-workspaces`. It must not overlap `stateRoot`; `stateRoot` must also remain outside fixed/slot repositories. |
+| `legacyLauncherPids` | no | Temporary upgrade aid: unique launcher PIDs for pre-generation workers whose old temporary state directory has already vanished. The runner adopts only an exact live legacy `launch.mjs` command whose task/session matches the Project, records its start identity durably, and never signals or restarts it. Remove the entries after those launchers exit. |
 
 Per-playbook concurrency (`capacity`) and any `workingDirectory` come from each
 `playbooks/<machine>/<name>.md` front matter in the Domain, **not** this file.
@@ -74,7 +76,7 @@ changing local config requires restarting the runner.
 
 A **fixed `workingDirectory`** should use **capacity 1**. It is a real in-place
 checkout shared by every task of that playbook (Pan's own state lives elsewhere,
-under `workspaceRoot`, never inside it). Two concurrent workers in the same
+under `stateRoot`, never inside it). Two concurrent workers in the same
 checkout would collide on the working tree, so the runner **refuses to run
 concurrent workers in the same fixed directory**: if a claimed task resolves to a
 fixed `workingDirectory` already in use by another active worker (whether from
@@ -116,16 +118,14 @@ paths, or a `capacity` above the slot count are all hard errors. The machine's
 runnable set is exactly the `.md` files in `playbooks/<machine>/`; an empty or
 missing folder is a hard error.
 
-### Note on temp directories
+### Durable state and disposable workspaces
 
-Every launched task gets a **per-session state directory** under `workspaceRoot`
-(default `os.tmpdir()/pan-workspaces`, named `pan-<number>-<sessionId>`) that
-holds all Pan-owned control and signal files (its `.pan/`). For a playbook with a
-fixed `workingDirectory` or `workspaceSlots`, the worker runs in that real
-checkout while its Pan state stays under `workspaceRoot` — never inside the
-repository. For a playbook with neither, that session directory is also where the
-worker gets its clean checkout. The runner keeps **no** other scratch, log, or
-state files of its own on disk.
+Every task gets a durable **per-session state directory** under `stateRoot`,
+named `pan-<number>-<sessionId>`. Every process launch gets a UUID generation at
+`.pan/runs/<launchId>/`. For an isolated playbook, code lives separately in the
+matching directory under `workspaceRoot`; fixed and slot playbooks use their
+configured checkout. Removing temporary workspaces therefore cannot remove the
+ownership records used to prevent duplicate launches.
 
 ## How a task flows
 
@@ -138,21 +138,24 @@ state files of its own on disk.
    this machine runs, spare capacity (global and per-playbook), and a free
    lease. Order each group by `priority` (`urgent` > `high` > `normal` > `low`),
    preserving Project order among ties.
-2. **Claim or resume** — re-read the item to avoid races, then set `claimed-by`,
-   `machine` (this machine's name, or a composite `<machine>::<slot>` for a
-   slot-pooled playbook), `lease-until` (near-future UTC), and
-   `Status=in-progress`.
+2. **Claim or resume** — re-read the item to avoid races. For new work, first
+   provision the durable session root, then persist `machine` (this machine's
+   name, or a composite `<machine>::<slot>` for a slot-pooled playbook) and
+   `session-id`. Set `claimed-by`, `lease-until` (near-future UTC), and finally
+   `Status=in-progress`. A crash therefore cannot leave an in-progress item
+   without a durable session to resume.
    Immediately after writing, the runner **re-reads once more to confirm** it
-   still owns the claim (`claimed-by`, `lease-until`, and `machine` are exactly
-   the values it wrote and `Status` is `in-progress`); if another runner won the
-   race, it abandons the item **without overwriting** the winner's fields. This
+   still owns the claim (`claimed-by`, `lease-until`, `machine`, and
+   `session-id` are exactly the values it wrote and `Status` is
+   `in-progress`); if another runner won the race, it abandons the item
+   **without overwriting** the winner's fields. This
    is best-effort optimistic concurrency (GitHub has no atomic
    compare-and-swap); the confirming re-read is the point. The lease is renewed
    periodically while the worker runs.
-3. **Launch** — resolve the session state directory (always under
-   `workspaceRoot`, holding `.pan/`) and the working directory (a fixed
-   `workingDirectory`, the chosen `workspaceSlots` slot, else the session
-   directory itself for an isolated task), refresh `.pan/task.json` from the
+3. **Launch** — resolve the durable session state directory (under
+   `stateRoot`) and the separate working directory (a fixed
+   `workingDirectory`, the chosen `workspaceSlots` slot, else a matching
+   disposable directory under `workspaceRoot`), refresh `.pan/task.json` from the
    current Issue body and complete comment history, and open a headed `copilot`
    session in a visible terminal window under an explicit session id
    (`--session-id`), recording that id in the Issue's `session-id` field. The
@@ -165,7 +168,8 @@ state files of its own on disk.
    directory is a fixed `workingDirectory` or slot already in use by
    another active worker, the runner does **not** launch: it returns the task to
    `ready`/`paused` (a benign capacity collision, not an operational strike).
-4. **Supervise** — watch the `.pan/` signal files and relay them to the Issue.
+4. **Supervise** — verify the launch generation's PID plus process-start
+   identity, then watch only that generation's signal files.
 
 While the runner is looping, **Enter** or **Space** queues an immediate ordinary
 poll. The request remains pending even when the key is pressed during polling
@@ -173,13 +177,11 @@ or supervision rather than during the idle sleep.
 
 ### `.pan/` file contract
 
-The `.pan/` directory lives inside the task's **session state directory** under
-`workspaceRoot`, not inside the repository (except for an isolated task, whose
-working directory *is* the session directory). The worker is given its absolute
-path in the launch prompt and in the `PAN_STATE_DIR` environment variable
-(`PAN_WORKING_DIRECTORY` names its working directory).
+The session `.pan/` directory lives under durable `stateRoot`. Every launch has
+an isolated `.pan/runs/<launch-id>/`; that attempt directory is passed in
+`PAN_STATE_DIR`, while `PAN_WORKING_DIRECTORY` names the separate checkout.
 
-Written by the runner before launch:
+Durable session files:
 
 - `.pan/task.json` —
   `{ itemId, number, title, body, comments, url, repo, playbook, workstream, answers }`.
@@ -187,7 +189,7 @@ Written by the runner before launch:
   `{ author, timestamp, url, body }` entries. The runner refreshes Issue content
   before every launch and retains existing structured answers.
   `itemId` keys runner state because Issue numbers are repository-local.
-- `.pan/launch.json` — runner-owned launch metadata **and ownership marker**
+- `.pan/launch.json` — runner-owned session metadata and ownership marker
   `{ panRunner, version, machine, identity, itemId, number, sessionId, isolated, workingDir, slot }`
   (not part of the worker contract). Rehydration reads it to re-adopt a worker
   and supervise it against the correct working directory when that directory is
@@ -203,28 +205,45 @@ Written by the runner before launch:
   adopt, finalize, resume, or delete that root. A foreign-machine, wrong-version,
   malformed, or otherwise mismatched marker authorizes nothing (a matching
   `pan-<number>-<sessionId>` name plus a `.pan/task.json` alone is never proof).
-- `.pan/playbook.md` — the chosen playbook's instructions (fetched from the Domain).
-- `.pan/launch-prompt.txt` — the initial prompt handed to `copilot`.
-- `.pan/launch.mjs` — a generated Node launcher (ESM). Run with its CWD set to
+- `.pan/attempts.json` — durable append-only index of every launch UUID for the
+  bound task/session plus the current owned launch id. Missing or malformed
+  index data, a missing `runs/` directory, a missing indexed child, or an
+  unexpected/renamed child is uncertain ownership and fails closed. Restart
+  recovery consumes signals only from the indexed current launch.
+- `.pan/playbook.md` and optional `.pan/pan.md` — latest instructions, copied
+  into each attempt before launch.
+
+Attempt-local files:
+
+- `attempt.json` — immutable generation metadata binding UUID launch id,
+  task/session, machine/runner identity, workspace kind/path, and slot.
+- `owner.json` — atomically written before Copilot starts. It records launcher
+  PID and process-start identity. The runner calls an attempt live only when
+  both still match; a reused PID is dead and an unreadable identity is
+  uncertain.
+- `exit.json` — atomically written by the launcher during cleanup. A still-live
+  matching owner remains live until the process actually exits.
+- `task.json`, `playbook.md`, optional `pan.md`, `launch-prompt.txt`, and
+  `launch.mjs` — that generation's launch snapshot and launcher. Run with its CWD set to
   the working directory, it addresses every control/signal file by its absolute
-  path under the state directory (so a fixed/slot repository never gains a
+  attempt path (so a fixed/slot repository never gains a
   `.pan/`), passes the prompt to `copilot` as a single argv element (no shell
   ever re-parses the prompt on any platform), grants `copilot` access to the
-  state directory with `--add-dir`, exports `PAN_STATE_DIR`/`PAN_WORKING_DIRECTORY`,
-  maintains the liveness marker below, and runs a **title watchdog** that
+  attempt directory with `--add-dir`, exports
+  `PAN_STATE_DIR`/`PAN_WORKING_DIRECTORY`, and runs a **title watchdog** that
   periodically re-asserts the worker's task title on the terminal. `copilot`
   rewrites the window title (`OSC 0`) repeatedly during a session with its own
   AI-generated summary — which overrides any terminal-side "custom title" — so
   the launcher keeps re-emitting the stable `#<number> <title>` so each worker
   window stays identifiable (a brief flicker to copilot's title can appear right
   after each of its infrequent updates). The launcher also watches for
-  `.pan/worker.stop` (below) and, on that signal, stops `copilot` and closes its
+  `worker.stop` (below) and, on that signal, stops `copilot` and closes its
   own terminal window (on macOS via Terminal.app matched by tty; on Windows by
   exiting 0 so Windows Terminal auto-closes the tab).
 
-Written by the worker:
+Written by the worker in its own attempt:
 
-- `.pan/needs-human.json` — presence means the worker needs the user
+- `needs-human.json` — presence means the worker needs the user
   (`{ question, since }`). While present, the runner sets the Issue's
   `needs-human-since` and posts a comment with the question; when the worker
   deletes it, the runner clears `needs-human-since`. If the file is present but
@@ -232,7 +251,7 @@ Written by the worker:
   the runner does **nothing** — it neither sets `needs-human-since` nor posts a
   comment — and retries parsing on the next supervise tick, so a half-written
   signal never posts a placeholder question.
-- `.pan/result.json` — `{ outcome: "done" | "needs-review", summary, details }`,
+- `result.json` — `{ outcome: "done" | "needs-review", summary, details }`,
   written once when finished. The runner records it on the Issue and moves the
   Project item to `done` or `in-review`. For `done`, it closes and re-reads the
   Issue before committing the Project status. Only the exact outcomes `done`
@@ -257,27 +276,24 @@ Written by the worker:
 
 Written by the runner after finalizing:
 
-- `.pan/worker.stop` — written once the runner has recorded a worker's
+- `worker.stop` — written once the runner has recorded that attempt's
   `result.json` on the Issue and updated the Project (for `done` or
   `needs-review`). Its presence tells the launcher the task is finished, so the
   worker session shuts down and closes its terminal window instead of lingering.
   It is not written while a worker is merely paused on `needs-human.json`.
 
-Before each launch the runner clears any stale `.pan/` signal files
-(`result.json`, `needs-human.json`, `worker.running`, `worker.pid`,
-`worker.stop`) in the session state directory. A new task always gets a fresh
-state directory, so this mainly matters on resume (a reused state directory could
-still carry a dead worker's liveness/pid markers). **A resume is the exception
-for `result.json`:** if the state directory still holds an unprocessed
-`result.json`, the worker finished but was never finalized, so the runner
-**refuses the resume and preserves the result** (leaving the task `paused` for
-the next rehydration to finalize) rather than clearing it and losing the outcome.
-Stale liveness/attention markers are still cleared as appropriate.
-
-Internal liveness marker: `.pan/worker.running` is created by the Node launcher
-(`launch.mjs`) and removed when the worker process exits — including on
-window-close signals (`SIGINT`/`SIGTERM`/`SIGHUP`) — on both platforms, so the
-runner can detect a closed terminal or vanished worker.
+The runner never clears another generation's files. Its per-task launch lock is
+an append-only set of uniquely named contender/holder records: stale records
+are ignored only after PID/start-identity verification and are never removed
+through a shared compare-then-unlink pathname. Before launching it validates
+the attempt index and scans all attempts under the session. It adopts exactly
+one confirmed live attempt, launches only after every prior attempt is
+confirmed dead, and refuses on multiple live or uncertain ownership. It also
+refuses while a dead attempt holds an unprocessed result. During supervision,
+signals are consumed only from the launch id the runner already owns; a stale
+result from another generation is preserved but never adopted. `worker.running`
+and `worker.pid` remain diagnostic/legacy files only; deleting
+`worker.running` cannot make a matching live owner disappear.
 
 ## Failure handling
 
@@ -319,95 +335,31 @@ more than one page of fields) and cached for the process lifetime; writes use
   independently confirm that a pull request merged before setting `Status=done`;
   it trusts the worker's `result.json` and notes this in the Issue comment.
   `runner.md` calls for confirming the merge from GitHub first.
-- **Rehydration is best-effort.** On restart the runner re-adopts surviving
-  workers by scanning `workspaceRoot` for per-session state roots whose Project
-  item is still `claimed-by` this runner. Because every task — isolated, fixed
-  `workingDirectory`, or slot-pooled — now has a state root under `workspaceRoot`,
-  all three are rediscovered here; each root's `.pan/launch.json` records the real
-  working directory and mode, and a legacy root without it is treated as isolated.
-  **Every adoption, finalization, or deletion requires exact agreement across
-  four sources — the canonical root name `pan-<issue>-<minted session UUID>`, its
-  `task.json`, its `launch.json`, and the live Project item — on issue number,
-  item id, base machine, (critically) `session-id`, and — for a slot-pooled
-  session — the composite slot **and the saved checkout path** (the current
-  playbook must still be slot-pooled and map that exact slot id to the same
-  directory the marker recorded), so an established session is never moved
-  between slot checkouts even if a slot id is remapped.** So a *stale* session-A
-  root can never act on the item now
-  running session B: a mismatched or non-canonical root is left untouched (its
-  result preserved, never finalized or deleted). The `launch.json` marker is
-  worker-writable, so it counts only as corruption/ownership evidence and every
-  check fails closed: an **absent** marker is the legacy-isolated compatibility
-  path, but a **present** marker must be a complete, matching runner marker (tag,
-  version, this machine and identity, the exact tuple, and workspace kind/slot) or
-  it authorizes nothing — a foreign-machine or malformed marker is preserved but
-  never adopted, finalized, or deleted. Each session root is also `lstat`-checked:
-  a symlink or Windows junction is never followed for a read, write, or removal,
-  and a root that does not resolve to a real direct child of `workspaceRoot` is
-  ignored. A root that holds a `.pan/result.json` (produced while the runner was
-  down) is processed **before** any paused handling and **finalized** only when it
-  binds to the current session AND is this runner's finished worker: a passive
-  lease sweep leaves our claim and expires the lease, so finalization requires our
-  **surviving claim plus an expired/missing lease** (an *unclaimed* paused item is
-  an ambiguous/manual pause and is never finalized). `finalize` re-reads the item
-  immediately before any Issue or Project write and re-validates the exact
-  session-id, machine/slot affinity, and (for a swept finalization) the still-
-  paused, still-claimed, still-lapsed state, so a startup snapshot can never
-  authorize a write onto drifted state. Any result that does not qualify is left
-  untouched, never deleted, and if a launcher is still alive its directory is
-  reserved. A
-  root is treated as alive only when its liveness marker is present **and** its
-  recorded PID (`.pan/worker.pid`) is a live process (`process.kill(pid, 0)`); a
-  missing marker, or a marker whose PID is dead/missing/unparseable, is a stopped
-  worker, and if its item is still `claimed-by` this runner and `in-progress` it
-  is released to `paused` (clearing `claimed-by`/`lease-until`) while retaining
-  the state root for resume — the runner never renews the lease of a dead PID
-  forever. A **live** worker always keeps its fixed/slot working directory
-  reserved so no duplicate worker launches into it. It is only (re-)adopted for
-  supervision after an **immediate re-read** confirms it is still ours — already
-  `in-progress`+ours, or the exact passive-sweep state (`paused`, our claim, an
-  expired lease) which is restored with a fresh claim/lease/`in-progress` and a
-  **confirming re-read** validating status/claim/machine/session/lease. On any
-  read/write/confirmation failure or mismatch — including a concurrent transition
-  or a foreign claim — the worker is reserved occupancy-only rather than adopted,
-  so newer Project state is never overwritten. The exact child process is not
-  re-attached — only file-signal supervision and lease renewal resume. A paused
-  state root remains discoverable across runner restarts, as does a bound
-  `in-review` or `ready` root that may be relaunched. A state root that is
-  **inert** — no live worker and no longer this runner's to supervise (finalized,
-  released, missing from the Project, or externally transitioned) — is **pruned**
-  during rehydration, so finished roots do not accumulate under `workspaceRoot`
-  and get re-scanned and re-logged on every restart. Pruning only ever removes the
-  state root; a fixed/slot repository (its recorded working directory) is never
-  touched. Deletion is **fail-closed on ownership**: the target is re-derived from
-  `workspaceRoot` and the canonical name (never a worker-writable field) and
-  removed only when the `.pan/launch.json` marker validates this `machine`, the
-  exact name session id, and the task — so an unmarked or legacy root is preserved
-  (and may still be adopted), never deleted by name and `task.json` alone.
-  Rehydration also only treats a directory that parses to `pan-<issue>-<minted
-  UUID>` as a session root, so a checkout a user placed under `workspaceRoot`
-  (even one carrying a legacy `.pan/`) is never scanned or pruned. A task whose
-  `.pan/` was written into a repository by a runner predating this state
-  separation is not under `workspaceRoot` and is not rediscovered, but its expired
-  Project lease is still swept to `paused` during
-  polling and the owning machine can relaunch it. A resumed `session-id` (read
-  back from the Project) must match the exact UUID shape the runner mints before
-  it is used to build any path, so a tampered value can neither escape
-  `workspaceRoot` nor alias another session's root.
-- **A hard kill can leave the liveness marker.** Both platforms launch the
-  worker through the generated `launch.mjs`, whose signal handlers remove
-  `worker.running` (in the state directory) on window close
-  (`SIGINT`/`SIGTERM`/`SIGHUP`) and on normal exit. A **hard** kill (`SIGKILL` /
-  force terminate) cannot run those handlers, so the marker may linger; the
-  runner's rehydration pause and liveness grace still recover a truly-gone worker.
+- **Rehydration is conservative.** On restart the runner scans durable
+  `stateRoot`, validates the session binding, then classifies every UUID launch
+  generation by its owner PID and process-start identity. Exactly one confirmed
+  live attempt is adopted. Multiple live attempts, malformed ownership, or an
+  identity that cannot be queried leave the task fail-closed; diagnostics list
+  launch ids and known PIDs and no additional worker is started. Results are
+  accepted only from the selected owned attempt. Inert owned state is pruned
+  from `stateRoot`; a matching disposable isolated workspace may also be
+  removed, but fixed/slot repositories are never deleted.
+- **Legacy migration.** Before durable rehydration, the runner scans the former
+  `workspaceRoot` state layout. Matching session context is copied to
+  `stateRoot`. Stopped results become dead attempt generations. A live legacy
+  launcher is left untouched and is adopted through a durable migration record
+  only after its exact PID command is corroborated and its current start identity
+  is captured. An uncorroborated legacy owner remains uncertain and blocks
+  relaunch. If the old directory is already gone but its launcher is known,
+  temporarily list that launcher PID in `legacyLauncherPids`; the same
+  corroboration and durable adoption run without recreating or touching the
+  vanished path. Migration takes the same per-task launch lock as ordinary
+  launching and is idempotent on the legacy PID plus process-start identity; an
+  interrupted owner-record write is repaired without creating a second attempt.
 - **`copilot` invocation.** The worker is started as
-  `<copilotBin> [copilotArgs...] <prompt>` by the generated `launch.mjs`, passing
-  the prompt as a single positional argv element (never re-parsed by any shell).
-  Current `copilot` builds do **not** accept a bare positional prompt (they fail
-  with `too many arguments`); they seed an interactive session with
-  `-i/--interactive <prompt>`. So `copilotArgs` should end with `--interactive`
-  (e.g. `["--allow-all", "--interactive"]`) — the runner appends the prompt as
-  its value. Adjust `copilotBin`/`copilotArgs` if your build seeds a session
-  differently.
+  `<copilotBin> [permission args] --add-dir <attempt-dir> [copilotArgs...]
+  --session-id <id> --interactive <prompt>` by the generated `launch.mjs`.
+  The prompt is one argv value and is never re-parsed by a shell; any bare
+  `-i`/`--interactive` supplied in `copilotArgs` is stripped.
 - **Recorded answers.** A first launch starts with an empty `answers` array.
   Later launches retain any structured answers already in `.pan/task.json`.

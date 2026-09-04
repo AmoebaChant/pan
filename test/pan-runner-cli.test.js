@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, copyFileSync, chmodSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -105,11 +104,11 @@ if (require.main === module) {
 // Build a self-contained sandbox: a stub gh on PATH, the fake-gh script, a
 // config, and a log. Returns the paths plus a cleanup that removes everything.
 function makeSandbox() {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'pan-cli-'));
+  const dir = mkdtempSync(path.join(process.cwd(), '.pan-cli-test-'));
   const stubDir = path.join(dir, 'stub-bin');
   const workspaceRoot = path.join(dir, 'workspaces');
   const logPath = path.join(dir, 'gh-calls.log');
-  const fakeGhJs = path.join(dir, 'fake-gh.js');
+  const fakeGhJs = path.join(dir, 'fake-gh.cjs');
   const configPath = path.join(dir, 'config.json');
   for (const p of [stubDir, workspaceRoot]) mkdirSync(p, { recursive: true });
   writeFileSync(fakeGhJs, fakeGhSource({ logPath }), 'utf8');
