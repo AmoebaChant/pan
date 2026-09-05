@@ -530,8 +530,21 @@ of which source found it. Migration attempts use that identity in a deterministi
 creation key, so concurrent or repeated startup repairs the same manifest entry
 and attempt directory after a crash before or after directory creation,
 `attempt.json`, or `owner.json`; it never appends a second generation for the
-same verified process. Distinct or unverifiable process identities remain
-separate and fail closed.
+same verified process. After all configured and discovered legacy records have
+been inventoried, Pan selects the sole verified-live attempt as
+`currentLaunchId` only when every other preserved attempt is conclusively dead.
+This selection is made under the task launch lock, is independent of discovery
+order, and is idempotent across repeated or concurrent startup. Multiple live
+attempts or any uncertain ownership leave the inventory unchanged and fail
+closed. Distinct or unverifiable process identities remain separate as
+historical evidence.
+Task-lock contention during configured inventory, discovered-directory
+inventory, or post-inventory selection is a startup serialization barrier. A
+runner waits for the live lock holder and then performs or observes the
+idempotent operation itself. Any acquisition error that cannot be established
+as live contention, or any lock-release failure, aborts startup fail-closed.
+Rehydration and polling never proceed past a skipped or incomplete known
+inventory.
 
 For deployment, keep the old runner stopped while reconciling the startup
 inventory. Put every expired task without a corroborated live launcher into a
