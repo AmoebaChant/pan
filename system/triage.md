@@ -20,9 +20,10 @@ durable evidence before consulting any migration receipt, then apply the
 [Domain contract](domain.md#external-human-task-manager-contract):
 
 - always add an Issue that is conclusively agent-owned or belongs to a
-  mandatory GitHub-retained class. Retained classes include every recurring
-  human task and every audit or lifecycle task type named by the Domain. A
-  receipt cannot override this requirement;
+  mandatory GitHub-retained class. Retained classes include every audit or
+  lifecycle task type named by the Domain and recurring human tasks unless the
+  Domain's complete external-manager contract makes that manager authoritative
+  for recurrence. A receipt cannot override a retained-class requirement;
 - add an Issue with no migration receipt;
 - only for an Issue that could legitimately be migrated human work, exclude it
   when exactly one well-formed receipt resolves to one live external task, the
@@ -120,13 +121,16 @@ Like registration, this reconciliation acts on an objective fact (a merge) and
 needs no approval. It only advances items that carry a recorded, merged PR, and
 it never edits runner-owned fields.
 
-## 4. Reconcile closed recurring tasks (automatic)
+## 4. Reconcile closed GitHub-authoritative recurring tasks (automatic)
 
-Issue closure is the durable completion signal for a recurring task, regardless
-of whether Pan, the GitHub UI, or another client performed it. Inspect every
-closed Domain Issue with an exact `## Recurrence` section, including items
+Issue closure is the durable completion signal for a GitHub-authoritative
+recurring task, regardless of whether Pan, the GitHub UI, or another client
+performed it. Inspect every closed Domain Issue with an exact `## Recurrence`
+section when GitHub is authoritative for its recurrence, including items
 already in a terminal Project status, until its closure has been reconciled.
-This is lifecycle reconciliation only: do not otherwise classify or edit closed
+When the Domain contract makes an external manager authoritative for recurring
+human work, use that manager's completion and successor semantics instead. This
+is lifecycle reconciliation only: do not otherwise classify or edit closed
 Issues.
 
 Re-read each candidate's body, comments, `stateReason`, `closedAt`, and Project
@@ -247,9 +251,10 @@ mode is enabled:
 - Eligible `owner=human` tasks are managed in the named external system and are
   removed from the Project only after their reciprocal migration receipt
   verifies.
-- Recurring human tasks always remain Domain Issues and Project items. The
-  external manager may mirror or link them only when its contract defines that
-  behavior; GitHub remains canonical for recurrence lifecycle and history.
+- Recurring human tasks follow the authority selected by the Domain contract.
+  If the external manager owns them, use its defined recurrence lifecycle and
+  do not retain duplicate Domain Issues or Project items. If recurrence is not
+  fully defined there, keep it GitHub-authoritative.
 - A migration must preserve the source Issue URL, repository, Issue number,
   title, description, deadline, comments, and any other data the Domain policy
   requires before removing the GitHub task.

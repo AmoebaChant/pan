@@ -16,11 +16,11 @@ required queue cannot be read completely, stop without presenting a complete
 briefing or changing planning dates. Apply existing automatic reconciliations
 before planning.
 
-Recurring human tasks remain Domain Issues and Project items even when an
-external manager is configured; GitHub is canonical for their lifecycle and
-history, while an external record may only mirror or link them under its
-contract. Before proposing a date change for an open recurring Issue, require
-and verify its valid occurrence marker. After a live re-read, automatically add
+Recurring human tasks follow the authoritative system selected by the Domain
+contract. External ownership requires complete cadence, completion,
+cancellation, history, planning-field, and verification semantics. For a
+GitHub-authoritative recurring task, require and verify its valid occurrence
+marker before proposing a date change. After a live re-read, automatically add
 only a missing first-line marker when the recurrence contract infers the
 nominal date unambiguously from still-intact evidence, preserving
 `next-action-date`; otherwise ask and leave the date unchanged. An unusable
