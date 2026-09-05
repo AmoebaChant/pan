@@ -1277,6 +1277,44 @@ export class Runner {
     }
   }
 
+  async releaseMigrationTaskLaunchLock(lock, context) {
+    try {
+      await releaseLaunchLock(lock);
+    } catch (error) {
+      const message = error?.message || String(error);
+      throw new Error(
+        `migration: cannot release ${context}; aborting startup fail-closed (${message})`,
+        { cause: error },
+      );
+    }
+  }
+
+  async acquireMigrationTaskLaunchLock(itemId, context) {
+    let waitingLogged = false;
+    for (;;) {
+      try {
+        return await this.acquireTaskLaunchLock(itemId);
+      } catch (error) {
+        const message = error?.message || String(error);
+        const contended = (
+          /held by live runner PID/.test(message)
+          || /could not acquire launch lock/.test(message)
+        );
+        if (!contended) {
+          throw new Error(
+            `migration: cannot serialize ${context}; aborting startup fail-closed (${message})`,
+            { cause: error },
+          );
+        }
+        if (!waitingLogged) {
+          log(`migration: waiting for another runner to finish ${context} (${message})`);
+          waitingLogged = true;
+        }
+        await sleep(20);
+      }
+    }
+  }
+
   async provisionClaimSession(item, playbook, slot, sessionId) {
     const number = item.issue.number;
     const rootName = `pan-${number}-${sessionId}`;
@@ -3477,24 +3515,10 @@ child.on('exit', (code, signal) => {
         );
       }
       const item = candidates[0];
-      let migrationLock = null;
-      let lockError = null;
-      for (let lockAttempt = 0; lockAttempt < 50 && !migrationLock; lockAttempt += 1) {
-        try {
-          migrationLock = await this.acquireTaskLaunchLock(item.itemId);
-        } catch (error) {
-          lockError = error;
-          if (!/held by live runner PID/.test(error.message)) break;
-          await sleep(20);
-        }
-      }
-      if (!migrationLock) {
-        log(
-          `migration: configured legacy #${number}/${sessionId} is being serialized ` +
-            `by another runner (${lockError?.message || 'lock unavailable'})`,
-        );
-        continue;
-      }
+      const migrationLock = await this.acquireMigrationTaskLaunchLock(
+        item.itemId,
+        `configured legacy inventory for #${number}/${sessionId}`,
+      );
       try {
       const playbookName = val(item, FIELD.playbook, '');
       const pb = this.playbooks.get(playbookName);
@@ -3626,7 +3650,10 @@ child.on('exit', (code, signal) => {
           `as attempt ${created.launchId} without signalling or restarting it`,
       );
       } finally {
-        await this.releaseTaskLaunchLock(migrationLock, `migration #${number}/${sessionId}`);
+        await this.releaseMigrationTaskLaunchLock(
+          migrationLock,
+          `configured legacy inventory for #${number}/${sessionId}`,
+        );
       }
     }
   }
@@ -3678,24 +3705,10 @@ child.on('exit', (code, signal) => {
       const item = findProjectItemForTask(items, task);
       if (!item || val(item, FIELD.sessionId, '') !== parsed.sessionId) continue;
 
-      let migrationLock = null;
-      let lockError = null;
-      for (let lockAttempt = 0; lockAttempt < 50 && !migrationLock; lockAttempt += 1) {
-        try {
-          migrationLock = await this.acquireTaskLaunchLock(item.itemId);
-        } catch (error) {
-          lockError = error;
-          if (!/held by live runner PID/.test(error.message)) break;
-          await sleep(20);
-        }
-      }
-      if (!migrationLock) {
-        log(
-          `migration: legacy #${parsed.number}/${parsed.sessionId} is already being serialized ` +
-            `by another runner (${lockError?.message || 'lock unavailable'})`,
-        );
-        continue;
-      }
+      const migrationLock = await this.acquireMigrationTaskLaunchLock(
+        item.itemId,
+        `discovered legacy inventory for #${parsed.number}/${parsed.sessionId}`,
+      );
       try {
       const markerRead = await readLaunchMarker(legacyPanDir);
       const marker = markerRead.marker;
@@ -3898,9 +3911,102 @@ child.on('exit', (code, signal) => {
         );
       }
       } finally {
-        await this.releaseTaskLaunchLock(
-            migrationLock,
-            `migration #${parsed.number}/${parsed.sessionId}`,
+        await this.releaseMigrationTaskLaunchLock(
+          migrationLock,
+          `discovered legacy inventory for #${parsed.number}/${parsed.sessionId}`,
+        );
+      }
+    }
+  }
+
+  async selectMigratedCurrentAttempts(items) {
+    let entries;
+    try {
+      entries = await readdir(this.cfg.stateRoot);
+    } catch {
+      return;
+    }
+
+    for (const entry of entries.sort()) {
+      const parsed = parseSessionRootName(entry);
+      if (!parsed) continue;
+      const sessionRoot = path.join(this.cfg.stateRoot, entry);
+      const sessionPanDir = path.join(sessionRoot, '.pan');
+      let rootStat;
+      let panStat;
+      try {
+        rootStat = await lstat(sessionRoot);
+        panStat = await lstat(sessionPanDir);
+      } catch {
+        continue;
+      }
+      if (
+        !rootStat.isDirectory()
+        || rootStat.isSymbolicLink()
+        || !panStat.isDirectory()
+        || panStat.isSymbolicLink()
+        || !(await sessionRootLinkSafe(this.cfg.stateRoot, sessionRoot))
+      ) {
+        continue;
+      }
+
+      let task;
+      try {
+        task = JSON.parse(await readFile(path.join(sessionPanDir, 'task.json'), 'utf8'));
+      } catch {
+        continue;
+      }
+      if (task.number !== parsed.number || !task.itemId) continue;
+      const item = findProjectItemForTask(items, task);
+      if (
+        !item
+        || val(item, FIELD.sessionId, '') !== parsed.sessionId
+        || !affinityMatchesMachine(val(item, FIELD.machine, ''), this.cfg.machine)
+      ) {
+        continue;
+      }
+
+      const migrationLock = await this.acquireMigrationTaskLaunchLock(
+        item.itemId,
+        `post-inventory current-attempt selection for #${parsed.number}/${parsed.sessionId}`,
+      );
+
+      try {
+        const expected = this.attemptExpected(item, parsed.sessionId);
+        const scan = await scanAttempts(
+          sessionPanDir,
+          expected,
+          this.attemptScanOptions(parsed.number, parsed.sessionId),
+        );
+        if (!scan.attempts.some((attempt) => attempt.attempt?.migrated === true)) continue;
+        if (
+          scan.uncertain.length > 0
+          || scan.live.length !== 1
+          || scan.dead.length !== scan.attempts.length - 1
+        ) {
+          continue;
+        }
+
+        const selected = scan.live[0];
+        const manifest = await ensureAttemptManifest(sessionPanDir, expected);
+        if (manifest.currentLaunchId === selected.launchId) continue;
+        if (!manifest.attempts.some((attempt) => attempt.launchId === selected.launchId)) {
+          throw new Error(
+            `migration: verified-live attempt ${selected.launchId} disappeared from the durable manifest`,
+          );
+        }
+        await atomicWriteJson(path.join(sessionPanDir, 'attempts.json'), {
+          ...manifest,
+          currentLaunchId: selected.launchId,
+        });
+        log(
+          `migration: selected verified-live attempt ${selected.launchId} as current for ` +
+            `#${parsed.number} after inventorying ${scan.attempts.length} legacy attempts`,
+        );
+      } finally {
+        await this.releaseMigrationTaskLaunchLock(
+          migrationLock,
+          `post-inventory current-attempt selection for #${parsed.number}/${parsed.sessionId}`,
         );
       }
     }
@@ -3947,6 +4053,7 @@ child.on('exit', (code, signal) => {
     }
     await this.migrateConfiguredLegacyLaunchers(items);
     await this.migrateLegacySessions(items);
+    await this.selectMigratedCurrentAttempts(items);
     if (!existsSync(this.cfg.stateRoot)) return;
     let entries;
     try {

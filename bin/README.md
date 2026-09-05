@@ -356,6 +356,14 @@ more than one page of fields) and cached for the process lifetime; writes use
   vanished path. Migration takes the same per-task launch lock as ordinary
   launching and is idempotent on the legacy PID plus process-start identity; an
   interrupted owner-record write is repaired without creating a second attempt.
+  After both configured-PID and discovered-directory inventory is complete, the
+  same lock protects a deterministic `currentLaunchId` correction: one verified
+  live attempt is selected only when every other preserved attempt is confirmed
+  dead. Contention in any migration phase is a startup barrier: Pan waits for
+  the live holder and completes or observes the idempotent inventory before
+  rehydrating or polling; unverifiable acquisition failures and all release
+  failures abort startup. Multiple live attempts or any uncertain ownership
+  remain fail-closed.
 - **`copilot` invocation.** The worker is started as
   `<copilotBin> [permission args] --add-dir <attempt-dir> [copilotArgs...]
   --session-id <id> --interactive <prompt>` by the generated `launch.mjs`.

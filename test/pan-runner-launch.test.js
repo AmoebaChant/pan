@@ -196,6 +196,27 @@ async function waitForFile(filePath, timeoutMs = 5000) {
   }
 }
 
+async function waitForLiveProcess(pid, commandPath, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const observed = await inspectProcess(pid);
+    if (
+      observed.state === 'live'
+      && observed.identity
+      && observed.command?.includes(commandPath)
+    ) {
+      return observed;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `timed out waiting for PID ${pid} to expose ${commandPath}: ` +
+          `${observed.state} ${observed.reason || observed.command || ''}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function markAttemptExited(worker) {
   writeFileSync(path.join(worker.attemptDir, 'owner.json'), JSON.stringify({
     panRunnerOwner: true,
@@ -1660,6 +1681,588 @@ test('configured and discovered legacy migration share one live attempt across r
     assertSingleOwner(restarted);
   } finally {
     sb.cleanup();
+  }
+});
+
+test('startup keeps a verified-live configured legacy attempt current over a dead duplicate root record', async () => {
+  const sb = makeSandbox();
+  const children = [];
+  try {
+    const number = 30;
+    const sessionId = randomUUID();
+    const rootName = `pan-${number}-${sessionId}`;
+    const legacyRoot = path.join(sb.workspaceRoot, rootName);
+    const legacyPanDir = path.join(legacyRoot, '.pan');
+    const launcher = path.join(legacyPanDir, 'launch.mjs');
+    const duplicateLauncher = path.join(legacyPanDir, 'duplicate-launch.mjs');
+    const repoDir = path.join(sb.dir, 'repo-30');
+    mkdirSync(legacyPanDir, { recursive: true });
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(path.join(legacyPanDir, 'task.json'), JSON.stringify({
+      itemId: 'item-30',
+      number,
+      title: 'Task 30',
+      url: 'https://github.com/example/domain/issues/30',
+      repo: 'example/domain',
+      playbook: 'fixed',
+    }));
+    writeFileSync(path.join(legacyPanDir, 'launch.json'), JSON.stringify({
+      panRunner: true,
+      version: 1,
+      machine: MACHINE,
+      identity: IDENTITY,
+      itemId: 'item-30',
+      number,
+      sessionId,
+      isolated: false,
+      workingDir: repoDir,
+      slot: null,
+    }));
+    writeFileSync(launcher, 'setInterval(() => {}, 1000);\n');
+    writeFileSync(duplicateLauncher, 'process.exit(0);\n');
+
+    const original = spawn(process.execPath, [launcher], {
+      cwd: repoDir,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    children.push(original);
+    const originalObserved = await waitForLiveProcess(original.pid, launcher);
+    const duplicate = spawn(process.execPath, [duplicateLauncher], {
+      cwd: repoDir,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    children.push(duplicate);
+    const duplicatePid = duplicate.pid;
+    await waitForExit(duplicate);
+    writeFileSync(path.join(legacyPanDir, 'worker.pid'), String(duplicatePid));
+
+    const live = projectItem({
+      itemId: 'item-30',
+      number,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    live.fields[FIELD.playbook] = 'fixed';
+    const deps = {
+      readAllItems: async () => [live],
+      readItemById: async () => live,
+      setTextField: async () => {},
+      setSelectField: async () => {},
+      readDomainFile: async () => { throw new Error('none'); },
+      inspectProcess,
+    };
+    const makeRunner = () => new Runner(
+      baseCfg(sb, { legacyLauncherPids: [original.pid] }),
+      { fields: new Map() },
+      fixedPlaybook(repoDir),
+      deps,
+    );
+    const assertAdoptedInventory = async (runner) => {
+      const sessionPanDir = path.join(stateRootFor(sb, number, sessionId), '.pan');
+      const manifest = JSON.parse(readFileSync(path.join(sessionPanDir, 'attempts.json'), 'utf8'));
+      assert.equal(manifest.attempts.length, 2);
+      const scan = await scanAttempts(
+        sessionPanDir,
+        runner.attemptExpected(live, sessionId),
+        runner.attemptScanOptions(number, sessionId),
+      );
+      assert.equal(scan.live.length, 1);
+      assert.equal(scan.dead.length, 1);
+      assert.equal(scan.uncertain.length, 0);
+      assert.equal(manifest.currentLaunchId, scan.live[0].launchId);
+      assert.equal(scan.live[0].owner.pid, original.pid);
+      assert.equal(scan.live[0].owner.processStart, originalObserved.identity);
+      assert.equal(scan.dead[0].attempt.legacyPid, duplicatePid);
+      const worker = runner.active.get('item-30');
+      assert.ok(worker);
+      assert.equal(worker.launchId, scan.live[0].launchId);
+      assert.notEqual(worker.attemptConflict, true);
+      return manifest;
+    };
+
+    let launches = 0;
+    const first = makeRunner();
+    const concurrent = makeRunner();
+    first.spawnTerminal = async () => { launches += 1; };
+    concurrent.spawnTerminal = async () => { launches += 1; };
+    await Promise.all([first.rehydrate(), concurrent.rehydrate()]);
+    const firstManifest = await assertAdoptedInventory(first);
+    await assertAdoptedInventory(concurrent);
+    assert.equal(launches, 0);
+
+    const restarted = makeRunner();
+    restarted.spawnTerminal = async () => { launches += 1; };
+    await restarted.rehydrate();
+    const restartedManifest = await assertAdoptedInventory(restarted);
+    assert.deepEqual(restartedManifest, firstManifest);
+    assert.equal(launches, 0);
+  } finally {
+    for (const child of children) {
+      if (child.exitCode == null && child.signalCode == null) child.kill('SIGKILL');
+    }
+    await Promise.all(children.map((child) => waitForExit(child).catch(() => null)));
+    sb.cleanup();
+  }
+});
+
+test('startup waits past the former migration lock retry window before rehydrating or polling', async () => {
+  const sb = makeSandbox();
+  let heldLock = null;
+  try {
+    const number = 34;
+    const livePid = 34001;
+    const deadPid = 34002;
+    const processStart = 'legacy-start-34';
+    const sessionId = randomUUID();
+    const rootName = `pan-${number}-${sessionId}`;
+    const legacyRoot = path.join(sb.workspaceRoot, rootName);
+    const legacyPanDir = path.join(legacyRoot, '.pan');
+    const launcher = path.join(legacyPanDir, 'launch.mjs');
+    const repoDir = path.join(sb.dir, 'repo-34');
+    mkdirSync(legacyPanDir, { recursive: true });
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(path.join(legacyPanDir, 'task.json'), JSON.stringify({
+      itemId: 'item-34',
+      number,
+      title: 'Task 34',
+      url: 'https://github.com/example/domain/issues/34',
+      repo: 'example/domain',
+      playbook: 'fixed',
+    }));
+    writeFileSync(path.join(legacyPanDir, 'launch.json'), JSON.stringify({
+      panRunner: true,
+      version: 1,
+      machine: MACHINE,
+      identity: IDENTITY,
+      itemId: 'item-34',
+      number,
+      sessionId,
+      isolated: false,
+      workingDir: repoDir,
+      slot: null,
+    }));
+    writeFileSync(path.join(legacyPanDir, 'worker.pid'), String(deadPid));
+    writeFileSync(launcher, '// legacy launcher');
+
+    const live = projectItem({
+      itemId: 'item-34',
+      number,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    live.fields[FIELD.playbook] = 'fixed';
+    const deps = {
+      readAllItems: async () => [live],
+      readItemById: async () => live,
+      setTextField: async () => {},
+      setSelectField: async () => {},
+      readDomainFile: async () => { throw new Error('none'); },
+      inspectProcess: async (pid) => (
+        pid === livePid
+          ? { state: 'live', identity: processStart, command: `node ${launcher}` }
+          : { state: 'dead', reason: 'gone' }
+      ),
+    };
+    const cfg = baseCfg(sb, { legacyLauncherPids: [livePid] });
+    const lockHolder = new Runner(cfg, { fields: new Map() }, fixedPlaybook(repoDir), deps);
+    heldLock = await lockHolder.acquireTaskLaunchLock(live.itemId);
+
+    const runner = new Runner(cfg, { fields: new Map() }, fixedPlaybook(repoDir), deps);
+    let launches = 0;
+    let pollCalled = false;
+    let contentionCount = 0;
+    let releaseFormerWindow;
+    const formerWindowExceeded = new Promise((resolve) => {
+      releaseFormerWindow = resolve;
+    });
+    const originalAcquire = runner.acquireTaskLaunchLock.bind(runner);
+    runner.acquireTaskLaunchLock = async (...args) => {
+      try {
+        return await originalAcquire(...args);
+      } catch (error) {
+        if (/held by live runner PID/.test(error.message)) {
+          contentionCount += 1;
+          if (contentionCount === 51) releaseFormerWindow();
+        }
+        throw error;
+      }
+    };
+    const migrationContexts = [];
+    const originalMigrationAcquire = runner.acquireMigrationTaskLaunchLock.bind(runner);
+    runner.acquireMigrationTaskLaunchLock = async (itemId, context) => {
+      migrationContexts.push(context);
+      return originalMigrationAcquire(itemId, context);
+    };
+    runner.spawnTerminal = async () => { launches += 1; };
+    runner.pollAndClaim = async () => {
+      pollCalled = true;
+      const sessionPanDir = path.join(stateRootFor(sb, number, sessionId), '.pan');
+      const manifest = JSON.parse(readFileSync(path.join(sessionPanDir, 'attempts.json'), 'utf8'));
+      const scan = await scanAttempts(
+        sessionPanDir,
+        runner.attemptExpected(live, sessionId),
+        runner.attemptScanOptions(number, sessionId),
+      );
+      assert.equal(manifest.attempts.length, 2);
+      assert.equal(scan.live.length, 1);
+      assert.equal(scan.dead.length, 1);
+      assert.equal(scan.uncertain.length, 0);
+      assert.equal(manifest.currentLaunchId, scan.live[0].launchId);
+      assert.equal(scan.live[0].owner.pid, livePid);
+      assert.equal(runner.active.get(live.itemId).launchId, scan.live[0].launchId);
+      return { candidates: 0, claimed: 0 };
+    };
+    runner.superviseTick = async () => {};
+    runner.activeCount = () => 0;
+
+    let startupSettled = false;
+    const startup = runner.loop({ once: true });
+    startup.then(
+      () => { startupSettled = true; },
+      () => { startupSettled = true; },
+    );
+    let formerWindowTimer;
+    try {
+      await Promise.race([
+        formerWindowExceeded,
+        new Promise((_, reject) => {
+          formerWindowTimer = setTimeout(
+            () => reject(new Error('startup did not contend beyond 50 migration lock attempts')),
+            10000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(formerWindowTimer);
+    }
+
+    assert.equal(startupSettled, false, 'startup remains blocked after the former retry limit');
+    assert.equal(pollCalled, false, 'polling cannot start while known migration inventory is blocked');
+    assert.equal(
+      existsSync(path.join(stateRootFor(sb, number, sessionId), '.pan', 'attempts.json')),
+      false,
+      'the blocked configured inventory has not yet created a misleading partial manifest',
+    );
+
+    await lockHolder.releaseTaskLaunchLock(heldLock, 'migration barrier test');
+    heldLock = null;
+    await startup;
+
+    assert.equal(launches, 0);
+    assert.equal(pollCalled, true);
+    assert.ok(contentionCount > 50);
+    assert.deepEqual(
+      migrationContexts.map((context) => context.split(' for ')[0]),
+      [
+        'configured legacy inventory',
+        'discovered legacy inventory',
+        'post-inventory current-attempt selection',
+      ],
+    );
+  } finally {
+    if (heldLock) {
+      const cleanupRunner = new Runner(
+        baseCfg(sb),
+        { fields: new Map() },
+        new Map(),
+        {
+          readAllItems: async () => [],
+          inspectProcess,
+        },
+      );
+      await cleanupRunner.releaseTaskLaunchLock(heldLock, 'migration barrier test cleanup');
+    }
+    sb.cleanup();
+  }
+});
+
+test('startup aborts instead of self-contending when migration lock release fails', async () => {
+  const sb = makeSandbox();
+  let heldLock = null;
+  try {
+    const number = 35;
+    const pid = 35001;
+    const sessionId = randomUUID();
+    const missingLauncher = path.join(
+      sb.workspaceRoot,
+      `pan-${number}-${sessionId}`,
+      '.pan',
+      'launch.mjs',
+    );
+    const repoDir = path.join(sb.dir, 'repo-35');
+    mkdirSync(repoDir, { recursive: true });
+    const live = projectItem({
+      itemId: 'item-35',
+      number,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    live.fields[FIELD.playbook] = 'fixed';
+    const deps = {
+      readAllItems: async () => [live],
+      readItemById: async () => live,
+      setTextField: async () => {},
+      setSelectField: async () => {},
+      readDomainFile: async () => { throw new Error('none'); },
+      inspectProcess: async (candidate) => (
+        candidate === pid
+          ? {
+            state: 'live',
+            identity: 'legacy-start-35',
+            command: `node ${missingLauncher}`,
+          }
+          : { state: 'dead', reason: 'gone' }
+      ),
+    };
+    const runner = new Runner(
+      baseCfg(sb, { legacyLauncherPids: [pid] }),
+      { fields: new Map() },
+      fixedPlaybook(repoDir),
+      deps,
+    );
+
+    let migrationAcquireCount = 0;
+    const originalMigrationAcquire = runner.acquireMigrationTaskLaunchLock.bind(runner);
+    runner.acquireMigrationTaskLaunchLock = async (...args) => {
+      migrationAcquireCount += 1;
+      const lock = await originalMigrationAcquire(...args);
+      heldLock = lock;
+      return {
+        ...lock,
+        claimPath: path.join(path.dirname(lock.claimPath), `${randomUUID()}.json`),
+      };
+    };
+    let pollCalled = false;
+    runner.pollAndClaim = async () => {
+      pollCalled = true;
+      return { candidates: 0, claimed: 0 };
+    };
+
+    let timeout;
+    try {
+      await assert.rejects(
+        Promise.race([
+          runner.loop({ once: true }),
+          new Promise((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error('startup entered self-contention after release failure')),
+              5000,
+            );
+          }),
+        ]),
+        /migration: cannot release configured legacy inventory.*aborting startup fail-closed.*no longer owned/i,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    assert.equal(migrationAcquireCount, 1, 'startup must not acquire the next migration phase');
+    assert.equal(pollCalled, false, 'polling must not start after a migration release failure');
+    assert.equal(existsSync(heldLock.claimPath), true, 'the unreleased live claim remains for cleanup');
+  } finally {
+    if (heldLock) {
+      const cleanupRunner = new Runner(
+        baseCfg(sb),
+        { fields: new Map() },
+        new Map(),
+        {
+          readAllItems: async () => [],
+          inspectProcess,
+        },
+      );
+      await cleanupRunner.releaseTaskLaunchLock(heldLock, 'migration release failure test cleanup');
+    }
+    sb.cleanup();
+  }
+});
+
+test('legacy current selection is discovery-order independent', async () => {
+  const sb = makeSandbox();
+  try {
+    const number = 31;
+    const livePid = 31031;
+    const deadPid = 31032;
+    const processStart = 'legacy-start-31';
+    const sessionId = randomUUID();
+    const legacyRoot = path.join(sb.workspaceRoot, `pan-${number}-${sessionId}`);
+    const legacyPanDir = path.join(legacyRoot, '.pan');
+    const launcher = path.join(legacyPanDir, 'launch.mjs');
+    const repoDir = path.join(sb.dir, 'repo-31');
+    mkdirSync(legacyPanDir, { recursive: true });
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(path.join(legacyPanDir, 'task.json'), JSON.stringify({
+      itemId: 'item-31',
+      number,
+      title: 'Task 31',
+      url: 'https://github.com/example/domain/issues/31',
+      repo: 'example/domain',
+      playbook: 'fixed',
+    }));
+    writeFileSync(path.join(legacyPanDir, 'launch.json'), JSON.stringify({
+      panRunner: true,
+      version: 1,
+      machine: MACHINE,
+      identity: IDENTITY,
+      itemId: 'item-31',
+      number,
+      sessionId,
+      isolated: false,
+      workingDir: repoDir,
+      slot: null,
+    }));
+    writeFileSync(path.join(legacyPanDir, 'worker.pid'), String(deadPid));
+    writeFileSync(launcher, '// legacy launcher');
+
+    const live = projectItem({
+      itemId: 'item-31',
+      number,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    live.fields[FIELD.playbook] = 'fixed';
+    const deps = {
+      readAllItems: async () => [live],
+      readItemById: async () => live,
+      setTextField: async () => {},
+      setSelectField: async () => {},
+      readDomainFile: async () => { throw new Error('none'); },
+      inspectProcess: async (pid) => (
+        pid === livePid
+          ? { state: 'live', identity: processStart, command: `node ${launcher}` }
+          : { state: 'dead', reason: 'gone' }
+      ),
+    };
+    const makeRunner = () => new Runner(
+      baseCfg(sb, { legacyLauncherPids: [livePid] }),
+      { fields: new Map() },
+      fixedPlaybook(repoDir),
+      deps,
+    );
+
+    const reversed = makeRunner();
+    await reversed.migrateLegacySessions([live]);
+    await reversed.migrateConfiguredLegacyLaunchers([live]);
+    await reversed.selectMigratedCurrentAttempts([live]);
+
+    const restarted = makeRunner();
+    await restarted.rehydrate();
+    const sessionPanDir = path.join(stateRootFor(sb, number, sessionId), '.pan');
+    const manifest = JSON.parse(readFileSync(path.join(sessionPanDir, 'attempts.json'), 'utf8'));
+    const scan = await scanAttempts(
+      sessionPanDir,
+      restarted.attemptExpected(live, sessionId),
+      restarted.attemptScanOptions(number, sessionId),
+    );
+    assert.equal(manifest.attempts.length, 2);
+    assert.equal(scan.live.length, 1);
+    assert.equal(scan.dead.length, 1);
+    assert.equal(manifest.currentLaunchId, scan.live[0].launchId);
+    assert.equal(restarted.active.get('item-31').launchId, scan.live[0].launchId);
+    assert.notEqual(restarted.active.get('item-31').attemptConflict, true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('legacy current selection leaves multiple-live and uncertain inventories fail-closed', async () => {
+  for (const duplicateState of ['live', 'unknown']) {
+    const sb = makeSandbox();
+    try {
+      const number = duplicateState === 'live' ? 32 : 33;
+      const livePid = number * 1000 + 1;
+      const duplicatePid = number * 1000 + 2;
+      const sessionId = randomUUID();
+      const legacyRoot = path.join(sb.workspaceRoot, `pan-${number}-${sessionId}`);
+      const legacyPanDir = path.join(legacyRoot, '.pan');
+      const launcher = path.join(legacyPanDir, 'launch.mjs');
+      const repoDir = path.join(sb.dir, `repo-${number}`);
+      mkdirSync(legacyPanDir, { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      writeFileSync(path.join(legacyPanDir, 'task.json'), JSON.stringify({
+        itemId: `item-${number}`,
+        number,
+        title: `Task ${number}`,
+        url: `https://github.com/example/domain/issues/${number}`,
+        repo: 'example/domain',
+        playbook: 'fixed',
+      }));
+      writeFileSync(path.join(legacyPanDir, 'launch.json'), JSON.stringify({
+        panRunner: true,
+        version: 1,
+        machine: MACHINE,
+        identity: IDENTITY,
+        itemId: `item-${number}`,
+        number,
+        sessionId,
+        isolated: false,
+        workingDir: repoDir,
+        slot: null,
+      }));
+      writeFileSync(path.join(legacyPanDir, 'worker.pid'), String(duplicatePid));
+      writeFileSync(launcher, '// legacy launcher');
+
+      const item = projectItem({
+        itemId: `item-${number}`,
+        number,
+        status: 'in-progress',
+        machine: MACHINE,
+        sessionId,
+        claimedBy: IDENTITY,
+        leaseUntil: VALID_LEASE,
+      });
+      item.fields[FIELD.playbook] = 'fixed';
+      const runner = new Runner(
+        baseCfg(sb, { legacyLauncherPids: [livePid] }),
+        { fields: new Map() },
+        fixedPlaybook(repoDir),
+        {
+          readAllItems: async () => [item],
+          readItemById: async () => item,
+          setTextField: async () => {},
+          setSelectField: async () => {},
+          readDomainFile: async () => { throw new Error('none'); },
+          inspectProcess: async (pid) => {
+            if (pid === livePid) {
+              return { state: 'live', identity: `start-${livePid}`, command: `node ${launcher}` };
+            }
+            if (pid === duplicatePid && duplicateState === 'live') {
+              return { state: 'live', identity: `start-${duplicatePid}`, command: `node ${launcher}` };
+            }
+            if (pid === duplicatePid) {
+              return { state: 'unknown', reason: 'permission denied' };
+            }
+            return { state: 'dead', reason: 'gone' };
+          },
+        },
+      );
+
+      await runner.rehydrate();
+
+      const sessionPanDir = path.join(stateRootFor(sb, number, sessionId), '.pan');
+      const manifest = JSON.parse(readFileSync(path.join(sessionPanDir, 'attempts.json'), 'utf8'));
+      assert.equal(manifest.attempts.length, 2);
+      const worker = runner.active.get(item.itemId);
+      assert.ok(worker);
+      assert.equal(worker.attemptConflict, true);
+      assert.match(
+        worker.conflictReason,
+        duplicateState === 'live' ? /multiple live/ : /ownership is uncertain/,
+      );
+    } finally {
+      sb.cleanup();
+    }
   }
 });
 
