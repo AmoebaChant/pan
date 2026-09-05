@@ -17,7 +17,7 @@ reads as its documented default rather than as an error.
 | `owner` | single select | triage | `unassigned` \| `human` \| `agent`. Empty reads as `unassigned`. Separates the human queue from the agent queue; nothing else does. |
 | `Status` | single select | triage, then the runner | `untriaged` \| `needs-detail` \| `ready` \| `in-progress` \| `paused` \| `in-review` \| `done` \| `rejected` \| `blocked`. Empty reads as `untriaged`. |
 | `priority` | single select | triage | `urgent` \| `high` \| `normal` \| `low`. Empty reads as `normal`. |
-| `next-action-date` | date | triage, Daily Briefing, reconciliation | The sole nonterminal human planning signal: past means overdue or punted, today means selected in the agreed daily plan, future records a prior deferral, and empty means unscheduled. It schedules attention rather than a deadline. Agent-owned and terminal human tasks leave it empty. Recurring tasks keep cadence and their nominal occurrence in the Issue body; moving this field does not move the recurrence and requires a valid occurrence marker. See [Daily Briefing](daily-briefing.md) and [recurrence](recurrence.md). |
+| `next-action-date` | date | triage, Daily Briefing, reconciliation | The sole nonterminal human planning signal for Project-managed work: past means overdue or punted, today means selected in the agreed daily plan, future records a prior deferral, and empty means unscheduled. It schedules attention rather than a deadline. Agent-owned and terminal human tasks leave it empty. GitHub-authoritative recurring tasks keep cadence and their nominal occurrence in the Issue body; moving this field does not move the recurrence and requires a valid occurrence marker. See [Daily Briefing](daily-briefing.md) and [recurrence](recurrence.md). |
 | `playbook` | text | triage | The name of the playbook that should run this task (see [playbooks](playbooks.md)). Empty means no playbook has been chosen yet. |
 | `workstream` | text | triage | Optional path relative to `workstreams/`. Empty means the task has no workstream. |
 | `needs-human-since` | text | the worker | RFC 3339 UTC timestamp. Non-empty means a live worker is waiting for the user right now. |
@@ -195,8 +195,8 @@ paused --owning machine resumes--> in-progress
 in-progress / paused --> in-review / done   (normal completion)
 paused --triage clears resume info--> ready  (manual cross-machine handoff)
 untriaged / needs-detail / ready / paused / in-review / blocked --user declines--> rejected
-recurring human --completed closure / rollover--> successor ready + current done
-recurring human --not-planned closure--> current rejected (series ends)
+GitHub-authoritative recurring human --completed closure / rollover--> successor ready + current done
+GitHub-authoritative recurring human --not-planned closure--> current rejected (series ends)
 ```
 
 Machine-pinning applies only to **resumes**: `ready` work is never pinned, so

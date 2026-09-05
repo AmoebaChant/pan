@@ -26,11 +26,11 @@ the task needs — [`triage.md`](system/triage.md),
 [`workstreams.md`](system/workstreams.md),
 [`playbooks.md`](system/playbooks.md). Also read the Domain's `pan.md` if it has
 one. A configured external human task manager is authoritative for eligible
-human tasks; GitHub remains canonical for agent tasks, recurring tasks, and
-explicitly retained lifecycle or audit classes. Read authoritative state live
-and verify writes. For a Daily Briefing, completely enumerate both the external
-human queue and GitHub's agent, recurring, and explicitly retained Project
-items.
+human tasks, including recurrence when the Domain contract defines its complete
+lifecycle. GitHub remains canonical for agent tasks and explicitly retained
+lifecycle or audit classes. Read authoritative state live and verify writes.
+For a Daily Briefing, completely enumerate the external human queue and every
+GitHub-retained Project item.
 
 ## If you were asked to change Pan itself
 

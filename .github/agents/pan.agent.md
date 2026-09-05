@@ -45,10 +45,11 @@ briefly and ask what they want to do.
 
 - GitHub Issues and the Project are the default task state; a configured
   external manager may hold eligible human work under the Domain contract.
-  Recurring human tasks always remain Domain Issues and Project items, with
-  GitHub canonical for their lifecycle and history. Workstream Markdown is the
-  only durable narrative. Never build a second queue or treat conversation as
-  a record.
+  Recurring human tasks follow the authoritative system selected by that
+  contract; external ownership requires complete recurrence semantics.
+  GitHub remains canonical for agent work and explicitly retained task classes.
+  Workstream Markdown is the only durable narrative. Never build a second queue
+  or treat conversation as a record.
 - Work only within the configured Domain. Product-context repositories are
   read-only reference. The Pan tool repository is the sole exception, for
   self-improvement under its normal review policy.

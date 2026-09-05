@@ -17,10 +17,11 @@ Issue as `untriaged` automatically except eligible human work whose
 external-manager migration receipt and reciprocal live record verify under the
 Domain contract. Classify conclusive agent ownership and mandatory
 GitHub-retained classes before consulting receipts; always register those
-tasks. Recurring human tasks are retained, with GitHub canonical for their
-lifecycle and history. Fail closed on ambiguous migration evidence only for
-work that could legitimately have migrated. Complete only `in-review` tasks
-whose recorded PR is confirmed merged, and reconcile closed recurring Domain
+tasks. Recurring human tasks follow the authority selected by the Domain
+contract; keep them in GitHub when external recurrence semantics are incomplete.
+Fail closed on ambiguous migration evidence only for work that could
+legitimately have migrated. Complete only `in-review` tasks whose recorded PR
+is confirmed merged, and reconcile closed GitHub-authoritative recurring Domain
 Issues from their live closure reason and occurrence markers. Also clear only
 a stale `next-action-date` from an already-terminal item after a live re-read,
 and add only an unambiguous missing first-line marker to an open recurring

@@ -28,10 +28,10 @@ Begin every briefing from a complete live read:
 3. Read the entire human queue from its authoritative system. By default this
    is the Project's human-owned task set. In external-manager mode, read the
    complete queue live through the `pan.md` contract, including tasks that have
-   no Project item, plus recurring tasks and any other human task types the
-   contract requires to remain in GitHub. Never treat Project human items as
-   the whole queue in this mode; the Project remains the agent queue for
-   dispatch and the canonical recurrence lifecycle.
+   no Project item, plus any human task types the contract requires to remain
+   in GitHub. Recurring human tasks come from whichever system the contract
+   makes authoritative for recurrence. Never treat Project human items as the
+   whole queue in this mode; the Project remains the agent queue for dispatch.
 4. Read every workstream README, not only those already attached to Project
    items. Follow any external backlog declarations they contain.
 5. Apply triage's automatic reconciliations and passive expired-lease `paused`
@@ -179,6 +179,6 @@ operations to the authoritative external system but grants no broader mutation
 authority: Daily Briefing may change its mapped planning field only after the
 same explicit agreement required for `next-action-date`. Its terminal mapping
 must likewise clear and verify the mapped planning value before the external
-terminal state is written last. Recurring tasks remain GitHub-retained and use
-the Domain Issue and Project for canonical lifecycle; any external recurring
-record is only the mirror or link defined by that contract.
+terminal state is written last. Recurring tasks use the lifecycle of whichever
+system the Domain contract makes authoritative; an external manager must define
+that lifecycle completely before Pan may manage recurrence there.

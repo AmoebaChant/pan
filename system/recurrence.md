@@ -1,21 +1,25 @@
 # Recurring tasks
 
-A recurring human commitment is a series of ordinary Pan tasks. Each
-occurrence has its own Domain Issue and Project item. Closing an occurrence as
-completed requires one successor; Pan may create it as part of an interactive
-completion or reconcile it during the next triage after another client closes
-the Issue. Pan never keeps one Issue open forever by overwriting its date:
-separate Issues preserve the instructions, discussion, completion record, and
-Project history for every occurrence.
+A recurring human commitment lives in the authoritative human task system.
+Without a Domain-configured external manager, each occurrence is a Domain Issue
+and Project item. Closing an occurrence as completed requires one successor;
+Pan may create it as part of an interactive completion or reconcile it during
+the next triage after another client closes the Issue. Pan never keeps one
+GitHub-managed Issue open forever by overwriting its date: separate Issues
+preserve the instructions, discussion, completion record, and Project history
+for every occurrence.
 
-Recurrence is supported for `human`-owned Issues in the configured Domain
-repository. Every occurrence remains a Domain Issue and Project item even when
-the Domain configures an external human task manager, because recurrence
-lifecycle and history are Issue- and Project-based. The external manager may
-mirror or link a recurring occurrence only when its contract defines that
-behavior; GitHub remains canonical, and no migration receipt permits Project
-removal. Agent-owned and external-backlog Issues use the ordinary non-recurring
-lifecycle.
+A complete external-manager contract may instead make that manager authoritative
+for recurring human tasks. It must define cadence, completion, cancellation,
+successor or history behavior, planning-field mappings, and verification.
+Pan then uses the manager's native recurrence lifecycle and does not create or
+retain Domain Issues merely to duplicate it. If the contract omits recurrence
+semantics, recurring human tasks remain GitHub-authoritative and are not
+eligible for migration.
+
+The remaining sections describe GitHub-authoritative recurrence for
+`human`-owned Issues in the configured Domain repository. Agent-owned and
+external-backlog Issues use the ordinary non-recurring lifecycle.
 
 ## Declaring recurrence
 

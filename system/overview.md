@@ -35,11 +35,11 @@ Pan works with exactly **one** Domain at a time. The default task system is
 GitHub Issues plus the connected Project. A Domain may explicitly opt into an
 external human task manager in its `pan.md`; in that mode, human-owned tasks
 eligible for migration live in that system while the GitHub Project remains
-the agent dispatch queue. Recurring human tasks and any other human audit or
-lifecycle classes the Domain explicitly retains stay as Domain Issues and
-Project items. GitHub remains canonical for recurring lifecycle and history;
-an external manager may only mirror or link recurring work when its contract
-says how.
+the agent dispatch queue. The Domain contract decides whether recurring human
+tasks also move to that manager or remain as Domain Issues and Project items.
+An external manager may own recurrence only when its contract defines the
+cadence, completion, cancellation, and history semantics completely. Any human
+audit or lifecycle classes the Domain explicitly retains stay in GitHub.
 
 ## The loop
 
@@ -61,8 +61,9 @@ says how.
    [worker base instructions](worker-base-instructions.md).
 6. Findings and decisions are written back to **workstreams**; task lifecycle
    lives on the Project or, for eligible human work under a Domain-designated
-   human task manager, in that external system. Recurring lifecycle always
-   remains in GitHub. See [workstreams](workstreams.md).
+   human task manager, in that external system. Recurring lifecycle follows the
+   authoritative system selected by the Domain contract. See
+   [workstreams](workstreams.md).
 
 ## Reading these documents
 
@@ -85,9 +86,10 @@ Load only what the current job needs; skip the rest until you need it.
 ## State rules
 
 By default, GitHub Issues and the Project are the only task state. A Domain that
-explicitly enables an external human task manager may keep human-owned task
-state there except for recurring tasks and other explicitly GitHub-retained
-classes; workstream Markdown remains the only durable narrative.
+explicitly enables an external human task manager may keep eligible human-owned
+task state there, including recurrence when the Domain contract fully defines
+it. Human task classes explicitly retained by the Domain remain in GitHub;
+workstream Markdown remains the only durable narrative.
 Conversation history is not a record of anything. Never build an undeclared
 second queue, cache the backlog, or treat a prior read as current: read live
 from each declared task system in the turn you act, and verify writes afterward.

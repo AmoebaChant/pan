@@ -17,10 +17,10 @@ in the Domain.
 - **Issues** in this repository are the tasks. By default every Issue belongs
   to the connected Project. A Domain-configured external human task manager may
   move an eligible verified human task out of the Project under the contract
-  below. Agent work, every recurring human task, and explicitly retained audit
-  or lifecycle task types stay in GitHub. An external manager may mirror or
-  link recurring work only when its contract defines that behavior; the Domain
-  Issue and Project remain canonical for recurrence lifecycle and history.
+  below. Agent work and explicitly retained audit or lifecycle task types stay
+  in GitHub. The Domain contract decides whether recurring human work moves to
+  the external manager or remains in GitHub; external ownership requires a
+  complete recurrence lifecycle definition.
 - **The Project** holds each task's lifecycle and fields. See
   [project schema](project-schema.md).
 - **Workstreams** are the durable narrative for each area of work. See
@@ -82,19 +82,24 @@ tasks by declaring it in `pan.md`. The declaration must provide:
 - complete live queue enumeration, task lookup, field mappings, terminal-state
   mappings, access, and write verification;
 - a durable location on the external task that stores the canonical source
-  Issue URL;
+  Issue URL while the source Issue is retained, plus any policy that permits
+  deleting the source and removing its dead backlink after migration;
 - the data that makes a migration complete, including every source field,
   comment, or other value the Domain requires;
 - a live task-type classification rule and the explicit task types that must
   remain GitHub Project items for audit or lifecycle reasons (an explicit empty
-  list is valid; an omitted rule or list is incomplete). Recurring human tasks
-  are always retained independently of this list; and
+  list is valid; an omitted rule or list is incomplete);
+- whether recurring human tasks remain GitHub-authoritative or move to the
+  external manager. External recurrence ownership must define cadence,
+  completion, cancellation, successor/history behavior, and planning-field
+  mappings; and
 - duplicate handling, assignee exclusions, and any approval or deletion policy.
 
 Only human work outside every mandatory GitHub-retained class is eligible for
-migration. After creating an external task for eligible work and verifying its
-complete data and source Issue URL, migration records a dedicated comment on
-the source Issue whose first line is:
+migration. Recurring work is eligible only when the Domain contract makes the
+external manager authoritative for recurrence. After creating an external task
+for eligible work and verifying its complete data and source Issue URL,
+migration records a dedicated comment on the source Issue whose first line is:
 
 ```text
 Pan: external human task <manager-key> <stable-task-id>
@@ -104,23 +109,28 @@ The manager key and identifier must resolve through the current `pan.md`
 contract without interpretation. The external task must point back to that
 exact Issue URL. Only this reciprocal, live-verified pair proves that a human
 task was migrated; the Issue comment alone is not sufficient. Write and verify
-the receipt before removing the Project item. For a recurring or otherwise
-GitHub-retained task, an external record may be only a mirror or link when the
-contract permits it; a receipt never authorizes Project removal or transfers
-canonical lifecycle.
+the receipt before removing the Project item or performing any
+contract-approved source deletion. If the source is retained, keep the
+reciprocal pointers. If the contract permits deleting it after verified
+migration, the external task becomes the sole task record and the contract
+decides whether its now-dead source backlink is retained as provenance or
+removed. For a task type the contract keeps GitHub-authoritative, an external
+record may be only a mirror or link; a receipt never authorizes Project removal
+or transfers canonical lifecycle.
 
 This receipt is a cross-system pointer, not another queue or a cache of task
-state. Pan reads the source Issue, current Domain contract, and authoritative
-external task live whenever it uses the receipt. Before doing so for
-registration, Pan first determines from live durable evidence whether the Issue
-is conclusively agent-owned or belongs to a mandatory GitHub-retained class,
-including recurrence. Those Issues are always represented in the Project even
-when a receipt is malformed, conflicting, or present. Only an Issue that could
-legitimately be migrated human work is decided by its receipt. For such an
-Issue, a missing external record, malformed or conflicting receipt, backlink
-mismatch, incomplete migrated data, or indeterminate classification makes the
-migration evidence ambiguous: make no registration, removal, or planning write
-for that Issue, report the gap, and do not claim a complete queue.
+state. While the source Issue is retained, Pan reads it, the current Domain
+contract, and the authoritative external task live whenever it uses the
+receipt. Before doing so for registration, Pan first determines from live
+durable evidence whether the Issue is conclusively agent-owned or belongs to a
+mandatory GitHub-retained class. Those Issues are always represented in the
+Project even when a receipt is malformed, conflicting, or present. Only an
+Issue that could legitimately be migrated human work is decided by its receipt.
+For such an Issue, a missing external record, malformed or conflicting receipt,
+backlink mismatch, incomplete migrated data, or indeterminate classification
+makes the migration evidence ambiguous: make no registration, removal, or
+planning write for that Issue, report the gap, and do not claim a complete
+queue.
 
 ## Boundaries
 
