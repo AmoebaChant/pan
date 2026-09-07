@@ -2,7 +2,8 @@
 
 GitHub Copilot CLI and similar agents auto-load this file. Read it before
 acting. This repository *is* Pan: the system is defined in Markdown under
-[`system/`](system/overview.md), with one small runner program as the only code.
+[`system/`](system/overview.md), with a small runner and an optional local
+Daily Briefing review service as the only code.
 
 ## If you were asked to "onboard to Pan" or "set up Pan"
 

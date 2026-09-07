@@ -6,8 +6,9 @@ machines supplied with work, and gets blocked agents back in front of you fast.
 
 Pan is defined almost entirely in Markdown. The contracts under
 [`system/`](system/overview.md) *are* the system — an agent that follows them is
-Pan. The only program is a small [runner](system/runner.md) that polls for work
-and launches Pan worker sessions.
+Pan. Its only programs are a small [runner](system/runner.md) that polls for
+work and launches Pan worker sessions, and an optional local
+[Daily Briefing review service](system/briefing-ui.md).
 
 - Your data lives in a private GitHub repository + Project called a **Domain**.
 - This public repository holds only the reusable system and holds no user data.
@@ -33,6 +34,38 @@ node bin/pan-runner.js --config <path-to-local-config> [--once]
 ```
 
 See [`system/runner.md`](system/runner.md) for the full contract.
+
+## Local Daily Briefing UI
+
+Pan includes an optional responsive review page for marking up a complete Daily
+Briefing proposal and sending one batch of feedback back to the Pan session.
+It is served by a local MCP process and keeps no database:
+
+```sh
+node bin/pan-briefing-mcp.js --demo
+```
+
+That safe fixture mode is available at `http://127.0.0.1:4319/` and does not
+connect to Copilot or any live task system. For MCP-backed use, save the
+following as checkout-local `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "pan-briefing": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["bin/pan-briefing-mcp.js"],
+      "tools": ["*"],
+      "timeout": 43200000
+    }
+  }
+}
+```
+
+The live page is available at `http://127.0.0.1:4318/` while a Copilot session
+in this checkout is using the MCP server. See
+[`system/briefing-ui.md`](system/briefing-ui.md).
 
 ## Requirements
 

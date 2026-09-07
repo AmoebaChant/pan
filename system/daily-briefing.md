@@ -95,17 +95,91 @@ proportional to its relevance today, and include:
 - optional Domain-specific considerations, such as meetings or another
   read-only context source named in `pan.md`.
 
+Pan makes the recommendation before presenting the proposal. It must consider
+every nonterminal human task and produce a realistically sized Today set. The
+user is reviewing Pan's judgment, not sorting an undecided queue: never present
+every task as a neutral "accept or postpone" choice.
+
+The reviewable proposal is intentionally narrower than the complete queue:
+
+- **Today** contains every task Pan recommends doing today, regardless of its
+  current planning date.
+- **Not today** contains every overdue or currently-today task that Pan does not
+  recommend for Today. Explain why each one should be deferred and show its
+  proposed future date or date removal.
+- Do not render future-dated or undated tasks merely to say they are not
+  recommended today. Pan still evaluates them against current context, but if
+  they are not selected for Today their planning dates remain unchanged.
+
+Existing planning dates are evidence about prior intent and unresolved
+commitments, but they are not authoritative assignments for the new day. An
+undated, overdue, or future-dated task may be recommended Today when current
+context supports it.
+
+Every briefing reconsiders every nonterminal human task from current context,
+including tasks whose durable planning guidance previously said to wait for a
+particular kind of day or situation. Guidance such as "next week," "when I have
+more energy," "on a quiet day," or "when I am already downtown" is a condition
+to evaluate, not an instruction to manufacture one arbitrary future date.
+Explain when today's context does or does not satisfy that condition.
+
 Show every proposed `next-action-date` change, or mapped external equivalent,
-including how each past or already-today nonterminal task would be resolved,
-but do not write those changes yet. Preserve Project order as precedence among
-otherwise comparable Project tasks and use the external manager's configured
-ordering for its queue.
+for the tasks included in the focused proposal, but do not write those changes
+yet. This includes an explicit disposition for every overdue and
+currently-today task. Preserve Project order as precedence among otherwise
+comparable Project tasks and use the external manager's configured ordering for
+its queue.
 
 The user may steer the plan using context that task state cannot express:
 meetings, energy, a rare collaboration opportunity, a desired primary focus,
 or any other constraint. Revise the recommendation until the user explicitly
 agrees to one plan. A request to start a briefing is not approval of its first
 recommendation.
+
+When the optional [Daily Briefing review UI](briefing-ui.md) is available, Pan
+may publish the complete recommendation there. It gives the user the clickable
+review URL before waiting for one complete marked-up review. A side question in
+the Pan conversation does not end the review loop: after answering, Pan resumes
+the wait for the same revision unless the user explicitly pauses, cancels, or
+redirects the briefing. The browser is only a presentation and input surface:
+task-level accepts and steering remain a draft until the user submits the whole
+review, and sending that feedback is not plan approval. Pan incorporates the
+complete review, publishes a new complete revision when needed, and treats only
+the UI's explicit approval action as the agreement required below.
+The UI's Agree/Disagree controls refer to Pan's already-made Today or Not today
+recommendation; they are not the mechanism that initially classifies tasks.
+
+In a revised proposal, distinguish the user's action from Pan's response.
+Never describe a task as "accepted" when the user disagreed with the prior
+recommendation. Say what changed, for example "Your guidance was incorporated;
+this remains off today's plan and will be reconsidered daily." A date or label
+in the revised proposal describes Pan's current recommendation, not the user's
+approval of it.
+
+## Durable planning guidance
+
+When the user gives a durable reason or situational condition for selecting or
+deferring a human task, preserve that guidance on the task in its authoritative
+system after plan approval. This is task context for future briefings, not
+another scheduling field:
+
+- In a system with a task description or notes field, maintain one line in that
+  field beginning `Pan planning guidance:` followed by the user's concise,
+  faithful wording. Replace that line when the user gives superseding guidance;
+  remove it when the user explicitly withdraws the guidance.
+- For a retained GitHub Issue, maintain the same marker in the Issue body.
+- Preserve unrelated description, notes, comments, and metadata exactly.
+
+Vague temporal language remains vague. Do not translate "next week" into a
+specific weekday, or "on a quiet day" into a guessed calendar date. The next
+briefing reads the guidance and evaluates it against the complete live picture.
+If the user provides an explicit calendar date, Pan may use that date as both
+guidance and a planning date when the agreed plan calls for it.
+
+The browser draft, MCP service, and conversation are never the durable copy. If
+the authoritative task has no writable description, notes, or body field, Pan
+must report that the guidance cannot be preserved and stop before claiming the
+approved plan was fully applied.
 
 ## Apply the agreed plan
 
@@ -114,10 +188,17 @@ and its complete queue remain readable. If not, make no planning-date writes.
 Then re-read every affected task in its authoritative system and update only
 human-owned tasks' `next-action-date` values or mapped external equivalents:
 
-- exactly the agreed nonterminal human tasks receive today's date;
-- every other nonterminal human task that was dated today or in the past
-  receives an agreed future date or is explicitly cleared;
-- unrelated future and empty dates on nonterminal tasks remain unchanged.
+- exactly the agreed Today tasks receive today's date;
+- each agreed Not today task that was overdue or dated today receives its agreed
+  future date or has its date cleared; and
+- unrelated future and empty dates on tasks omitted from the focused proposal
+  remain unchanged.
+
+Write and verify any agreed `Pan planning guidance:` update before changing its
+planning date. If the guidance write or verification fails, stop before making
+that task's date change and report the confirmed partial state. Never invent a
+future date merely to keep a deferred task visible: complete daily enumeration,
+not future-dating, makes it visible for reconsideration.
 
 The briefing never assigns `next-action-date` to agent-owned tasks. They run
 when their lifecycle and playbook dispatch permit, even when the briefing
@@ -136,18 +217,18 @@ Verify every write and finish only when every nonterminal human planning date
 is empty, today, or in the future, and every terminal human planning date is
 empty. If a stale terminal date remains, report the lifecycle conflict and do
 not claim the briefing invariant is satisfied. Never silently clear an overdue
-or previously selected date: its disposition is part of the agreement. Report
-the confirmed plan and date changes concisely.
+or previously selected date: its disposition must appear in the agreed focused
+proposal. Report the confirmed plan and date changes concisely.
 
 ## Meaning of `next-action-date`
 
 For nonterminal human-owned tasks:
 
-- a past date means the task is overdue or was punted and must be explicitly
-  resolved in the next briefing;
+- a past date means the task is overdue or was punted and must receive an
+  explicit Today or Not today recommendation in the next briefing;
 - today means the task is selected in the agreed plan;
-- a future date records a prior deferral and is planning evidence, not an
-  absolute reason to exclude the task; and
+- a future date is used only when the user agreed to that specific date; it is
+  planning evidence, not an absolute reason to exclude the task; and
 - an empty value means unscheduled.
 
 Terminal human tasks always leave the planning field empty. Their completion

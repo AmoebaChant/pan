@@ -1,7 +1,26 @@
-# pan-runner
+# Pan programs
 
-`pan-runner` is the single program in the Pan system. One instance runs per
-machine. It polls the Domain GitHub Project for **ready agent work** matching the
+## Daily Briefing MCP service
+
+`pan-briefing-mcp.js` exposes the optional responsive Daily Briefing review UI
+and the MCP tools that connect it to a Pan session:
+
+```sh
+node bin/pan-briefing-mcp.js [--host 127.0.0.1] [--port 4318]
+node bin/pan-briefing-mcp.js --demo [--port 4319]
+```
+
+The MCP transport uses standard input/output. Protocol output is written only
+to standard output; the local page URL and operational errors use standard
+error so they cannot corrupt MCP messages. See
+[`system/briefing-ui.md`](../system/briefing-ui.md).
+Demo mode serves realistic fixtures, simulates revise/approve cycles, and never
+starts MCP or connects to live task systems.
+
+## Runner
+
+`pan-runner` is Pan's task-dispatch program. One instance runs per machine. It
+polls the Domain GitHub Project for **ready agent work** matching the
 playbooks this machine runs, claims each task with a lease, and launches a
 **headed `copilot` worker session** in a visible terminal window to do it. It
 implements no task logic and verifies no deliverables — the
