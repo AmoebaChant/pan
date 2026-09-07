@@ -7,11 +7,13 @@
     "test": "node --test"
   },
   "bin": {
+    "pan-briefing": "./bin/pan-briefing-mcp.js",
     "pan-runner": "./bin/pan-runner.js"
   },
   "files": [
     "AGENTS.md",
     "README.md",
+    "briefing-ui",
     "system",
     "skills",
     ".github/agents",

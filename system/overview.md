@@ -6,10 +6,11 @@ with work, and gets blocked agents back in front of you fast.
 
 Pan is defined almost entirely in Markdown. The behavior, conventions, and
 contracts in [`system/`](.) *are* the system: an agent that reads and follows
-them is Pan. The only program is a small [runner](runner.md) that polls for work
-and launches Pan worker sessions, with focused automated coverage for critical
-runner behavior. If something is ambiguous, the fix is to make these documents
-clearer.
+them is Pan. The code is a small [runner](runner.md) that polls for work and
+launches Pan worker sessions plus an optional local
+[Daily Briefing review service](briefing-ui.md), with focused automated
+coverage for critical behavior. If something is ambiguous, the fix is to make
+these documents clearer.
 
 ## The pieces
 
@@ -30,6 +31,9 @@ clearer.
 - **Daily Briefing** — an interactive review that turns complete live Domain
   state into an agreed, realistically sized plan for the user's day. See
   [Daily Briefing](daily-briefing.md).
+- **Daily Briefing review UI** — an optional local, responsive review surface
+  for marking up a complete proposal before sending one batch of feedback back
+  to the Pan session. See [Daily Briefing review UI](briefing-ui.md).
 
 Pan works with exactly **one** Domain at a time. The default task system is
 GitHub Issues plus the connected Project. A Domain may explicitly opt into an
@@ -76,6 +80,7 @@ Load only what the current job needs; skip the rest until you need it.
 | Reading or writing Project fields | [project schema](project-schema.md) |
 | Triaging the backlog | [triage](triage.md) + [playbooks](playbooks.md) |
 | Planning the user's day | [Daily Briefing](daily-briefing.md) |
+| Reviewing a briefing in the local web UI | [Daily Briefing review UI](briefing-ui.md) |
 | Creating or completing recurring tasks | [recurrence](recurrence.md) |
 | Recording knowledge / routing info | [workstreams](workstreams.md) |
 | Defining or choosing a playbook | [playbooks](playbooks.md) |

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#17261f">
+    <title>Pan Daily Briefing</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="review-bar">
+      <div class="review-identity">
+        <strong>Pan</strong>
+        <span id="revision">Waiting</span>
+        <span id="phase" class="thinking-status">Connecting</span>
+      </div>
+      <div class="review-actions">
+        <span id="connection-status" class="connection-status">Offline</span>
+        <button id="submit-review" class="primary-button" type="button" disabled>
+          Submit
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section id="empty-state" class="empty-state">
+        <h2>Waiting for today’s proposal</h2>
+        <p>Start a Daily Briefing in the connected Pan session. The proposal will appear here.</p>
+      </section>
+
+      <section id="briefing" class="briefing" hidden>
+        <p id="summary" class="summary"></p>
+
+        <div id="tasks" class="task-groups"></div>
+
+        <section class="general-feedback">
+          <label for="general-feedback">Overall feedback</label>
+          <textarea
+            id="general-feedback"
+            rows="2"
+            placeholder="Optional steering that applies to the plan as a whole"
+          ></textarea>
+        </section>
+
+        <div id="submission-message" class="submission-message" role="status"></div>
+      </section>
+
+      <section id="completion" class="completion" hidden>
+        <h2>Today’s plan is confirmed</h2>
+        <p id="completion-summary" class="completion-summary"></p>
+        <div id="completion-details" class="completion-details"></div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
