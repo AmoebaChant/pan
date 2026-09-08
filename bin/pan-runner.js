@@ -78,7 +78,7 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import {
   claimConfirmed,
@@ -145,6 +145,45 @@ const DEFAULTS = {
 const FINALIZATION_FAILURE_LIMIT = 3;
 const FINALIZATION_RETRY_BASE_MS = 5000;
 const LEGACY_OCCUPANCY_DIR = 'legacy-launcher-occupancy';
+const RESULT_CONSUMED_FILE = 'result-consumed.json';
+const RESULT_CONSUMED_VERSION = 1;
+
+function resultDigest(resultBytes) {
+  return createHash('sha256').update(resultBytes).digest('hex');
+}
+
+function resultConsumptionReceiptMatches(attempt, resultBytes, receipt) {
+  const metadata = attempt?.attempt;
+  return !!(
+    metadata
+    && receipt
+    && receipt.panRunnerResultConsumed === true
+    && receipt.version === RESULT_CONSUMED_VERSION
+    && receipt.launchId === attempt.launchId
+    && receipt.sessionId === metadata.sessionId
+    && receipt.itemId === metadata.itemId
+    && receipt.number === metadata.number
+    && receipt.resultSha256 === resultDigest(resultBytes)
+  );
+}
+
+async function resultIsConsumed(attempt) {
+  const resultPath = path.join(attempt.signalDir, 'result.json');
+  const receiptPath = path.join(attempt.attemptDir, RESULT_CONSUMED_FILE);
+  try {
+    const [resultBytes, receiptText] = await Promise.all([
+      readFile(resultPath),
+      readFile(receiptPath, 'utf8'),
+    ]);
+    return resultConsumptionReceiptMatches(
+      attempt,
+      resultBytes,
+      JSON.parse(receiptText),
+    );
+  } catch {
+    return false;
+  }
+}
 
 function legacyAttemptMatchesProcess(attempt, pid, processStart) {
   if (!Number.isInteger(pid) || pid <= 0 || typeof processStart !== 'string' || !processStart) {
@@ -1902,6 +1941,10 @@ export class Runner {
     const resultAttempts = existingAttempts.attempts.filter(
       (attempt) => existsSync(path.join(attempt.signalDir, 'result.json')),
     );
+    const unconsumedResultAttempts = [];
+    for (const attempt of resultAttempts) {
+      if (!(await resultIsConsumed(attempt))) unconsumedResultAttempts.push(attempt);
+    }
     const recoveredUncertain = recoveredAttempt
       ? existingAttempts.uncertain.filter(
         (attempt) =>
@@ -1921,7 +1964,7 @@ export class Runner {
         || recoveredUncertain.length !== 1
         || blockingUncertain.length > 0
         || existingAttempts.live.length > 0
-        || resultAttempts.length > 0
+        || unconsumedResultAttempts.length > 0
       );
       if (recoveryBlocked) {
         this.registerAttemptConflict(
@@ -1998,6 +2041,30 @@ export class Runner {
         );
         return;
       }
+      if (
+        existsSync(path.join(live.signalDir, 'result.json'))
+        && await resultIsConsumed(live)
+      ) {
+        try {
+          await privateWriteFile(path.join(live.signalDir, 'worker.stop'), '');
+        } catch (e) {
+          logErr(`could not re-signal worker.stop for #${number}: ${e.message}`);
+        }
+        const reserved = this.workerForAttempt(
+          item,
+          playbookName,
+          sessionRoot,
+          live,
+          { hadNeedsHuman: !!val(item, FIELD.needsHumanSince, '') },
+        );
+        reserved.occupancyOnly = true;
+        this.active.set(item.itemId, reserved);
+        this.resumeWorkspaces.delete(item.itemId);
+        log(
+          `reserved consumed launch ${live.launchId} for #${number} until its launcher exits`,
+        );
+        return;
+      }
       const adopted = this.workerForAttempt(item, playbookName, sessionRoot, live, {
         hadNeedsHuman: !!val(item, FIELD.needsHumanSince, ''),
       });
@@ -2010,7 +2077,7 @@ export class Runner {
       );
       return;
     }
-    if (!recoveredAttempt && resultAttempts.length > 0) {
+    if (!recoveredAttempt && unconsumedResultAttempts.length > 0) {
       this.registerAttemptConflict(
         item,
         playbookName,
@@ -2020,7 +2087,7 @@ export class Runner {
         workerSlot,
         sessionId,
         existingAttempts,
-        `found ${resultAttempts.length} unprocessed prior result(s)`,
+        `found ${unconsumedResultAttempts.length} unprocessed prior result(s)`,
       );
       return;
     }
@@ -2907,9 +2974,11 @@ child.on('exit', (code, signal) => {
   }
 
   async finalizeUnderGenerationLock(w, resultPath) {
+    let resultBytes;
     let result;
     try {
-      result = JSON.parse(await readFile(resultPath, 'utf8'));
+      resultBytes = await readFile(resultPath);
+      result = JSON.parse(resultBytes.toString('utf8'));
     } catch (e) {
       // Result file present but unreadable/partial; try again next tick.
       logErr(`result.json unreadable for #${w.issueNumber}: ${e.message}`);
@@ -3055,16 +3124,37 @@ child.on('exit', (code, signal) => {
         return this.handleFinalizationFailure(w, e, status);
       }
     }
-    await this.finishFinalization(w, status);
-    return true;
+    return this.finishFinalization(w, status, resultPath, resultBytes);
   }
 
-  async finishFinalization(w, status) {
+  async finishFinalization(w, status, resultPath, resultBytes) {
+    try {
+      if (!w.attemptDir) {
+        throw new Error('cannot record result consumption without an attempt directory');
+      }
+      const currentResultBytes = await readFile(resultPath);
+      if (!currentResultBytes.equals(resultBytes)) {
+        throw new Error('result.json changed while finalization was in progress');
+      }
+      await atomicWriteJson(path.join(w.attemptDir, RESULT_CONSUMED_FILE), {
+        panRunnerResultConsumed: true,
+        version: RESULT_CONSUMED_VERSION,
+        launchId: w.launchId,
+        sessionId: w.sessionId,
+        itemId: w.itemId,
+        number: w.issueNumber,
+        resultSha256: resultDigest(resultBytes),
+        consumedAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      return this.handleFinalizationFailure(w, e, status);
+    }
     w.finalizationFailures = 0;
     w.nextFinalizeAttemptAt = 0;
     this.failCounts.delete(w.itemId);
     await this.stopFinalizedWorker(w);
     log(`#${w.issueNumber} → ${status}`);
+    return true;
   }
 
   async clearAndConfirmTerminalFields(w, expectedStatus) {
@@ -4171,11 +4261,17 @@ child.on('exit', (code, signal) => {
           && !currentAttempt
         );
       const alive = !attemptConflict && currentAttempt?.status === 'live';
+      const currentResultPath = currentAttempt
+        ? path.join(currentAttempt.signalDir, 'result.json')
+        : null;
+      const currentHasResult = !!currentResultPath && existsSync(currentResultPath);
+      const currentResultConsumed = currentHasResult
+        && await resultIsConsumed(currentAttempt);
       const selectedAttempt = !attemptConflict
         && currentAttempt
         && (
           alive
-          || existsSync(path.join(currentAttempt.signalDir, 'result.json'))
+          || (currentHasResult && !currentResultConsumed)
         )
         ? currentAttempt
         : null;
@@ -4207,6 +4303,7 @@ child.on('exit', (code, signal) => {
         selectedAttempt,
         owned,
         hasResult: !!selectedAttempt && existsSync(resultPath),
+        currentResultConsumed,
         hasAnyResult,
         mtimeMs: st.mtimeMs,
       });
@@ -4240,6 +4337,7 @@ child.on('exit', (code, signal) => {
         attemptScan,
         selectedAttempt,
         owned,
+        currentResultConsumed,
         hasAnyResult,
       } = workspace;
 
@@ -4377,6 +4475,30 @@ child.on('exit', (code, signal) => {
               `leaving it untouched: ${this.attemptDiagnostic(attemptScan)}`,
           );
         }
+        continue;
+      }
+
+      // A valid receipt proves this exact attempt/result was already finalized.
+      // Preserve the durable history, but never replay it on restart. A launcher
+      // that survived the receipt write is asked to stop and remains reserved
+      // until its exact owner exits.
+      if (currentResultConsumed) {
+        if (alive) {
+          try {
+            await privateWriteFile(
+              path.join(currentAttempt.signalDir, 'worker.stop'),
+              '',
+            );
+          } catch (e) {
+            logErr(`could not re-signal worker.stop for #${number}: ${e.message}`);
+          }
+          reserveLiveOccupancy('consumed result awaiting launcher exit');
+          continue;
+        }
+        if (isolated && sessionBound) {
+          this.resumeWorkspaces.set(match.itemId, workingDir);
+        }
+        log(`#${number} preserved a consumed result without replaying it (rehydrate)`);
         continue;
       }
 

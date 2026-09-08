@@ -371,9 +371,17 @@ native ACL behavior; POSIX mode bits are not assumed there.
   evidence and authorize no mutation. Finalization takes the same per-task
   launch lock used by creators and rechecks the manifest immediately before its
   first Issue/Project mutation, closing the signal-discovery-to-write race.
+**Runner-owned completion files:**
 
-**Runner → worker (written after finalizing):**
-
+- `result-consumed.json` — durable per-attempt receipt written atomically with
+  private permissions only after the terminal Project status and cleared
+  claim/lease are confirmed. It binds the launch, task/session identity, and
+  SHA-256 of the exact `result.json` bytes. Only a valid matching receipt makes
+  the preserved result non-blocking for a later `ready` follow-up and
+  non-replayable during rehydration. If the runner crashes after remote
+  finalization but before receipt creation, startup reruns the idempotent
+  finalization and writes the receipt; no separate pending-receipt mechanism is
+  used.
 - `worker.stop` — **presence means the task is finalized; the worker should
   shut down and close its window.** Once the runner has recorded a worker's
   `result.json` on the Issue and updated the Project (for either outcome), it
@@ -383,7 +391,8 @@ native ACL behavior; POSIX mode bits are not assumed there.
   has no running process and Terminal.app closes it silently — without its "Do
   you want to terminate running processes in this window?" prompt. This fires
   only on completion — a worker paused on `needs-human.json` keeps its window
-  open for the user to answer in.
+  open for the user to answer in. `worker.stop` is not the result-consumption
+  receipt because stop-only paths may write it without applying a result.
 
 ## Human-attention relay
 

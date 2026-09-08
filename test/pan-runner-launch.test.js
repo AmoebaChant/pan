@@ -15,7 +15,7 @@ import {
 } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Runner, loadConfig, readIssue } from '../bin/pan-runner.js';
 import { FIELD } from '../bin/pan-runner-poll.js';
 import { canonicalPathKey } from '../bin/pan-runner-slots.js';
@@ -3185,10 +3185,43 @@ function makeFinalizeRunner(sb, { fresh, reflect = false, onRead = null } = {}) 
   return { runner, calls };
 }
 
-async function finalizeWorker(sb, { number, itemId, sessionId, slot = null, isolated = false }) {
+async function finalizeWorker(sb, {
+  number,
+  itemId,
+  sessionId,
+  slot = null,
+  isolated = false,
+  workingDir = null,
+  result = { outcome: 'done', summary: 'done' },
+}) {
   const stateRoot = stateRootFor(sb, number, sessionId);
   const sessionPanDir = path.join(stateRoot, '.pan');
   mkdirSync(sessionPanDir, { recursive: true });
+  const attemptWorkingDir = workingDir || stateRoot;
+  await atomicWriteJson(path.join(sessionPanDir, 'task.json'), {
+    itemId,
+    number,
+    title: `Task ${number}`,
+    body: '',
+    comments: [],
+    url: `https://github.com/example/domain/issues/${number}`,
+    repo: 'example/domain',
+    playbook: 'fixed',
+    workstream: null,
+    answers: [],
+  });
+  await atomicWriteJson(path.join(sessionPanDir, 'launch.json'), {
+    panRunner: true,
+    version: 2,
+    machine: MACHINE,
+    identity: IDENTITY,
+    itemId,
+    number,
+    sessionId,
+    isolated,
+    workingDir: attemptWorkingDir,
+    slot,
+  });
   const attempt = await createAttempt(sessionPanDir, {
     sessionId,
     itemId,
@@ -3196,7 +3229,7 @@ async function finalizeWorker(sb, { number, itemId, sessionId, slot = null, isol
     machine: MACHINE,
     identity: IDENTITY,
     isolated,
-    workingDir: stateRoot,
+    workingDir: attemptWorkingDir,
     slot,
   });
   await atomicWriteJson(path.join(attempt.attemptDir, 'owner.json'), {
@@ -3208,7 +3241,7 @@ async function finalizeWorker(sb, { number, itemId, sessionId, slot = null, isol
   });
   writeFileSync(
     path.join(attempt.attemptDir, 'result.json'),
-    JSON.stringify({ outcome: 'done', summary: 'done' }),
+    JSON.stringify(result),
   );
   return {
     itemId,
@@ -3220,9 +3253,269 @@ async function finalizeWorker(sb, { number, itemId, sessionId, slot = null, isol
     attemptDir: attempt.attemptDir,
     sessionPanDir,
     launchId: attempt.launchId,
-    workingDir: stateRoot, url: `https://github.com/example/domain/issues/${number}`, repo: 'example/domain',
+    workingDir: attemptWorkingDir, url: `https://github.com/example/domain/issues/${number}`, repo: 'example/domain',
   };
 }
+
+test('launchWorker blocks an unconsumed prior attempt result', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { panDir, sessionId, launchId } = seedStateRoot(sb, {
+      number: 68,
+      itemId: 'item-68',
+      workingDir: repoDir,
+      isolated: false,
+      alive: false,
+      result: { outcome: 'needs-review', summary: 'review me' },
+    });
+    const resultBytes = Buffer.concat([
+      Buffer.from('{"outcome":"needs-review","summary":"'),
+      Buffer.from([0xff]),
+      Buffer.from('"}'),
+    ]);
+    writeFileSync(path.join(panDir, 'result.json'), resultBytes);
+    writeFileSync(path.join(panDir, 'result-consumed.json'), JSON.stringify({
+      panRunnerResultConsumed: true,
+      version: 1,
+      launchId,
+      sessionId,
+      itemId: 'item-68',
+      number: 68,
+      resultSha256: createHash('sha256').update(resultBytes.toString('utf8')).digest('hex'),
+      consumedAt: new Date().toISOString(),
+    }));
+    const { runner, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+
+    await runner.launchWorker(item({
+      itemId: 'item-68',
+      number: 68,
+      status: 'ready',
+      machine: MACHINE,
+      sessionId,
+    }), 'fixed');
+
+    assert.equal(spawned.length, 0);
+    assert.equal(runner.active.get('item-68')?.attemptConflict, true);
+    assert.match(runner.active.get('item-68')?.conflictReason || '', /unprocessed prior result/);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('successful finalization writes a valid result consumption receipt', async () => {
+  const sb = makeSandbox();
+  try {
+    const sessionId = randomUUID();
+    const result = { outcome: 'needs-review', summary: 'ready for review' };
+    const w = await finalizeWorker(sb, {
+      number: 69,
+      itemId: 'item-69',
+      sessionId,
+      result,
+    });
+    const live = projectItem({
+      itemId: 'item-69',
+      number: 69,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    const { runner } = makeFinalizeRunner(sb, { fresh: live, reflect: true });
+
+    assert.equal(await runner.finalize(w, path.join(w.panDir, 'result.json')), true);
+
+    const resultText = readFileSync(path.join(w.panDir, 'result.json'), 'utf8');
+    const receiptPath = path.join(w.panDir, 'result-consumed.json');
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    assert.deepEqual(
+      {
+        panRunnerResultConsumed: receipt.panRunnerResultConsumed,
+        version: receipt.version,
+        launchId: receipt.launchId,
+        sessionId: receipt.sessionId,
+        itemId: receipt.itemId,
+        number: receipt.number,
+        resultSha256: receipt.resultSha256,
+      },
+      {
+        panRunnerResultConsumed: true,
+        version: 1,
+        launchId: w.launchId,
+        sessionId,
+        itemId: 'item-69',
+        number: 69,
+        resultSha256: createHash('sha256').update(resultText).digest('hex'),
+      },
+    );
+    assert.match(receipt.consumedAt, /^\d{4}-\d{2}-\d{2}T/);
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(receiptPath).mode & 0o777, 0o600);
+    }
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('ready follow-up launches a new generation after its prior result is consumed', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const sessionId = randomUUID();
+    const w = await finalizeWorker(sb, {
+      number: 70,
+      itemId: 'item-70',
+      sessionId,
+      workingDir: repoDir,
+      result: { outcome: 'needs-review', summary: 'first pass' },
+    });
+    const live = projectItem({
+      itemId: 'item-70',
+      number: 70,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    const { runner: finalizer } = makeFinalizeRunner(sb, { fresh: live, reflect: true });
+    assert.equal(await finalizer.finalize(w, path.join(w.panDir, 'result.json')), true);
+    writeFileSync(path.join(w.panDir, 'owner.json'), JSON.stringify({
+      panRunnerOwner: true,
+      version: 1,
+      launchId: w.launchId,
+      pid: process.pid,
+      processStart: 'test-process-start',
+    }));
+
+    const { runner, spawned } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    const ready = item({
+      itemId: 'item-70',
+      number: 70,
+      status: 'ready',
+      machine: MACHINE,
+      sessionId,
+    });
+
+    await runner.launchWorker(ready, 'fixed');
+
+    assert.equal(spawned.length, 0, 'the still-live finalized launcher is not replayed');
+    assert.equal(runner.active.get('item-70')?.occupancyOnly, true);
+    assert.equal(existsSync(path.join(w.panDir, 'worker.stop')), true);
+
+    runner.deps.inspectProcess = async () => ({
+      state: 'dead',
+      reason: 'finalized launcher exited',
+    });
+    await runner.superviseTick();
+    assert.equal(runner.active.has('item-70'), false);
+
+    await runner.launchWorker(ready, 'fixed');
+
+    assert.equal(spawned.length, 1);
+    const manifest = JSON.parse(readFileSync(path.join(w.sessionPanDir, 'attempts.json'), 'utf8'));
+    assert.equal(manifest.attempts.length, 2);
+    assert.notEqual(manifest.currentLaunchId, w.launchId);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('rehydrate ignores a valid consumed result', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const sessionId = randomUUID();
+    const w = await finalizeWorker(sb, {
+      number: 71,
+      itemId: 'item-71',
+      sessionId,
+      workingDir: repoDir,
+      result: { outcome: 'needs-review', summary: 'already handled' },
+    });
+    const live = projectItem({
+      itemId: 'item-71',
+      number: 71,
+      status: 'in-progress',
+      machine: MACHINE,
+      sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: VALID_LEASE,
+    });
+    const { runner: finalizer } = makeFinalizeRunner(sb, { fresh: live, reflect: true });
+    assert.equal(await finalizer.finalize(w, path.join(w.panDir, 'result.json')), true);
+    writeFileSync(path.join(w.panDir, 'owner.json'), JSON.stringify({
+      panRunnerOwner: true,
+      version: 1,
+      launchId: w.launchId,
+      pid: 999999,
+      processStart: 'exited-prior-attempt',
+    }));
+
+    const inReview = projectItem({
+      itemId: 'item-71',
+      number: 71,
+      status: 'in-review',
+      machine: MACHINE,
+      sessionId,
+    });
+    const runner = makeRehydrateRunner(sb, [inReview], fixedPlaybook(repoDir));
+    let replayed = false;
+    runner.finalize = async () => { replayed = true; return true; };
+
+    await runner.rehydrate();
+
+    assert.equal(replayed, false);
+    assert.equal(existsSync(path.join(w.panDir, 'result.json')), true);
+    assert.equal(existsSync(path.join(w.panDir, 'result-consumed.json')), true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('failed or ownership-lost finalization does not write a result consumption receipt', async () => {
+  for (const scenario of ['failed', 'ownership-lost']) {
+    const sb = makeSandbox();
+    try {
+      const number = scenario === 'failed' ? 72 : 73;
+      const sessionId = randomUUID();
+      const w = await finalizeWorker(sb, {
+        number,
+        itemId: `item-${number}`,
+        sessionId,
+      });
+      const fresh = projectItem({
+        itemId: `item-${number}`,
+        number,
+        status: 'in-progress',
+        machine: MACHINE,
+        sessionId: scenario === 'failed' ? sessionId : randomUUID(),
+        claimedBy: IDENTITY,
+        leaseUntil: VALID_LEASE,
+      });
+      const { runner } = makeFinalizeRunner(sb, {
+        fresh,
+        reflect: scenario !== 'failed',
+      });
+
+      const finalized = await runner.finalize(w, path.join(w.panDir, 'result.json'));
+
+      assert.equal(finalized, scenario === 'ownership-lost');
+      assert.equal(
+        existsSync(path.join(w.panDir, 'result-consumed.json')),
+        false,
+        `${scenario} finalization must leave the result unconsumed`,
+      );
+    } finally {
+      sb.cleanup();
+    }
+  }
+});
 
 test('finalize writes nothing when the live session-id no longer matches', async () => {
   const sb = makeSandbox();

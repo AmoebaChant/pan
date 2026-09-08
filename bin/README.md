@@ -292,6 +292,16 @@ Written by the worker in its own attempt:
   committed before a crash, as well as this runner's partial `blocked`
   escalation, and finishes cleanup plus `worker.stop` instead of orphaning a
   live terminal.
+- `result-consumed.json` — runner-owned receipt written atomically with private
+  permissions only after the result's terminal Project status and cleared claim
+  and lease are confirmed. It binds the exact launch, task/session identity, and
+  SHA-256 of the exact `result.json` bytes. A missing, malformed, mismatched, or
+  stale receipt leaves the result unprocessed. A valid receipt lets a later
+  `ready` follow-up create a new launch generation and prevents rehydration from
+  replaying the prior result; `result.json` remains unchanged as durable
+  history. If the runner crashes after remote finalization but before writing
+  the receipt, restart reruns the existing idempotent finalization and then
+  records the receipt.
 
 Written by the runner after finalizing:
 
@@ -299,7 +309,9 @@ Written by the runner after finalizing:
   `result.json` on the Issue and updated the Project (for `done` or
   `needs-review`). Its presence tells the launcher the task is finished, so the
   worker session shuts down and closes its terminal window instead of lingering.
-  It is not written while a worker is merely paused on `needs-human.json`.
+  It is not written while a worker is merely paused on `needs-human.json`, and
+  it is not evidence that `result.json` was consumed because other stop paths do
+  not apply a result.
 
 The runner never clears another generation's files. Its per-task launch lock is
 an append-only set of uniquely named contender/holder records: stale records
@@ -308,9 +320,10 @@ through a shared compare-then-unlink pathname. Before launching it validates
 the attempt index and scans all attempts under the session. It adopts exactly
 one confirmed live attempt, launches only after every prior attempt is
 confirmed dead, and refuses on multiple live or uncertain ownership. It also
-refuses while a dead attempt holds an unprocessed result. During supervision,
-signals are consumed only from the launch id the runner already owns; a stale
-result from another generation is preserved but never adopted. `worker.running`
+refuses while a dead attempt holds a result without a valid matching
+`result-consumed.json`. During supervision, signals are consumed only from the
+launch id the runner already owns; a stale result from another generation is
+preserved but never adopted. `worker.running`
 and `worker.pid` remain diagnostic/legacy files only; deleting
 `worker.running` cannot make a matching live owner disappear.
 
