@@ -7,6 +7,7 @@ import {
   readTodoistSnapshot,
   recoveryPlan,
   todoistImportRecords,
+  verifyTodoistImport,
 } from '../bin/pan-todoist-migration.js';
 
 function response(body, status = 200) {
@@ -24,19 +25,22 @@ test('Todoist snapshot fully paginates and excludes tasks assigned to another us
   const fetchImpl = async (input) => {
     const url = new URL(input);
     calls.push(url.href);
-    if (url.pathname.endsWith('/user')) return response({ id: 'me' });
+    if (url.pathname.endsWith('/user')) return response({ id: 42 });
     if (url.pathname.endsWith('/tasks')) {
       if (!url.searchParams.get('cursor')) {
         return response({
           results: [
-            { id: '1', content: 'Mine', assignee_id: 'me' },
-            { id: '2', content: 'Someone else', assignee_id: 'other' },
+            { id: '1', content: 'Mine', responsible_uid: '42' },
+            { id: '2', content: 'Someone else', responsible_uid: 7 },
           ],
           next_cursor: 'task-page-2',
         });
       }
       return response({
-        results: [{ id: '3', content: 'Unassigned', assignee_id: null }],
+        results: [
+          { id: '3', content: 'Unassigned', responsible_uid: null },
+          { id: '4', content: 'Also unassigned', responsible_uid: '' },
+        ],
         next_cursor: null,
       });
     }
@@ -74,11 +78,10 @@ test('Todoist snapshot fully paginates and excludes tasks assigned to another us
     baseUrl: 'https://todoist.example/api/v1/',
   });
 
-  assert.deepEqual(snapshot.tasks.map((task) => task.id), ['1', '3']);
+  assert.deepEqual(snapshot.tasks.map((task) => task.id), ['1', '3', '4']);
   assert.deepEqual(snapshot.tasks[0].comments.map((comment) => comment.id), ['c1', 'c2']);
   assert.deepEqual(snapshot.excluded, [{
     id: '2',
-    assigneeId: 'other',
     reason: 'assigned-to-another-user',
   }]);
   assert.equal(calls.filter((url) => url.includes('/tasks?')).length, 2);
@@ -167,7 +170,8 @@ test('import planning is idempotent and fails closed on duplicate source markers
 });
 
 test('partial import continues independent tasks and reports failure without rollback', async () => {
-  const plan = planTodoistImport(snapshotFixture(), new Map());
+  const snapshot = snapshotFixture();
+  const plan = planTodoistImport(snapshot, new Map());
   const attempted = [];
   const store = {
     async importTodoistTask(record) {
@@ -181,11 +185,101 @@ test('partial import continues independent tasks and reports failure without rol
       };
     },
   };
-  const report = await applyTodoistImport(plan, store);
+  const report = await applyTodoistImport(plan, store, snapshot);
   assert.deepEqual(attempted, ['1', '2']);
   assert.equal(report.partial, true);
   assert.equal(report.results.find((result) => result.sourceId === '1').outcome, 'failed');
   assert.equal(report.results.find((result) => result.sourceId === '2').outcome, 'created');
+});
+
+test('legacy assignment aliases normalize string and number ids without coercing opaque values', () => {
+  const snapshot = snapshotFixture();
+  snapshot.user.id = '42';
+  snapshot.excluded = [];
+  snapshot.tasks = [
+    { id: 'self-number', content: 'Self', assignee_id: 42 },
+    { id: 'self-camel', content: 'Self camel', assigneeId: ' 42 ' },
+    { id: 'unassigned', content: 'Unassigned', assignee_id: null },
+    { id: 'other', content: 'Other', assigneeId: 7 },
+    { id: 'leading-zero', content: 'Opaque mismatch', responsibleUid: '042' },
+    {
+      id: 'conflicting-aliases',
+      content: 'Conflicting aliases',
+      responsible_uid: '42',
+      assignee_id: 'another-user',
+    },
+  ];
+
+  assert.deepEqual(
+    todoistImportRecords(snapshot).map((record) => record.sourceId),
+    ['self-number', 'self-camel', 'unassigned'],
+  );
+  assert.deepEqual(
+    planTodoistImport(snapshot).actions.map((action) => [action.sourceId, action.action]),
+    [
+      ['other', 'excluded-assignee'],
+      ['leading-zero', 'excluded-assignee'],
+      ['conflicting-aliases', 'excluded-assignee'],
+      ['self-number', 'create'],
+      ['self-camel', 'create'],
+      ['unassigned', 'create'],
+    ],
+  );
+});
+
+test('plan, apply, and verify reject other users from a buggy legacy snapshot', async () => {
+  const snapshot = snapshotFixture();
+  snapshot.excluded = [];
+  snapshot.tasks.push({
+    id: 'other-user-task',
+    content: 'Must not import',
+    responsible_uid: 'another-user',
+    comments: [],
+  });
+
+  const plan = planTodoistImport(snapshot, new Map());
+  assert.equal(
+    plan.actions.find((action) => action.sourceId === 'other-user-task').action,
+    'excluded-assignee',
+  );
+
+  const imported = [];
+  const verified = [];
+  const store = {
+    async importTodoistTask(record) {
+      imported.push(record.sourceId);
+      return { sourceId: record.sourceId, outcome: 'created' };
+    },
+    async verifyTodoistTask(record) {
+      verified.push(record.sourceId);
+      return { sourceId: record.sourceId, outcome: 'verified' };
+    },
+  };
+  const buggyPlan = {
+    actions: [{
+      sourceId: 'other-user-task',
+      action: 'create',
+      record: { sourceId: 'other-user-task' },
+    }],
+  };
+  const applyReport = await applyTodoistImport(buggyPlan, store, snapshot);
+  assert.deepEqual(imported, []);
+  assert.deepEqual(applyReport.results, [{
+    sourceId: 'other-user-task',
+    action: 'excluded-assignee',
+    reason: 'assigned-to-another-user',
+  }]);
+
+  const verifyReport = await verifyTodoistImport(snapshot, store);
+  assert.deepEqual(verified, ['1', '2']);
+  assert.deepEqual(
+    verifyReport.results.find((result) => result.sourceId === 'other-user-task'),
+    {
+      sourceId: 'other-user-task',
+      outcome: 'excluded-assignee',
+      reason: 'assigned-to-another-user',
+    },
+  );
 });
 
 test('recovery plan translates current live pilot state and preserves current scheduling', () => {

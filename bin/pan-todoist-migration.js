@@ -1,6 +1,70 @@
 import { planLifecycleRollback } from './pan-lifecycle-migration.js';
 
 const TODOIST_PAGE_SIZE = 200;
+const TODOIST_ASSIGNMENT_FIELDS = [
+  'responsible_uid',
+  'responsibleUid',
+  'assignee_id',
+  'assigneeId',
+];
+
+function normalizeOpaqueId(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+}
+
+function taskAssignmentIds(task) {
+  return [...new Set(
+    TODOIST_ASSIGNMENT_FIELDS
+      .filter((field) => Object.hasOwn(task, field))
+      .map((field) => normalizeOpaqueId(task[field]))
+      .filter(Boolean),
+  )];
+}
+
+function validateSnapshot(snapshot) {
+  if (snapshot?.format !== 'pan-todoist-active-snapshot' || snapshot.version !== 1) {
+    throw new Error('snapshot is not a supported Pan Todoist snapshot');
+  }
+  const userId = normalizeOpaqueId(snapshot.user?.id);
+  if (!userId) throw new Error('snapshot has no authenticated Todoist user id');
+  return userId;
+}
+
+export function todoistSnapshotScope(snapshot) {
+  const userId = validateSnapshot(snapshot);
+  const excludedById = new Map();
+  const eligibleTasks = [];
+
+  for (const task of snapshot.tasks ?? []) {
+    const sourceId = String(task.id);
+    const assignmentIds = taskAssignmentIds(task);
+    if (assignmentIds.some((assignmentId) => assignmentId !== userId)) {
+      excludedById.set(sourceId, {
+        id: sourceId,
+        reason: 'assigned-to-another-user',
+      });
+    } else {
+      eligibleTasks.push(task);
+    }
+  }
+
+  for (const excluded of snapshot.excluded ?? []) {
+    if (excluded?.id == null) continue;
+    const sourceId = String(excluded.id);
+    excludedById.set(sourceId, {
+      id: sourceId,
+      reason: 'assigned-to-another-user',
+    });
+  }
+
+  return {
+    userId,
+    tasks: eligibleTasks.filter((task) => !excludedById.has(String(task.id))),
+    excluded: [...excludedById.values()],
+  };
+}
 
 function arrayResult(payload) {
   if (Array.isArray(payload)) return { results: payload, nextCursor: null };
@@ -57,7 +121,8 @@ export async function readTodoistSnapshot({
   });
   if (!userResponse.ok) throw new Error(`Todoist user returned HTTP ${userResponse.status}`);
   const user = await userResponse.json();
-  if (user?.id == null) throw new Error('Todoist user response has no id');
+  const authenticatedUserId = normalizeOpaqueId(user?.id);
+  if (!authenticatedUserId) throw new Error('Todoist user response has no id');
 
   const [tasks, projects, sections, labels] = await Promise.all([
     paginateTodoist({ fetchImpl, baseUrl, path: 'tasks', token }),
@@ -68,11 +133,10 @@ export async function readTodoistSnapshot({
   const eligible = [];
   const excluded = [];
   for (const task of tasks) {
-    const assigneeId = task.assignee_id ?? task.assigneeId ?? null;
-    if (assigneeId != null && String(assigneeId) !== String(user.id)) {
+    const assignmentIds = taskAssignmentIds(task);
+    if (assignmentIds.some((assignmentId) => assignmentId !== authenticatedUserId)) {
       excluded.push({
         id: String(task.id),
-        assigneeId: String(assigneeId),
         reason: 'assigned-to-another-user',
       });
       continue;
@@ -90,7 +154,7 @@ export async function readTodoistSnapshot({
     format: 'pan-todoist-active-snapshot',
     version: 1,
     capturedAt: new Date().toISOString(),
-    user: { id: String(user.id) },
+    user: { id: authenticatedUserId },
     projects,
     sections,
     labels,
@@ -125,13 +189,11 @@ function sourceName(value) {
 }
 
 export function todoistImportRecords(snapshot) {
-  if (snapshot?.format !== 'pan-todoist-active-snapshot' || snapshot.version !== 1) {
-    throw new Error('snapshot is not a supported Pan Todoist snapshot');
-  }
+  const scope = todoistSnapshotScope(snapshot);
   const projects = nameIndex(snapshot.projects);
   const sections = nameIndex(snapshot.sections);
   const labels = nameIndex(snapshot.labels);
-  return snapshot.tasks.map((task) => {
+  return scope.tasks.map((task) => {
     const project = projects.get(String(task.project_id ?? task.projectId ?? ''));
     const section = sections.get(String(task.section_id ?? task.sectionId ?? ''));
     const labelRecords = (task.labels ?? []).map((label) => {
@@ -163,7 +225,7 @@ export function todoistImportRecords(snapshot) {
       `Source section: ${section ? `${sourceName(section)} (${section.id})` : '(none)'}`,
       `Source parent task: ${task.parent_id ?? task.parentId ?? '(none)'}`,
       `Source order: ${task.order ?? '(none)'}`,
-      `Source assignee: ${task.assignee_id ?? task.assigneeId ?? '(unassigned)'}`,
+      `Source assignee: ${taskAssignmentIds(task)[0] ?? '(unassigned)'}`,
       `Source priority: ${task.priority ?? '(none)'}`,
       `Source labels: ${labelRecords.length
         ? labelRecords.map((label) => label.id ? `${label.name} (${label.id})` : label.name).join(', ')
@@ -214,14 +276,14 @@ export function todoistImportRecords(snapshot) {
 }
 
 export function planTodoistImport(snapshot, sourceIndex = new Map()) {
+  const scope = todoistSnapshotScope(snapshot);
   const records = todoistImportRecords(snapshot);
   const actions = [];
-  for (const excluded of snapshot.excluded ?? []) {
+  for (const excluded of scope.excluded) {
     actions.push({
       sourceId: String(excluded.id),
       action: 'excluded-assignee',
       reason: excluded.reason,
-      assigneeId: excluded.assigneeId,
     });
   }
   for (const record of records) {
@@ -263,13 +325,48 @@ export function planTodoistImport(snapshot, sourceIndex = new Map()) {
   };
 }
 
-export async function applyTodoistImport(plan, store) {
+export async function applyTodoistImport(plan, store, snapshot) {
+  const scope = todoistSnapshotScope(snapshot);
+  const eligibleIds = new Set(scope.tasks.map((task) => String(task.id)));
+  const excludedById = new Map(scope.excluded.map((excluded) => [excluded.id, excluded]));
+  const reportedExcluded = new Set();
   const results = [];
   let failed = false;
   for (const action of plan.actions) {
-    if (action.action === 'excluded-assignee' || action.action === 'conflict') {
+    const sourceId = String(action.sourceId);
+    const excluded = excludedById.get(sourceId);
+    if (excluded) {
+      if (!reportedExcluded.has(sourceId)) {
+        results.push({
+          sourceId,
+          action: 'excluded-assignee',
+          reason: excluded.reason,
+        });
+        reportedExcluded.add(sourceId);
+      }
+      continue;
+    }
+    if (action.action === 'excluded-assignee') {
+      results.push({
+        sourceId,
+        action: 'excluded-assignee',
+        reason: 'assigned-to-another-user',
+      });
+      continue;
+    }
+    if (action.action === 'conflict') {
       results.push(action);
-      if (action.action === 'conflict') failed = true;
+      failed = true;
+      continue;
+    }
+    if (!eligibleIds.has(sourceId)) {
+      failed = true;
+      results.push({
+        sourceId,
+        outcome: 'failed',
+        plannedAction: action.action,
+        error: 'planned source task is not eligible in the supplied snapshot',
+      });
       continue;
     }
     try {
@@ -285,11 +382,39 @@ export async function applyTodoistImport(plan, store) {
       });
     }
   }
+  for (const excluded of scope.excluded) {
+    if (reportedExcluded.has(excluded.id)) continue;
+    results.push({
+      sourceId: excluded.id,
+      action: 'excluded-assignee',
+      reason: excluded.reason,
+    });
+  }
   return {
     format: 'pan-todoist-import-report',
     version: 1,
     completedAt: new Date().toISOString(),
     partial: failed,
+    results,
+  };
+}
+
+export async function verifyTodoistImport(snapshot, store) {
+  const scope = todoistSnapshotScope(snapshot);
+  const results = scope.excluded.map((excluded) => ({
+    sourceId: excluded.id,
+    outcome: 'excluded-assignee',
+    reason: excluded.reason,
+  }));
+  for (const record of todoistImportRecords(snapshot)) {
+    results.push(await store.verifyTodoistTask(record));
+  }
+  const failed = results.some((result) => !['verified', 'excluded-assignee'].includes(result.outcome));
+  return {
+    format: 'pan-todoist-verification-report',
+    version: 1,
+    verifiedAt: new Date().toISOString(),
+    complete: !failed,
     results,
   };
 }

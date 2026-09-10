@@ -13,7 +13,7 @@ import {
   planTodoistImport,
   readTodoistSnapshot,
   recoveryPlan,
-  todoistImportRecords,
+  verifyTodoistImport,
 } from './pan-todoist-migration.js';
 import { applyLifecycleRollback } from './pan-lifecycle-migration.js';
 
@@ -144,32 +144,14 @@ export async function runMigrationCommand(options) {
     };
   }
   if (options.command === 'apply') {
-    const report = await applyTodoistImport(plan, store);
+    const report = await applyTodoistImport(plan, store, snapshot);
     await output(report, options.report);
     return { exitCode: report.partial ? 2 : 0 };
   }
 
-  const results = [];
-  for (const excluded of snapshot.excluded ?? []) {
-    results.push({
-      sourceId: String(excluded.id),
-      outcome: 'excluded-assignee',
-      assigneeId: excluded.assigneeId,
-    });
-  }
-  for (const record of todoistImportRecords(snapshot)) {
-    results.push(await store.verifyTodoistTask(record));
-  }
-  const failed = results.some((result) => !['verified', 'excluded-assignee'].includes(result.outcome));
-  const report = {
-    format: 'pan-todoist-verification-report',
-    version: 1,
-    verifiedAt: new Date().toISOString(),
-    complete: !failed,
-    results,
-  };
+  const report = await verifyTodoistImport(snapshot, store);
   await output(report, options.report);
-  return { exitCode: failed ? 2 : 0 };
+  return { exitCode: report.complete ? 0 : 2 };
 }
 
 async function main() {
