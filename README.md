@@ -6,9 +6,10 @@ machines supplied with work, and gets blocked agents back in front of you fast.
 
 Pan is defined almost entirely in Markdown. The contracts under
 [`system/`](system/overview.md) *are* the system — an agent that follows them is
-Pan. Its only programs are a small [runner](system/runner.md) that polls for
-work and launches Pan worker sessions, and an optional local
-[Daily Briefing review service](system/briefing-ui.md).
+Pan. Its programs are a small [runner](system/runner.md) that polls for work and
+launches Pan worker sessions, an optional local
+[Daily Briefing review service](system/briefing-ui.md), an everyday task UI,
+and idempotent migration/recovery tools.
 
 - Your data lives in a private GitHub repository + Project called a **Domain**.
 - This public repository holds only the reusable system and holds no user data.
@@ -26,14 +27,38 @@ machine's playbooks, and gets a runner going. It confirms every choice first.
 
 ## Running the runner
 
-Each machine runs one runner that claims ready work matching its playbooks and
-launches headed worker sessions:
+Each machine runs one runner that claims explicitly authorized
+`ready-for-ai` work matching its playbooks and launches headed worker sessions:
 
 ```sh
 node bin/pan-runner.js --config <path-to-local-config> [--once]
 ```
 
 See [`system/runner.md`](system/runner.md) for the full contract.
+
+## Everyday task UI
+
+Try the public-safe fixture first:
+
+```sh
+node bin/pan-tasks.js --demo
+```
+
+Live mode requires explicit checkout and machine config bindings:
+
+```sh
+node bin/pan-tasks.js --config /absolute/path/to/config.json --checkout "$PWD"
+```
+
+The responsive UI provides Today, Needs me, In motion, Recent activity, and All
+tasks without exposing GitHub credentials to the browser. See
+[`system/briefing-ui.md`](system/briefing-ui.md).
+
+## Todoist migration
+
+`bin/pan-todoist-migrate.js` snapshots, plans, applies, verifies, and prepares
+pilot recovery mappings without deleting source tasks or history. See
+[`system/todoist-migration.md`](system/todoist-migration.md).
 
 ## Local Daily Briefing UI
 
@@ -77,6 +102,7 @@ in this checkout is using the MCP server. See
 
 The system is the documentation. Read [`system/overview.md`](system/overview.md)
 and the contracts it links: [domain](system/domain.md),
+[outcome task lifecycle](system/task-lifecycle.md),
 [project schema](system/project-schema.md), [triage](system/triage.md),
 [Daily Briefing](system/daily-briefing.md),
 [recurrence](system/recurrence.md), [workstreams](system/workstreams.md),

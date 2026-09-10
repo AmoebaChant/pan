@@ -5,32 +5,22 @@ description: Review and triage a Pan portfolio directly from live GitHub Issues 
 
 # Pan portfolio review
 
-Use this for portfolio review, next-work recommendations, Project triage,
-ordering, or completion checks.
+Follow [`system/triage.md`](../../system/triage.md),
+[`system/task-lifecycle.md`](../../system/task-lifecycle.md), and
+[`system/project-schema.md`](../../system/project-schema.md). Fully paginate
+Issues, Project items, workstreams, declared backlogs, and relevant comments.
 
-Follow [`system/triage.md`](../../system/triage.md) end to end, using
-[`system/project-schema.md`](../../system/project-schema.md) for fields and
-[`system/playbooks.md`](../../system/playbooks.md) to choose a `playbook` for
-each agent task. Read live from GitHub with `gh`, read the complete Issue and
-Project item sets (fail closed on possible truncation), register every missing
-Issue as `untriaged` automatically except eligible human work whose
-external-manager migration receipt and reciprocal live record verify under the
-Domain contract. Classify conclusive agent ownership and mandatory
-GitHub-retained classes before consulting receipts; always register those
-tasks. Recurring human tasks follow the authority selected by the Domain
-contract; keep them in GitHub when external recurrence semantics are incomplete.
-Fail closed on ambiguous migration evidence only for work that could
-legitimately have migrated. Complete only `in-review` tasks whose recorded PR
-is confirmed merged, and reconcile closed GitHub-authoritative recurring Domain
-Issues from their live closure reason and occurrence markers. Also clear only
-a stale `next-action-date` from an already-terminal item after a live re-read,
-and add only an unambiguous missing first-line marker to an open recurring
-Issue while preserving its date; verify both automatic repairs and ask on
-ambiguous marker inference. For every terminal transition, clear and verify
-`next-action-date` first, verify the matching Issue closure, and make terminal
-`Status` the final Project write of the transition. Always target the Project
-item's content repository, and get approval before any other change.
+Register missing Issues automatically. Prepare exact human actions, bounded AI
+next steps, authorization, dependencies, priority, playbook, workstream,
+deadline, and the durable current-next-action detail. Do not use or write the
+retained legacy `owner`.
 
-Present recommendations with Issue links, current fields, and a clear
-current-vs-proposed table, and ask one focused question when live data is
-insufficient.
+Scheduled triage may research, prepare, reconcile objective facts, and apply
+explicit standing permissions. Scope expansion and consequential decisions
+remain human. A merge completes work only when the actual playbook gate says it
+does. Never manufacture review because AI acted, date AI execution, resume a
+human checkpoint/hold, or create recurring successor loops.
+
+Before every mutation re-read the Issue/item, require its revision and any
+worker generation, write the Issue block/history, increment revision last, and
+verify. Present any non-approved changes current-vs-proposed with links.

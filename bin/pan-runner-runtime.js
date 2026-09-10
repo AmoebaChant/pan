@@ -238,6 +238,10 @@ function attemptMetadataValid(attempt, expected) {
     && attempt.number === expected.number
     && attempt.machine === expected.machine
     && attempt.identity === expected.identity
+    && (attempt.claimGeneration == null || (
+      typeof attempt.claimGeneration === 'string'
+      && attempt.claimGeneration.length > 0
+    ))
     && typeof attempt.isolated === 'boolean'
     && (attempt.slot == null || typeof attempt.slot === 'string')
     && typeof attempt.workingDir === 'string'

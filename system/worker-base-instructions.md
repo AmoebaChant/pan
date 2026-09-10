@@ -26,7 +26,8 @@ always correct.
 
 ## Your inputs
 
-- `task.json` (in your state directory) — the Project item id; Issue number,
+- `task.json` (in your state directory) — the Project item id and expected
+  task revision/claim generation; Issue number,
   current title, body, URL, and repository; the complete Issue comment history
   in chronological order (each comment includes its author, timestamp, URL, and
   body); your `playbook`; the optional `workstream`; and any structured answers
@@ -50,18 +51,24 @@ unless the playbook explicitly says to.
 ## Signalling that you need the user (required)
 
 **Whenever you need the user — a decision, missing information, credentials, an
-approval — you must signal it, not stall silently.** By default, signal by
-writing `needs-human.json` in your state directory:
+approval — you must signal it, not stall silently.** By default, signal by writing `needs-human.json` in your state directory:
 
 ```json
-{ "question": "<what you need, stated so the user can answer in one exchange>",
-  "since": "<current time, RFC 3339 UTC>" }
+{
+  "action": "clarify" | "discuss" | "approve" | "review",
+  "question": "<what you need, stated so the user can answer in one exchange>",
+  "detail": "<durable explanation of the checkpoint>",
+  "since": "<current time, RFC 3339 UTC>",
+  "safeToRelease": false
+}
 ```
 
 The runner detects this file and records `needs-human-since` on the Issue (a
-future notification system will alert the user). You then **wait** — you keep
-running, hold your lease and slot, and spend no budget until the user answers in
-this terminal. This is a pause, not a failure.
+future notification system will alert the user). It also changes the task to
+`ready-for-human` with the exact action while keeping
+`worker-state=waiting-human`. You then **wait** — you keep running, hold your
+lease and workspace, and spend no budget until the user answers in this
+terminal. This is an open checkpoint, not a failure or deliberate hold.
 
 When your question has been answered to your satisfaction, **delete**
 `needs-human.json` from your state directory. The runner clears
@@ -71,29 +78,39 @@ into one file when you can, and only clear the file once you are truly unblocked
 Never fabricate an answer, silently pick a default on a decision that is the
 user's to make, or abandon the task instead of asking.
 
-A playbook may define a durable checkpoint-and-release protocol for questions
-that can safely wait without retaining local-only state. In that case, follow
-the playbook: record the question through its durable Domain marker, report the
-specified nonterminal result, and release the worker. Use `needs-human.json`
-instead whenever the workspace or an active operation cannot be released
-safely. A playbook-specific release protocol changes how the question waits,
-not the requirement to surface it or obtain the user's answer.
+A playbook may define a durable checkpoint-and-release protocol. Set
+`safeToRelease=true` only after every necessary result, artifact, local state,
+and resume instruction is durable and the playbook permits releasing execution
+capacity. The runner may stop the process and set `worker-state=checkpointed`,
+but preserves the session/workspace affinity. The task remains
+`ready-for-human` and cannot resume until an explicit transition back to
+`ready-for-ai/execute`. Use `safeToRelease=false` whenever local state or live
+validation requires the worker to remain.
 
 ## Finishing
 
-When the task is complete per your playbook, write `result.json` once in your
-state directory:
+Write `result.json` once only when the playbook's current authorized scope has
+reached one of these outcomes:
 
 ```json
-{ "outcome": "done" | "needs-review",
+{
+  "outcome": "done" | "needs-human" | "external-waiting",
+  "action": "clarify" | "discuss" | "approve" | "review",
   "summary": "<one line>",
-  "details": "<what you did, links, and anything the reviewer needs>" }
+  "details": "<what you did, links, gates, and artifacts>"
+}
 ```
 
-Use `needs-review` when a human should look before it is truly done (for
-example, a pull request awaiting merge); use `done` when nothing further is
-needed. The runner records this on the Issue and sets the Project status
-accordingly. Do not edit any Project field yourself.
+- Use `done` only when the **whole task outcome** is complete and no playbook
+  gate remains.
+- Use `needs-human` with one exact action when the AI portion is complete but a
+  person must clarify, discuss, approve, or review. The Issue stays open.
+- Use `external-waiting` when an external event, not a person or Pan, is next.
+- If another AI step is already authorized, continue working; do not create a
+  review checkpoint merely because AI acted.
+
+The runner records the result under the matching claim generation. Do not edit
+Project fields yourself.
 
 ### Pull-request deliverables (link without auto-closing)
 
@@ -112,15 +129,16 @@ after a merge. Pan, not the pull request, owns task completion:
   review. Generic triage automatically reconciles merges only for GitHub URLs;
   provider-specific Domain guidance must define live-state reads and completion
   for other providers. Put the same URL in your `result.json` `details`.
-- **Use `needs-review` when merge is all that remains.** This leaves the task
-  `in-review` so triage can confirm the merge, set `done`, and close the Issue.
+- **Request review only when it is a real gate.** If human review is required,
+  use `needs-human` with `action=review`. If merge is an external wait, use
+  `external-waiting`. Do not invent review because a PR exists.
 - **Stay active through post-merge work.** If the playbook requires rollout,
   restart, verification, or any other step after merge, do not write
   `result.json` at merge time. Finish those gates first, then report `done`.
 - **Never close the Issue yourself.** The runner closes it for a worker's
-  `done` result. Generic triage closes an `in-review` task after confirming its
-  recorded GitHub PR merged; provider-specific Domain guidance owns completion
-  for other providers.
+  `done` result. If merge is the only remaining external event, report
+  `external-waiting`; triage advances it only when live merge evidence and the
+  playbook's actual completion gate agree.
 
 ## Improving Pan as you go
 

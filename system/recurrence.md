@@ -1,25 +1,17 @@
 # Recurring tasks
 
-A recurring human commitment lives in the authoritative human task system.
-Without a Domain-configured external manager, each occurrence is a Domain Issue
-and Project item. Closing an occurrence as completed requires one successor;
+A recurring commitment is canonical in GitHub. Each occurrence is a Domain
+Issue and Project item. Closing an occurrence as completed requires one successor;
 Pan may create it as part of an interactive completion or reconcile it during
 the next triage after another client closes the Issue. Pan never keeps one
 GitHub-managed Issue open forever by overwriting its date: separate Issues
 preserve the instructions, discussion, completion record, and Project history
 for every occurrence.
 
-A complete external-manager contract may instead make that manager authoritative
-for recurring human tasks. It must define cadence, completion, cancellation,
-successor or history behavior, planning-field mappings, and verification.
-Pan then uses the manager's native recurrence lifecycle and does not create or
-retain Domain Issues merely to duplicate it. If the contract omits recurrence
-semantics, recurring human tasks remain GitHub-authoritative and are not
-eligible for migration.
-
-The remaining sections describe GitHub-authoritative recurrence for
-`human`-owned Issues in the configured Domain repository. Agent-owned and
-external-backlog Issues use the ordinary non-recurring lifecycle.
+Imported source-system recurrence text is preserved, but import never claims
+completed history or starts a successor loop. Occurrence availability is owned
+only by this lifecycle. The runner never dispatches a recurring Issue, even if
+its fields otherwise look AI-ready.
 
 ## Declaring recurrence
 
@@ -125,8 +117,8 @@ its Project item immediately before acting. Run this procedure for an open
 Issue only after an explicit completion request, or automatically for a closed
 Issue whose reason is completed.
 
-1. Confirm that the Issue is `human`-owned, in the configured Domain
-   repository, has a usable `## Recurrence` rule, and has a
+1. Confirm that the Issue is in the configured Domain repository, has a usable
+   `## Recurrence` rule, and has a
    valid nominal occurrence marker. If the marker is absent, follow
    [backward compatibility](#backward-compatibility) before continuing. If a
    marker exists but is unusable, stop for confirmation rather than replacing
@@ -149,10 +141,13 @@ Issue whose reason is completed.
    creation remains discoverable even if a later write fails.
 5. Immediately add a current-Issue comment whose first line is
    `Pan: next occurrence <successor URL>`.
-6. Add the successor to the same Project and set `owner=human`,
-   `Status=ready`, `next-action-date` to the next nominal date, and the current
-   occurrence's `priority` and `workstream`. Leave all playbook, session,
-   human-attention, and lease fields empty.
+6. Add the successor to the same Project and set
+   `Status=ready-for-human`, `next-action=act`, `next-action-date` to the next
+   nominal date, `execution-authorized=no`, `worker-state=idle`, and the current
+   occurrence's `priority` and `workstream`. Leave playbook, dependency,
+   session, generation, human-attention, and lease fields empty. Initialize
+   `task-revision`, the durable current-next-action block, and a transition
+   comment. Do not write the retained legacy `owner`.
 7. Re-read the successor Issue and Project item. Only after GitHub confirms the
    links and all required fields, re-read the current Project item. If it
    already has `Status=done`, first require the Issue to be closed as completed,

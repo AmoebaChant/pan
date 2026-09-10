@@ -20,7 +20,7 @@
  *   "project":    "AmoebaChant/7",            // Project as <owner>/<number>
  *   "machine":    "kevins-macbook",           // reads playbooks/<machine>/*.md
  *   "identity":   "kevins-macbook-runner-1",  // stable string for claimed-by
- *   "panCheckout":"/Users/kevin/Repos/pan",   // path to this Pan checkout
+ *   "panCheckout":"/absolute/path/to/pan",    // path to this Pan checkout
  *
  *   // OPTIONAL
  *   "terminal": {                             // headed-window launcher
@@ -51,6 +51,10 @@
  *   "pollIntervalSeconds": 30,                // idle poll cadence (default 30)
  *   "leaseMinutes": 15,                       // lease duration (default 15)
  *   "maxConcurrent": null,                    // optional global capacity cap
+ *   "humanAttentionBackpressure": {          // optional Needs me soft limit
+ *     "softLimit": 5,
+ *     "mode": "prefer-autonomous"            // "off" | "prefer-autonomous"
+ *   },
  *   "stateRoot": "/durable/user/state/pan",   // authoritative session/runtime
  *                                             // state; platform-specific
  *                                             // per-user default
@@ -94,6 +98,7 @@ import {
   preparePoll,
   statusOf,
   val,
+  workerStateOf,
 } from './pan-runner-poll.js';
 import {
   affinityMatchesMachine,
@@ -108,6 +113,7 @@ import {
 import {
   ensureIssueClosed,
   ensureIssueComment,
+  updateIssueCurrentAction,
 } from './pan-issue-lifecycle.js';
 import {
   CANONICAL_FIELD_COUNT,
@@ -129,6 +135,10 @@ import {
   scanAttempts,
   windowsProcessIdentityScript,
 } from './pan-runner-runtime.js';
+import {
+  isHumanAction,
+  parseRevision,
+} from './pan-task-model.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -200,6 +210,8 @@ function legacyAttemptMatchesProcess(attempt, pid, processStart) {
 
 function terminalStatusForResult(result) {
   if (result?.outcome === 'done') return 'done';
+  if (result?.outcome === 'needs-human') return 'ready-for-human';
+  if (result?.outcome === 'external-waiting') return 'external-waiting';
   if (result?.outcome === 'needs-review') return 'in-review';
   return null;
 }
@@ -416,6 +428,23 @@ export async function loadConfig(configPath) {
     throw new UserError('Config field "legacyLauncherPids" must be an array of unique positive integer PIDs.');
   }
 
+  const rawBackpressure = json.humanAttentionBackpressure ?? {};
+  if (
+    rawBackpressure === null
+    || typeof rawBackpressure !== 'object'
+    || Array.isArray(rawBackpressure)
+  ) {
+    throw new UserError('Config field "humanAttentionBackpressure" must be an object.');
+  }
+  const backpressureMode = rawBackpressure.mode ?? 'off';
+  if (!['off', 'prefer-autonomous'].includes(backpressureMode)) {
+    throw new UserError('humanAttentionBackpressure.mode must be "off" or "prefer-autonomous".');
+  }
+  const backpressureLimit = rawBackpressure.softLimit ?? 5;
+  if (!Number.isInteger(backpressureLimit) || backpressureLimit < 1) {
+    throw new UserError('humanAttentionBackpressure.softLimit must be an integer >= 1.');
+  }
+
   return {
     domain,
     domainRepoSlug: `${domain.owner}/${domain.name}`,
@@ -435,6 +464,11 @@ export async function loadConfig(configPath) {
     legacyLauncherPids,
     stateRoot,
     workspaceRoot,
+    lifecycleVersion: 2,
+    humanAttentionBackpressure: {
+      mode: backpressureMode,
+      softLimit: backpressureLimit,
+    },
     copilotConfigPath:
       json.copilotConfigPath || path.join(os.homedir(), '.copilot', 'config.json'),
   };
@@ -611,6 +645,20 @@ async function loadPlaybooks(cfg) {
         );
       }
     }
+    const humanAttention = front.humanAttention ?? 'may-request';
+    if (!['autonomous', 'may-request'].includes(humanAttention)) {
+      throw new UserError(
+        `${dir}/${file} has invalid humanAttention ${JSON.stringify(humanAttention)}; ` +
+          'must be "autonomous" or "may-request".',
+      );
+    }
+    const checkpointRelease = front.checkpointRelease ?? 'forbidden';
+    if (!['allowed', 'forbidden'].includes(checkpointRelease)) {
+      throw new UserError(
+        `${dir}/${file} has invalid checkpointRelease ${JSON.stringify(checkpointRelease)}; ` +
+          'must be "allowed" or "forbidden".',
+      );
+    }
 
     playbooks.set(name, {
       name,
@@ -618,6 +666,8 @@ async function loadPlaybooks(cfg) {
       workingDirectory,
       slots,
       capacity: cap,
+      humanAttention,
+      checkpointRelease,
       body,
     });
   }
@@ -851,6 +901,20 @@ async function setTextField(cfg, meta, itemId, fieldName, value) {
   ];
   if (value === '' || value == null) base.push('--clear');
   else base.push('--text', String(value));
+  await gh(base);
+}
+
+async function setDateField(cfg, meta, itemId, fieldName, value) {
+  const field = meta.fields.get(fieldName);
+  if (!field) throw new Error(`Project has no field named "${fieldName}".`);
+  const base = [
+    'project', 'item-edit',
+    '--id', itemId,
+    '--field-id', field.id,
+    '--project-id', meta.projectId,
+  ];
+  if (value === '' || value == null) base.push('--clear');
+  else base.push('--date', String(value));
   await gh(base);
 }
 
@@ -1126,11 +1190,13 @@ export class Runner {
       readItemById,
       readIssue,
       setTextField,
+      setDateField,
       setSelectField,
       readDomainFile,
       gh,
       ensureIssueComment,
       ensureIssueClosed,
+      updateIssueCurrentAction,
       inspectProcess,
       ...deps,
     };
@@ -1163,6 +1229,153 @@ export class Runner {
 
   leaseTimestamp() {
     return new Date(Date.now() + this.cfg.leaseMinutes * 60000).toISOString();
+  }
+
+  usesOutcomeLifecycle() {
+    return this.cfg.lifecycleVersion === 2;
+  }
+
+  runningStatus() {
+    return this.usesOutcomeLifecycle() ? 'ai-executing' : 'in-progress';
+  }
+
+  readyStatus() {
+    return this.usesOutcomeLifecycle() ? 'ready-for-ai' : 'ready';
+  }
+
+  pausedStatus() {
+    return this.usesOutcomeLifecycle() ? 'ai-executing' : 'paused';
+  }
+
+  fixedResourceOwnedByOther(itemId, playbook, items) {
+    if (!this.usesOutcomeLifecycle() || !playbook?.workingDirectory) return false;
+    const wanted = canonicalPathKey(playbook.workingDirectory);
+    return items.some((candidate) => {
+      if (candidate.itemId === itemId) return false;
+      if (['done', 'rejected'].includes(statusOf(candidate))) return false;
+      if (!['starting', 'running', 'waiting-human', 'checkpointed', 'paused', 'uncertain']
+        .includes(workerStateOf(candidate))) {
+        return false;
+      }
+      const candidatePlaybook = this.playbooks.get(val(candidate, FIELD.playbook, ''));
+      return candidatePlaybook?.workingDirectory
+        && canonicalPathKey(candidatePlaybook.workingDirectory) === wanted;
+    });
+  }
+
+  async markWorkerPaused(itemId, snapshot) {
+    const expectedRevision = parseRevision(val(snapshot, FIELD.taskRevision, ''));
+    const expectedGeneration = val(snapshot, FIELD.claimGeneration, '');
+    await this.deps.setSelectField(
+      this.cfg,
+      this.meta,
+      itemId,
+      FIELD.workerState,
+      'paused',
+    );
+    const confirmed = await this.deps.readItemById(itemId);
+    if (
+      !confirmed
+      || statusOf(confirmed) !== 'ai-executing'
+      || workerStateOf(confirmed) !== 'paused'
+      || parseRevision(val(confirmed, FIELD.taskRevision, '')) !== expectedRevision
+      || val(confirmed, FIELD.claimGeneration, '') !== expectedGeneration
+    ) {
+      throw new Error('GitHub did not confirm paused worker liveness with the expected generation.');
+    }
+  }
+
+  async transitionOwnedWorker(w, {
+    status,
+    action,
+    detail,
+    workerState,
+    needsHumanSince,
+  }) {
+    const fresh = await this.deps.readItemById(w.itemId);
+    if (
+      !fresh
+      || val(fresh, FIELD.claimedBy, '') !== this.cfg.identity
+      || !w.claimGeneration
+      || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
+      || val(fresh, FIELD.sessionId, '') !== w.sessionId
+      || !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
+    ) {
+      throw new Error('live Project ownership no longer matches this worker generation');
+    }
+    const expectedRevision = parseRevision(val(fresh, FIELD.taskRevision, ''));
+    const nextRevision = expectedRevision + 1;
+    await this.deps.setSelectField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.status,
+      status,
+    );
+    await this.deps.setSelectField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.nextAction,
+      action,
+    );
+    if (workerState) {
+      await this.deps.setSelectField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.workerState,
+        workerState,
+      );
+    }
+    if (needsHumanSince !== undefined) {
+      await this.deps.setTextField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.needsHumanSince,
+        needsHumanSince,
+      );
+    }
+    await this.deps.updateIssueCurrentAction(
+      this.deps.gh,
+      this.issueRepoOf(w),
+      w.issueNumber,
+      {
+        expectedRevision,
+        revision: nextRevision,
+        status,
+        action,
+        detail,
+        actor: this.cfg.identity,
+        claimGeneration: w.claimGeneration,
+        fromStatus: statusOf(fresh),
+        fromAction: val(fresh, FIELD.nextAction, ''),
+      },
+    );
+    await this.deps.setTextField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.taskRevision,
+      String(nextRevision),
+    );
+    const confirmed = await this.deps.readItemById(w.itemId);
+    if (
+      !confirmed
+      || statusOf(confirmed) !== status
+      || val(confirmed, FIELD.nextAction, '') !== action
+      || parseRevision(val(confirmed, FIELD.taskRevision, '')) !== nextRevision
+      || val(confirmed, FIELD.claimGeneration, '') !== w.claimGeneration
+      || (workerState && workerStateOf(confirmed) !== workerState)
+      || (
+        needsHumanSince !== undefined
+        && val(confirmed, FIELD.needsHumanSince, '') !== needsHumanSince
+      )
+    ) {
+      throw new Error('GitHub did not confirm the task transition for this worker generation');
+    }
+    return confirmed;
   }
 
   // ---- Poll + claim -------------------------------------------------------
@@ -1202,11 +1415,16 @@ export class Runner {
       readItem: (itemId) => this.deps.readItemById(itemId),
       setPaused: (itemId) =>
         this.deps.setSelectField(this.cfg, this.meta, itemId, FIELD.status, 'paused'),
+      setWorkerPaused: (itemId, snapshot) => this.markWorkerPaused(itemId, snapshot),
       warn: logErr,
     });
     for (const item of swept) {
       const label = item.issue?.number ? `#${item.issue.number}` : `Project item ${item.itemId}`;
-      log(`${label} paused: lease expired (passive sweep)`);
+      log(
+        this.usesOutcomeLifecycle()
+          ? `${label} worker paused: lease expired (outcome state preserved)`
+          : `${label} paused: lease expired (passive sweep)`,
+      );
     }
 
     let claimed = 0;
@@ -1227,10 +1445,22 @@ export class Runner {
       const pb = val(it, FIELD.playbook, '');
       const pbObj = this.playbooks.get(pb);
       if (this.activeForPlaybook(pb) >= pbObj.capacity) continue;
+      if (this.fixedResourceOwnedByOther(it.itemId, pbObj, items)) {
+        log(`#${it.issue?.number ?? it.itemId} waiting for its fixed workspace owner to release`);
+        continue;
+      }
 
       let slot = null;
       if (isSlotPooled(pbObj)) {
-        const occupied = occupiedSlotsForPlaybook(occupiedByPlaybook, pb);
+        const occupied = new Set(occupiedSlotsForPlaybook(occupiedByPlaybook, pb));
+        if (
+          this.usesOutcomeLifecycle()
+          && statusOf(it) === 'ai-executing'
+          && workerStateOf(it) === 'paused'
+        ) {
+          const ownSlot = splitAffinity(val(it, FIELD.machine, '')).slot;
+          if (ownSlot) occupied.delete(ownSlot);
+        }
         const decision = selectSlot({
           slots: pbObj.slots,
           machineField: val(it, FIELD.machine, ''),
@@ -1427,8 +1657,26 @@ export class Runner {
     const fresh = await this.deps.readItemById(item.itemId);
     if (!fresh || !fresh.issue) return false;
     const previousStatus = statusOf(fresh);
-    const resuming = previousStatus === 'paused';
-    if (ownerOf(fresh) !== 'agent' || (previousStatus !== 'ready' && !resuming)) return false;
+    const previousWorkerState = workerStateOf(fresh);
+    const newLifecycle = this.usesOutcomeLifecycle();
+    const resuming = newLifecycle
+      ? previousStatus === 'ai-executing' && previousWorkerState === 'paused'
+      : previousStatus === 'paused';
+    if (newLifecycle) {
+      const freshStart = (
+        previousStatus === 'ready-for-ai'
+        && val(fresh, FIELD.nextAction, '') === 'execute'
+      );
+      if (!freshStart && !resuming) return false;
+      if (val(fresh, FIELD.executionAuthorized, '') !== 'yes') return false;
+      if (String(val(fresh, FIELD.dependencies, '')).trim()) return false;
+      if (/^## Recurrence\s*$/m.test(String(fresh.issue.body || ''))) return false;
+    } else if (ownerOf(fresh) !== 'agent' || (previousStatus !== 'ready' && !resuming)) {
+      return false;
+    }
+    const expectedRevision = newLifecycle
+      ? parseRevision(val(fresh, FIELD.taskRevision, ''))
+      : null;
     const recordedSessionId = val(fresh, FIELD.sessionId, '');
     const recordedMachine = val(fresh, FIELD.machine, '');
     if (recordedSessionId) {
@@ -1471,6 +1719,18 @@ export class Runner {
       log(`#${number} playbook "${pb}" at capacity on re-read; skipping`);
       return false;
     }
+    if (
+      this.usesOutcomeLifecycle()
+      && pbObj.workingDirectory
+      && this.fixedResourceOwnedByOther(
+        fresh.itemId,
+        pbObj,
+        await this.deps.readAllItems(this.cfg, this.meta),
+      )
+    ) {
+      log(`#${number} fixed workspace still has another durable owner on re-read; skipping`);
+      return false;
+    }
 
     // Re-run slot selection against the freshly-read `machine` value, the
     // current configured slots, and current occupancy (active workers for this
@@ -1496,6 +1756,24 @@ export class Runner {
       const occupied = new Set(
         occupiedByPlaybook ? occupiedSlotsForPlaybook(occupiedByPlaybook, pb) : [],
       );
+      if (newLifecycle && resuming) {
+        const ownSlot = splitAffinity(recordedMachine).slot;
+        if (ownSlot) {
+          const liveItems = await this.deps.readAllItems(this.cfg, this.meta);
+          const conflictingOwner = liveItems.some((candidate) =>
+            candidate.itemId !== fresh.itemId
+            && val(candidate, FIELD.playbook, '') === pb
+            && splitAffinity(val(candidate, FIELD.machine, '')).slot === ownSlot
+            && !['done', 'rejected'].includes(statusOf(candidate))
+            && ['starting', 'running', 'waiting-human', 'checkpointed', 'paused', 'uncertain']
+              .includes(workerStateOf(candidate)));
+          if (conflictingOwner) {
+            log(`#${number} cannot resume: workspace slot "${ownSlot}" has another durable owner`);
+            return false;
+          }
+          occupied.delete(ownSlot);
+        }
+      }
       for (const w of this.active.values()) {
         if (w.playbook === pb && w.slot) occupied.add(w.slot);
       }
@@ -1534,14 +1812,64 @@ export class Runner {
     // slot-pooled work which slot); unlike the lease it is not cleared on pause,
     // so a stopped task can be resumed on the same machine and slot.
     const leaseWritten = this.leaseTimestamp();
+    const claimGeneration = newLifecycle ? randomUUID() : null;
     try {
       await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, machineValue);
       if (newSession) {
         await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.sessionId, sessionId);
       }
+      if (newLifecycle) {
+        await this.deps.setTextField(
+          this.cfg,
+          this.meta,
+          item.itemId,
+          FIELD.claimGeneration,
+          claimGeneration,
+        );
+      }
       await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.claimedBy, this.cfg.identity);
       await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, leaseWritten);
-      await this.deps.setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, 'in-progress');
+      if (newLifecycle) {
+        await this.deps.setSelectField(
+          this.cfg,
+          this.meta,
+          item.itemId,
+          FIELD.workerState,
+          'starting',
+        );
+        await this.deps.setSelectField(
+          this.cfg,
+          this.meta,
+          item.itemId,
+          FIELD.status,
+          'ai-executing',
+        );
+        await this.deps.updateIssueCurrentAction(
+          this.deps.gh,
+          fresh.issue.repo || this.cfg.domainRepoSlug,
+          number,
+          {
+            expectedRevision,
+            revision: expectedRevision + 1,
+            status: 'ai-executing',
+            action: 'execute',
+            detail: `Runner ${this.cfg.identity} is starting the authorized playbook "${pb}".`,
+            actor: this.cfg.identity,
+            claimGeneration,
+            fromStatus: previousStatus,
+            fromAction: val(fresh, FIELD.nextAction, ''),
+          },
+        );
+        await this.deps.setTextField(
+          this.cfg,
+          this.meta,
+          item.itemId,
+          FIELD.taskRevision,
+          String(expectedRevision + 1),
+        );
+      } else {
+        await this.deps.setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, 'in-progress');
+      }
     } catch (e) {
       logErr(`claim write failed for #${number}: ${e.message}`);
       return false;
@@ -1568,9 +1896,15 @@ export class Runner {
       // added to this.active, so handleOperationalFailure's active.delete is a
       // harmless no-op. Do NOT launch a worker.
       await this.handleOperationalFailure(
-        { itemId: item.itemId, issueNumber: number, url: item.issue?.url, repo: item.issue?.repo },
+        {
+          itemId: item.itemId,
+          issueNumber: number,
+          url: item.issue?.url,
+          repo: item.issue?.repo,
+          claimGeneration,
+        },
         `claim confirm re-read failed: ${e.message}`,
-        { returnStatus: previousStatus },
+        { returnStatus: previousStatus, returnWorkerState: previousWorkerState || 'idle' },
       );
       return false;
     }
@@ -1579,6 +1913,9 @@ export class Runner {
       lease: leaseWritten,
       machine: machineValue,
       sessionId,
+      claimGeneration,
+      revision: newLifecycle ? expectedRevision + 1 : null,
+      status: this.runningStatus(),
     })) {
       const confirmClaimed = confirm ? val(confirm, FIELD.claimedBy, '') : '';
       log(`#${number} claim lost to another runner (claimed-by=${JSON.stringify(confirmClaimed)}); abandoning without writing`);
@@ -1620,6 +1957,22 @@ export class Runner {
             newSession ? machineValue : val(fresh, FIELD.machine, ''),
           );
           await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.leaseUntil, '');
+          if (newLifecycle) {
+            await this.deps.setTextField(
+              this.cfg,
+              this.meta,
+              item.itemId,
+              FIELD.claimGeneration,
+              val(fresh, FIELD.claimGeneration, ''),
+            );
+            await this.deps.setSelectField(
+              this.cfg,
+              this.meta,
+              item.itemId,
+              FIELD.workerState,
+              previousWorkerState || 'idle',
+            );
+          }
           await this.deps.setSelectField(this.cfg, this.meta, item.itemId, FIELD.status, previousStatus);
         } catch (e) {
           logErr(`revert-to-${previousStatus} writes failed for #${number}: ${e.message}`);
@@ -1636,14 +1989,43 @@ export class Runner {
     } catch (e) {
       logErr(`launch failed for #${number}: ${e.message}`);
       await this.handleOperationalFailure(
-        { itemId: item.itemId, issueNumber: number, url: item.issue?.url, repo: item.issue?.repo },
+        {
+          itemId: item.itemId,
+          issueNumber: number,
+          url: item.issue?.url,
+          repo: item.issue?.repo,
+          claimGeneration,
+        },
         `launch failed: ${e.message}`,
-        { returnStatus: previousStatus },
+        { returnStatus: previousStatus, returnWorkerState: previousWorkerState || 'idle' },
       );
       return false;
     }
+    if (newLifecycle) {
+      try {
+        const live = await this.deps.readItemById(item.itemId);
+        if (
+          live
+          && val(live, FIELD.claimGeneration, '') === claimGeneration
+          && val(live, FIELD.claimedBy, '') === this.cfg.identity
+          && statusOf(live) === 'ai-executing'
+        ) {
+          await this.deps.setSelectField(
+            this.cfg,
+            this.meta,
+            item.itemId,
+            FIELD.workerState,
+            'running',
+          );
+          const worker = this.active.get(item.itemId);
+          if (worker) worker.claimGeneration = claimGeneration;
+        }
+      } catch (error) {
+        logErr(`could not confirm running worker state for #${number}: ${error.message}`);
+      }
+    }
     this.failCounts.delete(item.itemId);
-    if (resuming) {
+    if (resuming && !newLifecycle) {
       try {
         await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.needsHumanSince, '');
         const worker = this.active.get(item.itemId);
@@ -1702,6 +2084,7 @@ export class Runner {
       isolated: metadata.isolated,
       slot: metadata.slot ?? null,
       sessionId: metadata.sessionId,
+      claimGeneration: metadata.claimGeneration || val(item, FIELD.claimGeneration, ''),
       startedAt,
       lastRenew: Date.now(),
       hadNeedsHuman,
@@ -1738,6 +2121,7 @@ export class Runner {
       isolated,
       slot,
       sessionId,
+      claimGeneration: val(item, FIELD.claimGeneration, ''),
       startedAt: Date.now(),
       lastRenew: Date.now(),
       hadNeedsHuman: !!val(item, FIELD.needsHumanSince, ''),
@@ -1762,7 +2146,9 @@ export class Runner {
     const previousStatus = statusOf(item);
     const recordedSessionId = val(item, FIELD.sessionId, '');
     const recordedMachine = val(item, FIELD.machine, '');
-    const paused = previousStatus === 'paused';
+    const paused = this.usesOutcomeLifecycle()
+      ? previousStatus === 'ai-executing' && workerStateOf(item) === 'paused'
+      : previousStatus === 'paused';
     const resuming = !!recordedSessionId;
     // Issue numbers and session ids are interpolated into the session root's
     // directory name, so both must be safe path components before any path is
@@ -1925,6 +2311,7 @@ export class Runner {
       isolated,
       workingDir,
       slot: workerSlot,
+      claimGeneration: val(item, FIELD.claimGeneration, '') || null,
     };
     const recoveredAttempt = await recoverAttemptCreation(
       panDir,
@@ -2134,6 +2521,8 @@ export class Runner {
         repo: liveIssue.repo || item.issue.repo || repoFromUrl(liveIssue.url),
         playbook: playbookName,
         workstream: val(item, FIELD.workstream, '') || null,
+        taskRevision: val(item, FIELD.taskRevision, '') || '0',
+        claimGeneration: val(item, FIELD.claimGeneration, '') || null,
         answers,
       };
       await atomicWriteJson(taskPath, task);
@@ -2707,7 +3096,26 @@ child.on('exit', (code, signal) => {
       return true;
     }
     const claimedBy = fresh ? val(fresh, FIELD.claimedBy, '') : '';
-    if (!fresh || claimedBy !== this.cfg.identity || statusOf(fresh) !== 'in-progress') {
+    const expectedLiveStatus = fresh && (
+      statusOf(fresh) === this.runningStatus()
+      || (
+        this.usesOutcomeLifecycle()
+        && statusOf(fresh) === 'ready-for-human'
+        && workerStateOf(fresh) === 'waiting-human'
+      )
+    );
+    if (
+      !fresh
+      || claimedBy !== this.cfg.identity
+      || !expectedLiveStatus
+      || (
+        this.usesOutcomeLifecycle()
+        && (
+          !w.claimGeneration
+          || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
+        )
+      )
+    ) {
       await this.handleOperationalFailure(w, 'lease lost', { releaseFields: false });
       return false;
     }
@@ -2902,7 +3310,10 @@ child.on('exit', (code, signal) => {
         const question = parsed && typeof parsed.question === 'string' && parsed.question.trim()
           ? parsed.question.trim()
           : null;
-        if (!question) {
+        const action = parsed && isHumanAction(parsed.action) && parsed.action !== 'act'
+          ? parsed.action
+          : null;
+        if (!question || (this.usesOutcomeLifecycle() && !action)) {
           // File present but not yet fully written (or missing a question).
           if (!w.warnedPartialNeedsHuman) {
             log(`#${w.issueNumber} needs-human.json present but not yet complete; waiting for a full write`);
@@ -2910,16 +3321,29 @@ child.on('exit', (code, signal) => {
           }
         } else {
           const since = parsed.since || new Date().toISOString();
+          const detail = typeof parsed.detail === 'string' && parsed.detail.trim()
+            ? parsed.detail.trim()
+            : question;
           const relayed = await this.withGenerationMutationLock(
             w,
             'needs-human relay',
             async () => {
-              await setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, since);
-              await issueComment(
-                this.issueRepoOf(w),
-                w.issueNumber,
-                `⏳ Worker needs the user:\n\n> ${question}`,
-              );
+              if (this.usesOutcomeLifecycle()) {
+                await this.transitionOwnedWorker(w, {
+                  status: 'ready-for-human',
+                  action,
+                  detail,
+                  workerState: 'waiting-human',
+                  needsHumanSince: since,
+                });
+              } else {
+                await setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, since);
+                await issueComment(
+                  this.issueRepoOf(w),
+                  w.issueNumber,
+                  `⏳ Worker needs the user:\n\n> ${question}`,
+                );
+              }
               return true;
             },
           );
@@ -2928,6 +3352,22 @@ child.on('exit', (code, signal) => {
             w.needsHumanRelayed = true;
             w.warnedPartialNeedsHuman = false;
             log(`#${w.issueNumber} needs human`);
+            if (
+              this.usesOutcomeLifecycle()
+              && parsed.safeToRelease === true
+              && this.playbooks.get(w.playbook)?.checkpointRelease === 'allowed'
+            ) {
+              await this.withGenerationMutationLock(
+                w,
+                'durable checkpoint release',
+                () => this.releaseCheckpointWorker(w, {
+                  action,
+                  detail,
+                  since,
+                }),
+              );
+              return;
+            }
           }
         }
       }
@@ -2939,7 +3379,17 @@ child.on('exit', (code, signal) => {
           w,
           'needs-human clear',
           async () => {
-            await setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, '');
+            if (this.usesOutcomeLifecycle()) {
+              await this.transitionOwnedWorker(w, {
+                status: 'ai-executing',
+                action: 'execute',
+                detail: 'The human checkpoint was answered in the worker session; execution continues.',
+                workerState: 'running',
+                needsHumanSince: '',
+              });
+            } else {
+              await setTextField(this.cfg, this.meta, w.itemId, FIELD.needsHumanSince, '');
+            }
             return true;
           },
         );
@@ -3000,6 +3450,26 @@ child.on('exit', (code, signal) => {
     }
     const summary = result.summary || '(no summary)';
     const details = result.details || '';
+    if (this.usesOutcomeLifecycle()) {
+      try {
+        return await this.finalizeOutcomeLifecycle(w, resultPath, resultBytes, {
+          ...result,
+          summary,
+          details,
+        });
+      } catch (error) {
+        w.finalizationPending = false;
+        const count = (w.finalizationFailures || 0) + 1;
+        w.finalizationFailures = count;
+        const delay = Math.min(60000, FINALIZATION_RETRY_BASE_MS * 2 ** (count - 1));
+        w.nextFinalizeAttemptAt = Date.now() + delay;
+        logErr(
+          `finalize failed for #${w.issueNumber} (${count}); retrying in ` +
+          `${delay / 1000}s: ${error.message}`,
+        );
+        return false;
+      }
+    }
 
     w.finalizationPending = true;
     // TODO (best-effort v1): for pull-request work, confirm the PR merged on
@@ -3123,6 +3593,178 @@ child.on('exit', (code, signal) => {
       } catch (e) {
         return this.handleFinalizationFailure(w, e, status);
       }
+    }
+    return this.finishFinalization(w, status, resultPath, resultBytes);
+  }
+
+  async finalizeOutcomeLifecycle(w, resultPath, resultBytes, result) {
+    let outcome = result.outcome;
+    let action = result.action;
+    if (outcome === 'needs-review') {
+      outcome = 'needs-human';
+      action = 'review';
+    }
+    if (
+      !['done', 'needs-human', 'external-waiting'].includes(outcome)
+      || (outcome === 'needs-human' && (!isHumanAction(action) || action === 'act'))
+    ) {
+      if (w.lastBadOutcome !== `${outcome}:${action}`) {
+        logErr(
+          `result.json for #${w.issueNumber} has invalid outcome/action ` +
+          `${JSON.stringify({ outcome, action })}; leaving the worker active.`,
+        );
+        w.lastBadOutcome = `${outcome}:${action}`;
+      }
+      return false;
+    }
+
+    w.finalizationPending = true;
+    const status = outcome === 'done'
+      ? 'done'
+      : outcome === 'external-waiting'
+        ? 'external-waiting'
+        : 'ready-for-human';
+    const nextAction = outcome === 'done'
+      ? 'none'
+      : outcome === 'external-waiting'
+        ? 'wait'
+        : action;
+    const fresh = await this.deps.readItemById(w.itemId);
+    if (!fresh) {
+      await this.stopFinalizedWorker(w);
+      return true;
+    }
+    const currentClaimedBy = val(fresh, FIELD.claimedBy, '');
+    const activeOwned = (
+      currentClaimedBy === this.cfg.identity
+      && ['ai-executing', 'ready-for-human'].includes(statusOf(fresh))
+    );
+    const partiallyFinalized = (
+      statusOf(fresh) === status
+      && val(fresh, FIELD.nextAction, '') === nextAction
+      && (!currentClaimedBy || currentClaimedBy === this.cfg.identity)
+    );
+    if (
+      (!activeOwned && !partiallyFinalized)
+      || !w.claimGeneration
+      || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
+      || val(fresh, FIELD.sessionId, '') !== w.sessionId
+      || !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
+    ) {
+      logErr(`#${w.issueNumber} result generation/ownership is stale; stopping without writes`);
+      await this.stopFinalizedWorker(w);
+      return true;
+    }
+
+    if (partiallyFinalized) {
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+      return this.finishFinalization(w, status, resultPath, resultBytes);
+    }
+
+    const expectedRevision = parseRevision(val(fresh, FIELD.taskRevision, ''));
+    const nextRevision = expectedRevision + 1;
+    const detail = result.details || result.summary;
+    const needsHumanSince = outcome === 'needs-human' ? new Date().toISOString() : '';
+    const workerState = outcome === 'done' ? 'stopped' : 'checkpointed';
+
+    let comment = `✅ Worker finished (${outcome}): ${result.summary}`;
+    if (result.details) comment += `\n\n${result.details}`;
+    await this.deps.ensureIssueComment(
+      this.deps.gh,
+      this.issueRepoOf(w),
+      w.issueNumber,
+      `<!-- pan-result:${w.sessionId}:${w.claimGeneration} -->`,
+      comment,
+    );
+
+    if (outcome === 'done') {
+      if (val(fresh, FIELD.nextActionDate, '')) {
+        await this.deps.setDateField(
+          this.cfg,
+          this.meta,
+          w.itemId,
+          FIELD.nextActionDate,
+          '',
+        );
+        const dateCleared = await this.deps.readItemById(w.itemId);
+        if (!dateCleared || val(dateCleared, FIELD.nextActionDate, '')) {
+          throw new Error('GitHub did not confirm next-action-date cleanup before completion');
+        }
+      }
+      await this.deps.ensureIssueClosed(
+        this.deps.gh,
+        this.issueRepoOf(w),
+        w.issueNumber,
+      );
+    }
+
+    await this.deps.setSelectField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.nextAction,
+      nextAction,
+    );
+    await this.deps.setSelectField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.workerState,
+      workerState,
+    );
+    await this.deps.setTextField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.needsHumanSince,
+      needsHumanSince,
+    );
+    await this.deps.setSelectField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.status,
+      status,
+    );
+    await this.deps.updateIssueCurrentAction(
+      this.deps.gh,
+      this.issueRepoOf(w),
+      w.issueNumber,
+      {
+        expectedRevision,
+        revision: nextRevision,
+        status,
+        action: nextAction,
+        detail,
+        actor: this.cfg.identity,
+        claimGeneration: w.claimGeneration,
+        fromStatus: statusOf(fresh),
+        fromAction: val(fresh, FIELD.nextAction, ''),
+      },
+    );
+    await this.deps.setTextField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.taskRevision,
+      String(nextRevision),
+    );
+    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+
+    const confirmed = await this.deps.readItemById(w.itemId);
+    if (
+      !confirmed
+      || statusOf(confirmed) !== status
+      || val(confirmed, FIELD.nextAction, '') !== nextAction
+      || workerStateOf(confirmed) !== workerState
+      || parseRevision(val(confirmed, FIELD.taskRevision, '')) !== nextRevision
+      || val(confirmed, FIELD.claimedBy, '')
+      || val(confirmed, FIELD.leaseUntil, '')
+      || val(confirmed, FIELD.claimGeneration, '') !== w.claimGeneration
+    ) {
+      throw new Error('GitHub did not confirm result finalization under the expected generation');
     }
     return this.finishFinalization(w, status, resultPath, resultBytes);
   }
@@ -3312,6 +3954,54 @@ child.on('exit', (code, signal) => {
     }
   }
 
+  async releaseCheckpointWorker(w, checkpoint) {
+    const fresh = await this.deps.readItemById(w.itemId);
+    if (
+      !fresh
+      || statusOf(fresh) !== 'ready-for-human'
+      || workerStateOf(fresh) !== 'waiting-human'
+      || val(fresh, FIELD.claimedBy, '') !== this.cfg.identity
+      || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
+    ) {
+      throw new Error('checkpoint release lost task or generation ownership');
+    }
+    await this.deps.setSelectField(
+      this.cfg,
+      this.meta,
+      w.itemId,
+      FIELD.workerState,
+      'checkpointed',
+    );
+    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+    const confirmed = await this.deps.readItemById(w.itemId);
+    if (
+      !confirmed
+      || statusOf(confirmed) !== 'ready-for-human'
+      || workerStateOf(confirmed) !== 'checkpointed'
+      || val(confirmed, FIELD.claimedBy, '')
+      || val(confirmed, FIELD.leaseUntil, '')
+      || val(confirmed, FIELD.claimGeneration, '') !== w.claimGeneration
+    ) {
+      throw new Error('GitHub did not confirm durable checkpoint release');
+    }
+    await atomicWriteJson(path.join(w.attemptDir, 'checkpoint-consumed.json'), {
+      panRunnerCheckpoint: true,
+      version: 1,
+      launchId: w.launchId,
+      sessionId: w.sessionId,
+      claimGeneration: w.claimGeneration,
+      action: checkpoint.action,
+      detail: checkpoint.detail,
+      since: checkpoint.since,
+      releasedAt: new Date().toISOString(),
+    });
+    w.finished = true;
+    this.active.delete(w.itemId);
+    await privateWriteFile(path.join(w.panDir, 'worker.stop'), '');
+    log(`#${w.issueNumber} checkpointed; execution capacity released`);
+  }
+
   /** Release a started task whose worker stopped so its session and workspace
    *  can be resumed on this machine. Unlike an operational launch failure,
    *  worker exit is a lifecycle transition, not a retry strike. */
@@ -3319,7 +4009,7 @@ child.on('exit', (code, signal) => {
     const number = w.issueNumber;
     let fresh;
     try {
-      fresh = await readItemById(w.itemId);
+      fresh = await this.deps.readItemById(w.itemId);
     } catch (e) {
       logErr(`pause re-read failed for #${number}: ${e.message}`);
       return false;
@@ -3332,23 +4022,62 @@ child.on('exit', (code, signal) => {
 
     const claimedBy = val(fresh, FIELD.claimedBy, '');
     const status = statusOf(fresh);
+    const newLifecycle = this.usesOutcomeLifecycle();
     if (claimedBy && claimedBy !== this.cfg.identity) {
       this.active.delete(w.itemId);
       logErr(`#${number} now claimed by "${claimedBy}"; not pausing a foreign worker`);
       return false;
     }
-    if (status !== 'in-progress') {
+    if (
+      newLifecycle
+      && (
+        !w.claimGeneration
+        || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
+      )
+    ) {
       this.active.delete(w.itemId);
-      if (status === 'paused' && affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine) && w.isolated && existsSync(w.workingDir)) {
+      logErr(`#${number} claim generation changed; not pausing a stale worker`);
+      return false;
+    }
+    const pausable = newLifecycle
+      ? (
+          status === 'ai-executing'
+          || (
+            status === 'ready-for-human'
+            && workerStateOf(fresh) === 'waiting-human'
+          )
+        )
+      : status === 'in-progress';
+    if (!pausable) {
+      this.active.delete(w.itemId);
+      if (
+        (
+          (!newLifecycle && status === 'paused')
+          || (newLifecycle && workerStateOf(fresh) === 'paused')
+        )
+        && affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
+        && w.isolated
+        && existsSync(w.workingDir)
+      ) {
         this.resumeWorkspaces.set(w.itemId, w.workingDir);
       }
-      return status === 'paused';
+      return newLifecycle ? workerStateOf(fresh) === 'paused' : status === 'paused';
     }
 
     try {
-      await setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
-      await setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
-      await setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'paused');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+      if (newLifecycle) {
+        await this.deps.setSelectField(
+          this.cfg,
+          this.meta,
+          w.itemId,
+          FIELD.workerState,
+          'paused',
+        );
+      } else {
+        await this.deps.setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'paused');
+      }
     } catch (e) {
       logErr(`pause writes failed for #${number}: ${e.message}`);
       return false;
@@ -3358,7 +4087,11 @@ child.on('exit', (code, signal) => {
     if (w.isolated && existsSync(w.workingDir)) {
       this.resumeWorkspaces.set(w.itemId, w.workingDir);
     }
-    log(`#${number} paused: ${reason}`);
+    log(
+      newLifecycle
+        ? `#${number} worker paused without changing outcome: ${reason}`
+        : `#${number} paused: ${reason}`,
+    );
     return true;
   }
 
@@ -3373,7 +4106,15 @@ child.on('exit', (code, signal) => {
    *  owner (the strike is still counted). Absent positive evidence of a foreign
    *  owner (re-read shows our identity, an empty claim, or fails/returns null),
    *  the writes proceed as before. */
-  async handleOperationalFailure(w, reason, { releaseFields = true, returnStatus = 'ready' } = {}) {
+  async handleOperationalFailure(
+    w,
+    reason,
+    {
+      releaseFields = true,
+      returnStatus = 'ready',
+      returnWorkerState = 'idle',
+    } = {},
+  ) {
     const number = w.issueNumber;
     const count = (this.failCounts.get(w.itemId) || 0) + 1;
     this.failCounts.set(w.itemId, count);
@@ -3391,7 +4132,7 @@ child.on('exit', (code, signal) => {
     // Best-effort confirming re-read before any writes: never stomp a foreign
     // runner that may have claimed the item during a race window.
     try {
-      const fresh = await readItemById(w.itemId);
+      const fresh = await this.deps.readItemById(w.itemId);
       if (fresh) {
         const claimedBy = val(fresh, FIELD.claimedBy, '');
         if (claimedBy && claimedBy !== this.cfg.identity) {
@@ -3405,6 +4146,92 @@ child.on('exit', (code, signal) => {
     }
 
     try {
+      if (this.usesOutcomeLifecycle()) {
+        const fresh = await this.deps.readItemById(w.itemId);
+        if (!fresh) return;
+        const currentGeneration = val(fresh, FIELD.claimGeneration, '');
+        if (w.claimGeneration && currentGeneration !== w.claimGeneration) {
+          logErr(`#${number} claim generation changed; skipping stale failure recovery`);
+          return;
+        }
+        const expectedRevision = parseRevision(val(fresh, FIELD.taskRevision, ''));
+        await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+        await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+        if (count >= 3) {
+          const since = new Date().toISOString();
+          await this.deps.setTextField(
+            this.cfg,
+            this.meta,
+            w.itemId,
+            FIELD.needsHumanSince,
+            since,
+          );
+          await this.deps.setSelectField(
+            this.cfg,
+            this.meta,
+            w.itemId,
+            FIELD.workerState,
+            'stopped',
+          );
+          await this.deps.setSelectField(
+            this.cfg,
+            this.meta,
+            w.itemId,
+            FIELD.nextAction,
+            'review',
+          );
+          await this.deps.setSelectField(
+            this.cfg,
+            this.meta,
+            w.itemId,
+            FIELD.status,
+            'ready-for-human',
+          );
+          await this.deps.updateIssueCurrentAction(
+            this.deps.gh,
+            this.issueRepoOf(w),
+            number,
+            {
+              expectedRevision,
+              revision: expectedRevision + 1,
+              status: 'ready-for-human',
+              action: 'review',
+              detail: `Review runner recovery after three operational failures. Last reason: ${reason}`,
+              actor: this.cfg.identity,
+              claimGeneration: currentGeneration,
+              fromStatus: statusOf(fresh),
+              fromAction: val(fresh, FIELD.nextAction, ''),
+            },
+          );
+          await this.deps.setTextField(
+            this.cfg,
+            this.meta,
+            w.itemId,
+            FIELD.taskRevision,
+            String(expectedRevision + 1),
+          );
+          log(`#${number} needs human review after 3 operational failures`);
+        } else {
+          await this.deps.setSelectField(
+            this.cfg,
+            this.meta,
+            w.itemId,
+            FIELD.workerState,
+            returnWorkerState,
+          );
+          if (statusOf(fresh) !== returnStatus) {
+            await this.deps.setSelectField(
+              this.cfg,
+              this.meta,
+              w.itemId,
+              FIELD.status,
+              returnStatus,
+            );
+          }
+          log(`#${number} restored to ${returnStatus}/${returnWorkerState}`);
+        }
+        return;
+      }
       if (count >= 3) {
         // Raise human attention so an unattended runner can't retry forever.
         await setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
@@ -3461,15 +4288,34 @@ child.on('exit', (code, signal) => {
       return false;
     }
 
-    // Already in-progress and ours: adopt without touching the Project.
-    if (status === 'in-progress' && claimedBy === this.cfg.identity) {
+    const newLifecycle = this.usesOutcomeLifecycle();
+    const activeState = newLifecycle
+      ? (
+          status === 'ai-executing'
+          || (status === 'ready-for-human' && workerStateOf(fresh) === 'waiting-human')
+        )
+      : status === 'in-progress';
+    // Already live and ours: adopt without touching the Project.
+    if (
+      activeState
+      && claimedBy === this.cfg.identity
+      && (
+        !newLifecycle
+        || (
+          w.claimGeneration
+          && val(fresh, FIELD.claimGeneration, '') === w.claimGeneration
+        )
+      )
+    ) {
       w.lastRenew = 0; // force an immediate renewal on the next tick
       return true;
     }
 
     // The only drift we restore is the exact passive-sweep state (paused, our
     // claim intact, lapsed lease); anything else is left for reservation.
-    const restorable = status === 'paused'
+    const restorable = (newLifecycle
+      ? status === 'ai-executing' && workerStateOf(fresh) === 'paused'
+      : status === 'paused')
       && claimedBy === this.cfg.identity
       && leaseExpiredOrMissing(fresh);
     if (!restorable) return false;
@@ -3478,7 +4324,17 @@ child.on('exit', (code, signal) => {
     try {
       await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, this.cfg.identity);
       await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, lease);
-      await this.deps.setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'in-progress');
+      if (newLifecycle) {
+        await this.deps.setSelectField(
+          this.cfg,
+          this.meta,
+          w.itemId,
+          FIELD.workerState,
+          'running',
+        );
+      } else {
+        await this.deps.setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'in-progress');
+      }
     } catch (e) {
       logErr(`could not restore claim for live #${w.issueNumber} on rehydrate: ${e.message}`);
       return false;
@@ -3495,10 +4351,14 @@ child.on('exit', (code, signal) => {
     }
     if (
       !confirm ||
-      statusOf(confirm) !== 'in-progress' ||
+      statusOf(confirm) !== this.runningStatus() ||
       val(confirm, FIELD.claimedBy, '') !== this.cfg.identity ||
       val(confirm, FIELD.leaseUntil, '') !== lease ||
       val(confirm, FIELD.sessionId, '') !== w.sessionId ||
+      (
+        newLifecycle
+        && val(confirm, FIELD.claimGeneration, '') !== w.claimGeneration
+      ) ||
       !affinityMatchesMachine(val(confirm, FIELD.machine, ''), this.cfg.machine)
     ) {
       logErr(`live re-adopt not confirmed for #${w.issueNumber}; reserving directory instead`);
@@ -3648,6 +4508,8 @@ child.on('exit', (code, signal) => {
         repo: item.issue.repo || repoFromUrl(item.issue.url),
         playbook: playbookName,
         workstream: val(item, FIELD.workstream, '') || null,
+        taskRevision: val(item, FIELD.taskRevision, '') || '0',
+        claimGeneration: val(item, FIELD.claimGeneration, '') || null,
         answers: [],
       };
       if (!existsSync(path.join(sessionPanDir, 'task.json'))) {
@@ -3697,6 +4559,7 @@ child.on('exit', (code, signal) => {
           isolated,
           workingDir,
           slot,
+          claimGeneration: val(item, FIELD.claimGeneration, '') || null,
           legacySignalDir: legacyPanDir,
           legacySource: legacyPanDir,
           legacyPid: pid,
@@ -3931,6 +4794,7 @@ child.on('exit', (code, signal) => {
           isolated,
           workingDir,
           slot,
+          claimGeneration: val(item, FIELD.claimGeneration, '') || null,
           ...(useLegacySignals ? { legacySignalDir: legacyPanDir } : {}),
           legacySource: legacyPanDir,
           legacyPid: pid,
@@ -4394,6 +5258,8 @@ child.on('exit', (code, signal) => {
       const projectMachine = val(match, FIELD.machine, '');
       const projectSessionId = val(match, FIELD.sessionId, '');
       const claimedBy = val(match, FIELD.claimedBy, '');
+      const projectWorkerState = workerStateOf(match);
+      const projectClaimGeneration = val(match, FIELD.claimGeneration, '');
 
       // Bind the root to the live Project item so a stale session-A root can never
       // act on the current session B: issue number, itemId, machine, session-id,
@@ -4407,13 +5273,19 @@ child.on('exit', (code, signal) => {
         const slotDef = pb && isSlotPooled(pb) ? pb.slots.find((s) => s.id === launchSlot) : null;
         slotPathBound = !!slotDef && canonicalRealKey(slotDef.dir) === canonicalRealKey(workingDir);
       }
+      const generationBound = !this.usesOutcomeLifecycle()
+        || (
+          !!projectClaimGeneration
+          && selectedAttempt?.attempt?.claimGeneration === projectClaimGeneration
+        );
       const sessionBound = bindable
         && match.issue?.number === nameNumber
         && match.itemId === task.itemId
         && projectSessionId === nameSessionId
         && affinityMatchesMachine(projectMachine, this.cfg.machine)
         && projectSlot === (launchSlot ?? null)
-        && slotPathBound;
+        && slotPathBound
+        && generationBound;
 
       // A pending result is finalizable only when it is our finished worker:
       // session-bound with a lapsed lease (the surviving-claim check is in
@@ -4436,6 +5308,7 @@ child.on('exit', (code, signal) => {
         isolated,
         slot: launchSlot,
         sessionId: projectSessionId,
+        claimGeneration: selectedAttempt?.attempt?.claimGeneration || projectClaimGeneration,
         startedAt: Date.now(),
         lastRenew: 0, // force an immediate lease renewal
         hadNeedsHuman: !!val(match, FIELD.needsHumanSince, ''),
@@ -4585,7 +5458,10 @@ child.on('exit', (code, signal) => {
       // claimed-by field as evidence it is inert). Only the root whose session
       // binds to the Project item is indexed for the next resume — a stale
       // session's root must never become the resume target for the current one.
-      if (projectStatus === 'paused' && affinityMatchesMachine(projectMachine, this.cfg.machine)) {
+      const preservedStoppedState = this.usesOutcomeLifecycle()
+        ? ['paused', 'checkpointed', 'uncertain'].includes(projectWorkerState)
+        : projectStatus === 'paused';
+      if (preservedStoppedState && affinityMatchesMachine(projectMachine, this.cfg.machine)) {
         if (isolated && sessionBound) {
           this.resumeWorkspaces.set(match.itemId, workingDir);
         }
@@ -4600,7 +5476,10 @@ child.on('exit', (code, signal) => {
       // its recorded local session. Preserve a fully bound stopped root while
       // it is in review or already ready so that relaunch continues the same
       // transcript and, for isolated work, the same checkout.
-      if (sessionBound && (projectStatus === 'in-review' || projectStatus === 'ready')) {
+      const reusableOutcomeState = this.usesOutcomeLifecycle()
+        ? ['ready-for-human', 'ready-for-ai', 'external-waiting', 'deliberate-hold'].includes(projectStatus)
+        : (projectStatus === 'in-review' || projectStatus === 'ready');
+      if (sessionBound && reusableOutcomeState) {
         if (isolated) this.resumeWorkspaces.set(match.itemId, workingDir);
         log(
           `found reusable ${isolated ? 'workspace' : 'session state'} for #${number} at ` +
@@ -4620,7 +5499,16 @@ child.on('exit', (code, signal) => {
       // Still ours but the worker stopped. Retain this state root and transition
       // the item to paused so the same machine can relaunch the recorded session
       // here.
-      if (projectStatus !== 'in-progress') {
+      const stoppedWasExecuting = this.usesOutcomeLifecycle()
+        ? (
+            projectStatus === 'ai-executing'
+            || (
+              projectStatus === 'ready-for-human'
+              && projectWorkerState === 'waiting-human'
+            )
+          )
+        : projectStatus === 'in-progress';
+      if (!stoppedWasExecuting) {
         // Not ours to pause and no live worker: inert leftover — prune the root
         // only, gated on ownership.
         await pruneIfOwned('stopped worker, not in-progress');

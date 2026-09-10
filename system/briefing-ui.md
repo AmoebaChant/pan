@@ -6,6 +6,46 @@ not replace that contract, hold authoritative task state, or make planning
 decisions. The Pan session still performs every live read, recommendation,
 revision, approved write, and verification.
 
+Pan also ships a dedicated **everyday task UI** from the same public-safe design
+language. It is a separate GitHub-backed loopback service, not a briefing
+proposal and not an orchestrator.
+
+## Everyday task UI
+
+Start fixture mode first:
+
+```sh
+node bin/pan-tasks.js --demo
+```
+
+Live mode requires both bindings explicitly:
+
+```sh
+node bin/pan-tasks.js \
+  --config /absolute/path/to/machine.json \
+  --checkout /absolute/path/to/this/pan/checkout
+```
+
+It never discovers a global agent, skill, Domain, or checkout implicitly.
+
+The primary views are Today, Needs me, In motion, Recent activity, and All
+tasks, derived exactly as [task lifecycle](task-lifecycle.md#everyday-derived-views)
+defines. A task appears in at most one primary view; All tasks intentionally
+contains the complete set. Recent activity is quiet informational history, not
+a clearable inbox.
+
+The UI supports fast capture and checked edits for title/details, priority,
+workstream, attention schedule, deadline, exact current action, authorization,
+dependencies, hold, explicit human↔AI handoff, finish/reject, and recurrence
+basics. Details show the current-next-action block, history, artifacts, worker
+liveness, and session/workspace affinity. Discuss/open presents the honest
+worker terminal/machine instruction; it does not pretend browser chat is a
+worker conversation.
+
+Daily commitment still requires the existing explicit briefing approval flow.
+An everyday edit may schedule a specific date only when the user directly asks
+for that edit; it never silently turns Needs me into Today.
+
 ## Interaction model
 
 The UI uses complete proposal and review snapshots rather than one agent turn
@@ -97,9 +137,8 @@ review, one pending MCP wait, and connected browser streams in memory. It has
 no database. Browser-local draft markup may be kept in local storage so a page
 refresh does not discard unfinished feedback.
 
-GitHub, the configured external human task manager, and workstream Markdown
-remain authoritative. The service must never infer task meaning, apply task
-writes, or expose credentials to browser code.
+GitHub and workstream Markdown remain authoritative. The service must never
+infer task meaning, apply task writes, or expose credentials to browser code.
 
 ## Local use
 
@@ -158,3 +197,27 @@ If the MCP process restarts, its in-memory proposal and pending review are
 lost. Pan republishes the current complete proposal and waits again; the
 browser restores matching unsent markup from local storage. No authoritative
 task state is lost.
+
+## Everyday service boundary
+
+`bin/pan-task-service.js` and `bin/pan-tasks.js` serve browser assets and a
+same-origin JSON API. The service:
+
+- invokes authenticated `gh` only in the Node process;
+- sends no credentials or arbitrary command capability to browser code;
+- binds loopback only;
+- requires an allowed `Origin` and exact Host authority for every write and
+  rejects DNS-rebinding-shaped hosts;
+- filters and writes only the configured Domain repository plus explicit
+  backlog repositories from config;
+- limits request and rendered content sizes;
+- re-reads the live Issue/Project item and requires `task-revision` before each
+  write;
+- requires explicit generation/resource operations before disturbing a worker;
+  and
+- returns real stale/conflict/error responses, never fixture or success-shaped
+  fallback data.
+
+The fixture service uses only public invented data. The live service never
+writes during startup or read requests. Browser local storage may hold
+presentation preferences, not authoritative task state or credentials.

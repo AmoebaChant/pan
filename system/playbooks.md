@@ -29,6 +29,8 @@ free-form instructions body:
 name: tool-development
 description: Open a pull request against a repo that fixes the Issue.
 capacity: 1                   # concurrent tasks on this machine; 0 disables
+humanAttention: may-request   # autonomous | may-request (default)
+checkpointRelease: forbidden # allowed | forbidden (default)
 workingDirectory: null        # optional; see below
 ---
 
@@ -48,6 +50,18 @@ Front matter fields:
 - `capacity` (required) — a non-negative integer: the number of concurrent
   tasks this machine will run for this playbook. `0` disables the playbook on
   this machine without removing its file.
+- `humanAttention` (optional) — `autonomous` or `may-request` (default).
+  `autonomous` means the currently authorized scope can complete without a
+  human checkpoint, allowing it to continue when the runner's Needs me
+  backpressure soft limit is reached. It never authorizes skipping an actual
+  approval, discussion, review, rollout, or live-validation gate; use
+  `may-request` when the current scope may reach one.
+- `checkpointRelease` (optional) — `allowed` or `forbidden` (default).
+  `allowed` permits a worker to set `safeToRelease=true` only after the
+  playbook's durable checkpoint steps are complete. It releases execution
+  capacity, not session/workspace affinity. Use `forbidden` when live
+  validation, local-only state, or an interactive operation requires the worker
+  to remain through explicit finish.
 - `workingDirectory` (optional) — an absolute path that becomes the worker's
   **in-place working directory** (its terminal CWD) when this playbook operates
   on a real checkout. It selects only where work happens; Pan's own control and
@@ -78,8 +92,12 @@ Front matter fields:
   exact slot (see [runner](runner.md)).
 
 The instructions body carries everything else — how to isolate work, build,
-test, and deliver. There are no capability tokens and no `repo:` selector; the
-target repository, if any, is described in the instructions and the Issue.
+test, deliver, and decide when the whole outcome is complete. State every real
+human, merge, rollout, restart, or live-validation gate. A worker remains
+through an explicit finish/live-validation gate when the playbook requires it;
+creating or merging a PR is not generic completion. There are no capability
+tokens and no `repo:` selector; the target repository, if any, is described in
+the instructions and the Issue.
 
 ## Which machines run which playbooks
 
@@ -93,17 +111,19 @@ defined but temporarily disabled on a machine.
 
 ## How triage uses playbooks
 
-During [triage](triage.md), for each agent task, Pan reads the available
+During [triage](triage.md), for each task whose next step may be AI, Pan reads the available
 `playbooks/*/*.md` across every machine, picks the one whose `description` and
 instructions fit the task, and writes its **name** into the Project `playbook`
 field. The name is the routing key; the same name may be defined differently per
 machine, and whichever machine claims the task runs its own definition. If no
-playbook fits, the task is not agent-ready: either keep it `human`-owned, keep
-it `needs-detail`, or propose creating a new playbook.
+playbook fits, the task is not `ready-for-ai`: prepare an exact human action or
+dependency instead, or propose creating a new playbook.
 
 ## How the runner uses playbooks
 
-A [runner](runner.md) claims a task only when its `playbook` field names a
-playbook present in this machine's `playbooks/<machine>/` folder with spare
-capacity. It then launches a worker with the playbook's instructions, the full
-Pan system context, and the Issue contents.
+A [runner](runner.md) claims a task only when it is
+`ready-for-ai/execute`, authorized, dependency-clear, non-recurring, and its
+`playbook` names a playbook present in this machine's
+`playbooks/<machine>/` folder with spare capacity and safe resources. It then
+launches a worker with the playbook's instructions, the full Pan system
+context, and the Issue contents.

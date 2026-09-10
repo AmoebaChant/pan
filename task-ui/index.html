@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#10231c">
+    <title>Pan Tasks</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <strong class="brand">Pan</strong>
+        <span id="binding" class="binding">Connecting…</span>
+      </div>
+      <div class="top-actions">
+        <span id="service-status" class="service-status">Offline</span>
+        <button id="refresh" class="button ghost" type="button">Refresh</button>
+        <button id="show-capture" class="button primary" type="button">Capture</button>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <nav id="views" class="views" aria-label="Task views"></nav>
+
+      <section class="task-pane">
+        <div class="pane-heading">
+          <div>
+            <p id="eyebrow" class="eyebrow"></p>
+            <h1 id="view-title">Today</h1>
+          </div>
+          <label class="search">
+            <span>Search</span>
+            <input id="search" type="search" placeholder="Find a task">
+          </label>
+        </div>
+        <p id="view-description" class="view-description"></p>
+        <div id="error" class="error" role="alert" hidden></div>
+        <div id="task-list" class="task-list" aria-live="polite"></div>
+      </section>
+
+      <aside id="detail-pane" class="detail-pane" aria-label="Task details">
+        <div id="detail-empty" class="detail-empty">
+          <h2>Select a task</h2>
+          <p>See the exact next action, scheduling, history, artifacts, and worker state.</p>
+        </div>
+        <div id="detail" hidden></div>
+      </aside>
+    </main>
+
+    <dialog id="capture-dialog">
+      <form id="capture-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">New stable outcome</p>
+            <h2>Capture a task</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="Close capture">×</button>
+        </div>
+        <label>Title <input name="title" maxlength="256" required autofocus></label>
+        <label>Details <textarea name="details" rows="5" maxlength="60000"></textarea></label>
+        <div class="form-grid">
+          <label>Priority
+            <select name="priority">
+              <option>urgent</option>
+              <option>high</option>
+              <option selected>normal</option>
+              <option>low</option>
+            </select>
+          </label>
+          <label>Workstream <input name="workstream" maxlength="300"></label>
+          <label>Attention date <input name="nextActionDate" type="date"></label>
+          <label>Deadline <input name="deadline" type="date"></label>
+        </div>
+        <label>Current action detail
+          <input name="currentActionDetail" maxlength="2000" placeholder="What should be clarified first?">
+        </label>
+        <fieldset>
+          <legend>Recurrence (optional)</legend>
+          <div class="form-grid">
+            <label>Rule <input name="recurrenceRule" maxlength="500" placeholder="Every Friday."></label>
+            <label>Nominal occurrence <input name="recurrenceOccurrence" type="date"></label>
+          </div>
+        </fieldset>
+        <div id="capture-error" class="error" hidden></div>
+        <div class="dialog-actions">
+          <button class="button ghost" value="cancel">Cancel</button>
+          <button id="capture-submit" class="button primary" value="default">Create task</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

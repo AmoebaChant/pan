@@ -28,6 +28,26 @@ test('a fully canonical Project reports no problems', () => {
   assert.equal(CANONICAL_FIELD_COUNT, CANONICAL_FIELDS.length);
 });
 
+test('schema is additive: canonical next actions coexist with legacy recovery fields', () => {
+  const status = CANONICAL_FIELDS.find((field) => field.name === 'Status');
+  const owner = CANONICAL_FIELDS.find((field) => field.name === 'owner');
+  const nextAction = CANONICAL_FIELDS.find((field) => field.name === 'next-action');
+  assert.deepEqual(owner.options, ['unassigned', 'human', 'agent']);
+  for (const option of [
+    'ready-for-human',
+    'ready-for-ai',
+    'ai-executing',
+    'external-waiting',
+    'deliberate-hold',
+    'ready',
+    'paused',
+  ]) {
+    assert.equal(status.options.includes(option), true);
+  }
+  assert.equal(nextAction.options.includes('approve'), true);
+  assert.equal(nextAction.options.includes('execute'), true);
+});
+
 test('a missing field is reported', () => {
   const problems = schemaProblems(metaFields({ 'session-id': undefined }));
   assert.deepEqual(problems, ['missing text field "session-id"']);

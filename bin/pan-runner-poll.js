@@ -1,24 +1,34 @@
 import { affinityMatchesMachine, splitAffinity } from './pan-runner-slots.js';
+import { isRecurringBody, runnableTask } from './pan-task-model.js';
 
 const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
 
 export const FIELD = {
   status: 'Status',
   owner: 'owner',
+  nextAction: 'next-action',
   priority: 'priority',
   nextActionDate: 'next-action-date',
+  deadline: 'deadline',
   playbook: 'playbook',
   workstream: 'workstream',
+  executionAuthorized: 'execution-authorized',
+  dependencies: 'dependencies',
+  workerState: 'worker-state',
   needsHumanSince: 'needs-human-since',
   leaseUntil: 'lease-until',
   claimedBy: 'claimed-by',
   machine: 'machine',
   sessionId: 'session-id',
+  claimGeneration: 'claim-generation',
+  taskRevision: 'task-revision',
 };
 
 export const val = (item, name, dflt = '') => (item.fields[name] ?? dflt);
 export const ownerOf = (item) => val(item, FIELD.owner, 'unassigned') || 'unassigned';
 export const statusOf = (item) => val(item, FIELD.status, 'untriaged') || 'untriaged';
+export const actionOf = (item) => val(item, FIELD.nextAction, '');
+export const workerStateOf = (item) => val(item, FIELD.workerState, '');
 const priorityOf = (item) => val(item, FIELD.priority, 'normal') || 'normal';
 
 export function findProjectItemForTask(items, task) {
@@ -48,6 +58,7 @@ export function pendingFinalizationKind({
   identity,
   sweptEligible = false,
 }) {
+  if (projectStatus === 'ai-executing' && claimedBy === identity) return 'active';
   if (projectStatus === 'in-progress' && claimedBy === identity) return 'active';
   if (
     pendingStatus === projectStatus &&
@@ -56,7 +67,7 @@ export function pendingFinalizationKind({
     return 'terminal';
   }
   if (
-    projectStatus === 'blocked' &&
+    ['blocked', 'ready-for-human'].includes(projectStatus) &&
     (!claimedBy || claimedBy === identity)
   ) {
     return 'escalated';
@@ -132,7 +143,7 @@ export async function cleanTerminalLeaseFields(
     warn = () => {},
   },
 ) {
-  const terminalStatuses = new Set(['in-review', 'done', 'blocked']);
+  const terminalStatuses = new Set(['in-review', 'done', 'rejected', 'blocked', 'external-waiting']);
   const cleaned = [];
 
   for (const item of items) {
@@ -225,9 +236,23 @@ export function computeMachineSlotOccupancy({
     if (worker.slot) mark(worker.playbook, worker.slot);
   }
   for (const item of items) {
-    if (statusOf(item) !== 'in-progress') continue;
     const { base, slot } = splitAffinity(val(item, FIELD.machine, ''));
     if (slot == null || base !== machine) continue;
+    const status = statusOf(item);
+    const workerState = workerStateOf(item);
+    const newLifecycleOwned = [
+      'starting',
+      'running',
+      'waiting-human',
+      'checkpointed',
+      'paused',
+      'uncertain',
+    ].includes(workerState) && !['done', 'rejected'].includes(status);
+    if (!newLifecycleOwned && status !== 'in-progress') continue;
+    if (newLifecycleOwned) {
+      mark(val(item, FIELD.playbook, ''), slot);
+      continue;
+    }
     const state = leaseState(item, now);
     if (state === 'expired') continue;
     if (state === 'malformed') {
@@ -254,14 +279,24 @@ export function occupiedSlotsForPlaybook(occupancy, playbook) {
  *  claimed-by, lease-until, machine, and session-id are the exact values we
  *  wrote and the Status is in-progress. Anything else means a foreign claim won
  *  the race. */
-export function claimConfirmed(item, { identity, lease, machine, sessionId }) {
+export function claimConfirmed(item, {
+  identity,
+  lease,
+  machine,
+  sessionId,
+  claimGeneration = null,
+  revision = null,
+  status = 'in-progress',
+}) {
   if (!item) return false;
   return (
     val(item, FIELD.claimedBy, '') === identity &&
     val(item, FIELD.leaseUntil, '') === lease &&
     val(item, FIELD.machine, '') === machine &&
     val(item, FIELD.sessionId, '') === sessionId &&
-    statusOf(item) === 'in-progress'
+    (claimGeneration == null || val(item, FIELD.claimGeneration, '') === claimGeneration) &&
+    (revision == null || val(item, FIELD.taskRevision, '') === String(revision)) &&
+    statusOf(item) === status
   );
 }
 
@@ -272,6 +307,8 @@ async function sweepExpiredItems(
     now,
     readItem,
     setPaused,
+    setWorkerPaused,
+    lifecycleVersion,
     isSupervised,
     warn,
   },
@@ -281,7 +318,12 @@ async function sweepExpiredItems(
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
-    if (statusOf(item) !== 'in-progress' || isSupervised(item)) continue;
+    const newLifecycle = lifecycleVersion === 2;
+    const runningStatus = newLifecycle ? 'ai-executing' : 'in-progress';
+    if (statusOf(item) !== runningStatus || isSupervised(item)) continue;
+    if (newLifecycle && !['starting', 'running', 'waiting-human'].includes(workerStateOf(item))) {
+      continue;
+    }
 
     const state = leaseState(item, now);
     if (state === 'malformed') {
@@ -300,7 +342,10 @@ async function sweepExpiredItems(
     if (!fresh) continue;
 
     current[index] = fresh;
-    if (statusOf(fresh) !== 'in-progress' || isSupervised(fresh)) continue;
+    if (statusOf(fresh) !== runningStatus || isSupervised(fresh)) continue;
+    if (newLifecycle && !['starting', 'running', 'waiting-human'].includes(workerStateOf(fresh))) {
+      continue;
+    }
 
     const freshState = leaseState(fresh, now);
     if (freshState === 'malformed') {
@@ -310,7 +355,8 @@ async function sweepExpiredItems(
     if (freshState !== 'expired') continue;
 
     try {
-      await setPaused(fresh.itemId);
+      if (newLifecycle) await setWorkerPaused(fresh.itemId, fresh);
+      else await setPaused(fresh.itemId, fresh);
     } catch (error) {
       warn(`passive pause failed for ${itemLabel(fresh)}: ${error.message}`);
       continue;
@@ -318,7 +364,9 @@ async function sweepExpiredItems(
 
     const paused = {
       ...fresh,
-      fields: { ...fresh.fields, [FIELD.status]: 'paused' },
+      fields: newLifecycle
+        ? { ...fresh.fields, [FIELD.workerState]: 'paused' }
+        : { ...fresh.fields, [FIELD.status]: 'paused' },
     };
     current[index] = paused;
     swept.push(paused);
@@ -329,23 +377,49 @@ async function sweepExpiredItems(
 
 /** Build the ordered work list for this machine's available playbooks. */
 function selectCandidates(items, cfg, playbooks, active, { now, warn }) {
-  const canRun = (item) => {
-    if (ownerOf(item) !== 'agent') return false;
+  const newLifecycle = cfg.lifecycleVersion === 2;
+  const attentionPolicy = cfg.humanAttentionBackpressure ?? { mode: 'off', softLimit: Infinity };
+  const humanAttentionCount = items.filter((item) => statusOf(item) === 'ready-for-human').length;
+  const attentionLimited = (
+    newLifecycle
+    && attentionPolicy.mode === 'prefer-autonomous'
+    && humanAttentionCount >= attentionPolicy.softLimit
+  );
+
+  const canRun = (item, { resume = false } = {}) => {
+    if (newLifecycle) {
+      if (val(item, FIELD.executionAuthorized, '') !== 'yes') return false;
+      if (String(val(item, FIELD.dependencies, '')).trim()) return false;
+      if (isRecurringBody(item.issue?.body)) return false;
+      if (!resume && !runnableTask(item, FIELD)) return false;
+    } else if (ownerOf(item) !== 'agent') {
+      return false;
+    }
     const playbook = val(item, FIELD.playbook, '');
     if (!playbook || !playbooks.has(playbook)) return false;
     if (playbooks.get(playbook).capacity <= 0) return false;
+    if (
+      attentionLimited
+      && !resume
+      && (playbooks.get(playbook).humanAttention ?? 'may-request') !== 'autonomous'
+    ) {
+      return false;
+    }
     if (!leaseIsFree(item, cfg.identity, { now, warn })) return false;
     if (active.has(item.itemId)) return false;
     return true;
   };
 
   const paused = items.filter((item) =>
-    statusOf(item) === 'paused'
+    (newLifecycle
+      ? statusOf(item) === 'ai-executing' && workerStateOf(item) === 'paused'
+      : statusOf(item) === 'paused')
     && affinityMatchesMachine(val(item, FIELD.machine, ''), cfg.machine)
     && !!val(item, FIELD.sessionId, '')
-    && canRun(item),
+    && canRun(item, { resume: true }),
   );
-  const ready = items.filter((item) => statusOf(item) === 'ready' && canRun(item));
+  const ready = items.filter((item) =>
+    statusOf(item) === (newLifecycle ? 'ready-for-ai' : 'ready') && canRun(item));
 
   const byPriority = (a, b) => {
     const aRank = PRIORITY_RANK[priorityOf(a)] ?? 2;
@@ -368,6 +442,7 @@ export async function preparePoll(
     now = Date.now(),
     readItem,
     setPaused,
+    setWorkerPaused = setPaused,
     warn = () => {},
   },
 ) {
@@ -375,6 +450,8 @@ export async function preparePoll(
     now,
     readItem,
     setPaused,
+    setWorkerPaused,
+    lifecycleVersion: cfg.lifecycleVersion,
     isSupervised: (item) => active.has(item.itemId),
     warn,
   });

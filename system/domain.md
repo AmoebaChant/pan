@@ -14,13 +14,10 @@ in the Domain.
   pan.md                         domain-specific Pan instructions (optional)
 ```
 
-- **Issues** in this repository are the tasks. By default every Issue belongs
-  to the connected Project. A Domain-configured external human task manager may
-  move an eligible verified human task out of the Project under the contract
-  below. Agent work and explicitly retained audit or lifecycle task types stay
-  in GitHub. The Domain contract decides whether recurring human work moves to
-  the external manager or remains in GitHub; external ownership requires a
-  complete recurrence lifecycle definition.
+- **Issues** in this repository are the tasks. Every eligible personal task
+  belongs to the connected Project. The stable outcome remains one task while
+  its exact next action moves between a person, AI, or an external wait.
+  Recurring occurrences are separate linked Issues.
 - **The Project** holds each task's lifecycle and fields. See
   [project schema](project-schema.md).
 - **Workstreams** are the durable narrative for each area of work. See
@@ -72,65 +69,24 @@ temporary directory. They must not overlap. Moving or cleaning
 `workspaceRoot` must never remove the ownership record that prevents duplicate
 workers.
 
-## External human task manager contract
+The same file may list `taskBacklogRepos` for the everyday UI. That is an
+explicit repository allowlist in addition to the Domain repository, not a
+discovery mechanism or authority transfer. The UI service requires both this
+config path and the Pan checkout path on its command line and rejects all other
+Issue repositories.
 
-A Domain may make one external system authoritative for eligible human-owned
-tasks by declaring it in `pan.md`. The declaration must provide:
+## Imports from other task systems
 
-- a stable, user-agnostic manager key and the exact syntax of that manager's
-  durable task identifiers;
-- complete live queue enumeration, task lookup, field mappings, terminal-state
-  mappings, access, and write verification;
-- a durable location on the external task that stores the canonical source
-  Issue URL while the source Issue is retained, plus any policy that permits
-  deleting the source and removing its dead backlink after migration;
-- the data that makes a migration complete, including every source field,
-  comment, or other value the Domain requires;
-- a live task-type classification rule and the explicit task types that must
-  remain GitHub Project items for audit or lifecycle reasons (an explicit empty
-  list is valid; an omitted rule or list is incomplete);
-- whether recurring human tasks remain GitHub-authoritative or move to the
-  external manager. External recurrence ownership must define cadence,
-  completion, cancellation, successor/history behavior, and planning-field
-  mappings; and
-- duplicate handling, assignee exclusions, and any approval or deletion policy.
+External systems may be migration sources or read-only context, but they do not
+become task authority based on who acts next. The supported Todoist importer
+preserves stable source ids, metadata, comments, scheduling, deadlines, and
+recurrence in Domain Issues, verifies Project membership, and never deletes the
+source. See [Todoist migration and recovery](todoist-migration.md).
 
-Only human work outside every mandatory GitHub-retained class is eligible for
-migration. Recurring work is eligible only when the Domain contract makes the
-external manager authoritative for recurrence. After creating an external task
-for eligible work and verifying its complete data and source Issue URL,
-migration records a dedicated comment on the source Issue whose first line is:
-
-```text
-Pan: external human task <manager-key> <stable-task-id>
-```
-
-The manager key and identifier must resolve through the current `pan.md`
-contract without interpretation. The external task must point back to that
-exact Issue URL. Only this reciprocal, live-verified pair proves that a human
-task was migrated; the Issue comment alone is not sufficient. Write and verify
-the receipt before removing the Project item or performing any
-contract-approved source deletion. If the source is retained, keep the
-reciprocal pointers. If the contract permits deleting it after verified
-migration, the external task becomes the sole task record and the contract
-decides whether its now-dead source backlink is retained as provenance or
-removed. For a task type the contract keeps GitHub-authoritative, an external
-record may be only a mirror or link; a receipt never authorizes Project removal
-or transfers canonical lifecycle.
-
-This receipt is a cross-system pointer, not another queue or a cache of task
-state. While the source Issue is retained, Pan reads it, the current Domain
-contract, and the authoritative external task live whenever it uses the
-receipt. Before doing so for registration, Pan first determines from live
-durable evidence whether the Issue is conclusively agent-owned or belongs to a
-mandatory GitHub-retained class. Those Issues are always represented in the
-Project even when a receipt is malformed, conflicting, or present. Only an
-Issue that could legitimately be migrated human work is decided by its receipt.
-For such an Issue, a missing external record, malformed or conflicting receipt,
-backlink mismatch, incomplete migrated data, or indeterminate classification
-makes the migration evidence ambiguous: make no registration, removal, or
-planning write for that Issue, report the gap, and do not claim a complete
-queue.
+`pan.md` may name other read-only sources or import mappings, but cannot move
+canonical lifecycle out of GitHub or authorize a background sync loop. A future
+adapter requires its own public contract, idempotency markers, complete
+pagination, assignee exclusions, partial-import behavior, and verified writes.
 
 ## Boundaries
 
@@ -141,5 +97,9 @@ queue.
   those still require agreement or a separate existing standing policy.
 - Product-context repositories a session may be pointed at are read-only
   reference. They grant no authority to modify anything.
+- A local UI or migration process must be explicitly bound to the config and
+  Pan checkout it serves. Browser code receives no GitHub or source-system
+  credential. Loopback origin, host/rebinding, repository scope, content size,
+  and stale-revision checks are mandatory.
 - The one exception is the Pan tool repository itself, for self-improvement
   under its normal review policy. See [self-improvement](self-improvement.md).

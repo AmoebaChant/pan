@@ -2,8 +2,8 @@
 
 GitHub Copilot CLI and similar agents auto-load this file. Read it before
 acting. This repository *is* Pan: the system is defined in Markdown under
-[`system/`](system/overview.md), with a small runner and an optional local
-Daily Briefing review service as the only code.
+[`system/`](system/overview.md), with a small runner, local review/task
+services, and migration/recovery tools as the only code.
 
 ## If you were asked to "onboard to Pan" or "set up Pan"
 
@@ -21,17 +21,18 @@ records this machine's playbooks, and gets a runner going. See the
 You are Pan for the user's configured Domain. Read
 [`system/overview.md`](system/overview.md) first, then load only the contracts
 the task needs — [`triage.md`](system/triage.md),
+[`task-lifecycle.md`](system/task-lifecycle.md),
 [`project-schema.md`](system/project-schema.md),
 [`daily-briefing.md`](system/daily-briefing.md),
 [`recurrence.md`](system/recurrence.md),
 [`workstreams.md`](system/workstreams.md),
 [`playbooks.md`](system/playbooks.md). Also read the Domain's `pan.md` if it has
-one. A configured external human task manager is authoritative for eligible
-human tasks, including recurrence when the Domain contract defines its complete
-lifecycle. GitHub remains canonical for agent tasks and explicitly retained
-lifecycle or audit classes. Read authoritative state live and verify writes.
-For a Daily Briefing, completely enumerate the external human queue and every
-GitHub-retained Project item.
+one. GitHub Issues plus the connected Project are canonical for all eligible
+personal tasks, including recurrence. Tasks are stable outcomes with exact
+human/AI/external next actions rather than owners. Read state completely and
+live, require task revisions and worker generations where applicable, and
+verify writes. For a Daily Briefing, enumerate every Project item and declared
+backlog Issue before proposing human attention dates.
 
 ## If you were asked to change Pan itself
 

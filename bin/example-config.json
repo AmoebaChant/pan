@@ -1,9 +1,9 @@
 {
-  "domainRepo": "AmoebaChant/pan-domain",
-  "project": "AmoebaChant/7",
-  "machine": "kevins-macbook",
-  "identity": "kevins-macbook-runner-1",
-  "panCheckout": "/Users/kevin.brown/Repos/pan",
+  "domainRepo": "example/pan-domain",
+  "project": "example/1",
+  "machine": "example-machine",
+  "identity": "example-machine-runner-1",
+  "panCheckout": "/absolute/path/to/pan",
   "terminal": { "kind": "macos-terminal" },
   "copilotBin": "copilot",
   "workerPermissions": "yolo",
@@ -11,5 +11,11 @@
   "pollIntervalSeconds": 30,
   "leaseMinutes": 15,
   "maxConcurrent": null,
-  "workspaceRoot": "/tmp/pan-workspaces"
+  "humanAttentionBackpressure": {
+    "softLimit": 5,
+    "mode": "prefer-autonomous"
+  },
+  "taskBacklogRepos": [],
+  "stateRoot": "/absolute/path/to/pan-state",
+  "workspaceRoot": "/absolute/path/to/pan-workspaces"
 }

@@ -8,12 +8,16 @@
   },
   "bin": {
     "pan-briefing": "./bin/pan-briefing-mcp.js",
-    "pan-runner": "./bin/pan-runner.js"
+    "pan-lifecycle-migrate": "./bin/pan-lifecycle-migrate.js",
+    "pan-runner": "./bin/pan-runner.js",
+    "pan-tasks": "./bin/pan-tasks.js",
+    "pan-todoist-migrate": "./bin/pan-todoist-migrate.js"
   },
   "files": [
     "AGENTS.md",
     "README.md",
     "briefing-ui",
+    "task-ui",
     "system",
     "skills",
     ".github/agents",
