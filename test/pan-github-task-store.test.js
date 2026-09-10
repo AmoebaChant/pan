@@ -234,6 +234,7 @@ function fakeGitHubState() {
       }];
       const commentsByIssue = new Map([[issue.number, comments]]);
       const writes = [];
+      const queries = [];
       const node = (projectItem = item) => ({
         id: projectItem.id,
         updatedAt: projectItem.updatedAt,
@@ -267,6 +268,7 @@ function fakeGitHubState() {
       const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
       const gh = async (args) => {
         const query = args.find((arg) => String(arg).startsWith('query=')) ?? '';
+        if (query) queries.push(query.slice('query='.length));
         if (query.includes('repositoryOwner')) {
           return JSON.stringify({ data: { repositoryOwner: { __typename: 'User' } } });
         }
@@ -389,7 +391,18 @@ function fakeGitHubState() {
         }
         throw new Error(`unexpected fake gh call: ${args.join(' ')}`);
       };
-      return { fields, issue, item, issues, items, comments, commentsByIssue, writes, gh };
+      return {
+        fields,
+        issue,
+        item,
+        issues,
+        items,
+        comments,
+        commentsByIssue,
+        writes,
+        queries,
+        gh,
+      };
     }
 
 async function fakeStore(state = fakeGitHubState()) {
@@ -403,6 +416,22 @@ async function fakeStore(state = fakeGitHubState()) {
       }).initialize();
       return { store, state };
     }
+
+test('task-store projection preserves Issue state and state reason from Project GraphQL', async () => {
+      const { store, state } = await fakeStore();
+      let task = (await store.list()).tasks[0];
+      assert.equal(task.issueState, 'OPEN');
+      assert.equal(task.issueStateReason, null);
+      const itemQuery = state.queries.find((query) => query.includes('items(first:100'));
+      assert.match(itemQuery, /\.\.\. on Issue\s*\{[^}]*\bstate\b[^}]*\bstateReason\b/);
+
+      state.issue.state = 'CLOSED';
+      state.issue.stateReason = 'NOT_PLANNED';
+      state.issue.closedAt = '2026-09-09T00:00:00Z';
+      task = (await store.list()).tasks[0];
+      assert.equal(task.issueState, 'CLOSED');
+      assert.equal(task.issueStateReason, 'NOT_PLANNED');
+});
 
 test('Todoist repair reconciles exact Issue, comments, fields, and writes revision last', async () => {
       const { store, state } = await fakeStore();

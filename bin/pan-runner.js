@@ -875,7 +875,7 @@ function validateProjectSchema(meta) {
 
 const ITEM_FRAGMENT = `
   id
-  content{ __typename ... on Issue { number title body url repository { nameWithOwner } } }
+  content{ __typename ... on Issue { number title body url state repository { nameWithOwner } } }
   fieldValues(first:100){
     nodes{
       __typename
@@ -904,6 +904,7 @@ function parseItemNode(node) {
         title: node.content.title,
         body: node.content.body,
         url: node.content.url,
+        state: node.content.state,
         // The repository the Issue physically lives in. For external-backlog
         // items this differs from the Domain repo, so all issue writes MUST
         // target this slug rather than cfg.domainRepoSlug.
@@ -956,7 +957,7 @@ export async function completeItemFieldValues(node, runJson = ghJson) {
 }
 
 /** Read the FULL set of Project items via cursor pagination. */
-async function readAllItems(cfg, meta) {
+export async function readAllItems(cfg, meta, runJson = ghJson) {
   const query = `query($login:String!,$number:Int!,$cursor:String){
     ${meta.ownerType}(login:$login){
       projectV2(number:$number){
@@ -975,10 +976,10 @@ async function readAllItems(cfg, meta) {
       '-f', `login=${cfg.project.owner}`, '-F', `number=${cfg.project.number}`,
     ];
     if (cursor) args.push('-f', `cursor=${cursor}`);
-    const data = await ghJson(args);
+    const data = await runJson(args);
     const conn = data.data[meta.ownerType].projectV2.items;
     for (const node of conn.nodes) {
-      items.push(parseItemNode(await completeItemFieldValues(node)));
+      items.push(parseItemNode(await completeItemFieldValues(node, runJson)));
     }
     if (!conn.pageInfo.hasNextPage) break;
     cursor = conn.pageInfo.endCursor;
@@ -987,11 +988,11 @@ async function readAllItems(cfg, meta) {
 }
 
 /** Re-read a single item by node id (used to confirm a claim without a race). */
-async function readItemById(itemId) {
+export async function readItemById(itemId, runJson = ghJson) {
   const query = `query($id:ID!){ node(id:$id){ ... on ProjectV2Item { ${ITEM_FRAGMENT} } } }`;
-  const data = await ghJson(['api', 'graphql', '-f', `query=${query}`, '-f', `id=${itemId}`]);
+  const data = await runJson(['api', 'graphql', '-f', `query=${query}`, '-f', `id=${itemId}`]);
   const node = data.data.node;
-  return node ? parseItemNode(await completeItemFieldValues(node)) : null;
+  return node ? parseItemNode(await completeItemFieldValues(node, runJson)) : null;
 }
 
 /** Read the complete live Issue context workers need to act on current intent. */
