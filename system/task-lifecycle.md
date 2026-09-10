@@ -164,7 +164,9 @@ persists through `paused`, `waiting-human`, and `checkpointed` until one of:
 An additive migration may encounter a closed terminal task whose
 `machine`/`session-id` pair was retained by the prior lifecycle as history
 before claim generations existed. The pair may therefore have an empty
-`claim-generation`; a complete later-generation tuple is also supported. When
+`claim-generation`. A complete machine/session/generation tuple is current
+operational evidence, not historical provenance, and is invalid on a terminal
+item even when claim and lease are empty. When
 `worker-state` is empty, `idle`, or `stopped`, `claimed-by`, `lease-until`, and
 `needs-human-since` are empty, the Issue close reason matches `done` or
 `rejected`, and operator preflight confirms there is no live/uncertain launcher,
@@ -195,6 +197,10 @@ operator-authorized non-execution cases:
 
 Both keep `needs-human-since`, machine, session, and the exact question/detail,
 set `execution-authorized=no`, and use `worker-state=checkpointed` or `paused`.
+The authorized detail must already be one non-empty canonical line of at most
+2,000 characters: no leading, trailing, repeated, or multiline whitespace, no
+control characters, and no value that the task model would normalize or
+truncate is accepted. The exact accepted value is persisted.
 The authorization binds the complete live projection and exact stale
 claim/lease values. It must attest that the named process is dead and all
 possible writers are stopped. Only then may apply clear that exact stale

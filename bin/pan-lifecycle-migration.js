@@ -1,4 +1,5 @@
 import {
+  exactCurrentActionDetail,
   legacyRecoveryTarget,
   parseRevision,
   rollbackSafetyReason,
@@ -85,7 +86,7 @@ function passiveWorkerState(task, fallback) {
 
 function safeTerminalProvenance(task, status = task.status) {
   if (!['done', 'rejected'].includes(status)) return false;
-  if (!hasCompleteResourceTuple(task) && !hasLegacyResourcePair(task)) return false;
+  if (!hasLegacyResourcePair(task)) return false;
   if (!['', 'historical-provenance'].includes(task.resourceSemantics || '')) return false;
   return (
     task.issueState === 'CLOSED'
@@ -254,8 +255,15 @@ export function parseMigrationAuthorizations(document) {
   ) {
     throw new Error('authorization file is not a Pan lifecycle migration authorization');
   }
+  return validateMigrationAuthorizations(document.items);
+}
+
+function validateMigrationAuthorizations(items) {
+  if (!Array.isArray(items)) {
+    throw new Error('migration authorizations must be an array');
+  }
   const seen = new Set();
-  return document.items.map((entry) => {
+  return items.map((entry) => {
     if (!entry || typeof entry.itemId !== 'string' || !entry.itemId) {
       throw new Error('every migration authorization must name itemId');
     }
@@ -286,13 +294,16 @@ export function parseMigrationAuthorizations(document) {
       if (requiredStrings.some((field) => typeof entry[field] !== 'string')) {
         throw new Error(`verified cutover authorization for ${entry.itemId} must contain every exact string binding`);
       }
+      const detail = exactCurrentActionDetail(
+        entry.detail,
+        `verified cutover authorization detail for ${entry.itemId}`,
+      );
       if (
         !entry.projection
         || !entry.machine
         || !entry.sessionId
         || entry.claimGeneration
         || !entry.needsHumanSince
-        || !entry.detail.trim()
         || entry.issueState !== 'OPEN'
         || entry.executionAuthorized !== false
         || entry.verifiedDeadProcess !== true
@@ -316,7 +327,7 @@ export function parseMigrationAuthorizations(document) {
       ) {
         throw new Error(`verifiedDeliberateHold for ${entry.itemId} must use action=hold`);
       }
-      return { ...entry };
+      return { ...entry, detail };
     }
     if (
       typeof entry.playbook !== 'string'
@@ -331,6 +342,22 @@ export function parseMigrationAuthorizations(document) {
       playbook: entry.playbook,
       dependencies: entry.dependencies,
       executionAuthorized: true,
+    };
+  });
+}
+
+function validateMigrationAuthorizationDetails(items) {
+  if (!Array.isArray(items)) {
+    throw new Error('migration authorizations must be an array');
+  }
+  return items.map((entry) => {
+    if (!entry || entry.classification === undefined) return entry;
+    return {
+      ...entry,
+      detail: exactCurrentActionDetail(
+        entry.detail,
+        `verified cutover authorization detail for ${entry.itemId || '(unknown item)'}`,
+      ),
     };
   });
 }
@@ -490,6 +517,9 @@ function invalidRuntimeReason(
     && !safeTerminalProvenance(task, status)
   ) {
     return 'historical provenance marker conflicts with the live task state';
+  }
+  if (['done', 'rejected'].includes(status) && tupleComplete) {
+    return 'terminal state retains a current machine/session/claim-generation owner tuple';
   }
   if (
     resourceSemantics === 'held-affinity'
@@ -656,8 +686,11 @@ function expectedProjection(task) {
 }
 
 export function planLifecycleMigration(tasks, options = {}) {
+  const validatedAuthorizations = validateMigrationAuthorizationDetails(
+    options.authorizations ?? [],
+  );
   const authorizations = new Map(
-    (options.authorizations ?? []).map((authorization) => [authorization.itemId, authorization]),
+    validatedAuthorizations.map((authorization) => [authorization.itemId, authorization]),
   );
   const actions = tasks.map((task) => {
     const alreadyCurrent = validLifecyclePair(task.status, task.nextAction);
@@ -713,6 +746,8 @@ export function planLifecycleMigration(tasks, options = {}) {
       ...(verifiedCutover ? {
         cutoverClassification: authorization.classification,
         cutoverAuthorization: {
+          projection: authorization.projection,
+          detail: authorization.detail,
           verifiedDeadProcess: true,
           verifiedWritersStopped: true,
         },
@@ -754,6 +789,21 @@ export function planLifecycleMigration(tasks, options = {}) {
 }
 
 export async function applyLifecycleMigration(plan, store) {
+  for (const action of plan.actions) {
+    if (!action.cutoverClassification) continue;
+    const authorizedDetail = exactCurrentActionDetail(
+      action.cutoverAuthorization?.detail,
+      `verified cutover authorization detail for ${action.itemId}`,
+    );
+    if (
+      action.target?.detail !== authorizedDetail
+      || action.expected?.projection !== action.cutoverAuthorization?.projection
+    ) {
+      throw new Error(
+        `verified cutover authorization binding for ${action.itemId} does not match the migration plan`,
+      );
+    }
+  }
   const results = [];
   let partial = false;
   for (const action of plan.actions) {

@@ -131,7 +131,10 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
    Every shown key is required. `claimedBy` and `leaseUntil` must both be empty
    or both exactly match the stale live values. A human checkpoint action is
    one of `clarify`, `discuss`, `approve`, or `review`; a deliberate hold uses
-   `hold`. The operator must verify the process is dead and all possible
+   `hold`. Detail must be one exact non-empty canonical line of at most 2,000
+   characters, with no control characters, multiline content, surrounding or
+   collapsible whitespace, or value that would be normalized or truncated.
+   The operator must verify the process is dead and all possible
    writers are stopped; timestamps and an expired lease are not proof.
 4. Run `pan-lifecycle-migrate apply` with that file and
    `--confirm-writers-stopped`. Active or uncertain workers, claims, leases,
@@ -142,9 +145,11 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
    session as held affinity. Before apply, inspect every terminal tuple's owning
    machine state and confirm there is no live/uncertain launcher, unconsumed
    result, checkpoint receipt, or terminal-release journal. A closed terminal
-   machine/session pair without a pre-generation claim id, or a complete
-   terminal tuple, with none of that evidence is historical provenance and is
-   preserved. A passive blocked session migrates as `deliberate-hold/hold` only
+   machine/session pair with empty claim generation and none of that evidence
+   is historical provenance and is preserved. A complete
+   machine/session/generation tuple is operational evidence and remains an
+   invalid terminal state. A passive blocked session migrates as
+   `deliberate-hold/hold` only
    when the revision-aligned Issue current-action block already records that
    deliberate hold or an exact `verifiedDeliberateHold` entry authorizes it;
    otherwise it remains held.

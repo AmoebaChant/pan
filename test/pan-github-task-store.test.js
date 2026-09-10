@@ -857,6 +857,9 @@ test('verified legacy checkpoint and deliberate hold migrations clear only stale
         });
         assert.equal(plan.actions[0].action, 'migrate', entry.classification);
         assert.equal(plan.actions[0].cutoverClassification, entry.classification);
+        assert.equal(plan.actions[0].cutoverAuthorization.detail, authorization.detail);
+        assert.equal(plan.actions[0].cutoverAuthorization.projection, authorization.projection);
+        assert.equal(plan.actions[0].expected.projection, authorization.projection);
 
         const report = await applyLifecycleMigration(plan, store);
         assert.equal(report.partial, false, entry.classification);
@@ -873,6 +876,7 @@ test('verified legacy checkpoint and deliberate hold migrations clear only stale
         assert.equal(state.item.fields['claim-generation'], '');
         assert.equal(state.item.fields['resource-semantics'], 'held-affinity');
         assert.equal(state.issue.state, 'OPEN');
+        assert.equal(parseCurrentActionBlock(state.issue.body).detail, authorization.detail);
 
         const converged = planLifecycleMigration((await store.list()).tasks, {
           authorizations: [authorization],
@@ -1320,7 +1324,7 @@ test('checked lifecycle rollback preserves terminal provenance without using it 
       state.item.fields['worker-state'] = 'stopped';
       state.item.fields.machine = 'machine-a';
       state.item.fields['session-id'] = 'session-a';
-      state.item.fields['claim-generation'] = 'generation-a';
+      state.item.fields['claim-generation'] = '';
       state.item.fields['resource-semantics'] = 'historical-provenance';
       state.item.fields['task-revision'] = '3';
       const { store } = await fakeStore(state);
@@ -1334,7 +1338,7 @@ test('checked lifecycle rollback preserves terminal provenance without using it 
       assert.equal(state.item.fields['worker-state'], 'stopped');
       assert.equal(state.item.fields.machine, 'machine-a');
       assert.equal(state.item.fields['session-id'], 'session-a');
-      assert.equal(state.item.fields['claim-generation'], 'generation-a');
+      assert.equal(state.item.fields['claim-generation'], '');
       assert.equal(state.item.fields['resource-semantics'], 'historical-provenance');
       assert.equal(state.item.fields['claimed-by'], '');
       assert.equal(state.item.fields['lease-until'], '');

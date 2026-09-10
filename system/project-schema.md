@@ -127,11 +127,13 @@ legacy human-facing `in-review`, `blocked`, or `ready` items. Two narrow cases
 do not make a task runnable and may migrate without clearing history:
 
 - a closed terminal task with `worker-state` empty/`idle`/`stopped`, no claim,
-  lease, or open human checkpoint, and either a pre-generation machine/session
-  pair or a complete historical machine/session/generation tuple may retain
+  lease, or open human checkpoint, and a pre-generation machine/session pair
+  with empty `claim-generation` may retain
   that evidence as provenance after operator preflight confirms there is no
   pending local result, checkpoint receipt, or release journal; migration records
-  `resource-semantics=historical-provenance`; and
+  `resource-semantics=historical-provenance`; a complete
+  machine/session/generation tuple remains operational evidence and is invalid
+  on terminal state; and
 - legacy `blocked` may become `deliberate-hold/hold` with passive
   session/resource evidence only when the Issue's exact, revision-aligned
   current-action block already records `deliberate-hold/hold`, no open human
@@ -144,7 +146,10 @@ work with a durable human checkpoint to `ready-for-human` and the authorized
 human action. It preserves `needs-human-since`, machine, session, and detail,
 sets `execution-authorized=no`, and clears only an exactly matched stale
 claim/lease after the operator attests all processes and writers are stopped.
-No claim generation is accepted for either authorization mode.
+No claim generation is accepted for either authorization mode. Authorization
+detail must be an exact non-empty canonical line of at most 2,000 characters,
+with no control characters or whitespace normalization; migration persists
+that exact authorized value.
 
 An ambiguous blocked/session item or any open human checkpoint without that
 exact authorization remains held for reconciliation. A live human-review worker

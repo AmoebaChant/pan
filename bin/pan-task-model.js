@@ -34,6 +34,7 @@ export const WORKER_STATES = [
 
 export const CURRENT_ACTION_START = '<!-- pan-current-next-action:start -->';
 export const CURRENT_ACTION_END = '<!-- pan-current-next-action:end -->';
+export const CURRENT_ACTION_DETAIL_MAX_LENGTH = 2000;
 
 export function isHumanAction(action) {
   return HUMAN_ACTIONS.has(action);
@@ -66,7 +67,7 @@ export function rollbackSafetyReason(task, status = task.status) {
     'uncertain',
   ].includes(workerState);
   const provenanceOnly = (
-    (tupleComplete || legacyPair)
+    legacyPair
     && (
       (
         ['done', 'rejected'].includes(status)
@@ -162,6 +163,27 @@ function cleanLine(value, maxLength) {
     .slice(0, maxLength);
 }
 
+export function canonicalCurrentActionDetail(value) {
+  return cleanLine(value, CURRENT_ACTION_DETAIL_MAX_LENGTH);
+}
+
+export function exactCurrentActionDetail(value, label = 'current next-action detail') {
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string`);
+  }
+  const canonical = canonicalCurrentActionDetail(value);
+  if (
+    !canonical
+    || /[\u0000-\u001f\u007f-\u009f]/u.test(value)
+    || canonical !== value
+  ) {
+    throw new Error(
+      `${label} must be one exact canonical line of 1-${CURRENT_ACTION_DETAIL_MAX_LENGTH} characters without control characters`,
+    );
+  }
+  return canonical;
+}
+
 export function renderCurrentActionBlock({
   status,
   action,
@@ -173,7 +195,7 @@ export function renderCurrentActionBlock({
   const parsedRevision = parseRevision(revision);
   const updated = new Date(updatedAt);
   if (Number.isNaN(updated.valueOf())) throw new Error('updatedAt must be a valid timestamp');
-  const actionDetail = cleanLine(detail, 2000);
+  const actionDetail = canonicalCurrentActionDetail(detail);
   if (!actionDetail && status !== 'done' && status !== 'rejected') {
     throw new Error('current next-action detail must be non-empty for nonterminal work');
   }
@@ -255,7 +277,7 @@ export function transitionComment({
     '',
     `- From: ${fromStatus || '(unmigrated)'}/${fromAction || '(unmigrated)'}`,
     `- To: ${toStatus}/${toAction}`,
-    `- Detail: ${cleanLine(detail, 2000) || '(none)'}`,
+    `- Detail: ${canonicalCurrentActionDetail(detail) || '(none)'}`,
     `- Actor: ${cleanLine(actor, 200) || 'Pan'}`,
   ];
   if (claimGeneration) lines.push(`- Claim generation: ${cleanLine(claimGeneration, 100)}`);

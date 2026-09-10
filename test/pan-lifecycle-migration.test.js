@@ -88,6 +88,80 @@ test('legacy migration keeps stable outcomes and does not use dates as AI gates'
   });
 });
 
+test('verified cutover authorization detail is exact and canonical before plan or apply', async () => {
+  const task = legacy({
+    status: 'paused',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    needsHumanSince: '2026-09-10T01:30:00Z',
+  });
+  const invalidDetails = [
+    'Approve build 42.\nThen publish it.',
+    'x'.repeat(2001),
+    ' Approve build 42.',
+    'Approve  build 42.',
+    'Approve build\u000042.',
+  ];
+  for (const detail of invalidDetails) {
+    const authorization = verifiedCutover(task, 'verifiedHumanCheckpoint', { detail });
+    assert.throws(
+      () => parseMigrationAuthorizations({
+        format: 'pan-lifecycle-migration-authorization',
+        version: 1,
+        items: [authorization],
+      }),
+      /exact canonical line/,
+    );
+    assert.throws(
+      () => planLifecycleMigration([task], { authorizations: [authorization] }),
+      /exact canonical line/,
+    );
+  }
+
+  const detail = 'Approve publishing verified build 42.';
+  const authorization = verifiedCutover(task, 'verifiedHumanCheckpoint', { detail });
+  const plan = planLifecycleMigration([task], {
+    authorizations: parseMigrationAuthorizations({
+      format: 'pan-lifecycle-migration-authorization',
+      version: 1,
+      items: [authorization],
+    }),
+  });
+  assert.equal(plan.actions[0].target.detail, detail);
+  assert.equal(plan.actions[0].cutoverAuthorization.detail, detail);
+  assert.equal(plan.actions[0].cutoverAuthorization.projection, task.projection);
+  assert.equal(plan.actions[0].expected.projection, task.projection);
+
+  for (const invalidDetail of invalidDetails) {
+    const invalidPlan = structuredClone(plan);
+    invalidPlan.actions[0].target.detail = invalidDetail;
+    invalidPlan.actions[0].cutoverAuthorization.detail = invalidDetail;
+    const visited = [];
+    await assert.rejects(
+      applyLifecycleMigration(invalidPlan, {
+        async migrateLegacyItem(action) {
+          visited.push(action.itemId);
+        },
+      }),
+      /exact canonical line/,
+    );
+    assert.deepEqual(visited, []);
+  }
+
+  const invalidPlan = structuredClone(plan);
+  invalidPlan.actions[0].target.detail = 'Different canonical detail.';
+  const visited = [];
+  await assert.rejects(
+    applyLifecycleMigration(invalidPlan, {
+      async migrateLegacyItem(action) {
+        visited.push(action.itemId);
+      },
+    }),
+    /does not match the migration plan/,
+  );
+  assert.deepEqual(visited, []);
+});
+
 test('live legacy execution is flagged for operational cutover instead of mutated', () => {
   const plan = planLifecycleMigration([
     legacy({
@@ -421,6 +495,19 @@ test('terminal provenance migrates safely while terminal active or uncertain evi
   assert.equal(provenance.target.workerState, 'stopped');
   assert.equal(provenance.preserve.resourceSemantics, 'historical-provenance');
 
+  const generated = planLifecycleMigration([
+    legacy({
+      status: 'done',
+      machine: 'machine-a',
+      sessionId: 'session-a',
+      claimGeneration: 'generation-a',
+      issueState: 'CLOSED',
+      issueStateReason: 'COMPLETED',
+    }),
+  ]).actions[0];
+  assert.equal(generated.action, 'invalid-state');
+  assert.match(generated.reason, /current machine\/session\/claim-generation owner tuple/);
+
   for (const tuple of [
     { machine: 'machine-a', sessionId: '', claimGeneration: '' },
     { machine: '', sessionId: 'session-a', claimGeneration: '' },
@@ -741,6 +828,22 @@ test('rollback dry-run derives only current live state and flags unsafe executio
   }]).actions[0];
   assert.equal(terminalProvenance.action, 'rollback');
   assert.deepEqual(terminalProvenance.legacyTarget, { owner: 'unassigned', status: 'done' });
+
+  const generatedTerminal = planLifecycleRollback([{
+    ...current,
+    status: 'done',
+    nextAction: 'none',
+    workerState: 'stopped',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: 'generation-a',
+    resourceSemantics: 'historical-provenance',
+    issueState: 'CLOSED',
+    issueStateReason: 'COMPLETED',
+    currentActionStatus: 'done',
+    currentActionAction: 'none',
+  }]).actions[0];
+  assert.equal(generatedTerminal.action, 'invalid-state');
 
   const heldAffinity = planLifecycleRollback([{
     ...current,

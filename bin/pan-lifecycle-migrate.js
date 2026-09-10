@@ -31,7 +31,9 @@ classifications "verifiedHumanCheckpoint" and "verifiedDeliberateHold". Those
 entries must bind the exact plan projection, owner, Status, Issue state,
 worker/resource fields, needs-human-since, requested action/detail, and target
 worker state, with executionAuthorized=false, verifiedDeadProcess=true, and
-verifiedWritersStopped=true. They never authorize execution.
+verifiedWritersStopped=true. Detail must already be one canonical non-empty
+line of at most 2,000 characters, with no control characters and no whitespace
+normalization required. They never authorize execution.
 
 Apply refuses live or uncertain workers and ambiguous retained sessions. Before
 authorizing a legacy checkpoint or hold, the operator must verify the named
@@ -39,9 +41,11 @@ process is dead and every possible runner, worker, UI, briefing session, and
 other Project writer is stopped. An expired lease alone is not death evidence.
 Apply clears an exactly matched stale claim/lease only for such an authorization
 and preserves machine, session, needs-human-since, and the unresolved action.
-A CLOSED terminal item may retain a historical machine/session pair without a
-legacy claim-generation, or a complete historical tuple. Before apply, verify
-terminal provenance has no pending result, checkpoint, or release journal.
+A CLOSED terminal item may retain a historical machine/session pair only when
+claim-generation is empty. A complete machine/session/generation tuple remains
+operational evidence and is invalid even without a claim or lease. Before
+apply, verify terminal provenance has no pending result, checkpoint, or release
+journal.
 Apply never changes the retained owner field/options.
 Rollback is generated from current live pilot state, preserves all work and
 resource evidence, changes only the retained legacy owner/Status projection,

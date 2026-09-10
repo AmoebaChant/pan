@@ -4,6 +4,7 @@ import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   derivePrimaryView,
+  exactCurrentActionDetail,
   isRecurringBody,
   isTerminalStatus,
   parseCurrentActionBlock,
@@ -1382,6 +1383,18 @@ export class GitHubTaskStore {
   }
 
   async migrateLegacyItem(action) {
+    if (action.cutoverClassification) {
+      const authorizedDetail = exactCurrentActionDetail(
+        action.cutoverAuthorization?.detail,
+        `verified cutover authorization detail for ${action.itemId}`,
+      );
+      if (
+        action.target?.detail !== authorizedDetail
+        || action.expected?.projection !== action.cutoverAuthorization?.projection
+      ) {
+        throw new Error('verified cutover authorization does not match the migration action');
+      }
+    }
     const item = await this.#item(action.itemId);
     if (!item) throw new Error('legacy Project item no longer exists');
     const expected = action.expected;
