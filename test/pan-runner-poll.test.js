@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   claimConfirmed,
+  claimOwnershipConfirmed,
   cleanTerminalLeaseFields,
   computeMachineSlotOccupancy,
   FIELD,
@@ -635,13 +636,15 @@ test('occupiedSlotsForPlaybook accumulates serial same-poll reservations per pla
 
 // --- claim confirmation tuple ---------------------------------------------
 
-test('claimConfirmed requires the exact claimed-by, lease, machine, and in-progress status', () => {
+test('claimConfirmed requires the exact tuple plus open executable resource semantics', () => {
   const base = {
+    issue: { state: 'OPEN' },
     fields: {
       [FIELD.claimedBy]: 'runner-a',
       [FIELD.leaseUntil]: VALID,
       [FIELD.machine]: 'machine-a::primary',
       [FIELD.sessionId]: '11111111-1111-4111-8111-111111111111',
+      [FIELD.resourceSemantics]: '',
       [FIELD.status]: 'in-progress',
     },
   };
@@ -655,23 +658,34 @@ test('claimConfirmed requires the exact claimed-by, lease, machine, and in-progr
   assert.equal(claimConfirmed(base, want), true);
   assert.equal(claimConfirmed(null, want), false);
   assert.equal(
-    claimConfirmed({ fields: { ...base.fields, [FIELD.claimedBy]: 'runner-b' } }, want),
+    claimConfirmed({ ...base, fields: { ...base.fields, [FIELD.claimedBy]: 'runner-b' } }, want),
     false,
   );
   assert.equal(
-    claimConfirmed({ fields: { ...base.fields, [FIELD.leaseUntil]: EXPIRED } }, want),
+    claimConfirmed({ ...base, fields: { ...base.fields, [FIELD.leaseUntil]: EXPIRED } }, want),
     false,
   );
   assert.equal(
-    claimConfirmed({ fields: { ...base.fields, [FIELD.machine]: 'machine-a::secondary' } }, want),
+    claimConfirmed({ ...base, fields: { ...base.fields, [FIELD.machine]: 'machine-a::secondary' } }, want),
     false,
   );
   assert.equal(
-    claimConfirmed({ fields: { ...base.fields, [FIELD.sessionId]: '22222222-2222-4222-8222-222222222222' } }, want),
+    claimConfirmed({ ...base, fields: { ...base.fields, [FIELD.sessionId]: '22222222-2222-4222-8222-222222222222' } }, want),
     false,
   );
   assert.equal(
-    claimConfirmed({ fields: { ...base.fields, [FIELD.status]: 'paused' } }, want),
+    claimConfirmed({ ...base, fields: { ...base.fields, [FIELD.status]: 'paused' } }, want),
     false,
   );
+  for (const resourceSemantics of ['historical-provenance', 'held-affinity']) {
+    const raced = {
+      ...base,
+      fields: { ...base.fields, [FIELD.resourceSemantics]: resourceSemantics },
+    };
+    assert.equal(claimOwnershipConfirmed(raced, want), true);
+    assert.equal(claimConfirmed(raced, want), false);
+  }
+  const closed = { ...base, issue: { state: 'CLOSED' } };
+  assert.equal(claimOwnershipConfirmed(closed, want), true);
+  assert.equal(claimConfirmed(closed, want), false);
 });

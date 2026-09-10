@@ -86,6 +86,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import {
   claimConfirmed,
+  claimOwnershipConfirmed,
   cleanTerminalLeaseFields,
   computeMachineSlotOccupancy,
   FIELD,
@@ -1818,11 +1819,7 @@ export class Runner {
     const fresh = await this.deps.readItemById(item.itemId);
     if (!fresh || !fresh.issue) return false;
     if (fresh.issue.state !== 'OPEN') return false;
-    if (['historical-provenance', 'held-affinity'].includes(
-      val(fresh, FIELD.resourceSemantics, ''),
-    )) {
-      return false;
-    }
+    if (val(fresh, FIELD.resourceSemantics, '') !== '') return false;
     const previousStatus = statusOf(fresh);
     const previousWorkerState = workerStateOf(fresh);
     const newLifecycle = this.usesOutcomeLifecycle();
@@ -2065,12 +2062,10 @@ export class Runner {
     log(`claimed #${number} (${pb})`);
 
     // Confirming re-read (best-effort optimistic concurrency — GitHub has no
-    // atomic CAS). Another runner may have written its own claim between our
-    // re-read above and our writes. Re-read now and verify we still own the
-    // item: claimed-by, lease-until, and machine must all be the exact values we
-    // wrote and Status must be in-progress. If any changed, a foreign claim
-    // won — ABANDON without writing anything (do not stomp the winner's fields)
-    // and skip this item this cycle.
+    // atomic CAS). Immediately before launch, verify the exact tuple we wrote,
+    // its generation/revision, the open Issue, and empty resource semantics.
+    // A foreign tuple is abandoned without writes; an exact tuple whose launch
+    // eligibility changed is rolled back without erasing its durable evidence.
     let confirm;
     try {
       confirm = await this.deps.readItemById(item.itemId);
@@ -2095,7 +2090,7 @@ export class Runner {
       );
       return false;
     }
-    if (!claimConfirmed(confirm, {
+    const expectedClaim = {
       identity: this.cfg.identity,
       lease: leaseWritten,
       machine: machineValue,
@@ -2103,7 +2098,27 @@ export class Runner {
       claimGeneration,
       revision: newLifecycle ? expectedRevision + 1 : null,
       status: this.runningStatus(),
-    })) {
+    };
+    if (!claimConfirmed(confirm, expectedClaim)) {
+      if (claimOwnershipConfirmed(confirm, expectedClaim)) {
+        const changedGate = confirm.issue?.state !== 'OPEN'
+          ? `Issue state changed to ${JSON.stringify(confirm.issue?.state || '')}`
+          : `resource semantics changed to ${JSON.stringify(
+              val(confirm, FIELD.resourceSemantics, ''),
+            )}`;
+        await this.handleOperationalFailure(
+          {
+            itemId: item.itemId,
+            issueNumber: number,
+            url: item.issue?.url,
+            repo: item.issue?.repo,
+            claimGeneration,
+          },
+          `claim launch eligibility changed after writes: ${changedGate}`,
+          { returnStatus: previousStatus, returnWorkerState: previousWorkerState || 'idle' },
+        );
+        return false;
+      }
       const confirmClaimed = confirm ? val(confirm, FIELD.claimedBy, '') : '';
       log(`#${number} claim lost to another runner (claimed-by=${JSON.stringify(confirmClaimed)}); abandoning without writing`);
       return false;

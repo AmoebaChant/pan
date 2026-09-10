@@ -152,6 +152,13 @@ Before creating a generation, scan the manifest and every indexed run:
 - interrupted creation uses a durable creation key so restart repairs the same
   generation rather than appending another.
 
+After writing a claim and its revision, the runner re-reads immediately before
+launch. The exact claim/session/machine/generation/revision tuple must still
+match, the Issue must still be open, and `resource-semantics` must still be
+empty. A concurrent closure or persistent provenance marker rolls back the
+unlaunched active claim without erasing the session/generation evidence and
+launches nothing.
+
 Signals authorize writes only when the launch id remains the manifest's current
 generation and the live Project `claim-generation`, session, machine/slot,
 runner claim, and revision still match. Finalization and checkpoint relay take

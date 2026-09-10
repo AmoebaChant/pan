@@ -32,6 +32,7 @@ function item({
   claimGeneration = '',
   claimedBy = '',
   leaseUntil = '',
+  resourceSemantics = '',
   body = '',
   revision = '1',
 }) {
@@ -59,6 +60,7 @@ function item({
       [FIELD.claimGeneration]: claimGeneration,
       [FIELD.claimedBy]: claimedBy,
       [FIELD.leaseUntil]: leaseUntil,
+      [FIELD.resourceSemantics]: resourceSemantics,
       [FIELD.taskRevision]: revision,
     },
   };
@@ -311,7 +313,7 @@ function runnerHarness(source, playbooks = new Map([
   return { runner, store, writes, launches };
 }
 
-test('new lifecycle claims mint and confirm a generation and revision before launch', async () => {
+test('normal new lifecycle claim confirms an open executable task before launch', async () => {
   const source = item({ id: 'claim', number: 10, revision: '7' });
   const { runner, store, launches } = runnerHarness(source);
 
@@ -327,7 +329,7 @@ test('new lifecycle claims mint and confirm a generation and revision before lau
   assert.match(live.fields[FIELD.claimGeneration], /^[0-9a-f-]{36}$/);
 });
 
-test('explicit retained-affinity resume keeps the existing claim generation', async () => {
+test('normal explicit retained-affinity resume confirms and keeps its generation', async () => {
   const generation = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
   const source = item({
     id: 'resume-claim',
@@ -390,6 +392,45 @@ test('claim re-read rejects closed Issues and persistent resource semantics befo
     assert.deepEqual(launches, [], blockedBy);
   }
 });
+
+for (const blockedBy of ['closed', 'historical-provenance', 'held-affinity']) {
+  test(`post-write claim confirmation rolls back ${blockedBy} race without launch`, async () => {
+    const source = item({ id: `claim-race-${blockedBy}`, number: 97 });
+    const { runner, store, writes, launches } = runnerHarness(source);
+    const originalRead = runner.deps.readItemById;
+    let reads = 0;
+    runner.deps.readItemById = async (id) => {
+      reads += 1;
+      if (reads === 2) {
+        const live = store.get(id);
+        if (blockedBy === 'closed') live.issue.state = 'CLOSED';
+        else live.fields[FIELD.resourceSemantics] = blockedBy;
+      }
+      return originalRead(id);
+    };
+
+    assert.equal(await runner.claimAndLaunch(source), false, blockedBy);
+    assert.deepEqual(launches, [], blockedBy);
+    assert.ok(writes.length > 0, `${blockedBy}: race must be injected after claim writes`);
+
+    const live = store.get(source.itemId);
+    assert.equal(live.fields[FIELD.claimedBy], '', blockedBy);
+    assert.equal(live.fields[FIELD.leaseUntil], '', blockedBy);
+    assert.equal(live.fields[FIELD.status], 'ready-for-ai', blockedBy);
+    assert.equal(live.fields[FIELD.workerState], 'idle', blockedBy);
+    assert.equal(live.fields[FIELD.machine], 'machine-a', blockedBy);
+    assert.match(live.fields[FIELD.sessionId], /^[0-9a-f-]{36}$/, blockedBy);
+    assert.match(live.fields[FIELD.claimGeneration], /^[0-9a-f-]{36}$/, blockedBy);
+    assert.equal(live.fields[FIELD.taskRevision], '2', blockedBy);
+    if (blockedBy === 'closed') {
+      assert.equal(live.issue.state, 'CLOSED');
+      assert.equal(live.fields[FIELD.resourceSemantics], '');
+    } else {
+      assert.equal(live.issue.state, 'OPEN');
+      assert.equal(live.fields[FIELD.resourceSemantics], blockedBy);
+    }
+  });
+}
 
 test('a stale worker generation cannot write a human checkpoint', async () => {
   const source = item({

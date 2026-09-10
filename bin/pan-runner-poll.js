@@ -293,11 +293,11 @@ export function occupiedSlotsForPlaybook(occupancy, playbook) {
   return set;
 }
 
-/** The confirming re-read after a claim write: we still own the item only when
- *  claimed-by, lease-until, machine, and session-id are the exact values we
- *  wrote and the Status is in-progress. Anything else means a foreign claim won
- *  the race. */
-export function claimConfirmed(item, {
+/** Whether a confirming re-read still contains the exact claim tuple written
+ *  by this runner. This deliberately excludes dispatch eligibility so callers
+ *  can distinguish a foreign claim from an owned claim whose Issue/resource
+ *  semantics changed concurrently and therefore needs rollback. */
+export function claimOwnershipConfirmed(item, {
   identity,
   lease,
   machine,
@@ -315,6 +315,17 @@ export function claimConfirmed(item, {
     (claimGeneration == null || val(item, FIELD.claimGeneration, '') === claimGeneration) &&
     (revision == null || val(item, FIELD.taskRevision, '') === String(revision)) &&
     statusOf(item) === status
+  );
+}
+
+/** The confirming re-read immediately before launch: the exact claim tuple
+ *  must still be ours, the Issue must still be open, and no persistent resource
+ *  semantics may make the retained machine/session tuple non-executable. */
+export function claimConfirmed(item, expected) {
+  return (
+    claimOwnershipConfirmed(item, expected)
+    && item.issue?.state === 'OPEN'
+    && val(item, FIELD.resourceSemantics, '') === ''
   );
 }
 
