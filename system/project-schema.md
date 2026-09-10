@@ -142,5 +142,8 @@ reconciliation. A live human-review worker remains a hard blocker. Terminal
 provenance is not a claim, lease, workspace reservation, or cleanup authority;
 pending result, checkpoint, or release evidence beside that marker is a
 contradiction requiring operator reconciliation, not interrupted-cleanup
-authority. Plans bind the complete Issue/Project projection, including
-playbook text, before apply.
+authority. A closed Issue whose planned or current lifecycle is nonterminal is
+also a reconciliation blocker: migration never reopens or repairs it
+automatically. Plans bind the complete Issue/Project projection, including
+Issue state, state reason, and playbook text, before apply, and verify the
+matching open or terminal Issue state afterward.

@@ -349,6 +349,16 @@ function invalidRuntimeReason(
   return '';
 }
 
+function invalidMigrationIssueStateReason(task, target) {
+  if (
+    task.issueState === 'CLOSED'
+    && !['done', 'rejected'].includes(target.status)
+  ) {
+    return 'closed Issue conflicts with a nonterminal lifecycle and requires reconciliation';
+  }
+  return '';
+}
+
 function currentTupleComplete(task) {
   if (!validLifecyclePair(task.status, task.nextAction)) return false;
   let revision;
@@ -449,7 +459,9 @@ export function planLifecycleMigration(tasks, options = {}) {
         ...options,
         authorization: authorizations.get(task.itemId),
       });
-    const invalidReason = task.bodyConflict || invalidRuntimeReason(task);
+    const invalidReason = task.bodyConflict
+      || invalidRuntimeReason(task)
+      || invalidMigrationIssueStateReason(task, target);
     const passiveProvenance = safeTerminalProvenance(task, target.status)
       || safeDeliberateHold(task, target);
     const requiresCutoverHold = !passiveProvenance && (

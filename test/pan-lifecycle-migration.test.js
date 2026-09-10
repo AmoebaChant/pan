@@ -222,6 +222,152 @@ test('partial current tuples are repaired and retained paused sessions require c
   );
 });
 
+test('closed nonterminal legacy, current, and durable hold tasks require reconciliation', () => {
+  const cases = [
+    {
+      name: 'legacy',
+      task: legacy({
+        legacyOwner: 'human',
+        status: 'ready',
+      }),
+      openAction: 'migrate',
+    },
+    {
+      name: 'current',
+      task: legacy({
+        status: 'ready-for-human',
+        nextAction: 'act',
+        executionAuthorized: 'no',
+        workerState: 'idle',
+        revision: 4,
+        currentActionStatus: 'ready-for-human',
+        currentActionAction: 'act',
+        currentActionRevision: 4,
+      }),
+      openAction: 'already-current',
+    },
+    {
+      name: 'durable hold',
+      task: legacy({
+        legacyOwner: 'human',
+        status: 'blocked',
+        workerState: 'checkpointed',
+        machine: 'machine-a',
+        sessionId: 'session-a',
+        claimGeneration: 'generation-a',
+        revision: 4,
+        currentActionStatus: 'deliberate-hold',
+        currentActionAction: 'hold',
+        currentActionRevision: 4,
+        nextActionDetail: 'Hold until the user deliberately resumes this outcome.',
+      }),
+      openAction: 'migrate',
+    },
+  ];
+
+  for (const entry of cases) {
+    const open = planLifecycleMigration([entry.task]).actions[0];
+    assert.equal(open.action, entry.openAction, `${entry.name} open counterpart`);
+
+    const closed = planLifecycleMigration([{
+      ...entry.task,
+      issueState: 'CLOSED',
+      issueStateReason: 'COMPLETED',
+    }]).actions[0];
+    assert.equal(closed.action, 'invalid-state', entry.name);
+    assert.match(closed.reason, /closed Issue.*nonterminal.*reconciliation/i, entry.name);
+  }
+
+  const terminal = legacy({
+    status: 'done',
+    nextAction: 'none',
+    executionAuthorized: 'no',
+    workerState: 'stopped',
+    revision: 4,
+    currentActionStatus: 'done',
+    currentActionAction: 'none',
+    currentActionRevision: 4,
+    nextActionDate: '',
+    issueState: 'CLOSED',
+    issueStateReason: 'COMPLETED',
+  });
+  assert.equal(planLifecycleMigration([terminal]).actions[0].action, 'already-current');
+  assert.notEqual(
+    planLifecycleMigration([{
+      ...terminal,
+      issueStateReason: 'NOT_PLANNED',
+    }]).actions[0].action,
+    'already-current',
+  );
+});
+
+test('migration apply skips closed nonterminal blockers and applies valid open counterparts', async () => {
+  const closed = [
+    legacy({
+      itemId: 'closed-legacy',
+      legacyOwner: 'human',
+      status: 'ready',
+      issueState: 'CLOSED',
+      issueStateReason: 'COMPLETED',
+    }),
+    legacy({
+      itemId: 'closed-current',
+      status: 'ready-for-human',
+      nextAction: 'act',
+      executionAuthorized: 'no',
+      workerState: 'idle',
+      revision: 4,
+      currentActionStatus: 'ready-for-human',
+      currentActionAction: 'act',
+      currentActionRevision: 3,
+      issueState: 'CLOSED',
+      issueStateReason: 'COMPLETED',
+    }),
+    legacy({
+      itemId: 'closed-hold',
+      legacyOwner: 'human',
+      status: 'blocked',
+      workerState: 'checkpointed',
+      machine: 'machine-a',
+      sessionId: 'session-a',
+      claimGeneration: 'generation-a',
+      revision: 4,
+      currentActionStatus: 'deliberate-hold',
+      currentActionAction: 'hold',
+      currentActionRevision: 4,
+      nextActionDetail: 'Hold until the user deliberately resumes this outcome.',
+      issueState: 'CLOSED',
+      issueStateReason: 'COMPLETED',
+    }),
+  ];
+  const open = closed.map((task) => ({
+    ...task,
+    itemId: task.itemId.replace('closed', 'open'),
+    issueState: 'OPEN',
+    issueStateReason: null,
+  }));
+  const plan = planLifecycleMigration([...closed, ...open]);
+  assert.deepEqual(
+    plan.actions.map((action) => action.action),
+    ['invalid-state', 'invalid-state', 'invalid-state', 'migrate', 'repair-current', 'migrate'],
+  );
+
+  const visited = [];
+  const report = await applyLifecycleMigration(plan, {
+    async migrateLegacyItem(action) {
+      visited.push(action.itemId);
+      return { itemId: action.itemId, outcome: 'migrated' };
+    },
+  });
+
+  assert.deepEqual(visited, ['open-legacy', 'open-current', 'open-hold']);
+  assert.equal(report.partial, true);
+  assert.deepEqual(
+    report.results.slice(0, 3).map((result) => result.action),
+    ['invalid-state', 'invalid-state', 'invalid-state'],
+  );
+});
+
 test('terminal provenance migrates safely while terminal active or uncertain evidence fails closed', () => {
   const provenance = planLifecycleMigration([
     legacy({

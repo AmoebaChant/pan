@@ -802,6 +802,126 @@ test('durable deliberate hold migration preserves passive session evidence and s
       assert.equal(state.issue.state, 'OPEN');
 });
 
+test('valid open nonterminal migrations converge for legacy, current repair, and durable hold', async () => {
+      const cases = [
+        {
+          name: 'legacy',
+          expectedAction: 'migrate',
+          configure(state) {
+            state.item.fields.Status = 'ready';
+            state.item.fields['next-action'] = '';
+            state.item.fields.owner = 'human';
+            state.item.fields['worker-state'] = '';
+            state.item.fields['task-revision'] = '';
+          },
+        },
+        {
+          name: 'current repair',
+          expectedAction: 'repair-current',
+          configure() {},
+        },
+        {
+          name: 'durable hold',
+          expectedAction: 'migrate',
+          configure(state) {
+            state.issue.body = renderCurrentActionBlock({
+              status: 'deliberate-hold',
+              action: 'hold',
+              detail: 'Hold until the user deliberately resumes this outcome.',
+              revision: 1,
+              updatedAt: '2026-09-01T00:00:00.000Z',
+            });
+            state.item.fields.Status = 'blocked';
+            state.item.fields['next-action'] = '';
+            state.item.fields.owner = 'human';
+            state.item.fields['worker-state'] = 'checkpointed';
+            state.item.fields.machine = 'machine-a';
+            state.item.fields['session-id'] = 'session-a';
+            state.item.fields['claim-generation'] = 'generation-a';
+          },
+        },
+      ];
+
+      for (const entry of cases) {
+        const state = fakeGitHubState();
+        entry.configure(state);
+        const { store } = await fakeStore(state);
+        const initial = planLifecycleMigration((await store.list()).tasks);
+        assert.equal(initial.actions[0].action, entry.expectedAction, entry.name);
+
+        const applied = await applyLifecycleMigration(initial, store);
+        assert.equal(applied.partial, false, entry.name);
+        assert.equal(state.issue.state, 'OPEN', entry.name);
+
+        const converged = planLifecycleMigration((await store.list()).tasks);
+        assert.equal(converged.actions[0].action, 'already-current', entry.name);
+        const before = state.writes.length;
+        const reapplied = await applyLifecycleMigration(converged, store);
+        assert.equal(reapplied.partial, false, entry.name);
+        assert.equal(state.writes.length, before, entry.name);
+      }
+});
+
+test('closed nonterminal migrations remain write-free during apply and direct store repair', async () => {
+      const cases = [
+        {
+          name: 'legacy',
+          configure(state) {
+            state.item.fields.Status = 'ready';
+            state.item.fields['next-action'] = '';
+            state.item.fields.owner = 'human';
+            state.item.fields['worker-state'] = '';
+            state.item.fields['task-revision'] = '';
+          },
+        },
+        {
+          name: 'current repair',
+          configure() {},
+        },
+        {
+          name: 'durable hold',
+          configure(state) {
+            state.issue.body = renderCurrentActionBlock({
+              status: 'deliberate-hold',
+              action: 'hold',
+              detail: 'Hold until the user deliberately resumes this outcome.',
+              revision: 1,
+              updatedAt: '2026-09-01T00:00:00.000Z',
+            });
+            state.item.fields.Status = 'blocked';
+            state.item.fields['next-action'] = '';
+            state.item.fields.owner = 'human';
+            state.item.fields['worker-state'] = 'checkpointed';
+            state.item.fields.machine = 'machine-a';
+            state.item.fields['session-id'] = 'session-a';
+            state.item.fields['claim-generation'] = 'generation-a';
+          },
+        },
+      ];
+
+      for (const entry of cases) {
+        const state = fakeGitHubState();
+        entry.configure(state);
+        state.issue.state = 'CLOSED';
+        state.issue.stateReason = 'COMPLETED';
+        const { store } = await fakeStore(state);
+        const plan = planLifecycleMigration((await store.list()).tasks);
+        assert.equal(plan.actions[0].action, 'invalid-state', entry.name);
+        const before = state.writes.length;
+
+        const report = await applyLifecycleMigration(plan, store);
+        assert.equal(report.partial, true, entry.name);
+        assert.equal(state.writes.length, before, entry.name);
+        await assert.rejects(
+          store.migrateLegacyItem(plan.actions[0]),
+          /closed Issue.*nonterminal.*reconciliation/i,
+          entry.name,
+        );
+        assert.equal(state.writes.length, before, entry.name);
+        assert.equal(state.issue.state, 'CLOSED', entry.name);
+      }
+});
+
 test('deliberate hold migration leaves an open checkpoint untouched for reconciliation', async () => {
       const state = fakeGitHubState();
       state.issue.body = renderCurrentActionBlock({

@@ -1411,6 +1411,10 @@ export class GitHubTaskStore {
     if (!validLifecyclePair(target.status, target.nextAction)) {
       throw new Error('migration target has an invalid lifecycle pair');
     }
+    const terminal = isTerminalStatus(target.status);
+    if (!terminal && item.issue.state === 'CLOSED') {
+      throw new Error('closed Issue with a nonterminal lifecycle requires reconciliation');
+    }
     const expectedRevision = parseRevision(item.fields['task-revision'] || '');
     const currentBlock = parseCurrentActionBlock(item.issue.body);
     let nextRevision = expectedRevision + 1;
@@ -1425,7 +1429,7 @@ export class GitHubTaskStore {
     } else if (currentBlock && currentBlock.revision > expectedRevision) {
       throw new Error('Issue current-next-action revision is ahead of the migration plan');
     }
-    if (isTerminalStatus(target.status)) {
+    if (terminal) {
       if (item.fields['next-action-date']) {
         await this.#setDate(item.itemId, 'next-action-date', '');
         const cleared = await this.#item(item.itemId);
@@ -1439,7 +1443,6 @@ export class GitHubTaskStore {
         await ensureIssueRejected(this.gh, item.issue.repo, item.issue.number);
       }
     }
-    const terminal = isTerminalStatus(target.status);
     const expectedFields = new Map([
       ['next-action', target.nextAction],
       ['execution-authorized', target.executionAuthorized],
@@ -1533,6 +1536,7 @@ export class GitHubTaskStore {
           || confirmed.issue.stateReason !== (target.status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
         )
       )
+      || (!terminal && confirmed.issue.state !== 'OPEN')
     ) {
       throw new Error('GitHub did not verify lifecycle migration');
     }
