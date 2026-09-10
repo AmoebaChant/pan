@@ -26,9 +26,14 @@ Usage:
 
 Plan is read-only. Agent-owned work is not authorized by legacy owner alone:
 the authorization file must explicitly approve each item and exactly match its
-playbook and dependency text. Apply refuses every legacy active/paused session
-and never changes the retained owner field/options. Stop every runner, task UI,
-briefing writer, and other Project writer for the Domain before applying.
+playbook and dependency text. Apply refuses live or uncertain workers and
+ambiguous retained sessions. A terminal item may retain a complete historical
+machine/session/generation tuple, and a blocked item may retain a passive
+session only when its Issue has an exact deliberate-hold/hold projection.
+Before apply, verify those terminal tuples have no pending result, checkpoint,
+or release journal. Apply never changes the retained owner field/options. Stop
+every runner, task UI, briefing writer, and other Project writer for the Domain
+before applying.
 Rollback is generated from current live pilot state, preserves all work and
 resource evidence, changes only the retained legacy owner/Status projection,
 and refuses active, uncertain, stale, or externally inconsistent items.

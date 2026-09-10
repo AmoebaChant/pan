@@ -161,6 +161,17 @@ persists through `paused`, `waiting-human`, and `checkpointed` until one of:
 - operator recovery proves every possible launcher dead, preserves all results,
   and deliberately releases the workspace under the runner recovery contract.
 
+An additive migration may encounter a terminal task whose complete
+`machine`/`session-id`/`claim-generation` tuple was intentionally retained by
+the prior lifecycle as history. When `worker-state` is empty, `idle`, or
+`stopped`, `claimed-by`, `lease-until`, and `needs-human-since` are empty, and
+operator preflight confirms there is no live/uncertain launcher, pending result,
+checkpoint receipt, or terminal-release journal, that tuple is **historical
+provenance**, not workspace ownership. Migration and rollback preserve it.
+Runners and cleanup paths must not use terminal provenance as authority to
+adopt a session, finalize a result, or release a workspace. Any active,
+uncertain, partial, or contradictory evidence fails closed.
+
 On restart, the durable manifest, lock, process-start identity, generation, and
 live Project tuple are reconciled before adopting, finalizing, or launching.
 Resume never consumes an old human-waiting or held task, clears a newer
@@ -214,7 +225,10 @@ live validation does not emit a terminal result at PR creation or merge.
 
 Terminal writes clear and verify `next-action-date` before Issue closure and
 write `Status=done` or `Status=rejected` last among lifecycle fields. Terminal
-cleanup then releases runner/resource fields without changing task history.
+cleanup then releases active runner/resource fields without changing task
+history. This remains the rule for new terminal transitions; the additive
+migration exception above preserves already-historical provenance rather than
+pretending it is a live release operation.
 
 ## Human attention dates and deadlines
 

@@ -221,7 +221,92 @@ test('partial current tuples are repaired and retained paused sessions require c
   );
 });
 
-test('migration holds every resource-bearing legacy item regardless of human-facing status', () => {
+test('terminal provenance migrates safely while terminal active or uncertain evidence fails closed', () => {
+  const provenance = planLifecycleMigration([
+    legacy({
+      status: 'done',
+      machine: 'machine-a',
+      sessionId: 'session-a',
+      claimGeneration: 'generation-a',
+    }),
+  ]).actions[0];
+  assert.equal(provenance.action, 'migrate');
+  assert.equal(provenance.target.status, 'done');
+  assert.equal(provenance.target.workerState, 'stopped');
+  assert.equal(provenance.preserve.resourceSemantics, 'historical-provenance');
+
+  for (const workerState of ['running', 'uncertain']) {
+    const unsafe = planLifecycleMigration([
+      legacy({
+        status: 'done',
+        workerState,
+        claimedBy: workerState === 'running' ? 'runner-a' : '',
+        leaseUntil: workerState === 'running' ? '2026-09-10T03:00:00Z' : '',
+        machine: 'machine-a',
+        sessionId: 'session-a',
+        claimGeneration: 'generation-a',
+      }),
+    ]).actions[0];
+    assert.equal(unsafe.action, 'invalid-state', workerState);
+  }
+});
+
+test('durable deliberate hold migrates with passive affinity but ambiguous blocked state does not', () => {
+  const held = planLifecycleMigration([
+    legacy({
+      legacyOwner: 'human',
+      status: 'blocked',
+      workerState: 'checkpointed',
+      machine: 'machine-a',
+      sessionId: 'session-a',
+      claimGeneration: 'generation-a',
+      revision: 4,
+      currentActionStatus: 'deliberate-hold',
+      currentActionAction: 'hold',
+      currentActionRevision: 4,
+      nextActionDetail: 'Hold until the user deliberately resumes this outcome.',
+    }),
+  ]).actions[0];
+  assert.equal(held.action, 'migrate');
+  assert.equal(held.target.status, 'deliberate-hold');
+  assert.equal(held.target.nextAction, 'hold');
+  assert.equal(held.target.workerState, 'checkpointed');
+  assert.equal(held.preserve.resourceSemantics, 'held-affinity');
+
+  const ambiguous = planLifecycleMigration([
+    legacy({
+      legacyOwner: 'human',
+      status: 'blocked',
+      workerState: 'checkpointed',
+      machine: 'machine-a',
+      sessionId: 'session-a',
+      claimGeneration: 'generation-a',
+    }),
+  ]).actions[0];
+  assert.equal(ambiguous.action, 'requires-cutover-hold');
+  assert.equal(ambiguous.target.status, 'external-waiting');
+});
+
+test('active human review remains a hard cutover blocker', () => {
+  const action = planLifecycleMigration([
+    legacy({
+      legacyOwner: 'human',
+      status: 'in-review',
+      workerState: 'waiting-human',
+      needsHumanSince: '2026-09-10T01:30:00Z',
+      claimedBy: 'runner-a',
+      leaseUntil: '2026-09-10T03:00:00Z',
+      machine: 'machine-a',
+      sessionId: 'session-a',
+      claimGeneration: 'generation-a',
+    }),
+  ], { now: Date.parse('2026-09-10T02:00:00Z') }).actions[0];
+  assert.equal(action.action, 'requires-cutover-hold');
+  assert.equal(action.target.status, 'ready-for-human');
+  assert.equal(action.target.nextAction, 'review');
+});
+
+test('migration holds ambiguous resource-bearing human-facing legacy items', () => {
   for (const status of ['in-review', 'blocked', 'ready']) {
     const action = planLifecycleMigration([
       legacy({
@@ -300,6 +385,37 @@ test('rollback dry-run derives only current live state and flags unsafe executio
     currentActionAction: 'execute',
   }]).actions[0];
   assert.equal(unsafe.action, 'invalid-state');
+
+  const terminalProvenance = planLifecycleRollback([{
+    ...current,
+    status: 'done',
+    nextAction: 'none',
+    workerState: 'stopped',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: 'generation-a',
+    issueState: 'CLOSED',
+    issueStateReason: 'COMPLETED',
+    currentActionStatus: 'done',
+    currentActionAction: 'none',
+  }]).actions[0];
+  assert.equal(terminalProvenance.action, 'rollback');
+  assert.deepEqual(terminalProvenance.legacyTarget, { owner: 'unassigned', status: 'done' });
+
+  const heldAffinity = planLifecycleRollback([{
+    ...current,
+    status: 'deliberate-hold',
+    nextAction: 'hold',
+    workerState: 'checkpointed',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: 'generation-a',
+    currentActionStatus: 'deliberate-hold',
+    currentActionAction: 'hold',
+    nextActionDetail: 'Hold until the user deliberately resumes this outcome.',
+  }]).actions[0];
+  assert.equal(heldAffinity.action, 'rollback');
+  assert.deepEqual(heldAffinity.legacyTarget, { owner: 'human', status: 'blocked' });
 });
 
 test('rollback apply continues independent items and treats a fresh re-plan as idempotent', async () => {

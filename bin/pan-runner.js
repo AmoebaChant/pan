@@ -6151,7 +6151,19 @@ child.on('exit', (code, signal) => {
         && this.terminalReleaseTupleIsMonotonic(match, terminalReleaseJournal)
       );
       const terminalReleaseBound = releasedTerminalBound || journaledTerminalBound;
+      const historicalTerminalProvenance = (
+        this.usesOutcomeLifecycle()
+        && ['done', 'rejected'].includes(projectStatus)
+        && projectWorkerState === 'stopped'
+        && !claimedBy
+        && !val(match, FIELD.leaseUntil, '')
+        && !!projectMachine
+        && !!projectSessionId
+        && !!projectClaimGeneration
+        && !hasRecoveryEvidence
+      );
       const sessionBound = terminalReleaseBound || (bindable
+        && !historicalTerminalProvenance
         && match.issue?.number === nameNumber
         && match.itemId === task.itemId
         && projectSessionId === nameSessionId

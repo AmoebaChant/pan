@@ -27,6 +27,73 @@ const LEGACY_STATUSES = new Set([
   'rejected',
 ]);
 
+function hasCompleteResourceTuple(task) {
+  return resourceTuple(task).every(Boolean);
+}
+
+function hasEmptyResourceTuple(task) {
+  return resourceTuple(task).every((value) => !value);
+}
+
+function hasActiveOrUncertainEvidence(task) {
+  return !!(
+    task.claimedBy
+    || task.leaseUntil
+    || ACTIVE_WORKER_STATES.has(task.workerState)
+    || task.workerState === 'uncertain'
+  );
+}
+
+function hasDurableHoldEvidence(task) {
+  if (
+    task.bodyConflict
+    || task.currentActionStatus !== 'deliberate-hold'
+    || task.currentActionAction !== 'hold'
+    || !String(task.nextActionDetail || '').trim()
+  ) {
+    return false;
+  }
+  let revision;
+  try {
+    revision = parseRevision(task.revision);
+  } catch {
+    return false;
+  }
+  return [revision, revision + 1].includes(task.currentActionRevision);
+}
+
+function passiveWorkerState(task, fallback) {
+  if (['checkpointed', 'paused', 'stopped'].includes(task.workerState)) {
+    return task.workerState;
+  }
+  return hasCompleteResourceTuple(task) ? fallback : 'idle';
+}
+
+function safeTerminalProvenance(task, status = task.status) {
+  if (!['done', 'rejected'].includes(status)) return false;
+  if (!hasCompleteResourceTuple(task)) return false;
+  return (
+    !hasActiveOrUncertainEvidence(task)
+    && !task.needsHumanSince
+    && ['', 'idle', 'stopped'].includes(task.workerState || '')
+  );
+}
+
+function safeDeliberateHold(task, target) {
+  if (target.status !== 'deliberate-hold' || !hasDurableHoldEvidence(task)) {
+    return false;
+  }
+  if (hasActiveOrUncertainEvidence(task)) return false;
+  if (!hasCompleteResourceTuple(task) && !hasEmptyResourceTuple(task)) return false;
+  if (
+    ['checkpointed', 'paused'].includes(task.workerState)
+    && !hasCompleteResourceTuple(task)
+  ) {
+    return false;
+  }
+  return ['', 'idle', 'checkpointed', 'paused', 'stopped'].includes(task.workerState || '');
+}
+
 function hasLiveLease(task, now) {
   if (!task.leaseUntil) return false;
   const lease = Date.parse(task.leaseUntil);
@@ -101,6 +168,15 @@ export function translateLegacyTask(task, {
     };
   }
   if (status === 'blocked') {
+    if (hasDurableHoldEvidence(task)) {
+      return {
+        ...base,
+        status: 'deliberate-hold',
+        nextAction: 'hold',
+        workerState: passiveWorkerState(task, 'checkpointed'),
+        detail: task.nextActionDetail,
+      };
+    }
     return {
       ...base,
       status: 'external-waiting',
@@ -182,7 +258,11 @@ function currentLifecycleTarget(task) {
         : task.status === 'rejected'
           ? 'Outcome rejected.'
           : 'Confirm the exact current next action.'),
-    requiresCutoverHold: hasSession && ['paused', 'checkpointed', 'uncertain'].includes(workerState),
+    requiresCutoverHold: (
+      task.status !== 'deliberate-hold'
+      && hasSession
+      && ['paused', 'checkpointed', 'uncertain'].includes(workerState)
+    ),
     requiresAuthorization: false,
   };
 }
@@ -212,14 +292,19 @@ function invalidRuntimeReason(
   const tuple = resourceTuple(task);
   const tupleComplete = tuple.every(Boolean);
   const tupleEmpty = tuple.every((value) => !value);
-  if (canonical && !tupleComplete && !tupleEmpty) {
+  if ((canonical || ['done', 'rejected'].includes(status)) && !tupleComplete && !tupleEmpty) {
     return 'machine, session-id, and claim-generation must be all present or all empty';
   }
   if (
     ['done', 'rejected'].includes(status)
-    && hasResourceEvidence(task)
+    && (
+      task.claimedBy
+      || task.leaseUntil
+      || task.needsHumanSince
+      || !['', 'idle', 'stopped'].includes(task.workerState || '')
+    )
   ) {
-    return 'terminal state retains worker or workspace ownership';
+    return 'terminal state retains active, uncertain, or contradictory worker evidence';
   }
   if (
     canonical
@@ -329,8 +414,12 @@ export function planLifecycleMigration(tasks, options = {}) {
         authorization: authorizations.get(task.itemId),
       });
     const invalidReason = task.bodyConflict || invalidRuntimeReason(task);
-    const requiresCutoverHold = target.requiresCutoverHold
-      || hasResourceEvidence(task);
+    const passiveProvenance = safeTerminalProvenance(task, target.status)
+      || safeDeliberateHold(task, target);
+    const requiresCutoverHold = !passiveProvenance && (
+      target.requiresCutoverHold
+      || hasResourceEvidence(task)
+    );
     if (currentTupleComplete(task) && !requiresCutoverHold && !invalidReason) {
       return {
         itemId: task.itemId,
@@ -363,6 +452,12 @@ export function planLifecycleMigration(tasks, options = {}) {
         workstream: task.workstream,
         machine: task.machine,
         sessionId: task.sessionId,
+        claimGeneration: task.claimGeneration,
+        resourceSemantics: safeTerminalProvenance(task, target.status)
+          ? 'historical-provenance'
+          : target.status === 'deliberate-hold' && passiveProvenance
+            ? 'held-affinity'
+            : '',
       },
     };
   });

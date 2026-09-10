@@ -78,9 +78,15 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
    non-empty `playbook`, exact `dependencies` text, and
    `executionAuthorized: true`. Legacy `owner=agent` is never authorization.
 4. Run `pan-lifecycle-migrate apply` with that file and
-   `--confirm-writers-stopped`. Active, paused, checkpointed, or uncertain
-   sessions remain held for operator reconciliation rather than being guessed
-   safe.
+   `--confirm-writers-stopped`. Active or uncertain workers, claims, leases,
+   partial tuples, and ambiguous retained sessions remain held for operator
+   reconciliation rather than being guessed safe. Before apply, inspect every
+   terminal tuple's owning machine state and confirm there is no live/uncertain
+   launcher, unconsumed result, checkpoint receipt, or terminal-release
+   journal. A complete terminal tuple with none of that evidence is historical
+   provenance and is preserved. A passive blocked session migrates as
+   `deliberate-hold/hold` only when the revision-aligned Issue current-action
+   block already records that deliberate hold; otherwise it remains held.
 5. Run another plan against current live state. Do not restart writers until it
    reports no authorization, cutover-hold, or repair actions.
 
@@ -130,8 +136,11 @@ liveness, and claim fields:
 The plan and checked apply preserve current dates, Issue text, comments,
 sessions, results, playbook/dependency text, and recurrence markers. Apply does
 not reopen or re-close Issues, reverse Todoist state, clear affinity, or infer
-that an active/uncertain worker is safe. Plan and apply use the same fail-closed
-worker/resource predicate, so an unsafe item is never presented as an approved
-rollback or idempotent no-op. A fresh post-apply plan reports
+that an active/uncertain worker is safe. A complete tuple on a terminal
+`worker-state=stopped` item remains historical provenance through rollback; it
+does not authorize workspace release or result replay. Passive affinity on a
+durable `deliberate-hold/hold` remains held and non-runnable. Plan and apply use
+the same fail-closed worker/resource predicate, so an unsafe item is never
+presented as an approved rollback or idempotent no-op. A fresh post-apply plan reports
 `already-rolled-back` only for a genuinely safe exact projection, making the
 operation idempotent.

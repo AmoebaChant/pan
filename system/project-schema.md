@@ -22,9 +22,9 @@ resource, revision, date, and transition rules are defined in
 | `needs-human-since` | text | RFC 3339 UTC timestamp for an open human checkpoint. It may coexist with a live lease. |
 | `lease-until` | text | RFC 3339 UTC timestamp for active runner supervision. |
 | `claimed-by` | text | Stable runner identity currently supervising execution. |
-| `machine` | text | Machine or `<machine>::<slot>` workspace affinity. Persists until explicit resource release. |
-| `session-id` | text | Durable Copilot session id. |
-| `claim-generation` | text | UUID binding one claim/launch lineage. Stale generations may not write. |
+| `machine` | text | Machine or `<machine>::<slot>` workspace affinity. Persists until explicit resource release; on a stopped terminal item a complete tuple may instead be retained historical provenance. |
+| `session-id` | text | Durable Copilot session id. On a stopped terminal item it may be provenance, never resume authority. |
+| `claim-generation` | text | UUID binding one claim/launch lineage. Stale generations may not write; a terminal provenance value grants no write or cleanup authority. |
 | `task-revision` | text | Non-negative decimal revision. Writers compare live state and increment this last. |
 | `owner` | single select | **Legacy pilot recovery only:** `unassigned`, `human`, or `agent`. New lifecycle logic and UI never read or write it. |
 
@@ -120,8 +120,21 @@ future authority:
 The translation preserves dates, deadlines, comments, Project order,
 recurrence markers, machine/session affinity, leases, and results. See
 [Todoist migration and recovery](todoist-migration.md) for reverse mapping.
-Every item with any worker/resource evidence is held for cutover, including
-legacy human-facing `in-review`, `blocked`, or `ready` items. Impossible
-terminal/resource combinations and canonical `ai-executing`/running tuples
-without a complete owner are invalid rather than “already current.” Plans bind
-the complete Issue/Project projection, including playbook text, before apply.
+Live or uncertain workers, claims, leases, partial resource tuples, pending
+results/journals, and contradictory state remain cutover blockers, including on
+legacy human-facing `in-review`, `blocked`, or `ready` items. Two narrow cases
+do not make a task runnable and may migrate without clearing history:
+
+- a terminal task with `worker-state` empty/`idle`/`stopped`, no claim, lease,
+  or open human checkpoint, and a complete historical
+  machine/session/generation tuple may retain that tuple as provenance after
+  operator preflight confirms there is no pending local result, checkpoint
+  receipt, or release journal; and
+- legacy `blocked` may become `deliberate-hold/hold` with passive
+  session/resource evidence only when the Issue's exact, revision-aligned
+  current-action block already records `deliberate-hold/hold`.
+
+An ambiguous blocked/session item remains held for reconciliation. A live
+human-review worker remains a hard blocker. Terminal provenance is not a claim,
+lease, workspace reservation, or cleanup authority. Plans bind the complete
+Issue/Project projection, including playbook text, before apply.

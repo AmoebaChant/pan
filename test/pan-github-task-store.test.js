@@ -707,12 +707,15 @@ test('task mutation requires an exact Issue and Project projection before writes
       await assert.rejects(store.detail('foreign-item'), /task not found/);
 });
 
-test('terminal lifecycle migration closes the Issue and writes revision last only without retained resources', async () => {
+test('terminal lifecycle migration closes the Issue and preserves historical provenance', async () => {
       const state = fakeGitHubState();
       state.item.fields.Status = 'done';
       state.item.fields['next-action'] = '';
       state.item.fields['next-action-date'] = '2026-09-01';
       state.item.fields['worker-state'] = '';
+      state.item.fields.machine = 'machine-a';
+      state.item.fields['session-id'] = 'session-a';
+      state.item.fields['claim-generation'] = 'generation-a';
       state.item.fields['task-revision'] = '';
       const { store } = await fakeStore(state);
       const task = (await store.list()).tasks[0];
@@ -726,10 +729,44 @@ test('terminal lifecycle migration closes the Issue and writes revision last onl
       assert.equal(state.issue.stateReason, 'COMPLETED');
       assert.equal(state.item.fields['next-action-date'], '');
       assert.equal(state.item.fields['worker-state'], 'stopped');
-      assert.equal(state.item.fields.machine, '');
-      assert.equal(state.item.fields['session-id'], '');
-      assert.equal(state.item.fields['claim-generation'], '');
+      assert.equal(state.item.fields.machine, 'machine-a');
+      assert.equal(state.item.fields['session-id'], 'session-a');
+      assert.equal(state.item.fields['claim-generation'], 'generation-a');
       assert.equal(state.writes.at(-1), 'project:task-revision');
+});
+
+test('durable deliberate hold migration preserves passive session evidence and stays non-runnable', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = renderCurrentActionBlock({
+        status: 'deliberate-hold',
+        action: 'hold',
+        detail: 'Hold until the user deliberately resumes this outcome.',
+        revision: 1,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      });
+      state.item.fields.Status = 'blocked';
+      state.item.fields['next-action'] = '';
+      state.item.fields.owner = 'human';
+      state.item.fields['worker-state'] = 'checkpointed';
+      state.item.fields.machine = 'machine-a';
+      state.item.fields['session-id'] = 'session-a';
+      state.item.fields['claim-generation'] = 'generation-a';
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleMigration((await store.list()).tasks);
+      assert.equal(plan.actions[0].action, 'migrate');
+
+      await store.migrateLegacyItem(plan.actions[0]);
+
+      assert.equal(state.item.fields.Status, 'deliberate-hold');
+      assert.equal(state.item.fields['next-action'], 'hold');
+      assert.equal(state.item.fields['execution-authorized'], 'no');
+      assert.equal(state.item.fields['worker-state'], 'checkpointed');
+      assert.equal(state.item.fields.machine, 'machine-a');
+      assert.equal(state.item.fields['session-id'], 'session-a');
+      assert.equal(state.item.fields['claim-generation'], 'generation-a');
+      assert.equal(state.item.fields['claimed-by'], '');
+      assert.equal(state.item.fields['lease-until'], '');
+      assert.equal(state.issue.state, 'OPEN');
 });
 
 test('lifecycle migration refuses playbook or Issue drift from its complete planned projection', async () => {
@@ -835,6 +872,42 @@ test('checked lifecycle rollback preserves pilot progress and is idempotent afte
       const second = await applyLifecycleRollback(secondPlan, store);
       assert.equal(second.partial, false);
       assert.equal(state.writes.length, writes);
+});
+
+test('checked lifecycle rollback preserves terminal provenance without using it as release authority', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = renderCurrentActionBlock({
+        status: 'done',
+        action: 'none',
+        detail: 'Outcome complete.',
+        revision: 3,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      });
+      state.issue.state = 'CLOSED';
+      state.issue.stateReason = 'COMPLETED';
+      state.item.fields.Status = 'done';
+      state.item.fields['next-action'] = 'none';
+      state.item.fields.owner = 'human';
+      state.item.fields['next-action-date'] = '';
+      state.item.fields['worker-state'] = 'stopped';
+      state.item.fields.machine = 'machine-a';
+      state.item.fields['session-id'] = 'session-a';
+      state.item.fields['claim-generation'] = 'generation-a';
+      state.item.fields['task-revision'] = '3';
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleRollback((await store.list()).tasks);
+      assert.equal(plan.actions[0].action, 'rollback');
+
+      await store.rollbackLifecycleItem(plan.actions[0]);
+
+      assert.equal(state.item.fields.Status, 'done');
+      assert.equal(state.item.fields.owner, 'unassigned');
+      assert.equal(state.item.fields['worker-state'], 'stopped');
+      assert.equal(state.item.fields.machine, 'machine-a');
+      assert.equal(state.item.fields['session-id'], 'session-a');
+      assert.equal(state.item.fields['claim-generation'], 'generation-a');
+      assert.equal(state.item.fields['claimed-by'], '');
+      assert.equal(state.item.fields['lease-until'], '');
 });
 
 test('checked lifecycle rollback refuses stale complete projection without writes', async () => {

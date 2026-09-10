@@ -52,6 +52,7 @@ export function rollbackSafetyReason(task, status = task.status) {
   const tupleComplete = tuple.every(Boolean);
   const tupleEmpty = tuple.every((value) => !value);
   const workerState = task.workerState || '';
+  const needsHumanSince = task.needsHumanSince || '';
   const claimedBy = task.claimedBy || '';
   const leaseUntil = task.leaseUntil || '';
   const retainedWorker = [
@@ -62,6 +63,13 @@ export function rollbackSafetyReason(task, status = task.status) {
     'paused',
     'uncertain',
   ].includes(workerState);
+  const provenanceOnly = (
+    tupleComplete
+    && (
+      (['done', 'rejected'].includes(status) && workerState === 'stopped')
+      || (status === 'deliberate-hold' && ['idle', 'stopped'].includes(workerState))
+    )
+  );
 
   if (!WORKER_STATES.includes(workerState)) {
     return 'worker-state is invalid';
@@ -78,14 +86,20 @@ export function rollbackSafetyReason(task, status = task.status) {
   if (
     tupleComplete
     && !retainedWorker
+    && !provenanceOnly
   ) {
     return 'rollback refuses workspace resources with no retained worker';
   }
   if (
     ['done', 'rejected'].includes(status)
-    && (tuple.some(Boolean) || claimedBy || leaseUntil || retainedWorker)
+    && (
+      claimedBy
+      || leaseUntil
+      || needsHumanSince
+      || workerState !== 'stopped'
+    )
   ) {
-    return 'rollback refuses terminal state with retained worker or workspace ownership';
+    return 'rollback refuses terminal state with active, uncertain, or contradictory worker evidence';
   }
   if (status === 'ai-executing' && !tupleComplete) {
     return 'rollback refuses ai-executing state without a complete workspace owner tuple';

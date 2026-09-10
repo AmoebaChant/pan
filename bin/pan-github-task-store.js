@@ -1435,9 +1435,9 @@ export class GitHubTaskStore {
       ['worker-state', target.workerState],
       ['claimed-by', ''],
       ['lease-until', ''],
-      ['machine', terminal ? '' : (item.fields.machine || '')],
-      ['session-id', terminal ? '' : (item.fields['session-id'] || '')],
-      ['claim-generation', terminal ? '' : (item.fields['claim-generation'] || '')],
+      ['machine', item.fields.machine || ''],
+      ['session-id', item.fields['session-id'] || ''],
+      ['claim-generation', item.fields['claim-generation'] || ''],
     ]);
     for (const [name, value] of expectedFields) {
       if ((item.fields[name] || '') === value) continue;
@@ -1502,12 +1502,10 @@ export class GitHubTaskStore {
       || confirmed.fields['worker-state'] !== target.workerState
       || confirmed.fields['claimed-by']
       || confirmed.fields['lease-until']
-      || (terminal && (
-        confirmed.fields.machine
-        || confirmed.fields['session-id']
-        || confirmed.fields['claim-generation']
-        || confirmed.fields['next-action-date']
-      ))
+      || (confirmed.fields.machine || '') !== (item.fields.machine || '')
+      || (confirmed.fields['session-id'] || '') !== (item.fields['session-id'] || '')
+      || (confirmed.fields['claim-generation'] || '') !== (item.fields['claim-generation'] || '')
+      || (terminal && confirmed.fields['next-action-date'])
       || parseRevision(confirmed.fields['task-revision']) !== nextRevision
       || !confirmedBlock
       || confirmedBlock.revision !== nextRevision
@@ -1563,6 +1561,7 @@ export class GitHubTaskStore {
     const rollbackUnsafe = rollbackSafetyReason({
       status: source.status,
       workerState: item.fields['worker-state'] || '',
+      needsHumanSince: item.fields['needs-human-since'] || '',
       claimedBy: item.fields['claimed-by'] || '',
       leaseUntil: item.fields['lease-until'] || '',
       machine: item.fields.machine || '',
