@@ -55,6 +55,7 @@ export function rollbackSafetyReason(task, status = task.status) {
   const needsHumanSince = task.needsHumanSince || '';
   const claimedBy = task.claimedBy || '';
   const leaseUntil = task.leaseUntil || '';
+  const resourceSemantics = task.resourceSemantics || '';
   const retainedWorker = [
     'starting',
     'running',
@@ -66,13 +67,27 @@ export function rollbackSafetyReason(task, status = task.status) {
   const provenanceOnly = (
     tupleComplete
     && (
-      (['done', 'rejected'].includes(status) && workerState === 'stopped')
-      || (status === 'deliberate-hold' && ['idle', 'stopped'].includes(workerState))
+      (
+        ['done', 'rejected'].includes(status)
+        && workerState === 'stopped'
+        && resourceSemantics === 'historical-provenance'
+      )
+      || (
+        status === 'deliberate-hold'
+        && ['idle', 'stopped'].includes(workerState)
+        && resourceSemantics === 'held-affinity'
+      )
     )
   );
 
   if (!WORKER_STATES.includes(workerState)) {
     return 'worker-state is invalid';
+  }
+  if (!['', 'historical-provenance', 'held-affinity'].includes(resourceSemantics)) {
+    return 'resource-semantics is invalid';
+  }
+  if (needsHumanSince) {
+    return 'rollback refuses an open human checkpoint';
   }
   if (!tupleComplete && !tupleEmpty) {
     return 'rollback refuses uncertain partial workspace resource ownership';
@@ -260,6 +275,7 @@ export function runnableTask(item, fields) {
     value(fields.status) === 'ready-for-ai'
     && value(fields.nextAction) === 'execute'
     && value(fields.executionAuthorized) === 'yes'
+    && !value(fields.resourceSemantics)
     && !String(value(fields.dependencies)).trim()
     && !isRecurringBody(item.issue?.body)
   );

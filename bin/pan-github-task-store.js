@@ -490,6 +490,7 @@ function normalizedTask(item, today, recentSince) {
     machine: fields.machine ?? '',
     sessionId: fields['session-id'] ?? '',
     claimGeneration: fields['claim-generation'] ?? '',
+    resourceSemantics: fields['resource-semantics'] ?? '',
     legacyOwner: fields.owner ?? '',
     revision: parseRevision(fields['task-revision'] ?? ''),
     recurring: isRecurringBody(item.issue.body),
@@ -796,6 +797,16 @@ export class GitHubTaskStore {
 
   async #setSelect(itemId, name, value) {
     const field = this.#field(name);
+    if (!value) {
+      await this.gh([
+        'project', 'item-edit',
+        '--id', itemId,
+        '--project-id', this.meta.projectId,
+        '--field-id', field.id,
+        '--clear',
+      ]);
+      return;
+    }
     const option = field.options?.get(value);
     if (!option) throw new Error(`Project field "${name}" has no option "${value}"`);
     await this.gh([
@@ -1389,6 +1400,7 @@ export class GitHubTaskStore {
       || (item.fields.machine || '') !== (expected.machine || '')
       || (item.fields['session-id'] || '') !== (expected.sessionId || '')
       || (item.fields['claim-generation'] || '') !== (expected.claimGeneration || '')
+      || (item.fields['resource-semantics'] || '') !== (expected.resourceSemantics || '')
       || parseRevision(item.fields['task-revision'] || '') !== parseRevision(expected.revision || '')
       || item.issue.state !== expected.issueState
       || item.issue.stateReason !== expected.issueStateReason
@@ -1438,6 +1450,7 @@ export class GitHubTaskStore {
       ['machine', item.fields.machine || ''],
       ['session-id', item.fields['session-id'] || ''],
       ['claim-generation', item.fields['claim-generation'] || ''],
+      ['resource-semantics', action.preserve.resourceSemantics || ''],
     ]);
     for (const [name, value] of expectedFields) {
       if ((item.fields[name] || '') === value) continue;
@@ -1505,6 +1518,7 @@ export class GitHubTaskStore {
       || (confirmed.fields.machine || '') !== (item.fields.machine || '')
       || (confirmed.fields['session-id'] || '') !== (item.fields['session-id'] || '')
       || (confirmed.fields['claim-generation'] || '') !== (item.fields['claim-generation'] || '')
+      || (confirmed.fields['resource-semantics'] || '') !== (action.preserve.resourceSemantics || '')
       || (terminal && confirmed.fields['next-action-date'])
       || parseRevision(confirmed.fields['task-revision']) !== nextRevision
       || !confirmedBlock
@@ -1567,6 +1581,7 @@ export class GitHubTaskStore {
       machine: item.fields.machine || '',
       sessionId: item.fields['session-id'] || '',
       claimGeneration: item.fields['claim-generation'] || '',
+      resourceSemantics: item.fields['resource-semantics'] || '',
     }, source.status);
     if (rollbackUnsafe) throw new Error(rollbackUnsafe);
     if (
@@ -1756,6 +1771,7 @@ export class GitHubTaskStore {
     actor = 'Pan task UI',
     workerState,
     needsHumanSince,
+    resourceSemantics,
     issueTitle,
     issueDetails,
   }) {
@@ -1767,6 +1783,9 @@ export class GitHubTaskStore {
     if (workerState) await this.#setSelect(item.itemId, 'worker-state', workerState);
     if (needsHumanSince !== undefined) {
       await this.#setText(item.itemId, 'needs-human-since', needsHumanSince);
+    }
+    if (resourceSemantics !== undefined) {
+      await this.#setSelect(item.itemId, 'resource-semantics', resourceSemantics);
     }
     await this.#setSelect(item.itemId, 'Status', status);
     await updateIssueCurrentAction(
@@ -1818,6 +1837,10 @@ export class GitHubTaskStore {
       !confirmed
       || confirmed.fields.Status !== status
       || confirmed.fields['next-action'] !== action
+      || (
+        resourceSemantics !== undefined
+        && (confirmed.fields['resource-semantics'] || '') !== resourceSemantics
+      )
       || parseRevision(confirmed.fields['task-revision']) !== nextRevision
       || !confirmedBlock
       || confirmedBlock.revision !== nextRevision
@@ -2266,10 +2289,19 @@ export class GitHubTaskStore {
     this.#assertNoLiveWorker(item, operation);
 
     if (operation === 'hold') {
+      const tuple = [
+        item.fields.machine || '',
+        item.fields['session-id'] || '',
+        item.fields['claim-generation'] || '',
+      ];
       await this.#transition(item, liveRevision, {
         status: 'deliberate-hold',
         action: 'hold',
         detail: text(input.detail, 'detail', 2000, { allowEmpty: false }),
+        resourceSemantics: (
+          tuple.every(Boolean)
+          && !item.fields['needs-human-since']
+        ) ? 'held-affinity' : '',
       });
     } else if (operation === 'handoff-ai') {
       if (!item.fields.playbook) throw new Error('handoff to AI requires a playbook');
@@ -2283,6 +2315,7 @@ export class GitHubTaskStore {
         action: 'execute',
         detail: text(input.detail || 'Run the authorized playbook step.', 'detail', 2000, { allowEmpty: false }),
         workerState: item.fields['worker-state'] === 'checkpointed' ? 'paused' : undefined,
+        resourceSemantics: '',
       });
     } else if (operation === 'handoff-human') {
       const action = input.action;
@@ -2294,12 +2327,14 @@ export class GitHubTaskStore {
         status: 'ready-for-human',
         action,
         detail: text(input.detail, 'detail', 2000, { allowEmpty: false }),
+        resourceSemantics: '',
       });
     } else if (operation === 'external-wait') {
       await this.#transition(item, liveRevision, {
         status: 'external-waiting',
         action: 'wait',
         detail: text(input.detail, 'detail', 2000, { allowEmpty: false }),
+        resourceSemantics: '',
       });
     } else if (operation === 'finish') {
       this.#assertNoRetainedAffinity(item, operation);

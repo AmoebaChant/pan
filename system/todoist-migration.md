@@ -138,8 +138,11 @@ sessions, results, playbook/dependency text, and recurrence markers. Apply does
 not reopen or re-close Issues, reverse Todoist state, clear affinity, or infer
 that an active/uncertain worker is safe. A complete tuple on a terminal
 `worker-state=stopped` item remains historical provenance through rollback; it
-does not authorize workspace release or result replay. Passive affinity on a
-durable `deliberate-hold/hold` remains held and non-runnable. Plan and apply use
+does not authorize workspace release or result replay and is identified by the
+preserved `resource-semantics=historical-provenance` marker. Passive affinity
+on a durable `deliberate-hold/hold` remains held and non-runnable only when no
+open human checkpoint exists; its `resource-semantics=held-affinity` marker is
+preserved. Plan and apply use
 the same fail-closed worker/resource predicate, so an unsafe item is never
 presented as an approved rollback or idempotent no-op. A fresh post-apply plan reports
 `already-rolled-back` only for a genuinely safe exact projection, making the

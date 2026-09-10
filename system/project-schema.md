@@ -25,6 +25,7 @@ resource, revision, date, and transition rules are defined in
 | `machine` | text | Machine or `<machine>::<slot>` workspace affinity. Persists until explicit resource release; on a stopped terminal item a complete tuple may instead be retained historical provenance. |
 | `session-id` | text | Durable Copilot session id. On a stopped terminal item it may be provenance, never resume authority. |
 | `claim-generation` | text | UUID binding one claim/launch lineage. Stale generations may not write; a terminal provenance value grants no write or cleanup authority. |
+| `resource-semantics` | single select | Empty for ordinary operational ownership; `historical-provenance` for a migrated terminal tuple that grants no authority; `held-affinity` for passive affinity retained by a deliberate hold. |
 | `task-revision` | text | Non-negative decimal revision. Writers compare live state and increment this last. |
 | `owner` | single select | **Legacy pilot recovery only:** `unassigned`, `human`, or `agent`. New lifecycle logic and UI never read or write it. |
 
@@ -129,12 +130,17 @@ do not make a task runnable and may migrate without clearing history:
   or open human checkpoint, and a complete historical
   machine/session/generation tuple may retain that tuple as provenance after
   operator preflight confirms there is no pending local result, checkpoint
-  receipt, or release journal; and
+  receipt, or release journal; migration records
+  `resource-semantics=historical-provenance`; and
 - legacy `blocked` may become `deliberate-hold/hold` with passive
   session/resource evidence only when the Issue's exact, revision-aligned
-  current-action block already records `deliberate-hold/hold`.
+  current-action block already records `deliberate-hold/hold`, no open human
+  checkpoint remains, and migration records `resource-semantics=held-affinity`.
 
-An ambiguous blocked/session item remains held for reconciliation. A live
-human-review worker remains a hard blocker. Terminal provenance is not a claim,
-lease, workspace reservation, or cleanup authority. Plans bind the complete
-Issue/Project projection, including playbook text, before apply.
+An ambiguous blocked/session item or any open human checkpoint remains held for
+reconciliation. A live human-review worker remains a hard blocker. Terminal
+provenance is not a claim, lease, workspace reservation, or cleanup authority;
+pending result, checkpoint, or release evidence beside that marker is a
+contradiction requiring operator reconciliation, not interrupted-cleanup
+authority. Plans bind the complete Issue/Project projection, including
+playbook text, before apply.

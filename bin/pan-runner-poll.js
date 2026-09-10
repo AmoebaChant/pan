@@ -21,6 +21,7 @@ export const FIELD = {
   machine: 'machine',
   sessionId: 'session-id',
   claimGeneration: 'claim-generation',
+  resourceSemantics: 'resource-semantics',
   taskRevision: 'task-revision',
 };
 
@@ -148,6 +149,16 @@ export async function cleanTerminalLeaseFields(
 
   for (const item of items) {
     if (
+      val(item, FIELD.resourceSemantics, '') === 'historical-provenance'
+      && (val(item, FIELD.claimedBy, '') || val(item, FIELD.leaseUntil, ''))
+    ) {
+      warn(
+        `historical provenance has contradictory claim/lease evidence on ${itemLabel(item)}; ` +
+        'leaving it untouched for operator reconciliation',
+      );
+      continue;
+    }
+    if (
       !terminalStatuses.has(statusOf(item)) ||
       (!val(item, FIELD.claimedBy, '') && !val(item, FIELD.leaseUntil, ''))
     ) {
@@ -166,6 +177,13 @@ export async function cleanTerminalLeaseFields(
       !terminalStatuses.has(statusOf(fresh)) ||
       (!val(fresh, FIELD.claimedBy, '') && !val(fresh, FIELD.leaseUntil, ''))
     ) {
+      continue;
+    }
+    if (val(fresh, FIELD.resourceSemantics, '') === 'historical-provenance') {
+      warn(
+        `historical provenance has contradictory claim/lease evidence on ${itemLabel(fresh)}; ` +
+        'leaving it untouched for operator reconciliation',
+      );
       continue;
     }
 

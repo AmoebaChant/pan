@@ -46,6 +46,10 @@ test('schema is additive: canonical next actions coexist with legacy recovery fi
   }
   assert.equal(nextAction.options.includes('approve'), true);
   assert.equal(nextAction.options.includes('execute'), true);
+  assert.deepEqual(
+    CANONICAL_FIELDS.find((field) => field.name === 'resource-semantics').options,
+    ['historical-provenance', 'held-affinity'],
+  );
 });
 
 test('a missing field is reported', () => {

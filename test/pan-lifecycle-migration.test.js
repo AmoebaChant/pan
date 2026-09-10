@@ -29,6 +29,7 @@ function legacy(overrides = {}) {
     machine: '',
     sessionId: '',
     claimGeneration: '',
+    resourceSemantics: '',
     issueState: 'OPEN',
     issueStateReason: null,
     projection: 'projection-1',
@@ -287,6 +288,44 @@ test('durable deliberate hold migrates with passive affinity but ambiguous block
   assert.equal(ambiguous.target.status, 'external-waiting');
 });
 
+test('deliberate hold migration refuses an open human checkpoint but accepts the cleared hold', () => {
+  const held = legacy({
+    legacyOwner: 'human',
+    status: 'blocked',
+    workerState: 'checkpointed',
+    needsHumanSince: '2026-09-10T01:30:00Z',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: 'generation-a',
+    revision: 4,
+    currentActionStatus: 'deliberate-hold',
+    currentActionAction: 'hold',
+    currentActionRevision: 4,
+    nextActionDetail: 'Hold until the user deliberately resumes this outcome.',
+  });
+  const blocked = planLifecycleMigration([held]).actions[0];
+  assert.equal(blocked.action, 'requires-cutover-hold');
+  assert.equal(blocked.preserve.resourceSemantics, '');
+
+  const cleared = planLifecycleMigration([{
+    ...held,
+    needsHumanSince: '',
+  }]).actions[0];
+  assert.equal(cleared.action, 'migrate');
+  assert.equal(cleared.preserve.resourceSemantics, 'held-affinity');
+
+  const withoutAffinity = planLifecycleMigration([{
+    ...held,
+    needsHumanSince: '',
+    workerState: 'idle',
+    machine: '',
+    sessionId: '',
+    claimGeneration: '',
+  }]).actions[0];
+  assert.equal(withoutAffinity.action, 'migrate');
+  assert.equal(withoutAffinity.preserve.resourceSemantics, '');
+});
+
 test('active human review remains a hard cutover blocker', () => {
   const action = planLifecycleMigration([
     legacy({
@@ -394,6 +433,7 @@ test('rollback dry-run derives only current live state and flags unsafe executio
     machine: 'machine-a',
     sessionId: 'session-a',
     claimGeneration: 'generation-a',
+    resourceSemantics: 'historical-provenance',
     issueState: 'CLOSED',
     issueStateReason: 'COMPLETED',
     currentActionStatus: 'done',
@@ -413,9 +453,27 @@ test('rollback dry-run derives only current live state and flags unsafe executio
     currentActionStatus: 'deliberate-hold',
     currentActionAction: 'hold',
     nextActionDetail: 'Hold until the user deliberately resumes this outcome.',
+    resourceSemantics: 'held-affinity',
   }]).actions[0];
   assert.equal(heldAffinity.action, 'rollback');
   assert.deepEqual(heldAffinity.legacyTarget, { owner: 'human', status: 'blocked' });
+
+  const openCheckpoint = planLifecycleRollback([{
+    ...current,
+    status: 'deliberate-hold',
+    nextAction: 'hold',
+    workerState: 'checkpointed',
+    needsHumanSince: '2026-09-10T01:30:00Z',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: 'generation-a',
+    resourceSemantics: 'held-affinity',
+    currentActionStatus: 'deliberate-hold',
+    currentActionAction: 'hold',
+    nextActionDetail: 'Hold until the user deliberately resumes this outcome.',
+  }]).actions[0];
+  assert.equal(openCheckpoint.action, 'invalid-state');
+  assert.match(openCheckpoint.reason, /open human checkpoint/);
 });
 
 test('rollback apply continues independent items and treats a fresh re-plan as idempotent', async () => {

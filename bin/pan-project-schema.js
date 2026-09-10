@@ -48,6 +48,11 @@ export const CANONICAL_FIELDS = [
   { name: 'machine', type: 'text' },
   { name: 'session-id', type: 'text' },
   { name: 'claim-generation', type: 'text' },
+  {
+    name: 'resource-semantics',
+    type: 'single-select',
+    options: ['historical-provenance', 'held-affinity'],
+  },
   { name: 'task-revision', type: 'text' },
 ];
 

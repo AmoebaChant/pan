@@ -1306,7 +1306,20 @@ function seedStateRoot(sb, { number, sessionId = randomUUID(), itemId, workingDi
   return { stateRoot, sessionPanDir, panDir, sessionId, launchId };
 }
 
-function projectItem({ itemId, number, status, machine, sessionId, claimedBy = '', leaseUntil = '', claimGeneration = '', workerState = '', nextAction = '', revision = '' }) {
+function projectItem({
+  itemId,
+  number,
+  status,
+  machine,
+  sessionId,
+  claimedBy = '',
+  leaseUntil = '',
+  claimGeneration = '',
+  resourceSemantics = '',
+  workerState = '',
+  nextAction = '',
+  revision = '',
+}) {
   return {
     itemId,
     issue: {
@@ -1321,6 +1334,7 @@ function projectItem({ itemId, number, status, machine, sessionId, claimedBy = '
       [FIELD.machine]: machine,
       [FIELD.sessionId]: sessionId,
       [FIELD.claimGeneration]: claimGeneration,
+      [FIELD.resourceSemantics]: resourceSemantics,
       [FIELD.workerState]: workerState,
       [FIELD.nextAction]: nextAction,
       [FIELD.taskRevision]: revision,
@@ -2871,6 +2885,7 @@ test('rehydrate finalizes a pending result on a passively-swept paused item befo
         number: num, itemId: `item-${num}`, workingDir: repoDir,
         isolated: false, alive, result: { outcome: 'done', summary: 'done' },
       });
+
       // Passive sweep to paused: our claim retained AND the lease expired/missing
       // → still ours to finalize.
       const swept = projectItem({
@@ -2893,6 +2908,54 @@ test('rehydrate finalizes a pending result on a passively-swept paused item befo
     } finally {
       sb.cleanup();
     }
+  }
+});
+
+test('rehydrate never treats migrated terminal provenance with a pending result as cleanup authority', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo-historical-provenance');
+    mkdirSync(repoDir, { recursive: true });
+    const claimGeneration = randomUUID();
+    const seeded = seedStateRoot(sb, {
+      number: 56,
+      itemId: 'item-56',
+      workingDir: repoDir,
+      isolated: false,
+      alive: false,
+      claimGeneration,
+      result: {
+        outcome: 'done',
+        summary: 'Contradictory historical result.',
+      },
+    });
+    const historical = projectItem({
+      itemId: 'item-56',
+      number: 56,
+      status: 'done',
+      machine: MACHINE,
+      sessionId: seeded.sessionId,
+      claimGeneration,
+      resourceSemantics: 'historical-provenance',
+      workerState: 'stopped',
+      nextAction: 'none',
+      revision: '5',
+    });
+    const { runner, writes } = makeRehydrateRunnerRW(sb, [historical]);
+    let finalized = false;
+    runner.finalize = async () => {
+      finalized = true;
+      return true;
+    };
+
+    await runner.rehydrate();
+
+    assert.equal(finalized, false);
+    assert.equal(writes.length, 0);
+    assert.equal(existsSync(path.join(seeded.panDir, 'result.json')), true);
+    assert.equal(runner.active.has('item-56'), false);
+  } finally {
+    sb.cleanup();
   }
 });
 
@@ -3129,6 +3192,7 @@ test('startup terminal-release failure preserves evidence and restart completes 
       workerState: 'running',
       nextAction: 'execute',
       revision: '4',
+      resourceSemantics: '',
     });
     project.fields[FIELD.nextActionDate] = '';
     project.fields[FIELD.needsHumanSince] = '';

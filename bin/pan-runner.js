@@ -6104,6 +6104,7 @@ child.on('exit', (code, signal) => {
       const claimedBy = val(match, FIELD.claimedBy, '');
       const projectWorkerState = workerStateOf(match);
       const projectClaimGeneration = val(match, FIELD.claimGeneration, '');
+      const projectResourceSemantics = val(match, FIELD.resourceSemantics, '');
 
       // Bind the root to the live Project item so a stale session-A root can never
       // act on the current session B: issue number, itemId, machine, session-id,
@@ -6124,6 +6125,7 @@ child.on('exit', (code, signal) => {
         );
       const releasedTerminalBound = (
         this.usesOutcomeLifecycle()
+        && projectResourceSemantics !== 'historical-provenance'
         && bindable
         && match.issue?.number === nameNumber
         && match.itemId === task.itemId
@@ -6138,6 +6140,7 @@ child.on('exit', (code, signal) => {
       );
       const journaledTerminalBound = (
         this.usesOutcomeLifecycle()
+        && projectResourceSemantics !== 'historical-provenance'
         && bindable
         && !!selectedAttempt
         && !!terminalReleaseJournal
@@ -6153,6 +6156,7 @@ child.on('exit', (code, signal) => {
       const terminalReleaseBound = releasedTerminalBound || journaledTerminalBound;
       const historicalTerminalProvenance = (
         this.usesOutcomeLifecycle()
+        && projectResourceSemantics === 'historical-provenance'
         && ['done', 'rejected'].includes(projectStatus)
         && projectWorkerState === 'stopped'
         && !claimedBy
@@ -6160,7 +6164,6 @@ child.on('exit', (code, signal) => {
         && !!projectMachine
         && !!projectSessionId
         && !!projectClaimGeneration
-        && !hasRecoveryEvidence
       );
       const sessionBound = terminalReleaseBound || (bindable
         && !historicalTerminalProvenance
@@ -6213,6 +6216,27 @@ child.on('exit', (code, signal) => {
         this.active.set(match.itemId, w);
         logErr(`#${number} reserving its working directory without adopting (${why}) (rehydrate)`);
       };
+
+      if (projectResourceSemantics === 'historical-provenance') {
+        if (!historicalTerminalProvenance || hasRecoveryEvidence || alive || attemptConflict) {
+          logErr(
+            `#${number} historical provenance conflicts with operational recovery evidence; ` +
+              `leaving it untouched for operator reconciliation (rehydrate)`,
+          );
+        } else {
+          log(`#${number} left migrated historical provenance untouched (rehydrate)`);
+        }
+        if (alive) reserveLiveOccupancy('historical provenance conflicts with a live launcher');
+        continue;
+      }
+      if (projectResourceSemantics && projectResourceSemantics !== 'held-affinity') {
+        logErr(
+          `#${number} has unsupported resource semantics ${JSON.stringify(projectResourceSemantics)}; ` +
+            `leaving it untouched for operator reconciliation (rehydrate)`,
+        );
+        if (alive) reserveLiveOccupancy('unsupported resource semantics');
+        continue;
+      }
 
       if (attemptConflict) {
         if (sessionBound) {

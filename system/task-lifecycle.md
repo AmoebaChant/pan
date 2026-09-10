@@ -167,10 +167,14 @@ the prior lifecycle as history. When `worker-state` is empty, `idle`, or
 `stopped`, `claimed-by`, `lease-until`, and `needs-human-since` are empty, and
 operator preflight confirms there is no live/uncertain launcher, pending result,
 checkpoint receipt, or terminal-release journal, that tuple is **historical
-provenance**, not workspace ownership. Migration and rollback preserve it.
+provenance**, not workspace ownership. Migration records
+`resource-semantics=historical-provenance`; migration and rollback preserve it.
 Runners and cleanup paths must not use terminal provenance as authority to
 adopt a session, finalize a result, or release a workspace. Any active,
-uncertain, partial, or contradictory evidence fails closed.
+uncertain, partial, or contradictory evidence — including a pending result,
+checkpoint receipt, or terminal-release journal beside that marker — fails
+closed for operator reconciliation. Unmarked journal-based interrupted
+terminal cleanup remains recoverable under the normal exact binding checks.
 
 On restart, the durable manifest, lock, process-start identity, generation, and
 live Project tuple are reconciled before adopting, finalizing, or launching.

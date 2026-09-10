@@ -9,6 +9,7 @@ import {
 import { completeItemFieldValues } from '../bin/pan-runner.js';
 import { CANONICAL_FIELDS } from '../bin/pan-project-schema.js';
 import {
+  applyLifecycleMigration,
   applyLifecycleRollback,
   planLifecycleMigration,
   planLifecycleRollback,
@@ -217,6 +218,7 @@ function fakeGitHubState() {
           machine: '',
           'session-id': '',
           'claim-generation': '',
+          'resource-semantics': '',
           'task-revision': '1',
         },
       };
@@ -732,6 +734,7 @@ test('terminal lifecycle migration closes the Issue and preserves historical pro
       assert.equal(state.item.fields.machine, 'machine-a');
       assert.equal(state.item.fields['session-id'], 'session-a');
       assert.equal(state.item.fields['claim-generation'], 'generation-a');
+      assert.equal(state.item.fields['resource-semantics'], 'historical-provenance');
       assert.equal(state.writes.at(-1), 'project:task-revision');
 });
 
@@ -764,9 +767,41 @@ test('durable deliberate hold migration preserves passive session evidence and s
       assert.equal(state.item.fields.machine, 'machine-a');
       assert.equal(state.item.fields['session-id'], 'session-a');
       assert.equal(state.item.fields['claim-generation'], 'generation-a');
+      assert.equal(state.item.fields['resource-semantics'], 'held-affinity');
       assert.equal(state.item.fields['claimed-by'], '');
       assert.equal(state.item.fields['lease-until'], '');
       assert.equal(state.issue.state, 'OPEN');
+});
+
+test('deliberate hold migration leaves an open checkpoint untouched for reconciliation', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = renderCurrentActionBlock({
+        status: 'deliberate-hold',
+        action: 'hold',
+        detail: 'Hold until the user deliberately resumes this outcome.',
+        revision: 1,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      });
+      state.item.fields.Status = 'blocked';
+      state.item.fields['next-action'] = '';
+      state.item.fields.owner = 'human';
+      state.item.fields['worker-state'] = 'checkpointed';
+      state.item.fields['needs-human-since'] = '2026-09-01T01:00:00Z';
+      state.item.fields.machine = 'machine-a';
+      state.item.fields['session-id'] = 'session-a';
+      state.item.fields['claim-generation'] = 'generation-a';
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleMigration((await store.list()).tasks);
+      assert.equal(plan.actions[0].action, 'requires-cutover-hold');
+      const before = state.writes.length;
+
+      const report = await applyLifecycleMigration(plan, store);
+
+      assert.equal(report.partial, true);
+      assert.equal(state.writes.length, before);
+      assert.equal(state.item.fields['needs-human-since'], '2026-09-01T01:00:00Z');
+      assert.equal(state.item.fields['resource-semantics'], '');
+      assert.equal(state.item.fields.Status, 'blocked');
 });
 
 test('lifecycle migration refuses playbook or Issue drift from its complete planned projection', async () => {
@@ -893,6 +928,7 @@ test('checked lifecycle rollback preserves terminal provenance without using it 
       state.item.fields.machine = 'machine-a';
       state.item.fields['session-id'] = 'session-a';
       state.item.fields['claim-generation'] = 'generation-a';
+      state.item.fields['resource-semantics'] = 'historical-provenance';
       state.item.fields['task-revision'] = '3';
       const { store } = await fakeStore(state);
       const plan = planLifecycleRollback((await store.list()).tasks);
@@ -906,6 +942,7 @@ test('checked lifecycle rollback preserves terminal provenance without using it 
       assert.equal(state.item.fields.machine, 'machine-a');
       assert.equal(state.item.fields['session-id'], 'session-a');
       assert.equal(state.item.fields['claim-generation'], 'generation-a');
+      assert.equal(state.item.fields['resource-semantics'], 'historical-provenance');
       assert.equal(state.item.fields['claimed-by'], '');
       assert.equal(state.item.fields['lease-until'], '');
 });

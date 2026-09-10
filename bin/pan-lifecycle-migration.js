@@ -72,6 +72,7 @@ function passiveWorkerState(task, fallback) {
 function safeTerminalProvenance(task, status = task.status) {
   if (!['done', 'rejected'].includes(status)) return false;
   if (!hasCompleteResourceTuple(task)) return false;
+  if (!['', 'historical-provenance'].includes(task.resourceSemantics || '')) return false;
   return (
     !hasActiveOrUncertainEvidence(task)
     && !task.needsHumanSince
@@ -83,6 +84,8 @@ function safeDeliberateHold(task, target) {
   if (target.status !== 'deliberate-hold' || !hasDurableHoldEvidence(task)) {
     return false;
   }
+  if (!['', 'held-affinity'].includes(task.resourceSemantics || '')) return false;
+  if (task.needsHumanSince) return false;
   if (hasActiveOrUncertainEvidence(task)) return false;
   if (!hasCompleteResourceTuple(task) && !hasEmptyResourceTuple(task)) return false;
   if (
@@ -280,6 +283,7 @@ function hasResourceEvidence(task) {
     resourceTuple(task).some(Boolean)
     || task.claimedBy
     || task.leaseUntil
+    || task.needsHumanSince
     || RETAINED_WORKER_STATES.has(task.workerState)
   );
 }
@@ -292,6 +296,22 @@ function invalidRuntimeReason(
   const tuple = resourceTuple(task);
   const tupleComplete = tuple.every(Boolean);
   const tupleEmpty = tuple.every((value) => !value);
+  const resourceSemantics = task.resourceSemantics || '';
+  if (!['', 'historical-provenance', 'held-affinity'].includes(resourceSemantics)) {
+    return 'resource-semantics is invalid';
+  }
+  if (
+    resourceSemantics === 'historical-provenance'
+    && !safeTerminalProvenance(task, status)
+  ) {
+    return 'historical provenance marker conflicts with the live task state';
+  }
+  if (
+    resourceSemantics === 'held-affinity'
+    && status !== 'deliberate-hold'
+  ) {
+    return 'held affinity marker conflicts with the live task state';
+  }
   if ((canonical || ['done', 'rejected'].includes(status)) && !tupleComplete && !tupleEmpty) {
     return 'machine, session-id, and claim-generation must be all present or all empty';
   }
@@ -356,6 +376,21 @@ function currentTupleComplete(task) {
   }
   const tuple = resourceTuple(task);
   if (tuple.some(Boolean) && !tuple.every(Boolean)) return false;
+  if (
+    tuple.every(Boolean)
+    && ['done', 'rejected'].includes(task.status)
+    && task.resourceSemantics !== 'historical-provenance'
+  ) {
+    return false;
+  }
+  if (
+    tuple.every(Boolean)
+    && task.status === 'deliberate-hold'
+    && task.resourceSemantics !== 'held-affinity'
+  ) {
+    return false;
+  }
+  if (tuple.every((value) => !value) && task.resourceSemantics) return false;
   if (invalidRuntimeReason(task)) return false;
   if (
     ['done', 'rejected'].includes(task.status)
@@ -395,6 +430,7 @@ function expectedProjection(task) {
     machine: task.machine,
     sessionId: task.sessionId,
     claimGeneration: task.claimGeneration,
+    resourceSemantics: task.resourceSemantics,
     revision: task.revision,
     issueState: task.issueState,
     issueStateReason: task.issueStateReason,
@@ -455,7 +491,11 @@ export function planLifecycleMigration(tasks, options = {}) {
         claimGeneration: task.claimGeneration,
         resourceSemantics: safeTerminalProvenance(task, target.status)
           ? 'historical-provenance'
-          : target.status === 'deliberate-hold' && passiveProvenance
+          : (
+            target.status === 'deliberate-hold'
+            && passiveProvenance
+            && hasCompleteResourceTuple(task)
+          )
             ? 'held-affinity'
             : '',
       },
@@ -615,6 +655,7 @@ export function planLifecycleRollback(tasks) {
         machine: task.machine,
         sessionId: task.sessionId,
         claimGeneration: task.claimGeneration,
+        resourceSemantics: task.resourceSemantics,
       },
     };
   });

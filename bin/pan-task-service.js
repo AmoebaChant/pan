@@ -166,6 +166,7 @@ export class DemoTaskStore {
       machine: '',
       sessionId: '',
       claimGeneration: '',
+      resourceSemantics: '',
       revision: 1,
       recurring: !!input.recurrence,
       updatedAt: new Date().toISOString(),

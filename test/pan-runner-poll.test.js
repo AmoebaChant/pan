@@ -259,6 +259,33 @@ test('active work suppresses only its exact Project item', async () => {
   );
 });
 
+test('persistent resource semantics cannot regain execution authority', async () => {
+  for (const resourceSemantics of ['historical-provenance', 'held-affinity']) {
+    const item = projectItem({ id: `marked-${resourceSemantics}`, number: 19 });
+    item.fields[FIELD.status] = 'ready-for-ai';
+    item.fields[FIELD.nextAction] = 'execute';
+    item.fields[FIELD.executionAuthorized] = 'yes';
+    item.fields[FIELD.dependencies] = '';
+    item.fields[FIELD.claimedBy] = '';
+    item.fields[FIELD.leaseUntil] = '';
+    item.fields[FIELD.machine] = '';
+    item.fields[FIELD.sessionId] = '';
+    item.fields[FIELD.claimGeneration] = '';
+    item.fields[FIELD.resourceSemantics] = resourceSemantics;
+    const { options } = pollOptions([item], {
+      cfg: {
+        identity: 'runner-a',
+        machine: 'machine-a',
+        lifecycleVersion: 2,
+      },
+    });
+
+    const result = await preparePoll([item], options);
+
+    assert.deepEqual(result.candidates, [], resourceSemantics);
+  }
+});
+
 test('terminal tasks have stale lease fields cleared and confirmed', async () => {
   const source = ['in-review', 'done', 'blocked'].map((status, index) => {
     const item = projectItem({
@@ -304,6 +331,31 @@ test('terminal cleanup does not touch work that became active on re-read', async
 
   assert.equal(writes, 0);
   assert.deepEqual(cleaned, []);
+});
+
+test('terminal lease cleanup never erases contradictory historical provenance evidence', async () => {
+  const source = projectItem({ id: 'historical-terminal', number: 24 });
+  source.fields[FIELD.status] = 'done';
+  source.fields[FIELD.workerState] = 'stopped';
+  source.fields[FIELD.resourceSemantics] = 'historical-provenance';
+  const originalClaimedBy = source.fields[FIELD.claimedBy];
+  const originalLeaseUntil = source.fields[FIELD.leaseUntil];
+  let writes = 0;
+  const warnings = [];
+
+  const cleaned = await cleanTerminalLeaseFields([source], {
+    readItem: async () => clone(source),
+    clearFields: async () => {
+      writes += 1;
+    },
+    warn: (message) => warnings.push(message),
+  });
+
+  assert.equal(writes, 0);
+  assert.deepEqual(cleaned, []);
+  assert.equal(source.fields[FIELD.claimedBy], originalClaimedBy);
+  assert.equal(source.fields[FIELD.leaseUntil], originalLeaseUntil);
+  assert.match(warnings[0], /operator reconciliation/);
 });
 
 test('stale local fixed and isolated tasks are resumable in the same poll', async () => {
