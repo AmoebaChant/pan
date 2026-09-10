@@ -404,22 +404,15 @@ function renderDetail(detail) {
       }),
       actionButton('Finish', 'finish', 'success', () => {
         if (!confirm('Mark the whole outcome complete?')) return null;
-        if (detail.recurring) {
-          const nextOccurrence = prompt('Next nominal occurrence (YYYY-MM-DD)');
-          if (!nextOccurrence) return null;
-          return { nextOccurrence, detail: 'Occurrence complete; one successor created or verified.' };
-        }
-        return { detail: 'Outcome explicitly completed.' };
+        return {
+          detail: detail.recurring
+            ? 'Occurrence complete; the cadence-derived successor was created or verified.'
+            : 'Outcome explicitly completed.',
+        };
       }),
       actionButton('Reject', 'reject', 'danger', () =>
         confirm('Reject this outcome as not planned?') ? { detail: 'Outcome explicitly rejected.' } : null),
     );
-    if (detail.machine || detail.sessionId || detail.claimGeneration) {
-      actionRow.append(actionButton('Release workspace', 'release-workspace', 'danger', () =>
-        confirm('Release this stopped/checkpointed workspace affinity? This may discard local resume convenience.')
-          ? { detail: 'Workspace affinity explicitly released.' }
-          : null));
-    }
   } else if (isTerminalStatus(detail.status)) {
     actions.append(node('p', 'muted', 'Terminal history is informational and not clearable.'));
   }
@@ -477,6 +470,7 @@ async function mutate(operation, payload = {}) {
         method: 'POST',
         body: JSON.stringify({
           revision: selectedDetail.revision,
+          projection: selectedDetail.projection,
           operation,
           ...payload,
         }),

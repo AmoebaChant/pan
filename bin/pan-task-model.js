@@ -192,7 +192,7 @@ export function derivePrimaryView(task, today, recentSince = null) {
   const status = task.status;
   const date = task.nextActionDate || '';
   if (!isTerminalStatus(status) && date === today) return 'today';
-  if (status === 'ready-for-human') return 'needs-me';
+  if (status === 'ready-for-human' && (!date || date < today)) return 'needs-me';
   if (['ready-for-ai', 'ai-executing', 'external-waiting'].includes(status)) {
     return 'in-motion';
   }

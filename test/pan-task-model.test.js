@@ -80,6 +80,8 @@ test('primary views are exclusive while All tasks remains complete', () => {
   const cases = [
     [{ status: 'ready-for-human', nextActionDate: today }, 'today'],
     [{ status: 'ready-for-human', nextActionDate: '' }, 'needs-me'],
+    [{ status: 'ready-for-human', nextActionDate: '2026-09-08' }, 'needs-me'],
+    [{ status: 'ready-for-human', nextActionDate: '2026-09-10' }, 'all-only'],
     [{ status: 'ready-for-ai', nextActionDate: '' }, 'in-motion'],
     [{ status: 'ai-executing', nextActionDate: '' }, 'in-motion'],
     [{ status: 'external-waiting', nextActionDate: '' }, 'in-motion'],

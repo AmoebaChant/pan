@@ -142,6 +142,7 @@ test('task service refuses success-shaped writes against a live worker', async (
     },
     body: JSON.stringify({
       revision: detail.revision,
+      projection: detail.projection,
       operation: 'finish',
     }),
   });
@@ -156,6 +157,7 @@ test('task service refuses success-shaped writes against a live worker', async (
     },
     body: JSON.stringify({
       revision: detail.revision,
+      projection: detail.projection,
       operation: 'edit',
       changes: { title: 'Stale browser title edit' },
     }),
@@ -173,5 +175,7 @@ test('task UI exposes everyday views and honest worker-terminal language', async
   }
   assert.match(source, /worker terminal/i);
   assert.match(source, /Save checked edit/);
+  assert.doesNotMatch(source, /release-workspace|Release workspace/);
+  assert.doesNotMatch(source, /Next nominal occurrence/);
   assert.doesNotMatch(source, /gh auth|Authorization: Bearer|TODOIST_API_TOKEN/);
 });

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { parseLifecycleCli } from '../bin/pan-lifecycle-migrate.js';
 import {
   applyLifecycleMigration,
+  parseMigrationAuthorizations,
   planLifecycleMigration,
   translateLegacyTask,
 } from '../bin/pan-lifecycle-migration.js';
@@ -33,7 +34,14 @@ function legacy(overrides = {}) {
 test('legacy migration keeps stable outcomes and does not use dates as AI gates', () => {
   const target = translateLegacyTask(legacy({
     nextActionDate: '2030-01-01',
-  }));
+  }), {
+    authorization: {
+      itemId: 'item-1',
+      playbook: 'tool-development',
+      dependencies: '',
+      executionAuthorized: true,
+    },
+  });
   assert.deepEqual(target, {
     executionAuthorized: 'yes',
     dependencies: '',
@@ -42,6 +50,7 @@ test('legacy migration keeps stable outcomes and does not use dates as AI gates'
     nextAction: 'execute',
     detail: 'Run the previously authorized ready agent task.',
     requiresCutoverHold: false,
+    requiresAuthorization: false,
   });
 });
 
@@ -82,7 +91,12 @@ test('lifecycle apply continues independent items and reports partial state', as
   const plan = planLifecycleMigration([
     legacy({ itemId: 'one' }),
     legacy({ itemId: 'two', url: 'https://github.com/example/domain/issues/2' }),
-  ]);
+  ], {
+    authorizations: [
+      { itemId: 'one', playbook: 'tool-development', dependencies: '', executionAuthorized: true },
+      { itemId: 'two', playbook: 'tool-development', dependencies: '', executionAuthorized: true },
+    ],
+  });
   const visited = [];
   const store = {
     async migrateLegacyItem(action) {
@@ -98,24 +112,105 @@ test('lifecycle apply continues independent items and reports partial state', as
   assert.equal(report.results[1].outcome, 'migrated');
 });
 
-test('lifecycle apply CLI requires explicit binding and stopped-runner acknowledgement', () => {
+test('lifecycle apply CLI requires explicit authorization and writer exclusion acknowledgement', () => {
   assert.throws(
     () => parseLifecycleCli(['apply', '--config', '/config', '--checkout', '/pan']),
-    /confirm-runners-stopped/,
+    /authorization/,
   );
   assert.deepEqual(
     parseLifecycleCli([
       'apply',
       '--config', '/config',
       '--checkout', '/pan',
-      '--confirm-runners-stopped',
+      '--authorization', '/authorization.json',
+      '--confirm-writers-stopped',
     ]),
     {
       help: false,
       command: 'apply',
       config: '/config',
       checkout: '/pan',
+      authorization: '/authorization.json',
       report: undefined,
     },
+  );
+});
+
+test('legacy agent work is not authorized without exact item, playbook, and dependency approval', () => {
+  const task = legacy({ dependencies: 'Wait for #2' });
+  const plan = planLifecycleMigration([task], {
+    authorizations: [{
+      itemId: task.itemId,
+      playbook: task.playbook,
+      dependencies: '',
+      executionAuthorized: true,
+    }],
+  });
+  assert.equal(plan.actions[0].action, 'requires-authorization');
+  assert.equal(plan.actions[0].target.executionAuthorized, 'no');
+});
+
+test('migration authorization files reject incomplete or duplicate approvals', () => {
+  assert.throws(
+    () => parseMigrationAuthorizations({ format: 'wrong', version: 1, items: [] }),
+    /not a Pan lifecycle/,
+  );
+  assert.throws(
+    () => parseMigrationAuthorizations({
+      format: 'pan-lifecycle-migration-authorization',
+      version: 1,
+      items: [
+        { itemId: 'one', playbook: 'pb', dependencies: '', executionAuthorized: true },
+        { itemId: 'one', playbook: 'pb', dependencies: '', executionAuthorized: true },
+      ],
+    }),
+    /duplicate/,
+  );
+});
+
+test('partial current tuples are repaired and retained paused sessions require cutover hold', () => {
+  const partial = legacy({
+    status: 'ready-for-human',
+    nextAction: 'approve',
+    legacyOwner: 'human',
+    executionAuthorized: 'no',
+    workerState: 'idle',
+    revision: 4,
+    currentActionStatus: 'ready-for-human',
+    currentActionAction: 'approve',
+    currentActionRevision: 3,
+  });
+  assert.equal(planLifecycleMigration([partial]).actions[0].action, 'repair-current');
+
+  const paused = {
+    ...partial,
+    status: 'ready-for-ai',
+    nextAction: 'execute',
+    executionAuthorized: 'yes',
+    workerState: 'paused',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: 'generation-a',
+    currentActionStatus: 'ready-for-ai',
+    currentActionAction: 'execute',
+    currentActionRevision: 4,
+  };
+  assert.equal(planLifecycleMigration([paused]).actions[0].action, 'requires-cutover-hold');
+
+  const terminalButRunning = {
+    ...partial,
+    status: 'done',
+    nextAction: 'none',
+    workerState: 'running',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: 'generation-a',
+    currentActionStatus: 'done',
+    currentActionAction: 'none',
+    currentActionRevision: 4,
+  };
+  assert.equal(
+    planLifecycleMigration([terminalButRunning]).actions[0].action,
+    'requires-cutover-hold',
   );
 });

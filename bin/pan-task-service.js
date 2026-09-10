@@ -88,6 +88,9 @@ function clone(value) {
 export class DemoTaskStore {
   constructor() {
     this.state = demoTasks();
+    for (const task of this.state.tasks) {
+      task.projection = `demo:${task.id}:${task.revision}`;
+    }
     this.details = new Map(this.state.tasks.map((task) => [
       task.id,
       {
@@ -167,6 +170,7 @@ export class DemoTaskStore {
       recurring: !!input.recurrence,
       updatedAt: new Date().toISOString(),
       overdue: false,
+      projection: `demo:${id}:1`,
     };
     this.state.tasks.push(task);
     this.details.set(id, {
@@ -183,6 +187,9 @@ export class DemoTaskStore {
     if (!task) throw Object.assign(new Error('task not found'), { statusCode: 404 });
     if (Number(input.revision) !== task.revision) {
       throw Object.assign(new Error('stale task revision'), { statusCode: 409 });
+    }
+    if (input.projection !== task.projection) {
+      throw Object.assign(new Error('stale task projection'), { statusCode: 409 });
     }
     if (['starting', 'running', 'waiting-human', 'uncertain'].includes(task.workerState)) {
       throw Object.assign(new Error('fixture worker must be continued in its terminal'), { statusCode: 409 });
@@ -214,11 +221,6 @@ export class DemoTaskStore {
       task.workerState = 'stopped';
     } else if (operation === 'defer') {
       task.nextActionDate = input.date || '';
-    } else if (operation === 'release-workspace') {
-      task.machine = '';
-      task.sessionId = '';
-      task.claimGeneration = '';
-      task.workerState = 'idle';
     } else if (operation === 'edit') {
       const changes = input.changes ?? {};
       for (const [key, value] of Object.entries(changes)) {
@@ -233,6 +235,7 @@ export class DemoTaskStore {
       || input.changes?.currentActionDetail
       || task.nextActionDetail;
     task.revision += 1;
+    task.projection = `demo:${task.id}:${task.revision}`;
     task.updatedAt = new Date().toISOString();
     task.overdue = !isTerminalStatus(task.status)
       && !!task.nextActionDate

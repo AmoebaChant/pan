@@ -137,7 +137,10 @@ import {
 } from './pan-runner-runtime.js';
 import {
   isHumanAction,
+  parseCurrentActionBlock,
   parseRevision,
+  transitionComment,
+  transitionMarker,
 } from './pan-task-model.js';
 
 // ---------------------------------------------------------------------------
@@ -157,6 +160,8 @@ const FINALIZATION_RETRY_BASE_MS = 5000;
 const LEGACY_OCCUPANCY_DIR = 'legacy-launcher-occupancy';
 const RESULT_CONSUMED_FILE = 'result-consumed.json';
 const RESULT_CONSUMED_VERSION = 1;
+const CHECKPOINT_RECEIPT_FILE = 'checkpoint-consumed.json';
+const CHECKPOINT_RECEIPT_VERSION = 2;
 
 function resultDigest(resultBytes) {
   return createHash('sha256').update(resultBytes).digest('hex');
@@ -192,6 +197,64 @@ async function resultIsConsumed(attempt) {
     );
   } catch {
     return false;
+  }
+}
+
+function checkpointReceiptMatches(attempt, receipt) {
+  const metadata = attempt?.attempt;
+  return !!(
+    metadata
+    && receipt
+    && receipt.panRunnerCheckpoint === true
+    && receipt.version === CHECKPOINT_RECEIPT_VERSION
+    && ['prepared', 'stopped', 'released'].includes(receipt.phase)
+    && receipt.launchId === attempt.launchId
+    && receipt.sessionId === metadata.sessionId
+    && receipt.itemId === metadata.itemId
+    && receipt.number === metadata.number
+    && receipt.claimGeneration === metadata.claimGeneration
+    && isHumanAction(receipt.action)
+    && receipt.action !== 'act'
+    && typeof receipt.detail === 'string'
+    && receipt.detail.trim()
+    && typeof receipt.since === 'string'
+    && !Number.isNaN(Date.parse(receipt.since))
+  );
+}
+
+async function readCheckpointReceipt(attempt) {
+  const receiptPath = path.join(attempt.attemptDir, CHECKPOINT_RECEIPT_FILE);
+  if (!existsSync(receiptPath)) return { present: false, receipt: null, valid: true };
+  try {
+    let receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+    if (
+      receipt?.panRunnerCheckpoint === true
+      && receipt.version === 1
+      && receipt.launchId === attempt.launchId
+      && receipt.sessionId === attempt.attempt?.sessionId
+      && receipt.claimGeneration === attempt.attempt?.claimGeneration
+      && isHumanAction(receipt.action)
+      && receipt.action !== 'act'
+      && typeof receipt.detail === 'string'
+      && receipt.detail.trim()
+      && typeof receipt.since === 'string'
+      && !Number.isNaN(Date.parse(receipt.since))
+    ) {
+      receipt = {
+        ...receipt,
+        version: CHECKPOINT_RECEIPT_VERSION,
+        phase: 'released',
+        itemId: attempt.attempt.itemId,
+        number: attempt.attempt.number,
+      };
+    }
+    return {
+      present: true,
+      receipt,
+      valid: checkpointReceiptMatches(attempt, receipt),
+    };
+  } catch {
+    return { present: true, receipt: null, valid: false };
   }
 }
 
@@ -765,18 +828,24 @@ function validateProjectSchema(meta) {
 const ITEM_FRAGMENT = `
   id
   content{ __typename ... on Issue { number title body url repository { nameWithOwner } } }
-  fieldValues(first:50){ nodes{
-    __typename
-    ... on ProjectV2ItemFieldTextValue { text field{ ... on ProjectV2FieldCommon { name } } }
-    ... on ProjectV2ItemFieldSingleSelectValue { name field{ ... on ProjectV2FieldCommon { name } } }
-    ... on ProjectV2ItemFieldDateValue { date field{ ... on ProjectV2FieldCommon { name } } }
-  } }`;
+  fieldValues(first:100){
+    nodes{
+      __typename
+      ... on ProjectV2ItemFieldTextValue { text field{ ... on ProjectV2FieldCommon { name } } }
+      ... on ProjectV2ItemFieldSingleSelectValue { name field{ ... on ProjectV2FieldCommon { name } } }
+      ... on ProjectV2ItemFieldDateValue { date field{ ... on ProjectV2FieldCommon { name } } }
+    }
+    pageInfo{ hasNextPage endCursor }
+  }`;
 
 function parseItemNode(node) {
   const fields = {};
   for (const fv of node.fieldValues?.nodes || []) {
     const name = fv.field?.name;
     if (!name) continue;
+    if (Object.hasOwn(fields, name)) {
+      throw new Error(`Project item returned duplicate values for field "${name}"`);
+    }
     if (typeof fv.text === 'string') fields[name] = fv.text;
     else if (typeof fv.name === 'string') fields[name] = fv.name;
     else if (typeof fv.date === 'string') fields[name] = fv.date;
@@ -794,6 +863,48 @@ function parseItemNode(node) {
       }
     : null;
   return { itemId: node.id, issue, fields };
+}
+
+export async function completeItemFieldValues(node, runJson = ghJson) {
+  const nodes = [...(node.fieldValues?.nodes ?? [])];
+  let cursor = node.fieldValues?.pageInfo?.hasNextPage
+    ? node.fieldValues.pageInfo.endCursor
+    : null;
+  const seen = new Set();
+  const query = `query($id:ID!,$cursor:String){
+    node(id:$id){
+      ... on ProjectV2Item {
+        fieldValues(first:100,after:$cursor){
+          nodes{
+            __typename
+            ... on ProjectV2ItemFieldTextValue { text field{ ... on ProjectV2FieldCommon { name } } }
+            ... on ProjectV2ItemFieldSingleSelectValue { name field{ ... on ProjectV2FieldCommon { name } } }
+            ... on ProjectV2ItemFieldDateValue { date field{ ... on ProjectV2FieldCommon { name } } }
+          }
+          pageInfo{ hasNextPage endCursor }
+        }
+      }
+    }
+  }`;
+  while (cursor) {
+    if (seen.has(cursor)) throw new Error(`Project item ${node.id} repeated a field-value cursor`);
+    seen.add(cursor);
+    const data = await runJson([
+      'api', 'graphql', '-f', `query=${query}`,
+      '-f', `id=${node.id}`, '-f', `cursor=${cursor}`,
+    ]);
+    const connection = data.data?.node?.fieldValues;
+    if (!connection) throw new Error(`Project item ${node.id} field values were unreadable`);
+    nodes.push(...(connection.nodes ?? []));
+    cursor = connection.pageInfo?.hasNextPage ? connection.pageInfo.endCursor : null;
+  }
+  return {
+    ...node,
+    fieldValues: {
+      nodes,
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  };
 }
 
 /** Read the FULL set of Project items via cursor pagination. */
@@ -818,7 +929,9 @@ async function readAllItems(cfg, meta) {
     if (cursor) args.push('-f', `cursor=${cursor}`);
     const data = await ghJson(args);
     const conn = data.data[meta.ownerType].projectV2.items;
-    for (const node of conn.nodes) items.push(parseItemNode(node));
+    for (const node of conn.nodes) {
+      items.push(parseItemNode(await completeItemFieldValues(node)));
+    }
     if (!conn.pageInfo.hasNextPage) break;
     cursor = conn.pageInfo.endCursor;
   }
@@ -830,7 +943,7 @@ async function readItemById(itemId) {
   const query = `query($id:ID!){ node(id:$id){ ... on ProjectV2Item { ${ITEM_FRAGMENT} } } }`;
   const data = await ghJson(['api', 'graphql', '-f', `query=${query}`, '-f', `id=${itemId}`]);
   const node = data.data.node;
-  return node ? parseItemNode(node) : null;
+  return node ? parseItemNode(await completeItemFieldValues(node)) : null;
 }
 
 /** Read the complete live Issue context workers need to act on current intent. */
@@ -1455,7 +1568,8 @@ export class Runner {
         const occupied = new Set(occupiedSlotsForPlaybook(occupiedByPlaybook, pb));
         if (
           this.usesOutcomeLifecycle()
-          && statusOf(it) === 'ai-executing'
+          && statusOf(it) === 'ready-for-ai'
+          && val(it, FIELD.nextAction, '') === 'execute'
           && workerStateOf(it) === 'paused'
         ) {
           const ownSlot = splitAffinity(val(it, FIELD.machine, '')).slot;
@@ -1660,7 +1774,11 @@ export class Runner {
     const previousWorkerState = workerStateOf(fresh);
     const newLifecycle = this.usesOutcomeLifecycle();
     const resuming = newLifecycle
-      ? previousStatus === 'ai-executing' && previousWorkerState === 'paused'
+      ? (
+          previousStatus === 'ready-for-ai'
+          && val(fresh, FIELD.nextAction, '') === 'execute'
+          && previousWorkerState === 'paused'
+        )
       : previousStatus === 'paused';
     if (newLifecycle) {
       const freshStart = (
@@ -1679,6 +1797,17 @@ export class Runner {
       : null;
     const recordedSessionId = val(fresh, FIELD.sessionId, '');
     const recordedMachine = val(fresh, FIELD.machine, '');
+    const recordedClaimGeneration = val(fresh, FIELD.claimGeneration, '');
+    const hasRetainedAffinity = !!(
+      recordedSessionId
+      || recordedMachine
+      || recordedClaimGeneration
+    );
+    if (newLifecycle && hasRetainedAffinity && !resuming) {
+      throw new Error(
+        `cannot start #${number}: retained workspace affinity is not an explicit ready-for-ai/execute resume`,
+      );
+    }
     if (recordedSessionId) {
       if (!isValidSessionId(recordedSessionId)) {
         throw new Error(`cannot resume #${number}: recorded session-id is not a valid Pan session id`);
@@ -1688,6 +1817,9 @@ export class Runner {
       }
     } else if (resuming) {
       throw new Error(`cannot resume #${number}: recorded session or machine is missing/mismatched`);
+    }
+    if (newLifecycle && resuming && !recordedClaimGeneration) {
+      throw new Error(`cannot resume #${number}: recorded claim-generation is missing`);
     }
     const pb = val(fresh, FIELD.playbook, '');
     if (!this.playbooks.has(pb)) return false;
@@ -1812,7 +1944,9 @@ export class Runner {
     // slot-pooled work which slot); unlike the lease it is not cleared on pause,
     // so a stopped task can be resumed on the same machine and slot.
     const leaseWritten = this.leaseTimestamp();
-    const claimGeneration = newLifecycle ? randomUUID() : null;
+    const claimGeneration = newLifecycle
+      ? (resuming ? recordedClaimGeneration : randomUUID())
+      : null;
     try {
       await this.deps.setTextField(this.cfg, this.meta, item.itemId, FIELD.machine, machineValue);
       if (newSession) {
@@ -2147,7 +2281,7 @@ export class Runner {
     const recordedSessionId = val(item, FIELD.sessionId, '');
     const recordedMachine = val(item, FIELD.machine, '');
     const paused = this.usesOutcomeLifecycle()
-      ? previousStatus === 'ai-executing' && workerStateOf(item) === 'paused'
+      ? previousStatus === 'ready-for-ai' && workerStateOf(item) === 'paused'
       : previousStatus === 'paused';
     const resuming = !!recordedSessionId;
     // Issue numbers and session ids are interpolated into the session root's
@@ -2168,6 +2302,13 @@ export class Runner {
     }
     if (paused && !resuming) {
       throw new Error(`cannot resume #${number}: recorded session or machine is missing/mismatched`);
+    }
+    if (
+      this.usesOutcomeLifecycle()
+      && resuming
+      && !val(item, FIELD.claimGeneration, '')
+    ) {
+      throw new Error(`cannot resume #${number}: recorded claim-generation is missing`);
     }
     const sessionId = resuming ? recordedSessionId : randomUUID();
 
@@ -2344,6 +2485,32 @@ export class Runner {
         (attempt) => !recoveredUncertain.includes(attempt),
       )
       : existingAttempts.uncertain;
+
+    if (this.usesOutcomeLifecycle() && resuming && existingAttempts.currentLaunchId) {
+      const priorCurrent = existingAttempts.attempts.find(
+        (attempt) => attempt.launchId === existingAttempts.currentLaunchId,
+      );
+      if (
+        !priorCurrent
+        || priorCurrent.attempt?.sessionId !== recordedSessionId
+        || priorCurrent.attempt?.machine !== this.cfg.machine
+        || (priorCurrent.attempt?.slot ?? null) !== (workerSlot ?? null)
+        || priorCurrent.attempt?.claimGeneration !== val(item, FIELD.claimGeneration, '')
+      ) {
+        this.registerAttemptConflict(
+          item,
+          playbookName,
+          sessionRoot,
+          workingDir,
+          isolated,
+          workerSlot,
+          sessionId,
+          existingAttempts,
+          'the retained session/machine/slot/generation tuple does not match its current attempt',
+        );
+        return;
+      }
+    }
 
     if (recoveredAttempt) {
       const recoveryBlocked = (
@@ -3644,6 +3811,62 @@ child.on('exit', (code, signal) => {
       && val(fresh, FIELD.nextAction, '') === nextAction
       && (!currentClaimedBy || currentClaimedBy === this.cfg.identity)
     );
+    const releasedTerminal = (
+      outcome === 'done'
+      && partiallyFinalized
+      && workerStateOf(fresh) === 'stopped'
+      && !val(fresh, FIELD.needsHumanSince, '')
+      && !val(fresh, FIELD.nextActionDate, '')
+      && !currentClaimedBy
+      && !val(fresh, FIELD.leaseUntil, '')
+      && !val(fresh, FIELD.machine, '')
+      && !val(fresh, FIELD.sessionId, '')
+      && !val(fresh, FIELD.claimGeneration, '')
+    );
+    if (releasedTerminal) {
+      const revision = parseRevision(val(fresh, FIELD.taskRevision, ''));
+      const block = parseCurrentActionBlock(fresh.issue?.body ?? '');
+      if (
+        !block
+        || block.revision !== revision
+        || block.status !== status
+        || block.action !== nextAction
+        || block.detail !== (result.details || result.summary)
+      ) {
+        throw new Error('released terminal result does not have a complete matching action projection');
+      }
+      await this.deps.ensureIssueClosed(
+        this.deps.gh,
+        this.issueRepoOf(w),
+        w.issueNumber,
+      );
+      let resultComment = `✅ Worker finished (${outcome}): ${result.summary}`;
+      if (result.details) resultComment += `\n\n${result.details}`;
+      await this.deps.ensureIssueComment(
+        this.deps.gh,
+        this.issueRepoOf(w),
+        w.issueNumber,
+        `<!-- pan-result:${w.sessionId}:${w.claimGeneration} -->`,
+        resultComment,
+      );
+      await this.deps.ensureIssueComment(
+        this.deps.gh,
+        this.issueRepoOf(w),
+        w.issueNumber,
+        transitionMarker(revision),
+        transitionComment({
+          revision,
+          fromStatus: status,
+          fromAction: nextAction,
+          toStatus: status,
+          toAction: nextAction,
+          detail: result.details || result.summary,
+          actor: this.cfg.identity,
+          claimGeneration: w.claimGeneration,
+        }),
+      );
+      return this.finishFinalization(w, status, resultPath, resultBytes);
+    }
     if (
       (!activeOwned && !partiallyFinalized)
       || !w.claimGeneration
@@ -3656,117 +3879,256 @@ child.on('exit', (code, signal) => {
       return true;
     }
 
-    if (partiallyFinalized) {
-      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
-      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
-      return this.finishFinalization(w, status, resultPath, resultBytes);
-    }
-
-    const expectedRevision = parseRevision(val(fresh, FIELD.taskRevision, ''));
-    const nextRevision = expectedRevision + 1;
     const detail = result.details || result.summary;
     const needsHumanSince = outcome === 'needs-human' ? new Date().toISOString() : '';
     const workerState = outcome === 'done' ? 'stopped' : 'checkpointed';
 
-    let comment = `✅ Worker finished (${outcome}): ${result.summary}`;
-    if (result.details) comment += `\n\n${result.details}`;
+    await this.repairOutcomeFinalization(w, fresh, {
+      outcome,
+      status,
+      nextAction,
+      detail,
+      needsHumanSince,
+      workerState,
+      partiallyFinalized,
+      summary: result.summary,
+      resultDetails: result.details,
+    });
+    return this.finishFinalization(w, status, resultPath, resultBytes);
+  }
+
+  async repairOutcomeFinalization(w, initial, {
+    outcome,
+    status,
+    nextAction,
+    detail,
+    needsHumanSince,
+    workerState,
+    partiallyFinalized,
+    summary,
+    resultDetails,
+  }) {
+    let fresh = initial;
+    const originalStatus = statusOf(fresh);
+    const originalAction = val(fresh, FIELD.nextAction, '');
+    let resultComment = `✅ Worker finished (${outcome}): ${summary}`;
+    if (resultDetails) resultComment += `\n\n${resultDetails}`;
     await this.deps.ensureIssueComment(
       this.deps.gh,
       this.issueRepoOf(w),
       w.issueNumber,
       `<!-- pan-result:${w.sessionId}:${w.claimGeneration} -->`,
-      comment,
+      resultComment,
     );
 
     if (outcome === 'done') {
       if (val(fresh, FIELD.nextActionDate, '')) {
-        await this.deps.setDateField(
-          this.cfg,
-          this.meta,
-          w.itemId,
-          FIELD.nextActionDate,
-          '',
-        );
-        const dateCleared = await this.deps.readItemById(w.itemId);
-        if (!dateCleared || val(dateCleared, FIELD.nextActionDate, '')) {
-          throw new Error('GitHub did not confirm next-action-date cleanup before completion');
-        }
+        await this.deps.setDateField(this.cfg, this.meta, w.itemId, FIELD.nextActionDate, '');
+      }
+      const dateCleared = await this.deps.readItemById(w.itemId);
+      if (!dateCleared || val(dateCleared, FIELD.nextActionDate, '')) {
+        throw new Error('GitHub did not confirm next-action-date cleanup before completion');
       }
       await this.deps.ensureIssueClosed(
         this.deps.gh,
         this.issueRepoOf(w),
         w.issueNumber,
       );
+      fresh = dateCleared;
     }
 
-    await this.deps.setSelectField(
-      this.cfg,
-      this.meta,
-      w.itemId,
-      FIELD.nextAction,
-      nextAction,
-    );
-    await this.deps.setSelectField(
-      this.cfg,
-      this.meta,
-      w.itemId,
-      FIELD.workerState,
-      workerState,
-    );
-    await this.deps.setTextField(
-      this.cfg,
-      this.meta,
-      w.itemId,
-      FIELD.needsHumanSince,
-      needsHumanSince,
-    );
-    await this.deps.setSelectField(
-      this.cfg,
-      this.meta,
-      w.itemId,
-      FIELD.status,
-      status,
-    );
-    await this.deps.updateIssueCurrentAction(
-      this.deps.gh,
-      this.issueRepoOf(w),
-      w.issueNumber,
-      {
-        expectedRevision,
-        revision: nextRevision,
+    if (val(fresh, FIELD.nextAction, '') !== nextAction) {
+      await this.deps.setSelectField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.nextAction,
+        nextAction,
+      );
+    }
+    if (workerStateOf(fresh) !== workerState) {
+      await this.deps.setSelectField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.workerState,
+        workerState,
+      );
+    }
+    if (val(fresh, FIELD.needsHumanSince, '') !== needsHumanSince) {
+      await this.deps.setTextField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.needsHumanSince,
+        needsHumanSince,
+      );
+    }
+    if (statusOf(fresh) !== status) {
+      await this.deps.setSelectField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.status,
         status,
-        action: nextAction,
-        detail,
-        actor: this.cfg.identity,
-        claimGeneration: w.claimGeneration,
-        fromStatus: statusOf(fresh),
-        fromAction: val(fresh, FIELD.nextAction, ''),
-      },
+      );
+    }
+
+    fresh = await this.deps.readItemById(w.itemId);
+    if (
+      !fresh
+      || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
+      || val(fresh, FIELD.sessionId, '') !== w.sessionId
+      || !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
+    ) {
+      throw new Error('result finalization lost the expected session/resource ownership tuple');
+    }
+
+    const projectRevision = parseRevision(val(fresh, FIELD.taskRevision, ''));
+    const block = parseCurrentActionBlock(fresh.issue?.body ?? '');
+    let finalRevision;
+    const blockMatches = (
+      block
+      && block.status === status
+      && block.action === nextAction
+      && block.detail === detail
     );
-    await this.deps.setTextField(
-      this.cfg,
-      this.meta,
-      w.itemId,
-      FIELD.taskRevision,
-      String(nextRevision),
-    );
+    if (blockMatches && block.revision === projectRevision) {
+      finalRevision = projectRevision;
+      await this.deps.ensureIssueComment(
+        this.deps.gh,
+        this.issueRepoOf(w),
+        w.issueNumber,
+        transitionMarker(finalRevision),
+        transitionComment({
+          revision: finalRevision,
+          fromStatus: originalStatus,
+          fromAction: originalAction,
+          toStatus: status,
+          toAction: nextAction,
+          detail,
+          actor: this.cfg.identity,
+          claimGeneration: w.claimGeneration,
+        }),
+      );
+    } else if (blockMatches && block.revision === projectRevision + 1) {
+      finalRevision = block.revision;
+      await this.deps.ensureIssueComment(
+        this.deps.gh,
+        this.issueRepoOf(w),
+        w.issueNumber,
+        transitionMarker(finalRevision),
+        transitionComment({
+          revision: finalRevision,
+          fromStatus: originalStatus,
+          fromAction: originalAction,
+          toStatus: status,
+          toAction: nextAction,
+          detail,
+          actor: this.cfg.identity,
+          claimGeneration: w.claimGeneration,
+        }),
+      );
+      await this.deps.setTextField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.taskRevision,
+        String(finalRevision),
+      );
+    } else {
+      if (block && block.revision > projectRevision) {
+        throw new Error(
+          `Issue current-next-action revision ${block.revision} is ahead of Project revision ` +
+            `${projectRevision} without a matching finalization`,
+        );
+      }
+      finalRevision = projectRevision + 1;
+      await this.deps.updateIssueCurrentAction(
+        this.deps.gh,
+        this.issueRepoOf(w),
+        w.issueNumber,
+        {
+          expectedRevision: block?.revision ?? projectRevision,
+          revision: finalRevision,
+          status,
+          action: nextAction,
+          detail,
+          actor: this.cfg.identity,
+          claimGeneration: w.claimGeneration,
+          fromStatus: originalStatus,
+          fromAction: originalAction,
+        },
+      );
+      await this.deps.setTextField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.taskRevision,
+        String(finalRevision),
+      );
+    }
+
     await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
     await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
 
     const confirmed = await this.deps.readItemById(w.itemId);
+    const confirmedBlock = confirmed
+      ? parseCurrentActionBlock(confirmed.issue?.body ?? '')
+      : null;
     if (
       !confirmed
       || statusOf(confirmed) !== status
       || val(confirmed, FIELD.nextAction, '') !== nextAction
       || workerStateOf(confirmed) !== workerState
-      || parseRevision(val(confirmed, FIELD.taskRevision, '')) !== nextRevision
+      || val(confirmed, FIELD.needsHumanSince, '') !== needsHumanSince
+      || parseRevision(val(confirmed, FIELD.taskRevision, '')) !== finalRevision
+      || !confirmedBlock
+      || confirmedBlock.revision !== finalRevision
+      || confirmedBlock.status !== status
+      || confirmedBlock.action !== nextAction
+      || confirmedBlock.detail !== detail
       || val(confirmed, FIELD.claimedBy, '')
       || val(confirmed, FIELD.leaseUntil, '')
       || val(confirmed, FIELD.claimGeneration, '') !== w.claimGeneration
+      || val(confirmed, FIELD.sessionId, '') !== w.sessionId
+      || !affinityMatchesMachine(val(confirmed, FIELD.machine, ''), this.cfg.machine)
     ) {
-      throw new Error('GitHub did not confirm result finalization under the expected generation');
+      throw new Error(
+        `GitHub did not confirm ${partiallyFinalized ? 'repaired ' : ''}` +
+          'result finalization under the expected generation',
+      );
     }
-    return this.finishFinalization(w, status, resultPath, resultBytes);
+    if (outcome === 'done') {
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.machine, '');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.sessionId, '');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimGeneration, '');
+      const released = await this.deps.readItemById(w.itemId);
+      const releasedBlock = released
+        ? parseCurrentActionBlock(released.issue?.body ?? '')
+        : null;
+      if (
+        !released
+        || statusOf(released) !== status
+        || val(released, FIELD.nextAction, '') !== nextAction
+        || workerStateOf(released) !== workerState
+        || val(released, FIELD.nextActionDate, '')
+        || val(released, FIELD.needsHumanSince, '')
+        || val(released, FIELD.claimedBy, '')
+        || val(released, FIELD.leaseUntil, '')
+        || val(released, FIELD.machine, '')
+        || val(released, FIELD.sessionId, '')
+        || val(released, FIELD.claimGeneration, '')
+        || parseRevision(val(released, FIELD.taskRevision, '')) !== finalRevision
+        || !releasedBlock
+        || releasedBlock.revision !== finalRevision
+        || releasedBlock.status !== status
+        || releasedBlock.action !== nextAction
+        || releasedBlock.detail !== detail
+      ) {
+        throw new Error('GitHub did not confirm terminal resource release before receipt');
+      }
+    }
   }
 
   async finishFinalization(w, status, resultPath, resultBytes) {
@@ -3956,24 +4318,99 @@ child.on('exit', (code, signal) => {
 
   async releaseCheckpointWorker(w, checkpoint) {
     const fresh = await this.deps.readItemById(w.itemId);
+    const alreadyReleased = (
+      fresh
+      && statusOf(fresh) === 'ready-for-human'
+      && workerStateOf(fresh) === 'checkpointed'
+      && !val(fresh, FIELD.claimedBy, '')
+      && !val(fresh, FIELD.leaseUntil, '')
+    );
     if (
       !fresh
       || statusOf(fresh) !== 'ready-for-human'
-      || workerStateOf(fresh) !== 'waiting-human'
-      || val(fresh, FIELD.claimedBy, '') !== this.cfg.identity
+      || (!alreadyReleased && workerStateOf(fresh) !== 'waiting-human')
+      || (!alreadyReleased && val(fresh, FIELD.claimedBy, '') !== this.cfg.identity)
       || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
+      || val(fresh, FIELD.sessionId, '') !== w.sessionId
+      || !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
     ) {
       throw new Error('checkpoint release lost task or generation ownership');
     }
-    await this.deps.setSelectField(
-      this.cfg,
-      this.meta,
-      w.itemId,
-      FIELD.workerState,
-      'checkpointed',
-    );
-    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
-    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+    if (!w.attemptDir || !w.launchId) {
+      throw new Error('checkpoint release requires a durable launch attempt');
+    }
+    const receiptPath = path.join(w.attemptDir, CHECKPOINT_RECEIPT_FILE);
+    const checkpointReceipt = {
+      panRunnerCheckpoint: true,
+      version: CHECKPOINT_RECEIPT_VERSION,
+      phase: 'prepared',
+      launchId: w.launchId,
+      sessionId: w.sessionId,
+      itemId: w.itemId,
+      number: w.issueNumber,
+      claimGeneration: w.claimGeneration,
+      action: checkpoint.action,
+      detail: checkpoint.detail,
+      since: checkpoint.since,
+      preparedAt: checkpoint.preparedAt || new Date().toISOString(),
+    };
+    const existing = await readCheckpointReceipt({
+      launchId: w.launchId,
+      attemptDir: w.attemptDir,
+      attempt: {
+        sessionId: w.sessionId,
+        itemId: w.itemId,
+        number: w.issueNumber,
+        claimGeneration: w.claimGeneration,
+      },
+    });
+    if (existing.present && !existing.valid) {
+      throw new Error('checkpoint release receipt is unreadable or does not match the owned attempt');
+    }
+    if (
+      existing.present
+      && (
+        existing.receipt.action !== checkpointReceipt.action
+        || existing.receipt.detail !== checkpointReceipt.detail
+        || existing.receipt.since !== checkpointReceipt.since
+      )
+    ) {
+      throw new Error('checkpoint release receipt conflicts with the current checkpoint');
+    }
+    let receipt = existing.receipt ?? checkpointReceipt;
+    if (!existing.present) await atomicWriteJson(receiptPath, receipt);
+
+    const resultPath = path.join(w.panDir, 'result.json');
+    if (existsSync(resultPath)) {
+      throw new Error('checkpoint release stopped because an unprocessed result is present');
+    }
+    if (receipt.phase === 'prepared') {
+      await privateWriteFile(path.join(w.panDir, 'worker.stop'), '');
+      if (!(await this.confirmCheckpointWorkerStopped(w))) {
+        throw new Error('checkpoint release could not confirm that the owned launcher stopped');
+      }
+      if (existsSync(resultPath)) {
+        throw new Error('checkpoint release stopped because a result appeared while stopping');
+      }
+      receipt = {
+        ...receipt,
+        phase: 'stopped',
+        stoppedAt: new Date().toISOString(),
+      };
+      await atomicWriteJson(receiptPath, receipt);
+    }
+
+    if (!alreadyReleased) {
+      await this.deps.setSelectField(
+        this.cfg,
+        this.meta,
+        w.itemId,
+        FIELD.workerState,
+        'checkpointed',
+      );
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+    }
     const confirmed = await this.deps.readItemById(w.itemId);
     if (
       !confirmed
@@ -3982,24 +4419,43 @@ child.on('exit', (code, signal) => {
       || val(confirmed, FIELD.claimedBy, '')
       || val(confirmed, FIELD.leaseUntil, '')
       || val(confirmed, FIELD.claimGeneration, '') !== w.claimGeneration
+      || val(confirmed, FIELD.sessionId, '') !== w.sessionId
+      || !affinityMatchesMachine(val(confirmed, FIELD.machine, ''), this.cfg.machine)
     ) {
       throw new Error('GitHub did not confirm durable checkpoint release');
     }
-    await atomicWriteJson(path.join(w.attemptDir, 'checkpoint-consumed.json'), {
-      panRunnerCheckpoint: true,
-      version: 1,
-      launchId: w.launchId,
-      sessionId: w.sessionId,
-      claimGeneration: w.claimGeneration,
-      action: checkpoint.action,
-      detail: checkpoint.detail,
-      since: checkpoint.since,
-      releasedAt: new Date().toISOString(),
-    });
+    if (receipt.phase !== 'released') {
+      receipt = {
+        ...receipt,
+        phase: 'released',
+        releasedAt: new Date().toISOString(),
+      };
+      await atomicWriteJson(receiptPath, receipt);
+    }
     w.finished = true;
     this.active.delete(w.itemId);
-    await privateWriteFile(path.join(w.panDir, 'worker.stop'), '');
     log(`#${w.issueNumber} checkpointed; execution capacity released`);
+    return true;
+  }
+
+  async confirmCheckpointWorkerStopped(w) {
+    const deadline = Date.now() + DEFAULTS.workerStartGraceSeconds * 1000;
+    for (;;) {
+      const scan = await this.scanWorkerAttempts(w);
+      const owned = scan.attempts.find((attempt) => attempt.launchId === w.launchId);
+      const foreignLive = scan.live.filter((attempt) => attempt.launchId !== w.launchId);
+      if (
+        scan.currentLaunchId !== w.launchId
+        || !owned
+        || scan.uncertain.length
+        || foreignLive.length
+      ) {
+        throw new Error('checkpoint stop lost exclusive attempt ownership');
+      }
+      if (owned.status !== 'live') return true;
+      if (Date.now() >= deadline) return false;
+      await sleep(100);
+    }
   }
 
   /** Release a started task whose worker stopped so its session and workspace
@@ -5118,12 +5574,16 @@ child.on('exit', (code, signal) => {
       const foreignLive = attemptScan.live.filter(
         (attempt) => attempt.launchId !== attemptScan.currentLaunchId,
       );
+      const checkpointReceiptState = currentAttempt
+        ? await readCheckpointReceipt(currentAttempt)
+        : { present: false, receipt: null, valid: true };
       const attemptConflict = attemptScan.uncertain.length > 0
         || foreignLive.length > 0
         || (
           attemptScan.currentLaunchId != null
           && !currentAttempt
-        );
+        )
+        || !checkpointReceiptState.valid;
       const alive = !attemptConflict && currentAttempt?.status === 'live';
       const currentResultPath = currentAttempt
         ? path.join(currentAttempt.signalDir, 'result.json')
@@ -5136,6 +5596,7 @@ child.on('exit', (code, signal) => {
         && (
           alive
           || (currentHasResult && !currentResultConsumed)
+          || checkpointReceiptState.present
         )
         ? currentAttempt
         : null;
@@ -5168,6 +5629,7 @@ child.on('exit', (code, signal) => {
         owned,
         hasResult: !!selectedAttempt && existsSync(resultPath),
         currentResultConsumed,
+        checkpointReceipt: checkpointReceiptState.receipt,
         hasAnyResult,
         mtimeMs: st.mtimeMs,
       });
@@ -5202,6 +5664,7 @@ child.on('exit', (code, signal) => {
         selectedAttempt,
         owned,
         currentResultConsumed,
+        checkpointReceipt,
         hasAnyResult,
       } = workspace;
 
@@ -5278,14 +5741,28 @@ child.on('exit', (code, signal) => {
           !!projectClaimGeneration
           && selectedAttempt?.attempt?.claimGeneration === projectClaimGeneration
         );
-      const sessionBound = bindable
+      const releasedTerminalBound = (
+        this.usesOutcomeLifecycle()
+        && bindable
+        && match.issue?.number === nameNumber
+        && match.itemId === task.itemId
+        && projectStatus === 'done'
+        && projectWorkerState === 'stopped'
+        && !projectMachine
+        && !projectSessionId
+        && !projectClaimGeneration
+        && !claimedBy
+        && !val(match, FIELD.leaseUntil, '')
+        && !!selectedAttempt
+      );
+      const sessionBound = releasedTerminalBound || (bindable
         && match.issue?.number === nameNumber
         && match.itemId === task.itemId
         && projectSessionId === nameSessionId
         && affinityMatchesMachine(projectMachine, this.cfg.machine)
         && projectSlot === (launchSlot ?? null)
         && slotPathBound
-        && generationBound;
+        && generationBound);
 
       // A pending result is finalizable only when it is our finished worker:
       // session-bound with a lapsed lease (the surviving-claim check is in
@@ -5307,7 +5784,9 @@ child.on('exit', (code, signal) => {
         launchId: selectedAttempt?.launchId || null,
         isolated,
         slot: launchSlot,
-        sessionId: projectSessionId,
+        sessionId: releasedTerminalBound
+          ? selectedAttempt.attempt.sessionId
+          : projectSessionId,
         claimGeneration: selectedAttempt?.attempt?.claimGeneration || projectClaimGeneration,
         startedAt: Date.now(),
         lastRenew: 0, // force an immediate lease renewal
@@ -5433,6 +5912,55 @@ child.on('exit', (code, signal) => {
           }
           // finalize returned false (transient); fall through to liveness handling.
         }
+      }
+
+      // A checkpoint release receipt is a durable phase journal. If a crash
+      // happened after the receipt or stop signal but before the Project
+      // release, resume the same operation under the task lock. A result always
+      // takes precedence above, and an unreadable receipt made the attempt
+      // conflicting before this point.
+      if (
+        checkpointReceipt
+        && projectStatus === 'ready-for-human'
+        && ['waiting-human', 'checkpointed'].includes(projectWorkerState)
+      ) {
+        if (!sessionBound) {
+          logErr(
+            `#${number} checkpoint receipt does not bind to the current Project tuple; ` +
+              'leaving the workspace and Project state untouched',
+          );
+          if (alive) reserveLiveOccupancy('unbound checkpoint release');
+          continue;
+        }
+        try {
+          const released = await this.withGenerationMutationLock(
+            w,
+            'checkpoint release recovery',
+            () => this.releaseCheckpointWorker(w, checkpointReceipt),
+          );
+          if (released) continue;
+        } catch (error) {
+          logErr(`#${number} checkpoint release recovery failed: ${error.message}`);
+        }
+        if (alive) reserveLiveOccupancy('checkpoint release recovery pending');
+        continue;
+      }
+      if (checkpointReceipt && checkpointReceipt.phase !== 'released') {
+        logErr(
+          `#${number} has an incomplete checkpoint release whose Project outcome moved; ` +
+            'leaving the workspace and receipt untouched for operator recovery',
+        );
+        if (alive) reserveLiveOccupancy('incomplete checkpoint release with changed outcome');
+        continue;
+      }
+      if (checkpointReceipt && alive) {
+        try {
+          await privateWriteFile(path.join(w.panDir, 'worker.stop'), '');
+        } catch (error) {
+          logErr(`could not re-signal worker.stop for #${number}: ${error.message}`);
+        }
+        reserveLiveOccupancy('released checkpoint awaiting launcher exit');
+        continue;
       }
 
       // A live worker keeps its directory reserved so no duplicate launches. It

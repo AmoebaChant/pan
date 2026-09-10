@@ -1,4 +1,8 @@
-import { validLifecyclePair } from './pan-task-model.js';
+import {
+  parseRevision,
+  validLifecyclePair,
+  WORKER_STATES,
+} from './pan-task-model.js';
 
 function hasLiveLease(task, now) {
   if (!task.leaseUntil) return false;
@@ -6,7 +10,57 @@ function hasLiveLease(task, now) {
   return Number.isFinite(lease) && lease >= now;
 }
 
-export function translateLegacyTask(task, { now = Date.now() } = {}) {
+function authorizationMatches(task, authorization) {
+  return !!(
+    authorization
+    && authorization.executionAuthorized === true
+    && authorization.itemId === task.itemId
+    && typeof authorization.playbook === 'string'
+    && authorization.playbook
+    && authorization.playbook === task.playbook
+    && typeof authorization.dependencies === 'string'
+    && authorization.dependencies === (task.dependencies || '')
+  );
+}
+
+export function parseMigrationAuthorizations(document) {
+  if (
+    document?.format !== 'pan-lifecycle-migration-authorization'
+    || document.version !== 1
+    || !Array.isArray(document.items)
+  ) {
+    throw new Error('authorization file is not a Pan lifecycle migration authorization');
+  }
+  const seen = new Set();
+  return document.items.map((entry) => {
+    if (
+      !entry
+      || typeof entry.itemId !== 'string'
+      || !entry.itemId
+      || typeof entry.playbook !== 'string'
+      || !entry.playbook
+      || typeof entry.dependencies !== 'string'
+      || entry.executionAuthorized !== true
+    ) {
+      throw new Error('every migration authorization must name itemId, playbook, dependencies, and executionAuthorized=true');
+    }
+    if (seen.has(entry.itemId)) {
+      throw new Error(`duplicate migration authorization for ${entry.itemId}`);
+    }
+    seen.add(entry.itemId);
+    return {
+      itemId: entry.itemId,
+      playbook: entry.playbook,
+      dependencies: entry.dependencies,
+      executionAuthorized: true,
+    };
+  });
+}
+
+export function translateLegacyTask(task, {
+  now = Date.now(),
+  authorization = null,
+} = {}) {
   const owner = task.legacyOwner || 'unassigned';
   const status = task.status || 'untriaged';
   const base = {
@@ -43,11 +97,12 @@ export function translateLegacyTask(task, { now = Date.now() } = {}) {
   }
   if (owner === 'agent' && ['ready', 'in-progress', 'paused'].includes(status)) {
     const executing = status !== 'ready';
+    const explicitlyAuthorized = authorizationMatches(task, authorization);
     return {
       ...base,
       status: executing ? 'ai-executing' : 'ready-for-ai',
       nextAction: 'execute',
-      executionAuthorized: 'yes',
+      executionAuthorized: explicitlyAuthorized ? 'yes' : 'no',
       workerState: status === 'paused'
         ? 'paused'
         : status === 'in-progress'
@@ -59,7 +114,8 @@ export function translateLegacyTask(task, { now = Date.now() } = {}) {
       // Any legacy in-progress task may still have a live launcher even when
       // its lease is missing or stale. Operational cutover must inventory it;
       // additive migration never guesses that the workspace is free.
-      requiresCutoverHold: status === 'in-progress',
+      requiresCutoverHold: status === 'in-progress' || status === 'paused' || !!task.sessionId,
+      requiresAuthorization: !explicitlyAuthorized,
     };
   }
   if (status === 'needs-detail' || status === 'untriaged' || owner === 'unassigned') {
@@ -79,9 +135,97 @@ export function translateLegacyTask(task, { now = Date.now() } = {}) {
   };
 }
 
+function currentLifecycleTarget(task) {
+  const hasSession = !!(task.sessionId || task.machine || task.claimGeneration);
+  let workerState = ['done', 'rejected'].includes(task.status)
+    ? 'stopped'
+    : task.workerState;
+  if (!WORKER_STATES.includes(workerState)) {
+    if (task.status === 'done' || task.status === 'rejected') workerState = 'stopped';
+    else if (task.status === 'ai-executing') workerState = hasSession ? 'paused' : 'uncertain';
+    else if (task.status === 'ready-for-ai') workerState = hasSession ? 'paused' : 'idle';
+    else if (task.status === 'ready-for-human' && hasSession) workerState = 'checkpointed';
+    else workerState = 'idle';
+  }
+  return {
+    status: task.status,
+    nextAction: task.nextAction,
+    executionAuthorized: ['ready-for-ai', 'ai-executing'].includes(task.status) ? 'yes' : 'no',
+    dependencies: task.dependencies || '',
+    workerState,
+    detail: task.nextActionDetail
+      || (task.status === 'done'
+        ? 'Outcome complete.'
+        : task.status === 'rejected'
+          ? 'Outcome rejected.'
+          : 'Confirm the exact current next action.'),
+    requiresCutoverHold: hasSession && ['paused', 'checkpointed', 'uncertain'].includes(workerState),
+    requiresAuthorization: false,
+  };
+}
+
+function currentTupleComplete(task) {
+  if (!validLifecyclePair(task.status, task.nextAction)) return false;
+  let revision;
+  try {
+    revision = parseRevision(task.revision);
+  } catch {
+    return false;
+  }
+  if (revision < 1) return false;
+  if (
+    task.bodyConflict
+    || task.currentActionStatus !== task.status
+    || task.currentActionAction !== task.nextAction
+    || task.currentActionRevision !== revision
+  ) {
+    return false;
+  }
+  if (!WORKER_STATES.includes(task.workerState)) return false;
+  if (
+    ['ready-for-ai', 'ai-executing'].includes(task.status)
+      ? task.executionAuthorized !== 'yes'
+      : task.executionAuthorized !== 'no'
+  ) {
+    return false;
+  }
+  const tuple = [task.machine, task.sessionId, task.claimGeneration].map((value) => value || '');
+  if (tuple.some(Boolean) && !tuple.every(Boolean)) return false;
+  if (
+    ['done', 'rejected'].includes(task.status)
+    && (
+      task.nextActionDate
+      || task.claimedBy
+      || task.leaseUntil
+      || task.workerState !== 'stopped'
+      || task.issueState !== 'CLOSED'
+      || task.issueStateReason !== (task.status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function planLifecycleMigration(tasks, options = {}) {
+  const authorizations = new Map(
+    (options.authorizations ?? []).map((authorization) => [authorization.itemId, authorization]),
+  );
   const actions = tasks.map((task) => {
-    if (validLifecyclePair(task.status, task.nextAction)) {
+    const alreadyCurrent = validLifecyclePair(task.status, task.nextAction);
+    const target = alreadyCurrent
+      ? currentLifecycleTarget(task)
+      : translateLegacyTask(task, {
+        ...options,
+        authorization: authorizations.get(task.itemId),
+      });
+    const requiresCutoverHold = target.requiresCutoverHold
+      || (
+        !!task.sessionId
+        && ['starting', 'running', 'waiting-human', 'paused', 'checkpointed', 'uncertain']
+          .includes(task.workerState)
+      );
+    if (currentTupleComplete(task) && !requiresCutoverHold) {
       return {
         itemId: task.itemId,
         issueUrl: task.url,
@@ -89,18 +233,32 @@ export function planLifecycleMigration(tasks, options = {}) {
         revision: task.revision,
       };
     }
-    const target = translateLegacyTask(task, options);
+    const requiresAuthorization = target.requiresAuthorization;
     return {
       itemId: task.itemId,
       issueUrl: task.url,
-      action: target.requiresCutoverHold ? 'requires-cutover-hold' : 'migrate',
+      action: requiresCutoverHold
+        ? 'requires-cutover-hold'
+        : requiresAuthorization
+          ? 'requires-authorization'
+          : alreadyCurrent
+            ? 'repair-current'
+            : 'migrate',
       expected: {
         owner: task.legacyOwner || 'unassigned',
         status: task.status,
+        nextAction: task.nextAction,
+        workerState: task.workerState,
+        executionAuthorized: task.executionAuthorized,
+        dependencies: task.dependencies,
         claimedBy: task.claimedBy,
         leaseUntil: task.leaseUntil,
         machine: task.machine,
         sessionId: task.sessionId,
+        claimGeneration: task.claimGeneration,
+        revision: task.revision,
+        issueState: task.issueState,
+        issueStateReason: task.issueStateReason,
       },
       target,
       preserve: {
@@ -130,9 +288,13 @@ export async function applyLifecycleMigration(plan, store) {
   const results = [];
   let partial = false;
   for (const action of plan.actions) {
-    if (action.action === 'already-current' || action.action === 'requires-cutover-hold') {
+    if (
+      action.action === 'already-current'
+      || action.action === 'requires-cutover-hold'
+      || action.action === 'requires-authorization'
+    ) {
       results.push(action);
-      if (action.action === 'requires-cutover-hold') partial = true;
+      if (action.action !== 'already-current') partial = true;
       continue;
     }
     try {

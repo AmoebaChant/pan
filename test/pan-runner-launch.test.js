@@ -25,6 +25,7 @@ import {
   inspectProcess,
   scanAttempts,
 } from '../bin/pan-runner-runtime.js';
+import { renderCurrentActionBlock } from '../bin/pan-task-model.js';
 
 // These tests drive the real launchWorker / rehydrate path so they prove actual
 // path construction, not a stubbed launch. Only the GitHub boundary and the
@@ -1232,7 +1233,7 @@ function makeRehydrateRunnerRW(sb, items) {
 // carries no valid marker. `sessionId` defaults to a real minted UUID (the only
 // shape rehydrate treats as a canonical root) and is returned so the caller can
 // bind the matching Project item's session-id to it.
-function seedStateRoot(sb, { number, sessionId = randomUUID(), itemId, workingDir, isolated, alive, result = null, owned = true, machine = MACHINE, markerSessionId = sessionId, slot = null, playbook = 'fixed' }) {
+function seedStateRoot(sb, { number, sessionId = randomUUID(), itemId, workingDir, isolated, alive, result = null, owned = true, machine = MACHINE, markerSessionId = sessionId, slot = null, playbook = 'fixed', claimGeneration = null }) {
   const stateRoot = stateRootFor(sb, number, sessionId);
   const sessionPanDir = path.join(stateRoot, '.pan');
   mkdirSync(sessionPanDir, { recursive: true });
@@ -1275,6 +1276,7 @@ function seedStateRoot(sb, { number, sessionId = randomUUID(), itemId, workingDi
     isolated,
     workingDir: workingDir || stateRoot,
     slot,
+    claimGeneration,
     createdAt: new Date().toISOString(),
   }));
   writeFileSync(path.join(panDir, 'exit.json'), JSON.stringify({
@@ -1301,7 +1303,7 @@ function seedStateRoot(sb, { number, sessionId = randomUUID(), itemId, workingDi
   return { stateRoot, sessionPanDir, panDir, sessionId, launchId };
 }
 
-function projectItem({ itemId, number, status, machine, sessionId, claimedBy = '', leaseUntil = '' }) {
+function projectItem({ itemId, number, status, machine, sessionId, claimedBy = '', leaseUntil = '', claimGeneration = '', workerState = '', nextAction = '', revision = '' }) {
   return {
     itemId,
     issue: {
@@ -1315,6 +1317,10 @@ function projectItem({ itemId, number, status, machine, sessionId, claimedBy = '
       [FIELD.status]: status,
       [FIELD.machine]: machine,
       [FIELD.sessionId]: sessionId,
+      [FIELD.claimGeneration]: claimGeneration,
+      [FIELD.workerState]: workerState,
+      [FIELD.nextAction]: nextAction,
+      [FIELD.taskRevision]: revision,
       [FIELD.claimedBy]: claimedBy,
       [FIELD.leaseUntil]: leaseUntil,
       [FIELD.needsHumanSince]: '',
@@ -2986,6 +2992,7 @@ test('rehydrate accepts a result only from the manifest-owned generation', async
       alive: false,
       result: { outcome: 'done', summary: 'stale generation' },
     });
+
     const current = await createAttempt(seeded.sessionPanDir, {
       sessionId: seeded.sessionId,
       itemId: 'item-53',
@@ -3021,6 +3028,68 @@ test('rehydrate accepts a result only from the manifest-owned generation', async
     assert.equal(finalized, false, 'the older result cannot finalize the newer current generation');
     assert.equal(existsSync(path.join(seeded.panDir, 'result.json')), true);
     assert.equal(runner.resumeWorkspaces.has('item-53'), false);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('rehydrate finishes a receipt after terminal resource fields were already released', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo-terminal-release');
+    mkdirSync(repoDir, { recursive: true });
+    const claimGeneration = randomUUID();
+    const seeded = seedStateRoot(sb, {
+      number: 54,
+      itemId: 'item-54',
+      workingDir: repoDir,
+      isolated: false,
+      alive: false,
+      claimGeneration,
+      result: {
+        outcome: 'done',
+        summary: 'Complete.',
+        details: 'Validated the complete outcome.',
+      },
+    });
+    const project = projectItem({
+      itemId: 'item-54',
+      number: 54,
+      status: 'done',
+      machine: '',
+      sessionId: '',
+      claimGeneration: '',
+      workerState: 'stopped',
+      nextAction: 'none',
+      revision: '5',
+    });
+    project.fields[FIELD.nextActionDate] = '';
+    project.fields[FIELD.needsHumanSince] = '';
+    project.issue.body = renderCurrentActionBlock({
+      status: 'done',
+      action: 'none',
+      detail: 'Validated the complete outcome.',
+      revision: 5,
+      updatedAt: '2026-09-09T20:00:00.000Z',
+    });
+    const { runner } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+    runner.cfg.lifecycleVersion = 2;
+    runner.deps.readAllItems = async () => [structuredClone(project)];
+    runner.deps.readItemById = async () => structuredClone(project);
+    runner.deps.ensureIssueClosed = async () => {};
+    runner.deps.ensureIssueComment = async () => {};
+    runner.deps.setTextField = async () => assert.fail('released terminal recovery must not rewrite Project fields');
+    runner.deps.setDateField = async () => assert.fail('released terminal recovery must not rewrite Project fields');
+    runner.deps.setSelectField = async () => assert.fail('released terminal recovery must not rewrite Project fields');
+    runner.deps.updateIssueCurrentAction = async () => assert.fail('released terminal recovery must not rewrite Issue state');
+
+    await runner.rehydrate();
+
+    const receipt = JSON.parse(readFileSync(path.join(seeded.panDir, 'result-consumed.json'), 'utf8'));
+    assert.equal(receipt.panRunnerResultConsumed, true);
+    assert.equal(receipt.resultSha256, createHash('sha256')
+      .update(readFileSync(path.join(seeded.panDir, 'result.json')))
+      .digest('hex'));
   } finally {
     sb.cleanup();
   }

@@ -178,11 +178,13 @@ explicitly answer/handoff so the checked pair returns to
 `ready-for-ai/execute`. A stale generation never clears attention.
 
 For `safeToRelease=true`, the runner verifies the durable checkpoint and
-playbook permission, records a checkpoint receipt, sets
-`worker-state=checkpointed`, clears active claim/lease, writes `worker.stop`,
-and releases execution capacity. Machine/session/generation affinity persists,
-so another task cannot steal the workspace. The task remains
-`ready-for-human`.
+playbook permission, records a recovery-readable checkpoint receipt, writes
+`worker.stop`, and proves the exact owned launcher dead before changing Project
+ownership. It then sets `worker-state=checkpointed`, clears active claim/lease,
+verifies the preserved machine/session/generation affinity, and marks the
+receipt released. Startup resumes any interrupted receipt phase idempotently.
+Machine/session/generation affinity persists, so another task cannot steal the
+workspace. The task remains `ready-for-human`.
 
 ### Result
 
@@ -229,8 +231,9 @@ workspace release.
 - Restart with one exact live generation → re-adopt and renew without clearing
   attention.
 - Stopped paused/checkpointed session → preserve state root and workspace.
-- Resume → only after an explicit live `ready-for-ai/execute` transition;
-  require same session/machine/slot/generation, no pending result, and capacity.
+- Resume → only after an explicit live `ready-for-ai/execute` transition with
+  `worker-state=paused`; require the same session/machine/slot/generation, no
+  pending result, and capacity. A resume retains its generation.
 - Deliberate hold or human checkpoint → never automatic resume.
 
 Process exit alone never frees a workspace. Slot occupancy includes active,
@@ -262,7 +265,10 @@ attempt/owner/exit/result/checkpoint, and proving possible owners dead. Never
 delete an unprocessed signal or uncertain owner. Reconstruct a corrupt manifest
 only from complete matching immutable attempt evidence. Release a workspace as
 a last resort only after results are preserved, all launchers are dead, and
-loss of local resume state is explicitly accepted.
+loss of local resume state is explicitly accepted. The browser task UI never
+clears workspace affinity; release is a runner/operator recovery operation
+under the per-task lock with the exact expected machine/session/generation
+tuple.
 
 ## Shutdown
 

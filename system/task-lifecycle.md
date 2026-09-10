@@ -264,7 +264,8 @@ It does not pause live workers, block terminal cleanup, or stop autonomous work.
 The local task UI derives each task into exactly one primary view:
 
 - **Today** — nonterminal tasks whose `next-action-date` is today;
-- **Needs me** — `ready-for-human`, excluding tasks already in Today;
+- **Needs me** — `ready-for-human` whose attention date is empty or overdue,
+  excluding tasks already in Today; a future date stays out until due;
 - **In motion** — `ready-for-ai`, `ai-executing`, or `external-waiting`,
   excluding tasks already in Today;
 - **Recent activity** — terminal outcomes or transition activity within the
@@ -275,4 +276,3 @@ The local task UI derives each task into exactly one primary view:
 Past scheduled tasks remain visibly overdue; future checkpoints wait for their
 date; unscheduled human checkpoints remain in Needs me. The UI never uses
 legacy `owner` to place a task.
-

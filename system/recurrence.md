@@ -53,6 +53,12 @@ The date must be a real calendar date and must satisfy the recurrence rule.
 This marker is the durable per-occurrence recurrence state. Do not put it in
 conversation history, a local scheduler, or a new Project field.
 
+The local task service mechanically supports the documented unambiguous forms:
+`Every <weekday>`, `Every N weeks on <weekday>`, `Every N days`, and
+`The first|second|third|fourth|last <weekday> of every month` (optional final
+period, case-insensitive). An unsupported or multi-line rule fails closed for
+human clarification; the browser never asks the user to supply a successor date.
+
 Before proposing or applying any `next-action-date` change to an open recurring
 Issue, re-read and require a valid occurrence marker. If it is absent, complete
 the backward-compatible marker migration below while the current planning date

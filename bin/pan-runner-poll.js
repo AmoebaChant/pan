@@ -379,19 +379,50 @@ async function sweepExpiredItems(
 function selectCandidates(items, cfg, playbooks, active, { now, warn }) {
   const newLifecycle = cfg.lifecycleVersion === 2;
   const attentionPolicy = cfg.humanAttentionBackpressure ?? { mode: 'off', softLimit: Infinity };
-  const humanAttentionCount = items.filter((item) => statusOf(item) === 'ready-for-human').length;
+  const localNow = new Date(now);
+  const today = [
+    localNow.getFullYear(),
+    String(localNow.getMonth() + 1).padStart(2, '0'),
+    String(localNow.getDate()).padStart(2, '0'),
+  ].join('-');
+  const humanAttentionCount = items.filter((item) => {
+    if (statusOf(item) !== 'ready-for-human') return false;
+    const date = val(item, FIELD.nextActionDate, '');
+    return !date || date < today;
+  }).length;
   const attentionLimited = (
     newLifecycle
     && attentionPolicy.mode === 'prefer-autonomous'
     && humanAttentionCount >= attentionPolicy.softLimit
   );
 
+  const retainedResume = (item) => {
+    const sessionId = val(item, FIELD.sessionId, '');
+    const machine = val(item, FIELD.machine, '');
+    const generation = val(item, FIELD.claimGeneration, '');
+    const hasRetainedAffinity = !!(sessionId || machine || generation);
+    if (!hasRetainedAffinity) return false;
+    return (
+      workerStateOf(item) === 'paused'
+      && !!sessionId
+      && !!machine
+      && !!generation
+      && affinityMatchesMachine(machine, cfg.machine)
+    );
+  };
+
   const canRun = (item, { resume = false } = {}) => {
     if (newLifecycle) {
       if (val(item, FIELD.executionAuthorized, '') !== 'yes') return false;
       if (String(val(item, FIELD.dependencies, '')).trim()) return false;
       if (isRecurringBody(item.issue?.body)) return false;
-      if (!resume && !runnableTask(item, FIELD)) return false;
+      if (!runnableTask(item, FIELD)) return false;
+      const hasRetainedAffinity = !!(
+        val(item, FIELD.sessionId, '')
+        || val(item, FIELD.machine, '')
+        || val(item, FIELD.claimGeneration, '')
+      );
+      if (hasRetainedAffinity && !resume) return false;
     } else if (ownerOf(item) !== 'agent') {
       return false;
     }
@@ -410,16 +441,17 @@ function selectCandidates(items, cfg, playbooks, active, { now, warn }) {
     return true;
   };
 
-  const paused = items.filter((item) =>
-    (newLifecycle
-      ? statusOf(item) === 'ai-executing' && workerStateOf(item) === 'paused'
-      : statusOf(item) === 'paused')
-    && affinityMatchesMachine(val(item, FIELD.machine, ''), cfg.machine)
-    && !!val(item, FIELD.sessionId, '')
-    && canRun(item, { resume: true }),
-  );
-  const ready = items.filter((item) =>
-    statusOf(item) === (newLifecycle ? 'ready-for-ai' : 'ready') && canRun(item));
+  const paused = newLifecycle
+    ? items.filter((item) => retainedResume(item) && canRun(item, { resume: true }))
+    : items.filter((item) =>
+      statusOf(item) === 'paused'
+      && affinityMatchesMachine(val(item, FIELD.machine, ''), cfg.machine)
+      && !!val(item, FIELD.sessionId, '')
+      && canRun(item, { resume: true }));
+  const ready = items.filter((item) => {
+    if (statusOf(item) !== (newLifecycle ? 'ready-for-ai' : 'ready')) return false;
+    return canRun(item, { resume: false });
+  });
 
   const byPriority = (a, b) => {
     const aRank = PRIORITY_RANK[priorityOf(a)] ?? 2;

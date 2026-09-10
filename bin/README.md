@@ -74,19 +74,29 @@ baseline. See
 ```sh
 node bin/pan-lifecycle-migrate.js plan \
   --config /absolute/path/to/machine.json \
-  --checkout /absolute/path/to/pan
+  --checkout /absolute/path/to/pan \
+  --authorization /absolute/path/to/authorization.json \
+  --report /absolute/path/to/baseline.json
 node bin/pan-lifecycle-migrate.js apply \
   --config /absolute/path/to/machine.json \
   --checkout /absolute/path/to/pan \
-  --confirm-runners-stopped
+  --authorization /absolute/path/to/authorization.json \
+  --confirm-writers-stopped \
+  --report /absolute/path/to/cutover.json
 ```
 
-Plan translates the current live legacy pilot state and flags every legacy
-`in-progress` item as `requires-cutover-hold`; a stale lease is not workspace
-release evidence. Apply is idempotent, re-reads every item, preserves
-legacy owner/options for rollback, refuses changed/live items, and verifies new
-revision/action state. The tool is provided for a reviewed operational cutover;
-starting it is not authorization to stop runners or mutate a live Domain.
+The authorization document has format
+`pan-lifecycle-migration-authorization`, version `1`, and exact `itemId`,
+`playbook`, `dependencies`, and `executionAuthorized: true` entries. Legacy
+agent ownership is not authorization. Plan translates current live state,
+repairs partial current tuples, and flags active or paused sessions as
+`requires-cutover-hold`; a stale lease is not workspace release evidence.
+Apply is idempotent, re-reads every item, preserves legacy owner/options for
+rollback, refuses changed/live items, and verifies the full Issue/Project
+projection with revision last. Stop every runner, UI, briefing session, and
+other writer before cutover. Re-run plan afterward, and use the current-state
+Todoist `recovery-plan` rather than replaying the baseline if rollback is
+needed.
 
 ## Daily Briefing MCP service
 

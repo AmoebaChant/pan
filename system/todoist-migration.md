@@ -57,6 +57,29 @@ Todoist credentials are supplied through an environment variable named by
   retained legacy `owner`/Status vocabulary. It does not replay a stale
   baseline over newer work.
 
+Lifecycle schema migration is a separate, writer-exclusive cutover:
+
+1. Stop every runner, task UI, briefing session, and other Project writer.
+2. Save a fresh read-only baseline with
+   `pan-lifecycle-migrate plan --config ... --checkout ... --report ...`.
+3. Review an authorization file with format
+   `pan-lifecycle-migration-authorization`, version `1`, and one entry per
+   approved legacy agent item. Each entry must contain the exact `itemId`,
+   non-empty `playbook`, exact `dependencies` text, and
+   `executionAuthorized: true`. Legacy `owner=agent` is never authorization.
+4. Run `pan-lifecycle-migrate apply` with that file and
+   `--confirm-writers-stopped`. Active, paused, checkpointed, or uncertain
+   sessions remain held for operator reconciliation rather than being guessed
+   safe.
+5. Run another plan against current live state. Do not restart writers until it
+   reports no authorization, cutover-hold, or repair actions.
+
+For rollback, keep writers stopped and generate
+`pan-todoist-migrate recovery-plan` from current live state. Review that plan
+against the saved baseline, then apply the retained legacy fields with the
+schema tooling. Never replay the baseline over newer Issues, comments, dates,
+session evidence, or results.
+
 The optional `--report` path receives a machine-readable report. Reports
 distinguish `created`, `repaired`, `verified`, `excluded-assignee`, `conflict`,
 and `failed`.

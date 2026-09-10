@@ -60,6 +60,37 @@ tasks without exposing GitHub credentials to the browser. See
 pilot recovery mappings without deleting source tasks or history. See
 [`system/todoist-migration.md`](system/todoist-migration.md).
 
+Lifecycle cutover is deliberately separate and writer-exclusive. Stop every
+runner, task UI, briefing session, and other Project writer; save a baseline
+plan; review an explicit per-item authorization file that matches each approved
+agent task's playbook and dependency text; then apply:
+
+```sh
+node bin/pan-lifecycle-migrate.js plan \
+  --config /absolute/path/to/config.json --checkout "$PWD" \
+  --authorization /absolute/path/to/authorization.json \
+  --report /absolute/path/to/baseline.json
+node bin/pan-lifecycle-migrate.js apply \
+  --config /absolute/path/to/config.json --checkout "$PWD" \
+  --authorization /absolute/path/to/authorization.json \
+  --confirm-writers-stopped \
+  --report /absolute/path/to/cutover.json
+node bin/pan-lifecycle-migrate.js plan \
+  --config /absolute/path/to/config.json --checkout "$PWD" \
+  --authorization /absolute/path/to/authorization.json \
+  --report /absolute/path/to/current-state.json
+```
+
+The authorization document is
+`{"format":"pan-lifecycle-migration-authorization","version":1,"items":[...]}`;
+each item contains exact `itemId`, `playbook`, `dependencies`, and
+`"executionAuthorized":true`. Legacy ownership alone never authorizes AI.
+Paused or otherwise retained sessions require operator reconciliation and are
+not migrated automatically. For rollback, keep all writers stopped, generate a
+current-live-state `pan-todoist-migrate recovery-plan`, compare it with the
+baseline, and apply the reviewed legacy mapping; never replay stale baseline
+state over newer work.
+
 ## Local Daily Briefing UI
 
 Pan includes an optional responsive review page for marking up a complete Daily

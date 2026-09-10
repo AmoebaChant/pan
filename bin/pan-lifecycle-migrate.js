@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -10,19 +10,21 @@ import {
 } from './pan-github-task-store.js';
 import {
   applyLifecycleMigration,
+  parseMigrationAuthorizations,
   planLifecycleMigration,
 } from './pan-lifecycle-migration.js';
 
 const HELP = `Pan additive lifecycle migration
 
 Usage:
-  node bin/pan-lifecycle-migrate.js plan --config <path> --checkout <path> [--report <path>]
-  node bin/pan-lifecycle-migrate.js apply --config <path> --checkout <path> --confirm-runners-stopped [--report <path>]
+  node bin/pan-lifecycle-migrate.js plan --config <path> --checkout <path> [--authorization <path>] [--report <path>]
+  node bin/pan-lifecycle-migrate.js apply --config <path> --checkout <path> --authorization <path> --confirm-writers-stopped [--report <path>]
 
-Plan is read-only. Apply refuses every legacy in-progress item (a stale lease
-does not prove its process/workspace free) and never changes the retained owner
-field/options. Stop every old/new runner for the Domain and complete the
-reviewed operational cutover before applying.
+Plan is read-only. Agent-owned work is not authorized by legacy owner alone:
+the authorization file must explicitly approve each item and exactly match its
+playbook and dependency text. Apply refuses every legacy active/paused session
+and never changes the retained owner field/options. Stop every runner, task UI,
+briefing writer, and other Project writer for the Domain before applying.
 `;
 
 export function parseLifecycleCli(argv) {
@@ -34,8 +36,9 @@ export function parseLifecycleCli(argv) {
     options: {
       config: { type: 'string' },
       checkout: { type: 'string' },
+      authorization: { type: 'string' },
       report: { type: 'string' },
-      'confirm-runners-stopped': { type: 'boolean', default: false },
+      'confirm-writers-stopped': { type: 'boolean', default: false },
     },
     strict: true,
     allowPositionals: false,
@@ -43,19 +46,23 @@ export function parseLifecycleCli(argv) {
   if (!values.config || !values.checkout) {
     throw new Error(`${command} requires --config and --checkout`);
   }
-  for (const field of ['config', 'checkout', 'report']) {
+  for (const field of ['config', 'checkout', 'authorization', 'report']) {
     if (values[field] && !path.isAbsolute(values[field])) {
       throw new Error(`--${field} must be an absolute path`);
     }
   }
-  if (command === 'apply' && !values['confirm-runners-stopped']) {
-    throw new Error('apply requires --confirm-runners-stopped');
+  if (command === 'apply' && !values.authorization) {
+    throw new Error('apply requires --authorization');
+  }
+  if (command === 'apply' && !values['confirm-writers-stopped']) {
+    throw new Error('apply requires --confirm-writers-stopped');
   }
   return {
     help: false,
     command,
     config: values.config,
     checkout: values.checkout,
+    authorization: values.authorization,
     report: values.report,
   };
 }
@@ -70,7 +77,10 @@ export async function runLifecycleCommand(options) {
   const binding = await loadTaskServiceBinding(options.config, options.checkout);
   const store = await new GitHubTaskStore(binding).initialize();
   const current = await store.list();
-  const plan = planLifecycleMigration(current.tasks);
+  const authorizations = options.authorization
+    ? parseMigrationAuthorizations(JSON.parse(await readFile(options.authorization, 'utf8')))
+    : [];
+  const plan = planLifecycleMigration(current.tasks, { authorizations });
   if (options.command === 'plan') {
     await emit(plan, options.report);
     return {
