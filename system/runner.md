@@ -73,9 +73,10 @@ runnable only when:
 - required workspace is free or already affined to this same task/session; and
 - there is no active/uncertain local generation or unprocessed result.
 
-The runner then sorts by priority and canonical Project order. It never gates
-or sorts by `next-action-date`, deadline, occurrence date, or source-system
-date.
+The runner sorts one combined set of new starts and valid resumes by priority
+and then canonical Project order. Resume affinity affects eligibility and
+workspace selection, never ordering precedence. It never gates or sorts by
+`next-action-date`, deadline, occurrence date, or source-system date.
 
 `ready-for-human`, `external-waiting`, `deliberate-hold`, terminal states, and
 legacy states are not new-lifecycle candidates. A reusable session does not
@@ -256,8 +257,12 @@ Startup binds a root using all of:
 - live process-start identity where a launcher may remain.
 
 Any mismatch preserves evidence and fails closed. Unprocessed results are
-finalized before pause/resume decisions. A consumed result is never replayed.
-An old human checkpoint is never cleared merely because the process restarted.
+finalized before pause/resume decisions. A terminal release journal binds any
+monotonic partial resource-clear prefix back to its exact attempt and result so
+startup can resume it. A state root is never pruned while any result, terminal
+release journal, or pending checkpoint receipt remains. A consumed result is
+never replayed. An old human checkpoint is never cleared merely because the
+process restarted.
 
 Legacy workspace-root migration is idempotent. It corroborates old launchers by
 exact PID, command, and process-start identity, writes durable metadata, and

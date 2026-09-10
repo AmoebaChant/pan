@@ -43,6 +43,69 @@ export function validLifecyclePair(status, action) {
   return LIFECYCLE.get(status)?.has(action) ?? false;
 }
 
+export function rollbackSafetyReason(task, status = task.status) {
+  const tuple = [
+    task.machine || '',
+    task.sessionId || '',
+    task.claimGeneration || '',
+  ];
+  const tupleComplete = tuple.every(Boolean);
+  const tupleEmpty = tuple.every((value) => !value);
+  const workerState = task.workerState || '';
+  const claimedBy = task.claimedBy || '';
+  const leaseUntil = task.leaseUntil || '';
+  const retainedWorker = [
+    'starting',
+    'running',
+    'waiting-human',
+    'checkpointed',
+    'paused',
+    'uncertain',
+  ].includes(workerState);
+
+  if (!WORKER_STATES.includes(workerState)) {
+    return 'worker-state is invalid';
+  }
+  if (!tupleComplete && !tupleEmpty) {
+    return 'rollback refuses uncertain partial workspace resource ownership';
+  }
+  if (
+    ['paused', 'checkpointed'].includes(workerState)
+    && !tupleComplete
+  ) {
+    return 'rollback refuses a retained worker without complete workspace resource ownership';
+  }
+  if (
+    tupleComplete
+    && !retainedWorker
+  ) {
+    return 'rollback refuses workspace resources with no retained worker';
+  }
+  if (
+    ['done', 'rejected'].includes(status)
+    && (tuple.some(Boolean) || claimedBy || leaseUntil || retainedWorker)
+  ) {
+    return 'rollback refuses terminal state with retained worker or workspace ownership';
+  }
+  if (status === 'ai-executing' && !tupleComplete) {
+    return 'rollback refuses ai-executing state without a complete workspace owner tuple';
+  }
+  if (
+    ['starting', 'running', 'waiting-human'].includes(workerState)
+    && (!tupleComplete || !claimedBy || !leaseUntil)
+  ) {
+    return 'rollback refuses an executing worker without a complete live owner tuple';
+  }
+  if (
+    claimedBy
+    || leaseUntil
+    || ['starting', 'running', 'waiting-human', 'uncertain'].includes(workerState)
+  ) {
+    return 'rollback refuses a live or uncertain worker';
+  }
+  return '';
+}
+
 export function assertLifecyclePair(status, action) {
   if (!validLifecyclePair(status, action)) {
     throw new Error(`invalid task lifecycle pair: ${status || '(empty)'}/${action || '(empty)'}`);

@@ -3672,7 +3672,10 @@ child.on('exit', (code, signal) => {
           details,
         });
       } catch (error) {
-        w.finalizationPending = false;
+        // The result and any release journal remain durable recovery work.
+        // Keep the worker adopted across startup so rehydrate cannot fall
+        // through to ordinary stale-root pruning after a transient failure.
+        w.finalizationPending = true;
         const count = (w.finalizationFailures || 0) + 1;
         w.finalizationFailures = count;
         const delay = Math.min(60000, FINALIZATION_RETRY_BASE_MS * 2 ** (count - 1));
@@ -5888,18 +5891,45 @@ child.on('exit', (code, signal) => {
       const checkpointReceiptState = currentAttempt
         ? await readCheckpointReceipt(currentAttempt)
         : { present: false, receipt: null, valid: true };
+      const currentResultPath = currentAttempt
+        ? path.join(currentAttempt.signalDir, 'result.json')
+        : null;
+      const currentHasResult = !!currentResultPath && existsSync(currentResultPath);
+      let currentResultBytes = null;
+      if (currentHasResult) {
+        try {
+          currentResultBytes = await readFile(currentResultPath);
+        } catch {
+          currentResultBytes = null;
+        }
+      }
+      const terminalReleasePath = currentAttempt
+        ? path.join(currentAttempt.attemptDir, TERMINAL_RELEASE_FILE)
+        : null;
+      const terminalReleaseJournalState = currentAttempt && currentResultBytes
+        ? await readTerminalReleaseJournal({
+          attemptDir: currentAttempt.attemptDir,
+          launchId: currentAttempt.launchId,
+          sessionId: currentAttempt.attempt?.sessionId,
+          itemId: currentAttempt.attempt?.itemId,
+          issueNumber: currentAttempt.attempt?.number,
+          claimGeneration: currentAttempt.attempt?.claimGeneration,
+        }, currentResultBytes)
+        : {
+          present: !!terminalReleasePath && existsSync(terminalReleasePath),
+          valid: !terminalReleasePath || !existsSync(terminalReleasePath),
+          journal: null,
+          journalPath: terminalReleasePath,
+        };
       const attemptConflict = attemptScan.uncertain.length > 0
         || foreignLive.length > 0
         || (
           attemptScan.currentLaunchId != null
           && !currentAttempt
         )
-        || !checkpointReceiptState.valid;
+        || !checkpointReceiptState.valid
+        || !terminalReleaseJournalState.valid;
       const alive = !attemptConflict && currentAttempt?.status === 'live';
-      const currentResultPath = currentAttempt
-        ? path.join(currentAttempt.signalDir, 'result.json')
-        : null;
-      const currentHasResult = !!currentResultPath && existsSync(currentResultPath);
       const currentResultConsumed = currentHasResult
         && await resultIsConsumed(currentAttempt);
       const selectedAttempt = !attemptConflict
@@ -5908,6 +5938,7 @@ child.on('exit', (code, signal) => {
           alive
           || (currentHasResult && !currentResultConsumed)
           || checkpointReceiptState.present
+          || terminalReleaseJournalState.present
         )
         ? currentAttempt
         : null;
@@ -5915,6 +5946,26 @@ child.on('exit', (code, signal) => {
         (attempt) =>
           attempt.launchId
           && existsSync(path.join(attempt.signalDir, 'result.json')),
+      );
+      const hasAnyReleaseJournal = attemptScan.attempts.some(
+        (attempt) =>
+          attempt.launchId
+          && existsSync(path.join(attempt.attemptDir, TERMINAL_RELEASE_FILE)),
+      );
+      const pendingCheckpointStates = await Promise.all(
+        attemptScan.attempts
+          .filter((candidate) => candidate.launchId)
+          .map((candidate) => readCheckpointReceipt(candidate)),
+      );
+      const hasAnyPendingCheckpointReceipt = pendingCheckpointStates.some(
+        (state) =>
+          state.present
+          && (!state.valid || state.receipt?.phase !== 'released'),
+      );
+      const hasRecoveryEvidence = (
+        hasAnyResult
+        || hasAnyReleaseJournal
+        || hasAnyPendingCheckpointReceipt
       );
       const panDir = selectedAttempt?.signalDir || sessionPanDir;
       const resultPath = path.join(panDir, 'result.json');
@@ -5941,7 +5992,8 @@ child.on('exit', (code, signal) => {
         hasResult: !!selectedAttempt && existsSync(resultPath),
         currentResultConsumed,
         checkpointReceipt: checkpointReceiptState.receipt,
-        hasAnyResult,
+        terminalReleaseJournal: terminalReleaseJournalState.journal,
+        hasRecoveryEvidence,
         mtimeMs: st.mtimeMs,
       });
     }
@@ -5950,6 +6002,7 @@ child.on('exit', (code, signal) => {
       Number(b.attemptConflict) - Number(a.attemptConflict)
       || Number(b.alive) - Number(a.alive)
       || Number(b.hasResult) - Number(a.hasResult)
+      || Number(b.hasRecoveryEvidence) - Number(a.hasRecoveryEvidence)
       || b.mtimeMs - a.mtimeMs,
     );
 
@@ -5976,13 +6029,30 @@ child.on('exit', (code, signal) => {
         owned,
         currentResultConsumed,
         checkpointReceipt,
-        hasAnyResult,
+        hasRecoveryEvidence,
+        terminalReleaseJournal,
       } = workspace;
 
       // Deletion is fail-closed on ownership (`owned` = a fully valid marker). The
       // target is re-derived inside pruneWorkspace from stateRoot + the
       // canonical name and re-checked for symlink/containment safety.
       const pruneIfOwned = async (why) => {
+        const recoveryEvidenceNow = attemptScan.attempts.some(
+          (candidate) =>
+            candidate.launchId
+            && (
+              existsSync(path.join(candidate.signalDir, 'result.json'))
+              || existsSync(path.join(candidate.attemptDir, TERMINAL_RELEASE_FILE))
+              || existsSync(path.join(candidate.attemptDir, CHECKPOINT_RECEIPT_FILE))
+            ),
+        );
+        if (hasRecoveryEvidence || recoveryEvidenceNow) {
+          log(
+            `#${number} preserving recovery evidence at ${sessionRoot} ` +
+              `(${why}) (rehydrate)`,
+          );
+          return;
+        }
         if (owned) {
           await pruneWorkspace(this.cfg.stateRoot, entry, number, why);
           const expectedIsolatedWorkspace = path.join(this.cfg.workspaceRoot, entry);
@@ -6005,7 +6075,7 @@ child.on('exit', (code, signal) => {
       const match = findProjectItemForTask(items, task);
       if (!match) {
         // Gone from the Project: an inert leftover if no worker is alive here.
-        if (!alive && !attemptConflict && !hasAnyResult) {
+        if (!alive && !attemptConflict && !hasRecoveryEvidence) {
           await pruneIfOwned('task not found on Project');
         }
         continue;
@@ -6066,7 +6136,22 @@ child.on('exit', (code, signal) => {
         && !val(match, FIELD.leaseUntil, '')
         && !!selectedAttempt
       );
-      const sessionBound = releasedTerminalBound || (bindable
+      const journaledTerminalBound = (
+        this.usesOutcomeLifecycle()
+        && bindable
+        && !!selectedAttempt
+        && !!terminalReleaseJournal
+        && match.issue?.number === nameNumber
+        && match.itemId === task.itemId
+        && terminalReleaseJournal.expectedClaimedBy === this.cfg.identity
+        && terminalReleaseJournal.expectedMachine
+          === formatAffinity(this.cfg.machine, launchSlot)
+        && slotPathBound
+        && this.terminalReleaseProjectionMatches(match, terminalReleaseJournal)
+        && this.terminalReleaseTupleIsMonotonic(match, terminalReleaseJournal)
+      );
+      const terminalReleaseBound = releasedTerminalBound || journaledTerminalBound;
+      const sessionBound = terminalReleaseBound || (bindable
         && match.issue?.number === nameNumber
         && match.itemId === task.itemId
         && projectSessionId === nameSessionId
@@ -6095,7 +6180,7 @@ child.on('exit', (code, signal) => {
         launchId: selectedAttempt?.launchId || null,
         isolated,
         slot: launchSlot,
-        sessionId: releasedTerminalBound
+        sessionId: terminalReleaseBound
           ? selectedAttempt.attempt.sessionId
           : projectSessionId,
         claimGeneration: selectedAttempt?.attempt?.claimGeneration || projectClaimGeneration,

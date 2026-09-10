@@ -124,5 +124,8 @@ liveness, and claim fields:
 The plan and checked apply preserve current dates, Issue text, comments,
 sessions, results, playbook/dependency text, and recurrence markers. Apply does
 not reopen or re-close Issues, reverse Todoist state, clear affinity, or infer
-that an active/uncertain worker is safe. A fresh post-apply plan reports
-`already-rolled-back`, making the operation idempotent.
+that an active/uncertain worker is safe. Plan and apply use the same fail-closed
+worker/resource predicate, so an unsafe item is never presented as an approved
+rollback or idempotent no-op. A fresh post-apply plan reports
+`already-rolled-back` only for a genuinely safe exact projection, making the
+operation idempotent.

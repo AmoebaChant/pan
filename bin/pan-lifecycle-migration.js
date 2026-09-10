@@ -1,6 +1,7 @@
 import {
   legacyRecoveryTarget,
   parseRevision,
+  rollbackSafetyReason,
   validLifecyclePair,
   WORKER_STATES,
 } from './pan-task-model.js';
@@ -450,8 +451,7 @@ function rollbackInvalidReason(task, source) {
   ) {
     return 'Issue current-action projection does not match the rollback source';
   }
-  if (!WORKER_STATES.includes(task.workerState)) return 'worker-state is invalid';
-  const runtimeReason = invalidRuntimeReason(task, source.status, true);
+  const runtimeReason = rollbackSafetyReason(task, source.status);
   if (runtimeReason) return runtimeReason;
   if (
     ['done', 'rejected'].includes(source.status)
@@ -485,21 +485,14 @@ export function planLifecycleRollback(tasks) {
       && (task.legacyOwner || 'unassigned') === target.owner
       && task.currentActionRevision === parseRevision(task.revision)
     );
-    const active = !!(
-      task.claimedBy
-      || task.leaseUntil
-      || ACTIVE_WORKER_STATES.has(task.workerState)
-    );
     return {
       itemId: task.itemId,
       issueUrl: task.url,
       action: invalidReason
         ? 'invalid-state'
-        : active
-          ? 'requires-cutover-hold'
-          : alreadyRolledBack
-            ? 'already-rolled-back'
-            : 'rollback',
+        : alreadyRolledBack
+          ? 'already-rolled-back'
+          : 'rollback',
       ...(invalidReason ? { reason: invalidReason } : {}),
       expected: expectedProjection(task),
       current: {

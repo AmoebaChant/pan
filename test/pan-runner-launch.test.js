@@ -25,7 +25,10 @@ import {
   inspectProcess,
   scanAttempts,
 } from '../bin/pan-runner-runtime.js';
-import { renderCurrentActionBlock } from '../bin/pan-task-model.js';
+import {
+  renderCurrentActionBlock,
+  upsertCurrentActionBlock,
+} from '../bin/pan-task-model.js';
 
 // These tests drive the real launchWorker / rehydrate path so they prove actual
 // path construction, not a stubbed launch. Only the GitHub boundary and the
@@ -3090,6 +3093,122 @@ test('rehydrate finishes a receipt after terminal resource fields were already r
     assert.equal(receipt.resultSha256, createHash('sha256')
       .update(readFileSync(path.join(seeded.panDir, 'result.json')))
       .digest('hex'));
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('startup terminal-release failure preserves evidence and restart completes the exact receipt', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo-startup-release');
+    mkdirSync(repoDir, { recursive: true });
+    const claimGeneration = randomUUID();
+    const seeded = seedStateRoot(sb, {
+      number: 55,
+      itemId: 'item-55',
+      workingDir: repoDir,
+      isolated: false,
+      alive: false,
+      claimGeneration,
+      result: {
+        outcome: 'done',
+        summary: 'Complete.',
+        details: 'Validated after restart.',
+      },
+    });
+    const project = projectItem({
+      itemId: 'item-55',
+      number: 55,
+      status: 'ai-executing',
+      machine: MACHINE,
+      sessionId: seeded.sessionId,
+      claimedBy: IDENTITY,
+      leaseUntil: '2026-09-09T19:00:00.000Z',
+      claimGeneration,
+      workerState: 'running',
+      nextAction: 'execute',
+      revision: '4',
+    });
+    project.fields[FIELD.nextActionDate] = '';
+    project.fields[FIELD.needsHumanSince] = '';
+    project.issue.body = renderCurrentActionBlock({
+      status: 'ai-executing',
+      action: 'execute',
+      detail: 'Finish the task.',
+      revision: 4,
+      updatedAt: '2026-09-09T20:00:00.000Z',
+    });
+
+    const makeRunner = ({ failSessionClear = false } = {}) => {
+      let injected = false;
+      const deps = {
+        readAllItems: async () => [project],
+        readItemById: async () => project,
+        setTextField: async (_cfg, _meta, _id, field, value) => {
+          if (failSessionClear && field === FIELD.sessionId && !injected) {
+            injected = true;
+            throw new Error('injected startup session clear failure');
+          }
+          project.fields[field] = value ?? '';
+        },
+        setDateField: async (_cfg, _meta, _id, field, value) => {
+          project.fields[field] = value ?? '';
+        },
+        setSelectField: async (_cfg, _meta, _id, field, value) => {
+          project.fields[field] = value;
+        },
+        updateIssueCurrentAction: async (_gh, _repo, _number, update) => {
+          project.issue.body = upsertCurrentActionBlock(
+            project.issue.body,
+            renderCurrentActionBlock({
+              status: update.status,
+              action: update.action,
+              detail: update.detail,
+              revision: update.revision,
+              updatedAt: '2026-09-09T20:00:00.000Z',
+            }),
+          );
+        },
+        ensureIssueClosed: async () => {},
+        ensureIssueComment: async () => {},
+        readDomainFile: async () => { throw new Error('no Domain pan.md'); },
+        inspectProcess: async () => ({ state: 'dead', reason: 'test process absent' }),
+      };
+      return new Runner(
+        baseCfg(sb, { lifecycleVersion: 2 }),
+        { fields: new Map() },
+        fixedPlaybook(repoDir),
+        deps,
+      );
+    };
+
+    const first = makeRunner({ failSessionClear: true });
+    await first.rehydrate();
+
+    const journalPath = path.join(seeded.panDir, 'terminal-release.json');
+    const resultPath = path.join(seeded.panDir, 'result.json');
+    const receiptPath = path.join(seeded.panDir, 'result-consumed.json');
+    assert.equal(existsSync(seeded.stateRoot), true);
+    assert.equal(existsSync(resultPath), true);
+    assert.equal(JSON.parse(readFileSync(journalPath, 'utf8')).phase, 'prepared');
+    assert.equal(existsSync(receiptPath), false);
+    assert.equal(first.active.get('item-55')?.finalizationPending, true);
+    assert.equal(project.fields[FIELD.machine], '');
+    assert.equal(project.fields[FIELD.sessionId], seeded.sessionId);
+    assert.equal(project.fields[FIELD.claimGeneration], claimGeneration);
+
+    const restarted = makeRunner();
+    await restarted.rehydrate();
+
+    assert.equal(existsSync(seeded.stateRoot), true);
+    assert.equal(existsSync(resultPath), true);
+    assert.equal(JSON.parse(readFileSync(journalPath, 'utf8')).phase, 'released');
+    assert.equal(JSON.parse(readFileSync(receiptPath, 'utf8')).panRunnerResultConsumed, true);
+    assert.equal(project.fields[FIELD.machine], '');
+    assert.equal(project.fields[FIELD.sessionId], '');
+    assert.equal(project.fields[FIELD.claimGeneration], '');
+    assert.equal(restarted.active.has('item-55'), false);
   } finally {
     sb.cleanup();
   }

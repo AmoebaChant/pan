@@ -459,6 +459,33 @@ test('Todoist repair completes an exact interrupted revision-last commit', async
       assert.equal(parseCurrentActionBlock(state.issue.body).revision, 2);
 });
 
+test('Todoist revision-last recovery rejects independent priority drift without writes', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      state.item.fields['task-revision'] = '1';
+      state.item.fields.priority = 'low';
+      state.writes.length = 0;
+
+      await assert.rejects(
+        store.importTodoistTask(record),
+        /revision-last recovery.*non-revision projection drift/,
+      );
+      assert.equal(state.item.fields.priority, 'low');
+      assert.equal(state.item.fields['task-revision'], '1');
+      assert.deepEqual(state.writes, []);
+});
+
 test('Todoist revision-last recovery recreates a missing transition receipt before commit', async () => {
       const { store, state } = await fakeStore();
       const record = {
@@ -490,7 +517,7 @@ test('Todoist revision-last recovery recreates a missing transition receipt befo
       );
 });
 
-test('recurrence repair completes an exact interrupted revision-last commit', async () => {
+function recurrenceRevisionRecoveryState() {
       const state = fakeGitHubState();
       const currentBody = recurring('2026-09-04', 'Every Friday.');
       state.issue.body = upsertCurrentActionBlock(currentBody, renderCurrentActionBlock({
@@ -565,6 +592,11 @@ test('recurrence repair completes an exact interrupted revision-last commit', as
           actor: 'Pan recurrence rollover',
         }),
       }]);
+      return { state, successor, successorItem };
+}
+
+test('recurrence repair completes an exact interrupted revision-last commit', async () => {
+      const { state, successor, successorItem } = recurrenceRevisionRecoveryState();
       const { store } = await fakeStore(state);
       const detail = await store.detail('item-1');
 
@@ -578,6 +610,63 @@ test('recurrence repair completes an exact interrupted revision-last commit', as
 
       assert.equal(successorItem.fields['task-revision'], '2');
       assert.equal(parseCurrentActionBlock(successor.body).revision, 2);
+});
+
+test('recurrence revision-last recovery rejects independent priority drift', async () => {
+      const { state, successorItem } = recurrenceRevisionRecoveryState();
+      successorItem.fields.priority = 'urgent';
+      const { store } = await fakeStore(state);
+      const detail = await store.detail('item-1');
+      state.writes.length = 0;
+
+      await assert.rejects(
+        store.mutate({
+          itemId: detail.itemId,
+          revision: detail.revision,
+          projection: detail.projection,
+          operation: 'finish',
+          detail: 'Occurrence complete.',
+        }),
+        /revision-last recovery.*non-revision projection drift/,
+      );
+
+      assert.equal(successorItem.fields.priority, 'urgent');
+      assert.equal(successorItem.fields['task-revision'], '1');
+      assert.deepEqual(state.writes, []);
+});
+
+test('recurrence revision repair fails unless the Project revision is reread exactly', async () => {
+      const { state, successor, successorItem } = recurrenceRevisionRecoveryState();
+      const revisionFieldId = state.fields.find((field) => field.name === 'task-revision').id;
+      const gh = state.gh;
+      state.gh = async (args) => {
+        if (
+          args[0] === 'project'
+          && args[1] === 'item-edit'
+          && args.includes(revisionFieldId)
+          && args.includes('item-2')
+        ) {
+          state.writes.push('project:task-revision-ignored');
+          return '';
+        }
+        return gh(args);
+      };
+      const { store } = await fakeStore(state);
+      const detail = await store.detail('item-1');
+
+      await assert.rejects(
+        store.mutate({
+          itemId: detail.itemId,
+          revision: detail.revision,
+          projection: detail.projection,
+          operation: 'finish',
+          detail: 'Occurrence complete.',
+        }),
+        /did not verify recurring successor revision repair/,
+      );
+
+      assert.equal(parseCurrentActionBlock(successor.body).revision, 2);
+      assert.equal(successorItem.fields['task-revision'], '1');
 });
 
 test('Todoist import fails closed on duplicate source comment markers', async () => {
@@ -766,6 +855,47 @@ test('checked lifecycle rollback refuses stale complete projection without write
 
       assert.equal(report.partial, true);
       assert.match(report.results[0].error, /changed after the current-state plan/);
+      assert.equal(state.writes.length, before);
+});
+
+test('rollback plan and apply reject the same uncertain worker state without writes', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = renderCurrentActionBlock({
+        status: 'ready-for-human',
+        action: 'act',
+        detail: 'Perform the next action.',
+        revision: 1,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      });
+      state.item.fields['worker-state'] = 'uncertain';
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleRollback((await store.list()).tasks);
+      const blocked = plan.actions[0];
+      assert.equal(blocked.action, 'invalid-state');
+      assert.match(blocked.reason, /live or uncertain worker/);
+
+      let called = false;
+      const report = await applyLifecycleRollback(plan, {
+        async rollbackLifecycleItem() {
+          called = true;
+          throw new Error('unsafe rollback must not be invoked');
+        },
+      });
+      assert.equal(called, false);
+      assert.equal(report.partial, true);
+
+      const before = state.writes.length;
+      await assert.rejects(
+        store.rollbackLifecycleItem({
+          ...blocked,
+          action: 'rollback',
+          legacyTarget: { owner: 'human', status: 'ready' },
+        }),
+        (error) => {
+          assert.equal(error.message, blocked.reason);
+          return true;
+        },
+      );
       assert.equal(state.writes.length, before);
 });
 

@@ -459,9 +459,7 @@ function selectCandidates(items, cfg, playbooks, active, { now, warn }) {
     if (aRank !== bRank) return aRank - bRank;
     return items.indexOf(a) - items.indexOf(b);
   };
-  paused.sort(byPriority);
-  ready.sort(byPriority);
-  return [...paused, ...ready];
+  return [...paused, ...ready].sort(byPriority);
 }
 
 /** Reconcile stale claims before selecting work for the current poll. */

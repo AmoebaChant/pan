@@ -93,7 +93,13 @@ For `done` and `rejected`:
    confirmed; never delete session history or results.
 
 A failure leaves the confirmed partial state visible for retry. Clients never
-return success merely because an earlier write succeeded.
+return success merely because an earlier write succeeded. Revision-last
+recovery accepts an Issue at Project revision plus one only when every
+non-revision Issue and Project field, plus every source-authored import
+comment, already equals the projection derived from the source/current
+operation. A missing revision transition receipt may be reconstructed. Any
+independent drift fails closed; the Project revision repair is successful only
+after an exact re-read.
 
 ## Additive pilot translation
 

@@ -110,6 +110,55 @@ test('AI selection uses readiness, authorization, dependencies, priority, and Pr
   );
 });
 
+test('resumes and new work share priority then canonical Project ordering without date sorting', async () => {
+  const urgentNew = item({
+    id: 'urgent-new',
+    number: 20,
+    priority: 'urgent',
+    date: '2035-01-01',
+  });
+  const lowResume = item({
+    id: 'low-resume',
+    number: 21,
+    priority: 'low',
+    date: '2020-01-01',
+    workerState: 'paused',
+    machine: 'machine-a',
+    sessionId: '11111111-1111-4111-8111-111111111111',
+    claimGeneration: '22222222-2222-4222-8222-222222222222',
+  });
+  const result = await preparePoll([lowResume, urgentNew], options([lowResume, urgentNew]));
+  assert.deepEqual(
+    result.candidates.map((entry) => entry.itemId),
+    ['urgent-new', 'low-resume'],
+  );
+
+  const firstNew = item({
+    id: 'first-new',
+    number: 22,
+    priority: 'normal',
+    date: '2035-01-01',
+  });
+  const laterResume = item({
+    id: 'later-resume',
+    number: 23,
+    priority: 'normal',
+    date: '2020-01-01',
+    workerState: 'paused',
+    machine: 'machine-a',
+    sessionId: '33333333-3333-4333-8333-333333333333',
+    claimGeneration: '44444444-4444-4444-8444-444444444444',
+  });
+  const samePriority = await preparePoll(
+    [firstNew, laterResume],
+    options([firstNew, laterResume]),
+  );
+  assert.deepEqual(
+    samePriority.candidates.map((entry) => entry.itemId),
+    ['first-new', 'later-resume'],
+  );
+});
+
 test('attention backpressure skips only new may-request work', async () => {
   const tasks = [
     item({ id: 'need-1', number: 1, status: 'ready-for-human', action: 'clarify' }),
@@ -137,7 +186,7 @@ test('attention backpressure skips only new may-request work', async () => {
 
   assert.deepEqual(
     result.candidates.map((entry) => entry.itemId),
-    ['resume', 'auto'],
+    ['auto', 'resume'],
   );
 });
 

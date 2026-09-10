@@ -9,6 +9,7 @@ import {
   parseCurrentActionBlock,
   parseRevision,
   renderCurrentActionBlock,
+  rollbackSafetyReason,
   transitionComment,
   transitionMarker,
   upsertCurrentActionBlock,
@@ -1072,6 +1073,16 @@ export class GitHubTaskStore {
       !needsRevision
       && currentBlock.revision === currentRevision + 1
     );
+    if (
+      needsRevision
+      && currentBlock
+      && currentBlock.revision === currentRevision + 1
+    ) {
+      throw new Error(
+        `Todoist source ${sourceId} interrupted revision-last recovery found ` +
+          'independent non-revision projection drift',
+      );
+    }
     const needsRepair = (
       needsRevision
       || transitionOccurrences.length !== 1
@@ -1079,29 +1090,19 @@ export class GitHubTaskStore {
     );
     let finalRevision = currentRevision;
     if (needsRevision) {
-      if (
-        currentBlock
-        && currentBlock.status === 'ready-for-human'
-        && currentBlock.action === 'act'
-        && currentBlock.detail === currentActionDetail
-        && currentBlock.revision === currentRevision + 1
-      ) {
-        finalRevision = currentBlock.revision;
-      } else {
-        if (currentBlock && currentBlock.revision > currentRevision) {
-          throw new Error(`Todoist source ${sourceId} current-action revision is ahead of the Project`);
-        }
-        finalRevision = currentRevision + 1;
-        currentBlock = {
-          block: renderCurrentActionBlock({
-            status: 'ready-for-human',
-            action: 'act',
-            detail: currentActionDetail,
-            revision: finalRevision,
-            updatedAt: this.now().toISOString(),
-          }),
-        };
+      if (currentBlock && currentBlock.revision > currentRevision) {
+        throw new Error(`Todoist source ${sourceId} current-action revision is ahead of the Project`);
       }
+      finalRevision = currentRevision + 1;
+      currentBlock = {
+        block: renderCurrentActionBlock({
+          status: 'ready-for-human',
+          action: 'act',
+          detail: currentActionDetail,
+          revision: finalRevision,
+          updatedAt: this.now().toISOString(),
+        }),
+      };
     } else if (revisionLastRecovery) {
       finalRevision = currentBlock.revision;
     } else if (currentBlock.revision !== currentRevision) {
@@ -1547,14 +1548,6 @@ export class GitHubTaskStore {
     ) {
       throw new Error('rollback item changed after the current-state plan was generated');
     }
-    if (
-      item.fields['claimed-by']
-      || item.fields['lease-until']
-      || ['starting', 'running', 'waiting-human', 'uncertain']
-        .includes(item.fields['worker-state'])
-    ) {
-      throw new Error('rollback refuses a live or uncertain worker');
-    }
     const source = action.source;
     const target = action.legacyTarget;
     if (
@@ -1567,6 +1560,16 @@ export class GitHubTaskStore {
     ) {
       throw new Error('rollback plan has an invalid source or legacy target');
     }
+    const rollbackUnsafe = rollbackSafetyReason({
+      status: source.status,
+      workerState: item.fields['worker-state'] || '',
+      claimedBy: item.fields['claimed-by'] || '',
+      leaseUntil: item.fields['lease-until'] || '',
+      machine: item.fields.machine || '',
+      sessionId: item.fields['session-id'] || '',
+      claimGeneration: item.fields['claim-generation'] || '',
+    }, source.status);
+    if (rollbackUnsafe) throw new Error(rollbackUnsafe);
     if (
       ['done', 'rejected'].includes(source.status)
         ? (
@@ -1936,42 +1939,51 @@ export class GitHubTaskStore {
       !needsRevision
       && block.revision === currentRevision + 1
     );
+    if (
+      needsRevision
+      && block
+      && block.revision === currentRevision + 1
+    ) {
+      throw new Error(
+        'recurring successor interrupted revision-last recovery found ' +
+          'independent non-revision projection drift',
+      );
+    }
     let finalRevision = currentRevision;
     if (needsRevision) {
-      if (blockMatches && block.revision === currentRevision + 1) {
-        finalRevision = block.revision;
-      } else {
-        if (block && block.revision > currentRevision) {
-          throw new Error('recurring successor current-action revision is ahead of its Project item');
-        }
-        finalRevision = currentRevision + 1;
-        block = {
-          block: renderCurrentActionBlock({
-            status: 'ready-for-human',
-            action: 'act',
-            detail: desiredDetail,
-            revision: finalRevision,
-            updatedAt: this.now().toISOString(),
-          }),
-        };
+      if (block && block.revision > currentRevision) {
+        throw new Error('recurring successor current-action revision is ahead of its Project item');
       }
+      finalRevision = currentRevision + 1;
+      block = {
+        block: renderCurrentActionBlock({
+          status: 'ready-for-human',
+          action: 'act',
+          detail: desiredDetail,
+          revision: finalRevision,
+          updatedAt: this.now().toISOString(),
+        }),
+      };
     } else if (revisionLastRecovery) {
       finalRevision = block.revision;
     } else if (block.revision !== currentRevision) {
       throw new Error('recurring successor Issue and Project revisions disagree');
     }
     const desiredBody = upsertCurrentActionBlock(expectedBaseBody, block.block);
-    if (successor.title !== item.issue.title || successor.body !== desiredBody) {
-      await this.#editIssue(this.binding.domain.slug, successor.number, {
-        title: item.issue.title,
-        body: desiredBody,
-      });
-    }
+    // Project fields precede the Issue revision boundary. Therefore an Issue
+    // already at Project+1 is recoverable only when every non-revision field is
+    // exact; a crash before this point leaves the Issue at the old revision.
     for (const [name, value] of fieldChanges) {
       const field = this.#field(name);
       if (field.dataType === 'SINGLE_SELECT') await this.#setSelect(successorItem.itemId, name, value);
       else if (field.dataType === 'DATE') await this.#setDate(successorItem.itemId, name, value);
       else await this.#setText(successorItem.itemId, name, value);
+    }
+    if (successor.title !== item.issue.title || successor.body !== desiredBody) {
+      await this.#editIssue(this.binding.domain.slug, successor.number, {
+        title: item.issue.title,
+        body: desiredBody,
+      });
     }
     await ensureIssueComment(
       this.gh,
@@ -1990,6 +2002,18 @@ export class GitHubTaskStore {
     );
     if (currentRevision !== finalRevision) {
       await this.#setText(successorItem.itemId, 'task-revision', String(finalRevision));
+      const revisionConfirmed = await this.#item(successorItem.itemId);
+      const revisionConfirmedBlock = revisionConfirmed
+        ? parseCurrentActionBlock(revisionConfirmed.issue.body)
+        : null;
+      if (
+        !revisionConfirmed
+        || parseRevision(revisionConfirmed.fields['task-revision'] ?? '') !== finalRevision
+        || !revisionConfirmedBlock
+        || revisionConfirmedBlock.revision !== finalRevision
+      ) {
+        throw new Error('GitHub did not verify recurring successor revision repair');
+      }
     }
     successorItem = await this.#item(successorItem.itemId);
     const confirmedBlock = successorItem
