@@ -192,23 +192,22 @@ test('partial import continues independent tasks and reports failure without rol
   assert.equal(report.results.find((result) => result.sourceId === '2').outcome, 'created');
 });
 
-test('legacy assignment aliases normalize string and number ids without coercing opaque values', () => {
+function assignmentSnapshot(tasks) {
   const snapshot = snapshotFixture();
   snapshot.user.id = '42';
   snapshot.excluded = [];
-  snapshot.tasks = [
+  snapshot.tasks = tasks;
+  return snapshot;
+}
+
+test('legacy assignment aliases normalize string and number ids without coercing opaque values', () => {
+  const snapshot = assignmentSnapshot([
     { id: 'self-number', content: 'Self', assignee_id: 42 },
     { id: 'self-camel', content: 'Self camel', assigneeId: ' 42 ' },
     { id: 'unassigned', content: 'Unassigned', assignee_id: null },
     { id: 'other', content: 'Other', assigneeId: 7 },
     { id: 'leading-zero', content: 'Opaque mismatch', responsibleUid: '042' },
-    {
-      id: 'conflicting-aliases',
-      content: 'Conflicting aliases',
-      responsible_uid: '42',
-      assignee_id: 'another-user',
-    },
-  ];
+  ]);
 
   assert.deepEqual(
     todoistImportRecords(snapshot).map((record) => record.sourceId),
@@ -219,12 +218,77 @@ test('legacy assignment aliases normalize string and number ids without coercing
     [
       ['other', 'excluded-assignee'],
       ['leading-zero', 'excluded-assignee'],
-      ['conflicting-aliases', 'excluded-assignee'],
       ['self-number', 'create'],
       ['self-camel', 'create'],
       ['unassigned', 'create'],
     ],
   );
+});
+
+test('definitive self responsible_uid ignores a stale other-user alias', () => {
+  const snapshot = assignmentSnapshot([{
+    id: 'self-definitive',
+    content: 'Self definitive',
+    responsible_uid: '42',
+    assignee_id: 'another-user',
+  }]);
+
+  assert.deepEqual(todoistImportRecords(snapshot).map((record) => record.sourceId), [
+    'self-definitive',
+  ]);
+  assert.equal(planTodoistImport(snapshot).actions[0].action, 'create');
+});
+
+test('definitive other-user responsible_uid ignores a stale self alias', () => {
+  const snapshot = assignmentSnapshot([{
+    id: 'other-definitive',
+    content: 'Other definitive',
+    responsible_uid: 'another-user',
+    assignee_id: '42',
+  }]);
+
+  assert.deepEqual(todoistImportRecords(snapshot), []);
+  assert.equal(planTodoistImport(snapshot).actions[0].action, 'excluded-assignee');
+});
+
+test('absent or empty responsible_uid falls back to legacy assignment aliases', () => {
+  const snapshot = assignmentSnapshot([
+    {
+      id: 'absent-definitive',
+      content: 'Absent definitive',
+      assignee_id: '42',
+    },
+    {
+      id: 'empty-definitive',
+      content: 'Empty definitive',
+      responsible_uid: ' ',
+      responsibleUid: 'another-user',
+    },
+  ]);
+
+  assert.deepEqual(todoistImportRecords(snapshot).map((record) => record.sourceId), [
+    'absent-definitive',
+  ]);
+  assert.deepEqual(
+    planTodoistImport(snapshot).actions.map((action) => [action.sourceId, action.action]),
+    [
+      ['empty-definitive', 'excluded-assignee'],
+      ['absent-definitive', 'create'],
+    ],
+  );
+});
+
+test('conflicting nonempty fallback assignment aliases fail closed', () => {
+  const snapshot = assignmentSnapshot([{
+    id: 'conflicting-fallbacks',
+    content: 'Conflicting fallbacks',
+    responsible_uid: '',
+    responsibleUid: '42',
+    assignee_id: 'another-user',
+  }]);
+
+  assert.deepEqual(todoistImportRecords(snapshot), []);
+  assert.equal(planTodoistImport(snapshot).actions[0].action, 'excluded-assignee');
 });
 
 test('plan, apply, and verify reject other users from a buggy legacy snapshot', async () => {

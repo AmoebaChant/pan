@@ -1,8 +1,7 @@
 import { planLifecycleRollback } from './pan-lifecycle-migration.js';
 
 const TODOIST_PAGE_SIZE = 200;
-const TODOIST_ASSIGNMENT_FIELDS = [
-  'responsible_uid',
+const TODOIST_ASSIGNMENT_FALLBACK_FIELDS = [
   'responsibleUid',
   'assignee_id',
   'assigneeId',
@@ -15,8 +14,13 @@ function normalizeOpaqueId(value) {
 }
 
 function taskAssignmentIds(task) {
+  const responsibleUid = Object.hasOwn(task, 'responsible_uid')
+    ? normalizeOpaqueId(task.responsible_uid)
+    : null;
+  if (responsibleUid) return [responsibleUid];
+
   return [...new Set(
-    TODOIST_ASSIGNMENT_FIELDS
+    TODOIST_ASSIGNMENT_FALLBACK_FIELDS
       .filter((field) => Object.hasOwn(task, field))
       .map((field) => normalizeOpaqueId(task[field]))
       .filter(Boolean),

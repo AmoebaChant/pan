@@ -8,14 +8,16 @@ item, or comment.
 ## Import scope
 
 The tool reads the authenticated Todoist user first, then fully paginates active
-tasks, projects, sections, labels, and every imported task's comments. A task
-with a non-empty Todoist API v1 `responsible_uid` different from the
-authenticated user's id is excluded. The stable legacy `assignee_id` aliases
-remain supported. IDs are compared as normalized opaque strings; unassigned
-tasks and tasks assigned to the authenticated user are eligible. Snapshot,
-plan, apply, and verify each enforce this rule from the task records, so a
-snapshot produced by an older buggy client cannot authorize importing another
-person's task. Exclusion output contains only the source task id and reason.
+tasks, projects, sections, labels, and every imported task's comments. A task with a non-empty Todoist API v1 `responsible_uid` different from the
+authenticated user's id is excluded. A non-empty `responsible_uid` is
+authoritative, and stale legacy assignment aliases are ignored. When it is
+absent or empty, the stable `responsibleUid`, `assignee_id`, and `assigneeId`
+aliases are checked in that order; conflicting non-empty fallbacks fail closed.
+IDs are compared as normalized opaque strings; unassigned tasks and tasks
+assigned to the authenticated user are eligible. Snapshot, plan, apply, and
+verify each enforce this rule from the task records, so a snapshot produced by
+an older buggy client cannot authorize importing another person's task.
+Exclusion output contains only the source task id and reason.
 
 Every created Issue preserves:
 
