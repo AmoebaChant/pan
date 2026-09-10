@@ -161,13 +161,15 @@ persists through `paused`, `waiting-human`, and `checkpointed` until one of:
 - operator recovery proves every possible launcher dead, preserves all results,
   and deliberately releases the workspace under the runner recovery contract.
 
-An additive migration may encounter a terminal task whose complete
-`machine`/`session-id`/`claim-generation` tuple was intentionally retained by
-the prior lifecycle as history. When `worker-state` is empty, `idle`, or
-`stopped`, `claimed-by`, `lease-until`, and `needs-human-since` are empty, and
-operator preflight confirms there is no live/uncertain launcher, pending result,
-checkpoint receipt, or terminal-release journal, that tuple is **historical
-provenance**, not workspace ownership. Migration records
+An additive migration may encounter a closed terminal task whose
+`machine`/`session-id` pair was retained by the prior lifecycle as history
+before claim generations existed. The pair may therefore have an empty
+`claim-generation`; a complete later-generation tuple is also supported. When
+`worker-state` is empty, `idle`, or `stopped`, `claimed-by`, `lease-until`, and
+`needs-human-since` are empty, the Issue close reason matches `done` or
+`rejected`, and operator preflight confirms there is no live/uncertain launcher,
+pending result, checkpoint receipt, or terminal-release journal, that tuple is
+**historical provenance**, not workspace ownership. Migration records
 `resource-semantics=historical-provenance`; migration and rollback preserve it.
 That marker is immutable through routine browser and service mutations:
 metadata-only edits may preserve it, but no hold, handoff, worker-state edit,
@@ -180,6 +182,26 @@ uncertain, partial, or contradictory evidence — including a pending result,
 checkpoint receipt, or terminal-release journal beside that marker — fails
 closed for operator reconciliation. Unmarked journal-based interrupted
 terminal cleanup remains recoverable under the normal exact binding checks.
+
+Writer-exclusive migration may also preserve a pre-generation
+`machine`/`session-id` pair as `resource-semantics=held-affinity` in exactly two
+operator-authorized non-execution cases:
+
+- a verified-dead legacy `paused` agent worker with a durable unresolved human
+  checkpoint becomes `ready-for-human` with an exact
+  `clarify`/`discuss`/`approve`/`review` action; or
+- a verified deliberate legacy `blocked` agent task becomes
+  `deliberate-hold/hold`.
+
+Both keep `needs-human-since`, machine, session, and the exact question/detail,
+set `execution-authorized=no`, and use `worker-state=checkpointed` or `paused`.
+The authorization binds the complete live projection and exact stale
+claim/lease values. It must attest that the named process is dead and all
+possible writers are stopped. Only then may apply clear that exact stale
+claim/lease. An unexpired lease, any `claim-generation`, active/uncertain worker
+state, terminal or closed Issue, mismatched projection, partial machine/session
+pair, or absent authorization fails closed. These held records cannot be
+selected or resumed; an explicit later checked human transition is required.
 
 On restart, the durable manifest, lock, process-start identity, generation, and
 live Project tuple are reconciled before adopting, finalizing, or launching.

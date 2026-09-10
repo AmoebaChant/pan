@@ -1397,6 +1397,7 @@ export class GitHubTaskStore {
       || (item.fields.playbook || '') !== (expected.playbook || '')
       || (item.fields['claimed-by'] || '') !== (expected.claimedBy || '')
       || (item.fields['lease-until'] || '') !== (expected.leaseUntil || '')
+      || (item.fields['needs-human-since'] || '') !== (expected.needsHumanSince || '')
       || (item.fields.machine || '') !== (expected.machine || '')
       || (item.fields['session-id'] || '') !== (expected.sessionId || '')
       || (item.fields['claim-generation'] || '') !== (expected.claimGeneration || '')
@@ -1410,6 +1411,51 @@ export class GitHubTaskStore {
     const target = action.target;
     if (!validLifecyclePair(target.status, target.nextAction)) {
       throw new Error('migration target has an invalid lifecycle pair');
+    }
+    if (action.cutoverClassification) {
+      const checkpoint = action.cutoverClassification === 'verifiedHumanCheckpoint';
+      const deliberateHold = action.cutoverClassification === 'verifiedDeliberateHold';
+      const lease = Date.parse(expected.leaseUntil || '');
+      if (
+        (!checkpoint && !deliberateHold)
+        || action.cutoverAuthorization?.verifiedDeadProcess !== true
+        || action.cutoverAuthorization?.verifiedWritersStopped !== true
+        || expected.issueState !== 'OPEN'
+        || expected.owner !== 'agent'
+        || !expected.machine
+        || !expected.sessionId
+        || expected.claimGeneration
+        || !expected.needsHumanSince
+        || expected.resourceSemantics
+        || expected.executionAuthorized === 'yes'
+        || !['', 'idle', 'checkpointed', 'paused', 'stopped'].includes(expected.workerState || '')
+        || (expected.claimedBy ? !expected.leaseUntil : !!expected.leaseUntil)
+        || (expected.leaseUntil && (!Number.isFinite(lease) || lease >= this.now().getTime()))
+        || target.executionAuthorized !== 'no'
+        || !String(target.detail || '').trim()
+        || !['checkpointed', 'paused'].includes(target.workerState)
+        || action.preserve.resourceSemantics !== 'held-affinity'
+        || (
+          checkpoint
+          && (
+            expected.status !== 'paused'
+            || target.status !== 'ready-for-human'
+            || !['clarify', 'discuss', 'approve', 'review'].includes(target.nextAction)
+          )
+        )
+        || (
+          deliberateHold
+          && (
+            expected.status !== 'blocked'
+            || target.status !== 'deliberate-hold'
+            || target.nextAction !== 'hold'
+          )
+        )
+      ) {
+        throw new Error('verified cutover authorization is not safe for this migration');
+      }
+    } else if (expected.claimedBy || expected.leaseUntil) {
+      throw new Error('migration cannot clear claim or lease without verified cutover authorization');
     }
     const terminal = isTerminalStatus(target.status);
     if (!terminal && item.issue.state === 'CLOSED') {
@@ -1450,6 +1496,7 @@ export class GitHubTaskStore {
       ['worker-state', target.workerState],
       ['claimed-by', ''],
       ['lease-until', ''],
+      ['needs-human-since', item.fields['needs-human-since'] || ''],
       ['machine', item.fields.machine || ''],
       ['session-id', item.fields['session-id'] || ''],
       ['claim-generation', item.fields['claim-generation'] || ''],
@@ -1518,6 +1565,7 @@ export class GitHubTaskStore {
       || confirmed.fields['worker-state'] !== target.workerState
       || confirmed.fields['claimed-by']
       || confirmed.fields['lease-until']
+      || (confirmed.fields['needs-human-since'] || '') !== (item.fields['needs-human-since'] || '')
       || (confirmed.fields.machine || '') !== (item.fields.machine || '')
       || (confirmed.fields['session-id'] || '') !== (item.fields['session-id'] || '')
       || (confirmed.fields['claim-generation'] || '') !== (item.fields['claim-generation'] || '')
@@ -1550,6 +1598,9 @@ export class GitHubTaskStore {
         nextAction: target.nextAction,
         workerState: target.workerState,
       },
+      ...(action.cutoverClassification
+        ? { cutoverClassification: action.cutoverClassification }
+        : {}),
     };
   }
 

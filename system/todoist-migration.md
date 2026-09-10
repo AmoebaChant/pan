@@ -77,16 +77,77 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
    approved legacy agent item. Each entry must contain the exact `itemId`,
    non-empty `playbook`, exact `dependencies` text, and
    `executionAuthorized: true`. Legacy `owner=agent` is never authorization.
+   Version 1 is backwards-compatible and also permits either of these explicit
+   non-execution classifications:
+
+   ```json
+   {
+     "itemId": "PVTI_sanitized",
+     "classification": "verifiedHumanCheckpoint",
+     "projection": "sha256-from-plan",
+     "status": "paused",
+     "owner": "agent",
+     "issueState": "OPEN",
+     "workerState": "",
+     "machine": "machine-a",
+     "sessionId": "sanitized-session",
+     "claimGeneration": "",
+     "claimedBy": "old-runner",
+     "leaseUntil": "2026-09-10T01:00:00.000Z",
+     "needsHumanSince": "2026-09-10T01:30:00.000Z",
+     "action": "approve",
+     "detail": "Approve publishing the verified build, or discuss the build number.",
+     "targetWorkerState": "checkpointed",
+     "executionAuthorized": false,
+     "verifiedDeadProcess": true,
+     "verifiedWritersStopped": true
+   }
+   ```
+
+   ```json
+   {
+     "itemId": "PVTI_sanitized",
+     "classification": "verifiedDeliberateHold",
+     "projection": "sha256-from-plan",
+     "status": "blocked",
+     "owner": "agent",
+     "issueState": "OPEN",
+     "workerState": "",
+     "machine": "machine-a",
+     "sessionId": "sanitized-session",
+     "claimGeneration": "",
+     "claimedBy": "",
+     "leaseUntil": "",
+     "needsHumanSince": "2026-09-10T01:30:00.000Z",
+     "action": "hold",
+     "detail": "Keep paused until the user explicitly marks the outcome ready again.",
+     "targetWorkerState": "paused",
+     "executionAuthorized": false,
+     "verifiedDeadProcess": true,
+     "verifiedWritersStopped": true
+   }
+   ```
+
+   Every shown key is required. `claimedBy` and `leaseUntil` must both be empty
+   or both exactly match the stale live values. A human checkpoint action is
+   one of `clarify`, `discuss`, `approve`, or `review`; a deliberate hold uses
+   `hold`. The operator must verify the process is dead and all possible
+   writers are stopped; timestamps and an expired lease are not proof.
 4. Run `pan-lifecycle-migrate apply` with that file and
    `--confirm-writers-stopped`. Active or uncertain workers, claims, leases,
-   partial tuples, and ambiguous retained sessions remain held for operator
-   reconciliation rather than being guessed safe. Before apply, inspect every
-   terminal tuple's owning machine state and confirm there is no live/uncertain
-   launcher, unconsumed result, checkpoint receipt, or terminal-release
-   journal. A complete terminal tuple with none of that evidence is historical
-   provenance and is preserved. A passive blocked session migrates as
-   `deliberate-hold/hold` only when the revision-aligned Issue current-action
-   block already records that deliberate hold; otherwise it remains held.
+   partial tuples, live leases, generated operational tuples, and ambiguous
+   retained sessions remain held for operator reconciliation rather than being
+   guessed safe. A matching verified non-execution entry may clear only its
+   exact stale claim/lease and preserves the human checkpoint, machine, and
+   session as held affinity. Before apply, inspect every terminal tuple's owning
+   machine state and confirm there is no live/uncertain launcher, unconsumed
+   result, checkpoint receipt, or terminal-release journal. A closed terminal
+   machine/session pair without a pre-generation claim id, or a complete
+   terminal tuple, with none of that evidence is historical provenance and is
+   preserved. A passive blocked session migrates as `deliberate-hold/hold` only
+   when the revision-aligned Issue current-action block already records that
+   deliberate hold or an exact `verifiedDeliberateHold` entry authorizes it;
+   otherwise it remains held.
 5. Run another plan against current live state. Do not restart writers until it
    reports no authorization, cutover-hold, or repair actions.
 
@@ -136,10 +197,11 @@ liveness, and claim fields:
 The plan and checked apply preserve current dates, Issue text, comments,
 sessions, results, playbook/dependency text, and recurrence markers. Apply does
 not reopen or re-close Issues, reverse Todoist state, clear affinity, or infer
-that an active/uncertain worker is safe. A complete tuple on a terminal
-`worker-state=stopped` item remains historical provenance through rollback; it
-does not authorize workspace release or result replay and is identified by the
-preserved `resource-semantics=historical-provenance` marker. Passive affinity
+that an active/uncertain worker is safe. A pre-generation machine/session pair
+or complete tuple on a terminal `worker-state=stopped` item remains historical
+provenance through rollback; it does not authorize workspace release or result
+replay and is identified by the preserved
+`resource-semantics=historical-provenance` marker. Passive affinity
 on a durable `deliberate-hold/hold` remains held and non-runnable only when no
 open human checkpoint exists; its `resource-semantics=held-affinity` marker is
 preserved. Plan and apply use

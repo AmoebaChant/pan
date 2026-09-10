@@ -97,14 +97,25 @@ node bin/pan-lifecycle-migrate.js rollback-apply \
 The authorization document has format
 `pan-lifecycle-migration-authorization`, version `1`, and exact `itemId`,
 `playbook`, `dependencies`, and `executionAuthorized: true` entries. Legacy
-agent ownership is not authorization. Plan translates current live state,
-repairs partial current tuples, and flags active or paused sessions as
-`requires-cutover-hold`; a stale lease is not workspace release evidence.
-Apply is idempotent, re-reads every item, preserves legacy owner/options for
-rollback, refuses changed/live items, and verifies the full Issue/Project
-projection with revision last. Stop every runner, UI, briefing session, and
-other writer before cutover. Rollback plan/apply translates the current live
-pilot projection to compatible retained legacy `owner`/`Status` values. It
+agent ownership is not authorization. The same version also supports exact
+`verifiedHumanCheckpoint` and `verifiedDeliberateHold` non-execution entries.
+Their complete JSON schema and examples are in
+[`system/todoist-migration.md`](../system/todoist-migration.md). They bind the
+plan projection plus every worker/resource value, preserve the unresolved
+human action and held affinity, and require
+`executionAuthorized: false`, `verifiedDeadProcess: true`, and
+`verifiedWritersStopped: true`. The operator must independently verify process
+death and stop every runner, worker, UI, briefing session, and other writer;
+an expired lease is not proof.
+
+Plan translates current live state, repairs partial current tuples, and flags
+unapproved active or paused sessions as `requires-cutover-hold`. Apply is
+idempotent, re-reads every item, clears only exactly authorized stale
+claim/lease values, preserves legacy owner/options for rollback, refuses
+changed/live items, and verifies the full Issue/Project projection with revision
+last. Closed terminal machine/session provenance from before claim generations
+is preserved as non-runnable history. Rollback plan/apply translates the current
+live pilot projection to compatible retained legacy `owner`/`Status` values. It
 preserves all trial progress and resource evidence, refuses active, uncertain,
 stale, or externally inconsistent items, and never replays the baseline or
 reverses Issue/Todoist side effects. The Todoist CLI exposes the same operation

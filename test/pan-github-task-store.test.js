@@ -35,6 +35,33 @@ function recurring(occurrence, rule) {
   ].join('\n');
 }
 
+function verifiedCutover(task, classification, overrides = {}) {
+  return {
+    itemId: task.itemId,
+    classification,
+    projection: task.projection,
+    status: task.status,
+    owner: task.legacyOwner || 'unassigned',
+    issueState: task.issueState,
+    workerState: task.workerState || '',
+    machine: task.machine || '',
+    sessionId: task.sessionId || '',
+    claimGeneration: task.claimGeneration || '',
+    claimedBy: task.claimedBy || '',
+    leaseUntil: task.leaseUntil || '',
+    needsHumanSince: task.needsHumanSince || '',
+    action: classification === 'verifiedDeliberateHold' ? 'hold' : 'approve',
+    detail: classification === 'verifiedDeliberateHold'
+      ? 'Keep paused until the user explicitly marks the outcome ready again.'
+      : 'Approve publishing the verified mobile build, or discuss the build number.',
+    targetWorkerState: 'checkpointed',
+    executionAuthorized: false,
+    verifiedDeadProcess: true,
+    verifiedWritersStopped: true,
+    ...overrides,
+  };
+}
+
 test('weekly recurrence derives from nominal occurrence and closed day, recording skipped slots', () => {
   assert.deepEqual(
     computeRecurringSuccessor(recurring('2026-09-04', 'Every Friday.'), '2026-09-18'),
@@ -740,13 +767,15 @@ test('task mutation requires an exact Issue and Project projection before writes
 
 test('terminal lifecycle migration closes the Issue and preserves historical provenance', async () => {
       const state = fakeGitHubState();
+      state.issue.state = 'CLOSED';
+      state.issue.stateReason = 'COMPLETED';
       state.item.fields.Status = 'done';
       state.item.fields['next-action'] = '';
       state.item.fields['next-action-date'] = '2026-09-01';
       state.item.fields['worker-state'] = '';
       state.item.fields.machine = 'machine-a';
       state.item.fields['session-id'] = 'session-a';
-      state.item.fields['claim-generation'] = 'generation-a';
+      state.item.fields['claim-generation'] = '';
       state.item.fields['task-revision'] = '';
       const { store } = await fakeStore(state);
       const task = (await store.list()).tasks[0];
@@ -762,9 +791,128 @@ test('terminal lifecycle migration closes the Issue and preserves historical pro
       assert.equal(state.item.fields['worker-state'], 'stopped');
       assert.equal(state.item.fields.machine, 'machine-a');
       assert.equal(state.item.fields['session-id'], 'session-a');
-      assert.equal(state.item.fields['claim-generation'], 'generation-a');
+      assert.equal(state.item.fields['claim-generation'], '');
       assert.equal(state.item.fields['resource-semantics'], 'historical-provenance');
       assert.equal(state.writes.at(-1), 'project:task-revision');
+
+      const converged = planLifecycleMigration((await store.list()).tasks);
+      assert.equal(converged.actions[0].action, 'already-current');
+      const before = state.writes.length;
+      const reapplied = await applyLifecycleMigration(converged, store);
+      assert.equal(reapplied.partial, false);
+      assert.equal(state.writes.length, before);
+});
+
+test('verified legacy checkpoint and deliberate hold migrations clear only stale claims and converge', async () => {
+      const cases = [
+        {
+          classification: 'verifiedHumanCheckpoint',
+          configure(state) {
+            state.item.fields.Status = 'paused';
+            state.item.fields.owner = 'agent';
+            state.item.fields['worker-state'] = '';
+            state.item.fields['claimed-by'] = 'old-runner';
+            state.item.fields['lease-until'] = '2026-09-09T08:00:00.000Z';
+            state.item.fields['needs-human-since'] = '2026-09-09T07:30:00.000Z';
+            state.item.fields.machine = 'machine-a';
+            state.item.fields['session-id'] = 'session-a';
+            state.item.fields['claim-generation'] = '';
+          },
+          expected: {
+            status: 'ready-for-human',
+            action: 'approve',
+            workerState: 'checkpointed',
+          },
+        },
+        {
+          classification: 'verifiedDeliberateHold',
+          configure(state) {
+            state.item.fields.Status = 'blocked';
+            state.item.fields.owner = 'agent';
+            state.item.fields['worker-state'] = '';
+            state.item.fields['claimed-by'] = '';
+            state.item.fields['lease-until'] = '';
+            state.item.fields['needs-human-since'] = '2026-09-09T07:30:00.000Z';
+            state.item.fields.machine = 'machine-a';
+            state.item.fields['session-id'] = 'session-a';
+            state.item.fields['claim-generation'] = '';
+          },
+          expected: {
+            status: 'deliberate-hold',
+            action: 'hold',
+            workerState: 'checkpointed',
+          },
+        },
+      ];
+
+      for (const entry of cases) {
+        const state = fakeGitHubState();
+        entry.configure(state);
+        const { store } = await fakeStore(state);
+        const task = (await store.list()).tasks[0];
+        const authorization = verifiedCutover(task, entry.classification);
+        const plan = planLifecycleMigration([task], {
+          now: Date.parse('2026-09-09T12:00:00.000Z'),
+          authorizations: [authorization],
+        });
+        assert.equal(plan.actions[0].action, 'migrate', entry.classification);
+        assert.equal(plan.actions[0].cutoverClassification, entry.classification);
+
+        const report = await applyLifecycleMigration(plan, store);
+        assert.equal(report.partial, false, entry.classification);
+        assert.equal(report.results[0].cutoverClassification, entry.classification);
+        assert.equal(state.item.fields.Status, entry.expected.status);
+        assert.equal(state.item.fields['next-action'], entry.expected.action);
+        assert.equal(state.item.fields['worker-state'], entry.expected.workerState);
+        assert.equal(state.item.fields['execution-authorized'], 'no');
+        assert.equal(state.item.fields['claimed-by'], '');
+        assert.equal(state.item.fields['lease-until'], '');
+        assert.equal(state.item.fields['needs-human-since'], '2026-09-09T07:30:00.000Z');
+        assert.equal(state.item.fields.machine, 'machine-a');
+        assert.equal(state.item.fields['session-id'], 'session-a');
+        assert.equal(state.item.fields['claim-generation'], '');
+        assert.equal(state.item.fields['resource-semantics'], 'held-affinity');
+        assert.equal(state.issue.state, 'OPEN');
+
+        const converged = planLifecycleMigration((await store.list()).tasks, {
+          authorizations: [authorization],
+        });
+        assert.equal(converged.actions[0].action, 'already-current');
+        const before = state.writes.length;
+        const reapplied = await applyLifecycleMigration(converged, store);
+        assert.equal(reapplied.partial, false);
+        assert.equal(state.writes.length, before);
+      }
+});
+
+test('verified cutover apply refuses stale claim changes before clearing ownership', async () => {
+      const state = fakeGitHubState();
+      state.item.fields.Status = 'paused';
+      state.item.fields.owner = 'agent';
+      state.item.fields['worker-state'] = '';
+      state.item.fields['claimed-by'] = 'old-runner';
+      state.item.fields['lease-until'] = '2026-09-09T08:00:00.000Z';
+      state.item.fields['needs-human-since'] = '2026-09-09T07:30:00.000Z';
+      state.item.fields.machine = 'machine-a';
+      state.item.fields['session-id'] = 'session-a';
+      state.item.fields['claim-generation'] = '';
+      const { store } = await fakeStore(state);
+      const task = (await store.list()).tasks[0];
+      const plan = planLifecycleMigration([task], {
+        now: Date.parse('2026-09-09T12:00:00.000Z'),
+        authorizations: [verifiedCutover(task, 'verifiedHumanCheckpoint')],
+      });
+      assert.equal(plan.actions[0].action, 'migrate');
+      state.item.fields['claimed-by'] = 'new-runner';
+      const before = state.writes.length;
+
+      await assert.rejects(
+        store.migrateLegacyItem(plan.actions[0]),
+        /changed after the migration plan/,
+      );
+      assert.equal(state.writes.length, before);
+      assert.equal(state.item.fields['claimed-by'], 'new-runner');
+      assert.equal(state.item.fields['lease-until'], '2026-09-09T08:00:00.000Z');
 });
 
 test('durable deliberate hold migration preserves passive session evidence and stays non-runnable', async () => {

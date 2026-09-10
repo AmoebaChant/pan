@@ -92,13 +92,19 @@ The authorization document is
 `{"format":"pan-lifecycle-migration-authorization","version":1,"items":[...]}`;
 each item contains exact `itemId`, `playbook`, `dependencies`, and
 `"executionAuthorized":true`. Legacy ownership alone never authorizes AI.
-Paused or otherwise retained sessions require operator reconciliation and are
-not migrated automatically. Rollback is generated only from current live pilot
-state, checks the complete Issue/Project projection again before every write,
-preserves dates, playbooks, dependencies, worker/session evidence, Issue text,
-comments, and recurrence progress, and changes only the retained legacy
-`owner`/`Status` projection plus revision history. It refuses active,
-uncertain, stale, or externally inconsistent items. The equivalent
+Version 1 also accepts exact `verifiedHumanCheckpoint` and
+`verifiedDeliberateHold` entries that explicitly deny execution and attest
+verified process death and stopped writers; see the complete schema in
+[`system/todoist-migration.md`](system/todoist-migration.md). An expired lease
+alone is not death evidence. Unapproved retained sessions remain held for
+operator reconciliation. Closed terminal machine/session provenance predating
+claim generations is preserved as non-runnable history. Rollback is generated
+only from current live pilot state, checks the complete Issue/Project projection
+again before every write, preserves dates, playbooks, dependencies,
+worker/session evidence, Issue text, comments, and recurrence progress, and
+changes only the retained legacy `owner`/`Status` projection plus revision
+history. It refuses active, uncertain, stale, or externally inconsistent items.
+The equivalent
 `pan-todoist-migrate recovery-plan` / `recovery-apply` commands are available
 for the Todoist migration workflow. Never replay stale baseline state.
 

@@ -38,6 +38,33 @@ function legacy(overrides = {}) {
   };
 }
 
+function verifiedCutover(task, classification, overrides = {}) {
+  return {
+    itemId: task.itemId,
+    classification,
+    projection: task.projection,
+    status: task.status,
+    owner: task.legacyOwner || 'unassigned',
+    issueState: task.issueState,
+    workerState: task.workerState || '',
+    machine: task.machine || '',
+    sessionId: task.sessionId || '',
+    claimGeneration: task.claimGeneration || '',
+    claimedBy: task.claimedBy || '',
+    leaseUntil: task.leaseUntil || '',
+    needsHumanSince: task.needsHumanSince || '',
+    action: classification === 'verifiedDeliberateHold' ? 'hold' : 'approve',
+    detail: classification === 'verifiedDeliberateHold'
+      ? 'Keep paused until the user explicitly marks the outcome ready again.'
+      : 'Approve publishing the verified mobile build, or discuss the build number.',
+    targetWorkerState: 'checkpointed',
+    executionAuthorized: false,
+    verifiedDeadProcess: true,
+    verifiedWritersStopped: true,
+    ...overrides,
+  };
+}
+
 test('legacy migration keeps stable outcomes and does not use dates as AI gates', () => {
   const target = translateLegacyTask(legacy({
     nextActionDate: '2030-01-01',
@@ -172,6 +199,17 @@ test('migration authorization files reject incomplete or duplicate approvals', (
       ],
     }),
     /duplicate/,
+  );
+  assert.throws(
+    () => parseMigrationAuthorizations({
+      format: 'pan-lifecycle-migration-authorization',
+      version: 1,
+      items: [{
+        ...verifiedCutover(legacy(), 'verifiedHumanCheckpoint'),
+        verifiedDeadProcess: false,
+      }],
+    }),
+    /incomplete or unsafe/,
   );
 });
 
@@ -374,13 +412,30 @@ test('terminal provenance migrates safely while terminal active or uncertain evi
       status: 'done',
       machine: 'machine-a',
       sessionId: 'session-a',
-      claimGeneration: 'generation-a',
+      issueState: 'CLOSED',
+      issueStateReason: 'COMPLETED',
     }),
   ]).actions[0];
   assert.equal(provenance.action, 'migrate');
   assert.equal(provenance.target.status, 'done');
   assert.equal(provenance.target.workerState, 'stopped');
   assert.equal(provenance.preserve.resourceSemantics, 'historical-provenance');
+
+  for (const tuple of [
+    { machine: 'machine-a', sessionId: '', claimGeneration: '' },
+    { machine: '', sessionId: 'session-a', claimGeneration: '' },
+    { machine: 'machine-a', sessionId: '', claimGeneration: 'generation-a' },
+  ]) {
+    const partial = planLifecycleMigration([
+      legacy({
+        status: 'done',
+        issueState: 'CLOSED',
+        issueStateReason: 'COMPLETED',
+        ...tuple,
+      }),
+    ]).actions[0];
+    assert.equal(partial.action, 'invalid-state');
+  }
 
   for (const workerState of ['running', 'uncertain']) {
     const unsafe = planLifecycleMigration([
@@ -392,10 +447,109 @@ test('terminal provenance migrates safely while terminal active or uncertain evi
         machine: 'machine-a',
         sessionId: 'session-a',
         claimGeneration: 'generation-a',
+        issueState: 'CLOSED',
+        issueStateReason: 'COMPLETED',
       }),
     ]).actions[0];
     assert.equal(unsafe.action, 'invalid-state', workerState);
   }
+});
+
+test('verified dead legacy human checkpoint becomes held non-execution work only on exact authorization', () => {
+  const task = legacy({
+    status: 'paused',
+    claimedBy: 'old-runner',
+    leaseUntil: '2026-09-10T01:00:00Z',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    needsHumanSince: '2026-09-10T01:30:00Z',
+  });
+  const without = planLifecycleMigration([task], {
+    now: Date.parse('2026-09-10T04:00:00Z'),
+  }).actions[0];
+  assert.equal(without.action, 'requires-cutover-hold');
+
+  const authorization = verifiedCutover(task, 'verifiedHumanCheckpoint');
+  const parsed = parseMigrationAuthorizations({
+    format: 'pan-lifecycle-migration-authorization',
+    version: 1,
+    items: [authorization],
+  });
+  const action = planLifecycleMigration([task], {
+    now: Date.parse('2026-09-10T04:00:00Z'),
+    authorizations: parsed,
+  }).actions[0];
+  assert.equal(action.action, 'migrate');
+  assert.equal(action.cutoverClassification, 'verifiedHumanCheckpoint');
+  assert.deepEqual(action.target, {
+    executionAuthorized: 'no',
+    dependencies: '',
+    workerState: 'checkpointed',
+    status: 'ready-for-human',
+    nextAction: 'approve',
+    detail: 'Approve publishing the verified mobile build, or discuss the build number.',
+    requiresCutoverHold: false,
+    requiresAuthorization: false,
+    cutoverClassification: 'verifiedHumanCheckpoint',
+  });
+  assert.equal(action.preserve.resourceSemantics, 'held-affinity');
+  assert.equal(action.preserve.needsHumanSince, task.needsHumanSince);
+});
+
+test('verified deliberate hold requires exact legacy hold projection and remains non-executable', () => {
+  const task = legacy({
+    status: 'blocked',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    needsHumanSince: '2026-09-09T19:00:00Z',
+  });
+  assert.equal(planLifecycleMigration([task]).actions[0].action, 'requires-cutover-hold');
+
+  const authorization = verifiedCutover(task, 'verifiedDeliberateHold', {
+    targetWorkerState: 'paused',
+  });
+  const action = planLifecycleMigration([task], {
+    authorizations: [authorization],
+  }).actions[0];
+  assert.equal(action.action, 'migrate');
+  assert.equal(action.cutoverClassification, 'verifiedDeliberateHold');
+  assert.equal(action.target.status, 'deliberate-hold');
+  assert.equal(action.target.nextAction, 'hold');
+  assert.equal(action.target.workerState, 'paused');
+  assert.equal(action.target.executionAuthorized, 'no');
+  assert.equal(action.preserve.resourceSemantics, 'held-affinity');
+});
+
+test('verified cutover authorization rejects stale bindings, live leases, and generations', () => {
+  const task = legacy({
+    status: 'paused',
+    claimedBy: 'old-runner',
+    leaseUntil: '2026-09-10T01:00:00Z',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    needsHumanSince: '2026-09-10T01:30:00Z',
+  });
+  const authorization = verifiedCutover(task, 'verifiedHumanCheckpoint');
+
+  for (const [name, changed, now] of [
+    ['projection', { ...authorization, projection: 'stale-projection' }, Date.parse('2026-09-10T04:00:00Z')],
+    ['claim', { ...authorization, claimedBy: 'different-runner' }, Date.parse('2026-09-10T04:00:00Z')],
+    ['live lease', authorization, Date.parse('2026-09-10T00:30:00Z')],
+  ]) {
+    const action = planLifecycleMigration([task], { authorizations: [changed], now }).actions[0];
+    assert.equal(action.action, 'invalid-state', name);
+  }
+
+  const generated = { ...task, claimGeneration: 'generation-a' };
+  const action = planLifecycleMigration([generated], {
+    authorizations: [{
+      ...verifiedCutover(generated, 'verifiedHumanCheckpoint'),
+      claimGeneration: 'generation-a',
+    }],
+    now: Date.parse('2026-09-10T04:00:00Z'),
+  }).actions[0];
+  assert.equal(action.action, 'invalid-state');
+  assert.match(action.reason, /without claim-generation/);
 });
 
 test('durable deliberate hold migrates with passive affinity but ambiguous blocked state does not', () => {
@@ -578,7 +732,7 @@ test('rollback dry-run derives only current live state and flags unsafe executio
     workerState: 'stopped',
     machine: 'machine-a',
     sessionId: 'session-a',
-    claimGeneration: 'generation-a',
+    claimGeneration: '',
     resourceSemantics: 'historical-provenance',
     issueState: 'CLOSED',
     issueStateReason: 'COMPLETED',

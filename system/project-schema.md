@@ -22,10 +22,10 @@ resource, revision, date, and transition rules are defined in
 | `needs-human-since` | text | RFC 3339 UTC timestamp for an open human checkpoint. It may coexist with a live lease. |
 | `lease-until` | text | RFC 3339 UTC timestamp for active runner supervision. |
 | `claimed-by` | text | Stable runner identity currently supervising execution. |
-| `machine` | text | Machine or `<machine>::<slot>` workspace affinity. Persists until explicit resource release; on a stopped terminal item a complete tuple may instead be retained historical provenance. |
+| `machine` | text | Machine or `<machine>::<slot>` workspace affinity. Persists until explicit resource release; a migrated pre-generation machine/session pair may instead be retained historical provenance or held affinity. |
 | `session-id` | text | Durable Copilot session id. On a stopped terminal item it may be provenance, never resume authority. |
 | `claim-generation` | text | UUID binding one claim/launch lineage. Stale generations may not write; a terminal provenance value grants no write or cleanup authority. |
-| `resource-semantics` | single select | Empty for ordinary operational ownership; `historical-provenance` for a migrated terminal tuple that grants no authority; `held-affinity` for passive affinity retained by a deliberate hold. |
+| `resource-semantics` | single select | Empty for ordinary operational ownership; `historical-provenance` for migrated terminal history that grants no authority; `held-affinity` for a verified non-execution human checkpoint or deliberate hold. |
 | `task-revision` | text | Non-negative decimal revision. Writers compare live state and increment this last. |
 | `owner` | single select | **Legacy pilot recovery only:** `unassigned`, `human`, or `agent`. New lifecycle logic and UI never read or write it. |
 
@@ -126,19 +126,29 @@ results/journals, and contradictory state remain cutover blockers, including on
 legacy human-facing `in-review`, `blocked`, or `ready` items. Two narrow cases
 do not make a task runnable and may migrate without clearing history:
 
-- a terminal task with `worker-state` empty/`idle`/`stopped`, no claim, lease,
-  or open human checkpoint, and a complete historical
-  machine/session/generation tuple may retain that tuple as provenance after
-  operator preflight confirms there is no pending local result, checkpoint
-  receipt, or release journal; migration records
+- a closed terminal task with `worker-state` empty/`idle`/`stopped`, no claim,
+  lease, or open human checkpoint, and either a pre-generation machine/session
+  pair or a complete historical machine/session/generation tuple may retain
+  that evidence as provenance after operator preflight confirms there is no
+  pending local result, checkpoint receipt, or release journal; migration records
   `resource-semantics=historical-provenance`; and
 - legacy `blocked` may become `deliberate-hold/hold` with passive
   session/resource evidence only when the Issue's exact, revision-aligned
   current-action block already records `deliberate-hold/hold`, no open human
-  checkpoint remains, and migration records `resource-semantics=held-affinity`.
+  checkpoint remains, or when an exact verified-dead non-execution cutover
+  authorization preserves that checkpoint and deliberate intent; migration
+  records `resource-semantics=held-affinity`.
 
-An ambiguous blocked/session item or any open human checkpoint remains held for
-reconciliation. A live human-review worker remains a hard blocker. Terminal
+An exact verified-dead authorization may likewise migrate legacy `paused` agent
+work with a durable human checkpoint to `ready-for-human` and the authorized
+human action. It preserves `needs-human-since`, machine, session, and detail,
+sets `execution-authorized=no`, and clears only an exactly matched stale
+claim/lease after the operator attests all processes and writers are stopped.
+No claim generation is accepted for either authorization mode.
+
+An ambiguous blocked/session item or any open human checkpoint without that
+exact authorization remains held for reconciliation. A live human-review worker
+remains a hard blocker. Terminal
 provenance is not a claim, lease, workspace reservation, or cleanup authority;
 pending result, checkpoint, or release evidence beside that marker is a
 contradiction requiring operator reconciliation, not interrupted-cleanup

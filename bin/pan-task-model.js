@@ -51,6 +51,7 @@ export function rollbackSafetyReason(task, status = task.status) {
   ];
   const tupleComplete = tuple.every(Boolean);
   const tupleEmpty = tuple.every((value) => !value);
+  const legacyPair = !!tuple[0] && !!tuple[1] && !tuple[2];
   const workerState = task.workerState || '';
   const needsHumanSince = task.needsHumanSince || '';
   const claimedBy = task.claimedBy || '';
@@ -65,7 +66,7 @@ export function rollbackSafetyReason(task, status = task.status) {
     'uncertain',
   ].includes(workerState);
   const provenanceOnly = (
-    tupleComplete
+    (tupleComplete || legacyPair)
     && (
       (
         ['done', 'rejected'].includes(status)
@@ -89,7 +90,7 @@ export function rollbackSafetyReason(task, status = task.status) {
   if (needsHumanSince) {
     return 'rollback refuses an open human checkpoint';
   }
-  if (!tupleComplete && !tupleEmpty) {
+  if (!tupleComplete && !tupleEmpty && !provenanceOnly) {
     return 'rollback refuses uncertain partial workspace resource ownership';
   }
   if (

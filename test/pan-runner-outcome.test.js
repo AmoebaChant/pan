@@ -113,6 +113,37 @@ test('AI selection uses readiness, authorization, dependencies, priority, and Pr
   );
 });
 
+test('verified cutover checkpoint and deliberate hold outcomes are never runner candidates', async () => {
+  const tasks = [
+    item({
+      id: 'legacy-checkpoint',
+      number: 101,
+      status: 'ready-for-human',
+      action: 'approve',
+      authorized: 'no',
+      workerState: 'checkpointed',
+      machine: 'machine-a',
+      sessionId: 'legacy-session-a',
+      resourceSemantics: 'held-affinity',
+    }),
+    item({
+      id: 'legacy-hold',
+      number: 102,
+      status: 'deliberate-hold',
+      action: 'hold',
+      authorized: 'no',
+      workerState: 'paused',
+      machine: 'machine-a',
+      sessionId: 'legacy-session-b',
+      resourceSemantics: 'held-affinity',
+    }),
+  ];
+
+  const result = await preparePoll(tasks, options(tasks));
+
+  assert.deepEqual(result.candidates, []);
+});
+
 test('resumes and new work share priority then canonical Project ordering without date sorting', async () => {
   const urgentNew = item({
     id: 'urgent-new',

@@ -26,14 +26,23 @@ Usage:
 
 Plan is read-only. Agent-owned work is not authorized by legacy owner alone:
 the authorization file must explicitly approve each item and exactly match its
-playbook and dependency text. Apply refuses live or uncertain workers and
-ambiguous retained sessions. A terminal item may retain a complete historical
-machine/session/generation tuple, and a blocked item may retain a passive
-session only when its Issue has an exact deliberate-hold/hold projection.
-Before apply, verify those terminal tuples have no pending result, checkpoint,
-or release journal. Apply never changes the retained owner field/options. Stop
-every runner, task UI, briefing writer, and other Project writer for the Domain
-before applying.
+playbook and dependency text. Version 1 also accepts explicit non-execution
+classifications "verifiedHumanCheckpoint" and "verifiedDeliberateHold". Those
+entries must bind the exact plan projection, owner, Status, Issue state,
+worker/resource fields, needs-human-since, requested action/detail, and target
+worker state, with executionAuthorized=false, verifiedDeadProcess=true, and
+verifiedWritersStopped=true. They never authorize execution.
+
+Apply refuses live or uncertain workers and ambiguous retained sessions. Before
+authorizing a legacy checkpoint or hold, the operator must verify the named
+process is dead and every possible runner, worker, UI, briefing session, and
+other Project writer is stopped. An expired lease alone is not death evidence.
+Apply clears an exactly matched stale claim/lease only for such an authorization
+and preserves machine, session, needs-human-since, and the unresolved action.
+A CLOSED terminal item may retain a historical machine/session pair without a
+legacy claim-generation, or a complete historical tuple. Before apply, verify
+terminal provenance has no pending result, checkpoint, or release journal.
+Apply never changes the retained owner field/options.
 Rollback is generated from current live pilot state, preserves all work and
 resource evidence, changes only the retained legacy owner/Status projection,
 and refuses active, uncertain, stale, or externally inconsistent items.
