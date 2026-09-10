@@ -64,9 +64,12 @@ contain private task data and must stay outside this public repository.
 The importer fully pages active tasks/projects/sections/labels/comments,
 excludes tasks assigned to another authenticated user, preserves source ids and
 metadata, never deletes originals/history, and is idempotent by durable Issue
-markers. Independent failures produce a nonzero partial report and are repaired
-by rerunning. Current Project state is never overwritten from a stale migration
-baseline. See
+markers. Each command indexes Domain Issues and Project items once, then uses
+targeted live reads for per-task reconciliation instead of repeated full scans.
+Independent failures produce a nonzero partial report and are repaired by
+rerunning. With `--report`, apply atomically checkpoints the private report
+after every task. Current Project state is never overwritten from a stale
+migration baseline. See
 [`system/todoist-migration.md`](../system/todoist-migration.md).
 
 ## Additive lifecycle migration

@@ -208,6 +208,32 @@ function parseItem(node) {
   };
 }
 
+function todoistSourceMarkers(issue) {
+  return [...String(issue?.body ?? '').matchAll(/^Pan: Todoist source task ([^\r\n]+)$/gm)];
+}
+
+function issueWriteProjection(issue) {
+  return JSON.stringify({
+    number: issue?.number ?? null,
+    title: issue?.title ?? '',
+    body: issue?.body ?? '',
+    url: issue?.url ?? '',
+    state: issue?.state ?? '',
+    stateReason: issue?.stateReason ?? null,
+  });
+}
+
+function itemWriteProjection(item) {
+  return JSON.stringify({
+    itemId: item?.itemId ?? null,
+    projectUpdatedAt: item?.projectUpdatedAt ?? null,
+    issue: JSON.parse(issueWriteProjection(item?.issue)),
+    fields: Object.fromEntries(
+      Object.entries(item?.fields ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    ),
+  });
+}
+
 export async function completeTaskStoreItemFieldValues(node, runJson) {
   const nodes = [...(node.fieldValues?.nodes ?? [])];
   let page = node.fieldValues?.pageInfo ?? {};
@@ -554,6 +580,7 @@ export class GitHubTaskStore {
     this.gh = gh;
     this.now = now;
     this.meta = null;
+    this.todoistRun = null;
   }
 
   async initialize() {
@@ -666,6 +693,326 @@ export class GitHubTaskStore {
     return items;
   }
 
+  async #todoistItem(itemId) {
+    const query = `query($id:ID!){
+      node(id:$id) {
+        ... on ProjectV2Item {
+          project { id }
+          ${ITEM_FRAGMENT}
+        }
+      }
+    }`;
+    const data = await this.#json([
+      'api', 'graphql', '-f', `query=${query}`, '-f', `id=${itemId}`,
+    ]);
+    const node = data.data?.node;
+    if (!node || node.project?.id !== this.meta.projectId) return null;
+    const parsed = parseItem(await this.#completeItemFieldValues(node));
+    if (!parsed || !this.binding.allowedRepos.has(parsed.issue.repo)) return null;
+    return parsed;
+  }
+
+  async #todoistIssue(number) {
+    const query = `query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+      repository(owner:$owner,name:$name) {
+        issue(number:$number) {
+          number title body url state stateReason createdAt updatedAt closedAt
+          projectItems(first:100,after:$cursor,includeArchived:true) {
+            nodes {
+              project { id }
+              ${ITEM_FRAGMENT}
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    }`;
+    let issue = null;
+    const projectItems = [];
+    let cursor = null;
+    do {
+      const args = [
+        'api', 'graphql', '-f', `query=${query}`,
+        '-f', `owner=${this.binding.domain.owner}`,
+        '-f', `name=${this.binding.domain.name}`,
+        '-F', `number=${number}`,
+      ];
+      if (cursor) args.push('-f', `cursor=${cursor}`);
+      const data = await this.#json(args);
+      const node = data.data?.repository?.issue;
+      if (!node) return null;
+      issue ??= {
+        number: node.number,
+        title: node.title ?? '',
+        body: node.body ?? '',
+        url: node.url ?? '',
+        state: node.state ?? '',
+        stateReason: node.stateReason ?? null,
+        createdAt: node.createdAt ?? null,
+        updatedAt: node.updatedAt ?? null,
+        closedAt: node.closedAt ?? null,
+      };
+      const connection = node.projectItems;
+      if (!connection) throw new Error(`Project memberships were unreadable for ${issue.url}`);
+      for (const projectItemNode of connection.nodes ?? []) {
+        if (projectItemNode.project?.id !== this.meta.projectId) continue;
+        const parsed = parseItem(await this.#completeItemFieldValues(projectItemNode));
+        if (parsed) projectItems.push(parsed);
+      }
+      cursor = connection.pageInfo?.hasNextPage ? connection.pageInfo.endCursor : null;
+    } while (cursor);
+    return { issue, projectItems };
+  }
+
+  #cacheTodoistIssue(issue) {
+    this.todoistRun.issuesByNumber.set(issue.number, issue);
+    const replacements = [];
+    for (const item of this.todoistRun.itemsById.values()) {
+      if (item.issue.url !== issue.url) continue;
+      replacements.push({ ...item, issue: { ...issue, repo: item.issue.repo } });
+    }
+    for (const item of replacements) this.#cacheTodoistItem(item);
+  }
+
+  #cacheTodoistItem(item) {
+    const previous = this.todoistRun.itemsById.get(item.itemId);
+    if (previous) {
+      const previousItems = this.todoistRun.itemsByIssueUrl.get(previous.issue.url) ?? [];
+      this.todoistRun.itemsByIssueUrl.set(
+        previous.issue.url,
+        previousItems.filter((candidate) => candidate.itemId !== item.itemId),
+      );
+    }
+    this.todoistRun.itemsById.set(item.itemId, item);
+    const current = this.todoistRun.itemsByIssueUrl.get(item.issue.url) ?? [];
+    this.todoistRun.itemsByIssueUrl.set(
+      item.issue.url,
+      [...current.filter((candidate) => candidate.itemId !== item.itemId), item],
+    );
+  }
+
+  #todoistSourceEntries(sourceId) {
+    const entries = [];
+    for (const issue of this.todoistRun.issuesByNumber.values()) {
+      const markers = todoistSourceMarkers(issue);
+      for (const match of markers) {
+        if (match[1] !== sourceId) continue;
+        entries.push({
+          sourceId,
+          issueUrl: issue.url,
+          number: issue.number,
+          state: issue.state,
+          inProject: (this.todoistRun.itemsByIssueUrl.get(issue.url) ?? []).length > 0,
+          duplicateMarker: markers.filter((candidate) => candidate[1] === sourceId).length > 1,
+        });
+      }
+    }
+    return entries;
+  }
+
+  async #ensureTodoistRun() {
+    if (this.todoistRun) return this.todoistRun;
+    const [issueSnapshot, items] = await Promise.all([
+      this.#domainIssueSnapshot(),
+      this.#allItems(),
+    ]);
+    this.todoistRun = {
+      issueTotalCount: issueSnapshot.totalCount,
+      issuesByNumber: new Map(issueSnapshot.issues.map((issue) => [issue.number, issue])),
+      itemsById: new Map(),
+      itemsByIssueUrl: new Map(),
+    };
+    for (const item of items) this.#cacheTodoistItem(item);
+    return this.todoistRun;
+  }
+
+  async #assertTodoistIssueCount() {
+    const query = `query($owner:String!,$name:String!){
+      repository(owner:$owner,name:$name) {
+        issues(last:1,states:[OPEN,CLOSED]) { totalCount }
+      }
+    }`;
+    const data = await this.#json([
+      'api', 'graphql', '-f', `query=${query}`,
+      '-f', `owner=${this.binding.domain.owner}`,
+      '-f', `name=${this.binding.domain.name}`,
+    ]);
+    const totalCount = data.data?.repository?.issues?.totalCount;
+    if (!Number.isInteger(totalCount)) throw new Error('Domain Issue count was unreadable');
+    if (totalCount !== this.todoistRun.issueTotalCount) {
+      throw new Error(
+        'Domain Issues changed after the Todoist run snapshot; restart to avoid a create race',
+      );
+    }
+  }
+
+  async #assertTodoistSourceIndexUnchanged(sourceId) {
+    const marker = `Pan: Todoist source task ${sourceId}`;
+    const queryText = `repo:${this.binding.domain.slug} is:issue in:body ${JSON.stringify(marker)}`;
+    const query = `query($searchQuery:String!,$cursor:String){
+      search(query:$searchQuery,type:ISSUE,first:100,after:$cursor) {
+        nodes {
+          ... on Issue {
+            number title body url state stateReason createdAt updatedAt closedAt
+            repository { nameWithOwner }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`;
+    const liveIssues = [];
+    let cursor = null;
+    do {
+      const args = [
+        'api', 'graphql', '-f', `query=${query}`, '-f', `searchQuery=${queryText}`,
+      ];
+      if (cursor) args.push('-f', `cursor=${cursor}`);
+      const data = await this.#json(args);
+      const connection = data.data?.search;
+      if (!connection) throw new Error(`Todoist source search failed for ${sourceId}`);
+      for (const issue of connection.nodes ?? []) {
+        if (issue.repository?.nameWithOwner !== this.binding.domain.slug) continue;
+        if (todoistSourceMarkers(issue).some((match) => match[1] === sourceId)) {
+          liveIssues.push(issue);
+        }
+      }
+      cursor = connection.pageInfo?.hasNextPage ? connection.pageInfo.endCursor : null;
+    } while (cursor);
+
+    const cachedEntries = this.#todoistSourceEntries(sourceId);
+    const cachedNumbers = cachedEntries.map((entry) => entry.number).sort((a, b) => a - b);
+    const liveNumbers = liveIssues.flatMap((issue) =>
+      todoistSourceMarkers(issue)
+        .filter((match) => match[1] === sourceId)
+        .map(() => issue.number)).sort((a, b) => a - b);
+    if (
+      cachedNumbers.length !== liveNumbers.length
+      || cachedNumbers.some((number, index) => number !== liveNumbers[index])
+    ) {
+      throw new Error(
+        `Todoist source marker ${sourceId} changed after the run snapshot; restart required`,
+      );
+    }
+    for (const issue of liveIssues) {
+      const cached = this.todoistRun.issuesByNumber.get(issue.number);
+      if (!cached || issueWriteProjection(cached) !== issueWriteProjection(issue)) {
+        throw new Error(`Todoist source Issue ${issue.url} changed during migration`);
+      }
+    }
+    return cachedEntries;
+  }
+
+  async #assertTodoistIssueUnchanged(expected) {
+    const live = await this.#todoistIssue(expected.number);
+    if (!live || issueWriteProjection(live.issue) !== issueWriteProjection(expected)) {
+      throw new Error(`Todoist source Issue ${expected.url} changed during migration`);
+    }
+    const expectedItems = this.todoistRun.itemsByIssueUrl.get(expected.url) ?? [];
+    if (
+      live.projectItems.length !== expectedItems.length
+      || live.projectItems.some((item) =>
+        !expectedItems.some((candidate) =>
+          candidate.itemId === item.itemId
+          && itemWriteProjection(candidate) === itemWriteProjection(item)))
+    ) {
+      throw new Error(`Project membership for ${expected.url} changed during migration`);
+    }
+    this.#cacheTodoistIssue(live.issue);
+    for (const item of live.projectItems) this.#cacheTodoistItem(item);
+    return live;
+  }
+
+  async #assertTodoistItemUnchanged(expected) {
+    const live = await this.#todoistItem(expected.itemId);
+    if (!live || itemWriteProjection(live) !== itemWriteProjection(expected)) {
+      throw new Error(`Project item ${expected.itemId} changed during Todoist migration`);
+    }
+    return live;
+  }
+
+  async #editTodoistIssue(expected, changes) {
+    await this.#assertTodoistIssueUnchanged(expected);
+    const expectedItems = this.todoistRun.itemsByIssueUrl.get(expected.url) ?? [];
+    await this.#editIssue(this.binding.domain.slug, expected.number, changes);
+    const confirmed = await this.#todoistIssue(expected.number);
+    if (
+      !confirmed
+      || (changes.title !== undefined && confirmed.issue.title !== changes.title)
+      || (changes.body !== undefined && confirmed.issue.body !== changes.body)
+      || confirmed.issue.url !== expected.url
+      || confirmed.issue.state !== expected.state
+      || confirmed.projectItems.length !== expectedItems.length
+      || confirmed.projectItems.some((item) => {
+        const prior = expectedItems.find((candidate) => candidate.itemId === item.itemId);
+        return !prior || JSON.stringify(prior.fields) !== JSON.stringify(item.fields);
+      })
+    ) {
+      throw new Error(`GitHub did not verify Todoist source Issue ${expected.url}`);
+    }
+    this.#cacheTodoistIssue(confirmed.issue);
+    for (const item of confirmed.projectItems) this.#cacheTodoistItem(item);
+    return confirmed.issue;
+  }
+
+  async #setTodoistFields(itemId, changes) {
+    if (changes.length === 0) return this.todoistRun.itemsById.get(itemId);
+    const expected = this.todoistRun.itemsById.get(itemId);
+    if (!expected) throw new Error(`Project item ${itemId} is absent from the Todoist run cache`);
+    await this.#assertTodoistItemUnchanged(expected);
+    const operations = changes.map(([name, value], index) => {
+      const field = this.#field(name);
+      const input = [
+        `projectId:${JSON.stringify(this.meta.projectId)}`,
+        `itemId:${JSON.stringify(itemId)}`,
+        `fieldId:${JSON.stringify(field.id)}`,
+      ].join(',');
+      if (value === '' || value == null) {
+        return `field${index}:clearProjectV2ItemFieldValue(input:{${input}}) {
+          projectV2Item { id }
+        }`;
+      }
+      let fieldValue;
+      if (field.dataType === 'SINGLE_SELECT') {
+        const option = field.options?.get(value);
+        if (!option) throw new Error(`Project field "${name}" has no option "${value}"`);
+        fieldValue = `singleSelectOptionId:${JSON.stringify(option)}`;
+      } else if (field.dataType === 'DATE') {
+        fieldValue = `date:${JSON.stringify(value)}`;
+      } else {
+        fieldValue = `text:${JSON.stringify(String(value))}`;
+      }
+      return `field${index}:updateProjectV2ItemFieldValue(input:{${input},value:{${fieldValue}}}) {
+        projectV2Item { id }
+      }`;
+    });
+    const data = await this.#json([
+      'api',
+      'graphql',
+      '-f',
+      `query=mutation TodoistProjectFields {\n${operations.join('\n')}\n}`,
+    ]);
+    if (changes.some((_, index) => data.data?.[`field${index}`]?.projectV2Item?.id !== itemId)) {
+      throw new Error(`GitHub did not confirm Todoist Project field writes for ${itemId}`);
+    }
+    const confirmed = await this.#todoistItem(itemId);
+    const expectedFields = { ...expected.fields };
+    for (const [name, value] of changes) {
+      if (value === '' || value == null) delete expectedFields[name];
+      else expectedFields[name] = String(value);
+    }
+    const expectedAfter = { ...expected, fields: expectedFields };
+    if (
+      !confirmed
+      || changes.some(([name, value]) => (confirmed.fields[name] ?? '') !== (value ?? ''))
+      || itemWriteProjection({ ...confirmed, projectUpdatedAt: expected.projectUpdatedAt })
+        !== itemWriteProjection(expectedAfter)
+    ) {
+      throw new Error(`GitHub did not verify Todoist Project field writes for ${itemId}`);
+    }
+    this.#cacheTodoistItem(confirmed);
+    return confirmed;
+  }
+
   async #item(itemId) {
     const matches = (await this.#allItems()).filter((item) => item.itemId === itemId);
     if (matches.length > 1) {
@@ -714,16 +1061,18 @@ export class GitHubTaskStore {
     return comments;
   }
 
-  async #allDomainIssues() {
+  async #domainIssueSnapshot() {
     const query = `query($owner:String!,$name:String!,$cursor:String){
       repository(owner:$owner,name:$name) {
         issues(first:100,after:$cursor,states:[OPEN,CLOSED],orderBy:{field:CREATED_AT,direction:ASC}) {
           nodes { number title body url state stateReason createdAt updatedAt closedAt }
           pageInfo { hasNextPage endCursor }
+          totalCount
         }
       }
     }`;
     const issues = [];
+    let totalCount = null;
     let cursor = null;
     do {
       const args = [
@@ -735,10 +1084,19 @@ export class GitHubTaskStore {
       const data = await this.#json(args);
       const connection = data.data?.repository?.issues;
       if (!connection) throw new Error('Domain Issues were unreadable');
+      totalCount ??= connection.totalCount;
       issues.push(...(connection.nodes ?? []));
       cursor = connection.pageInfo?.hasNextPage ? connection.pageInfo.endCursor : null;
     } while (cursor);
-    return issues;
+    if (!Number.isInteger(totalCount)) totalCount = issues.length;
+    if (issues.length !== totalCount) {
+      throw new Error(`Domain Issue pagination returned ${issues.length} of ${totalCount} Issues`);
+    }
+    return { issues, totalCount };
+  }
+
+  async #allDomainIssues() {
+    return (await this.#domainIssueSnapshot()).issues;
   }
 
   async list() {
@@ -946,19 +1304,19 @@ export class GitHubTaskStore {
 
   async importTodoistTask(record) {
     const sourceId = text(String(record.sourceId), 'sourceId', 200, { allowEmpty: false });
+    if (/[\r\n]/.test(sourceId)) throw new Error('sourceId must be a single line');
     const marker = `Pan: Todoist source task ${sourceId}`;
-    const domainIssues = await this.#allDomainIssues();
-    const malformed = domainIssues.filter((issue) =>
-      String(issue.body ?? '').split(/\r?\n/).filter((line) => line === marker).length > 1);
-    if (malformed.length) {
+    await this.#ensureTodoistRun();
+    const sourceEntries = await this.#assertTodoistSourceIndexUnchanged(sourceId);
+    if (sourceEntries.some((entry) => entry.duplicateMarker)) {
       throw new Error(`Todoist source ${sourceId} has duplicate markers in one Issue`);
     }
-    const matches = domainIssues.filter((issue) =>
-      String(issue.body ?? '').split(/\r?\n/).filter((line) => line === marker).length === 1);
-    if (matches.length > 1) {
+    if (sourceEntries.length > 1) {
       throw new Error(`multiple Domain Issues have Todoist source marker ${sourceId}`);
     }
-    let issue = matches[0] ?? null;
+    let issue = sourceEntries.length
+      ? this.todoistRun.issuesByNumber.get(sourceEntries[0].number)
+      : null;
     let created = false;
     if (issue?.state === 'CLOSED') {
       throw new Error(`Todoist source ${sourceId} maps to a closed Issue`);
@@ -970,6 +1328,7 @@ export class GitHubTaskStore {
       ? sourceBody.replace(/\r?\n/, `\n${marker}\n`)
       : `${marker}\n\n${sourceBody}`;
     if (!issue) {
+      await this.#assertTodoistIssueCount();
       const block = renderCurrentActionBlock({
         status: 'ready-for-human',
         action: 'act',
@@ -991,29 +1350,60 @@ export class GitHubTaskStore {
         body: parsed.body,
         url: parsed.html_url,
         state: parsed.state === 'open' ? 'OPEN' : 'CLOSED',
+        stateReason: parsed.state_reason ?? null,
+        createdAt: parsed.created_at ?? null,
+        updatedAt: parsed.updated_at ?? null,
+        closedAt: parsed.closed_at ?? null,
       };
+      if (!Number.isInteger(issue.number) || !issue.url || issue.state !== 'OPEN') {
+        throw new Error(`GitHub did not confirm creation of Todoist source ${sourceId}`);
+      }
+      this.todoistRun.issueTotalCount += 1;
+      const liveCreated = await this.#todoistIssue(issue.number);
+      if (
+        !liveCreated
+        || issueWriteProjection(liveCreated.issue) !== issueWriteProjection(issue)
+        || todoistSourceMarkers(liveCreated.issue).filter((match) => match[1] === sourceId).length !== 1
+        || liveCreated.projectItems.length > 1
+      ) {
+        throw new Error(`GitHub did not verify newly created Todoist source ${sourceId}`);
+      }
+      issue = liveCreated.issue;
+      this.#cacheTodoistIssue(issue);
+      for (const item of liveCreated.projectItems) this.#cacheTodoistItem(item);
+      await this.#assertTodoistIssueCount();
       created = true;
+    } else {
+      const live = await this.#assertTodoistIssueUnchanged(issue);
+      issue = live.issue;
     }
 
-    const projectMatches = (await this.#allItems()).filter((item) => item.issue.url === issue.url);
+    let projectMatches = this.todoistRun.itemsByIssueUrl.get(issue.url) ?? [];
     if (projectMatches.length > 1) {
       throw new Error(`Todoist source ${sourceId} appears more than once in the configured Project`);
     }
     let projectItem = projectMatches[0] ?? null;
     let addedProject = false;
     if (!projectItem) {
+      await this.#assertTodoistIssueUnchanged(issue);
       const itemId = await this.#addToProject(issue.url);
-      projectItem = {
-        itemId,
-        fields: {},
-        issue: {
-          ...issue,
-          repo: this.binding.domain.slug,
-          createdAt: issue.createdAt,
-          updatedAt: issue.updatedAt,
-          closedAt: issue.closedAt,
-        },
-      };
+      projectItem = await this.#todoistItem(itemId);
+      if (!projectItem || projectItem.issue.url !== issue.url) {
+        throw new Error(`GitHub did not verify Project membership for Todoist source ${sourceId}`);
+      }
+      const liveMembership = await this.#todoistIssue(issue.number);
+      projectMatches = liveMembership?.projectItems ?? [];
+      if (
+        !liveMembership
+        || projectMatches.length !== 1
+        || projectMatches[0].itemId !== itemId
+      ) {
+        throw new Error(`GitHub did not verify unique Project membership for Todoist source ${sourceId}`);
+      }
+      issue = liveMembership.issue;
+      this.#cacheTodoistIssue(issue);
+      this.#cacheTodoistItem(projectMatches[0]);
+      projectItem = projectMatches[0];
       addedProject = true;
     }
     const itemId = projectItem.itemId;
@@ -1096,6 +1486,19 @@ export class GitHubTaskStore {
       || currentBlock.action !== 'act'
       || currentBlock.detail !== currentActionDetail
     );
+    const initialProvisioningRecovery = (
+      currentRevision === 0
+      && currentBlock?.revision === 1
+      && !issueProjectionChanged
+      && [...expectedFields].every(([name, value]) => {
+        const current = projectItem.fields[name] ?? '';
+        return current === '' || current === value;
+      })
+      && [...expectedCommentBodies].every(([id, body]) => {
+        const current = sourceCommentOccurrences.get(id) ?? [];
+        return current.length === 0 || (current.length === 1 && current[0].body === body);
+      })
+    );
     const needsRevision = (
       addedProject
       || fieldChanges.length > 0
@@ -1110,6 +1513,7 @@ export class GitHubTaskStore {
       needsRevision
       && currentBlock
       && currentBlock.revision === currentRevision + 1
+      && !initialProvisioningRecovery
     ) {
       throw new Error(
         `Todoist source ${sourceId} interrupted revision-last recovery found ` +
@@ -1123,37 +1527,38 @@ export class GitHubTaskStore {
     );
     let finalRevision = currentRevision;
     if (needsRevision) {
-      if (currentBlock && currentBlock.revision > currentRevision) {
+      if (
+        currentBlock
+        && currentBlock.revision > currentRevision
+        && !initialProvisioningRecovery
+      ) {
         throw new Error(`Todoist source ${sourceId} current-action revision is ahead of the Project`);
       }
-      finalRevision = currentRevision + 1;
-      currentBlock = {
-        block: renderCurrentActionBlock({
-          status: 'ready-for-human',
-          action: 'act',
-          detail: currentActionDetail,
-          revision: finalRevision,
-          updatedAt: this.now().toISOString(),
-        }),
-      };
+      finalRevision = initialProvisioningRecovery ? currentBlock.revision : currentRevision + 1;
+      if (!initialProvisioningRecovery) {
+        currentBlock = {
+          block: renderCurrentActionBlock({
+            status: 'ready-for-human',
+            action: 'act',
+            detail: currentActionDetail,
+            revision: finalRevision,
+            updatedAt: this.now().toISOString(),
+          }),
+        };
+      }
     } else if (revisionLastRecovery) {
       finalRevision = currentBlock.revision;
     } else if (currentBlock.revision !== currentRevision) {
       throw new Error(`Todoist source ${sourceId} has mismatched Issue and Project revisions`);
     }
 
-    for (const [name, value] of fieldChanges) {
-      const field = this.#field(name);
-      if (field.dataType === 'SINGLE_SELECT') await this.#setSelect(itemId, name, value);
-      else if (field.dataType === 'DATE') await this.#setDate(itemId, name, value);
-      else await this.#setText(itemId, name, value);
-    }
+    await this.#setTodoistFields(itemId, fieldChanges);
     const expectedBody = upsertCurrentActionBlock(importedBody, currentBlock.block);
     if (
       issue.title !== record.title
       || issue.body !== expectedBody
     ) {
-      await this.#editIssue(this.binding.domain.slug, issue.number, {
+      issue = await this.#editTodoistIssue(issue, {
         title: text(record.title, 'title', 256, { allowEmpty: false }),
         body: expectedBody,
       });
@@ -1161,7 +1566,14 @@ export class GitHubTaskStore {
     for (const comment of record.comments ?? []) {
       const commentMarker = `Pan: Todoist source comment ${comment.id}`;
       const expectedBody = expectedCommentBodies.get(String(comment.id));
-      const existing = sourceCommentOccurrences.get(String(comment.id))?.[0];
+      await this.#assertTodoistIssueUnchanged(issue);
+      existingComments = await this.#comments(this.binding.domain.slug, issue.number);
+      const currentMatches = existingComments.filter((entry) =>
+        String(entry.body ?? '').split(/\r?\n/).includes(commentMarker));
+      if (currentMatches.length > 1) {
+        throw new Error(`Todoist source ${sourceId} has duplicate comment marker ${comment.id}`);
+      }
+      const existing = currentMatches[0];
       if (!existing) {
         await this.gh([
           'issue', 'comment', String(issue.number),
@@ -1176,7 +1588,14 @@ export class GitHubTaskStore {
           '-f', `body=${expectedBody}`,
         ]);
       }
+      const confirmedComments = await this.#comments(this.binding.domain.slug, issue.number);
+      const confirmedMatches = confirmedComments.filter((entry) =>
+        String(entry.body ?? '').split(/\r?\n/).includes(commentMarker));
+      if (confirmedMatches.length !== 1 || confirmedMatches[0].body !== expectedBody) {
+        throw new Error(`GitHub did not verify Todoist comment ${comment.id}`);
+      }
     }
+    await this.#assertTodoistIssueUnchanged(issue);
     await ensureIssueComment(
       this.gh,
       this.binding.domain.slug,
@@ -1193,9 +1612,10 @@ export class GitHubTaskStore {
       }),
     );
     if (currentRevision !== finalRevision) {
-      await this.#setText(itemId, 'task-revision', String(finalRevision));
+      await this.#setTodoistFields(itemId, [['task-revision', String(finalRevision)]]);
     }
-    const confirmed = await this.#item(itemId);
+    const confirmed = await this.#todoistItem(itemId);
+    if (confirmed) this.#cacheTodoistItem(confirmed);
     const confirmedBlock = confirmed
       ? parseCurrentActionBlock(confirmed.issue.body)
       : null;
@@ -1256,18 +1676,17 @@ export class GitHubTaskStore {
   }
 
   async todoistSourceIndex() {
-    const issues = await this.#allDomainIssues();
-    const projectUrls = new Set((await this.#allItems()).map((item) => item.issue.url));
+    await this.#ensureTodoistRun();
     const bySourceId = new Map();
-    for (const issue of issues) {
-      const markers = [...String(issue.body ?? '').matchAll(/^Pan: Todoist source task ([^\r\n]+)$/gm)];
+    for (const issue of this.todoistRun.issuesByNumber.values()) {
+      const markers = todoistSourceMarkers(issue);
       for (const match of markers) {
         const entry = {
           sourceId: match[1],
           issueUrl: issue.url,
           number: issue.number,
           state: issue.state,
-          inProject: projectUrls.has(issue.url),
+          inProject: (this.todoistRun.itemsByIssueUrl.get(issue.url) ?? []).length > 0,
           duplicateMarker: markers.filter((candidate) => candidate[1] === match[1]).length > 1,
         };
         const current = bySourceId.get(entry.sourceId) ?? [];
@@ -1280,7 +1699,13 @@ export class GitHubTaskStore {
 
   async verifyTodoistTask(record) {
     const sourceId = String(record.sourceId);
-    const matches = (await this.todoistSourceIndex()).get(sourceId) ?? [];
+    await this.#ensureTodoistRun();
+    let matches;
+    try {
+      matches = await this.#assertTodoistSourceIndexUnchanged(sourceId);
+    } catch (error) {
+      return { sourceId, outcome: 'conflict', error: error.message };
+    }
     if (matches.length !== 1) {
       return {
         sourceId,
@@ -1292,9 +1717,14 @@ export class GitHubTaskStore {
     if (match.state !== 'OPEN') {
       return { sourceId, outcome: 'conflict', error: 'source Issue is closed' };
     }
-    const projectMatches = (await this.#allItems()).filter(
-      (candidate) => candidate.issue.url === match.issueUrl,
-    );
+    let live;
+    try {
+      const expectedIssue = this.todoistRun.issuesByNumber.get(match.number);
+      live = await this.#assertTodoistIssueUnchanged(expectedIssue);
+    } catch (error) {
+      return { sourceId, outcome: 'conflict', error: error.message };
+    }
+    const projectMatches = live.projectItems;
     if (projectMatches.length !== 1) {
       return {
         sourceId,

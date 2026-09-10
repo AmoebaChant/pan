@@ -15,6 +15,12 @@ import {
   planLifecycleRollback,
 } from '../bin/pan-lifecycle-migration.js';
 import {
+  applyTodoistImport,
+  planTodoistImport,
+  todoistImportRecords,
+  verifyTodoistImport,
+} from '../bin/pan-todoist-migration.js';
+import {
   parseCurrentActionBlock,
   renderCurrentActionBlock,
   transitionComment,
@@ -266,6 +272,7 @@ function fakeGitHubState({ projectReadNodes = null } = {}) {
       const node = (projectItem = item) => ({
         id: projectItem.id,
         updatedAt: projectItem.updatedAt,
+        project: { id: 'project-1' },
         content: {
           __typename: 'Issue',
           number: projectItem.issue.number,
@@ -297,6 +304,26 @@ function fakeGitHubState({ projectReadNodes = null } = {}) {
       const gh = async (args) => {
         const query = args.find((arg) => String(arg).startsWith('query=')) ?? '';
         if (query) queries.push(query.slice('query='.length));
+        if (query.includes('mutation TodoistProjectFields')) {
+          const data = {};
+          const operationPattern = /field(\d+):(updateProjectV2ItemFieldValue|clearProjectV2ItemFieldValue)\(input:\{projectId:("[^"]+"),itemId:("[^"]+"),fieldId:("[^"]+")(?:,value:\{(singleSelectOptionId|date|text):("(?:\\.|[^"])*")\})?\}\)/g;
+          for (const match of query.matchAll(operationPattern)) {
+            const [, index, operation, , itemIdJson, fieldIdJson, valueType, valueJson] = match;
+            const projectItem = items.find((entry) => entry.id === JSON.parse(itemIdJson));
+            const field = byFieldId.get(JSON.parse(fieldIdJson));
+            let value = '';
+            if (operation !== 'clearProjectV2ItemFieldValue') {
+              const parsedValue = JSON.parse(valueJson);
+              value = valueType === 'singleSelectOptionId'
+                ? byOptionId.get(parsedValue).value
+                : parsedValue;
+            }
+            projectItem.fields[field.name] = value;
+            writes.push(`project:${field.name}`);
+            data[`field${index}`] = { projectV2Item: { id: projectItem.id } };
+          }
+          return JSON.stringify({ data });
+        }
         if (query.includes('repositoryOwner')) {
           return JSON.stringify({ data: { repositoryOwner: { __typename: 'User' } } });
         }
@@ -328,6 +355,15 @@ function fakeGitHubState({ projectReadNodes = null } = {}) {
             },
           });
         }
+        if (query.includes('issues(last:1')) {
+          return JSON.stringify({
+            data: {
+              repository: {
+                issues: { totalCount: issues.length },
+              },
+            },
+          });
+        }
         if (query.includes('issues(first:100')) {
           return JSON.stringify({
             data: {
@@ -335,10 +371,105 @@ function fakeGitHubState({ projectReadNodes = null } = {}) {
                 issues: {
                   nodes: issues.map((entry) => ({ ...entry })),
                   pageInfo: { hasNextPage: false, endCursor: null },
+                  totalCount: issues.length,
                 },
               },
             },
           });
+        }
+        if (query.includes('search(query:$searchQuery')) {
+          const searchQuery = args.find((arg) => String(arg).startsWith('searchQuery='))
+            ?.slice('searchQuery='.length);
+          const markerMatch = String(searchQuery).match(/"Pan: Todoist source task ([^"]+)"/);
+          const sourceId = markerMatch?.[1];
+          return JSON.stringify({
+            data: {
+              search: {
+                nodes: issues
+                  .filter((entry) =>
+                    sourceId
+                    && entry.body.split(/\r?\n/).includes(`Pan: Todoist source task ${sourceId}`))
+                  .map((entry) => ({
+                    ...entry,
+                    repository: { nameWithOwner: 'example/domain' },
+                  })),
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          });
+        }
+        if (query.includes('projectItems(first:100')) {
+          const numberArg = args.find((arg) => String(arg).startsWith('number='));
+          const targetIssue = issues.find(
+            (entry) => entry.number === Number(String(numberArg).slice('number='.length)),
+          );
+          return JSON.stringify({
+            data: {
+              repository: {
+                issue: targetIssue ? {
+                  ...targetIssue,
+                  projectItems: {
+                    nodes: items
+                      .filter((entry) => entry.issue.url === targetIssue.url)
+                      .map((entry) => node(entry)),
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                } : null,
+              },
+            },
+          });
+        }
+        if (query.includes('node(id:$id)')) {
+          const itemId = args.find((arg) => String(arg).startsWith('id='))?.slice('id='.length);
+          const target = items.find((entry) => entry.id === itemId);
+          return JSON.stringify({ data: { node: target ? node(target) : null } });
+        }
+        if (
+          args[0] === 'api'
+          && args[1] === 'repos/example/domain/issues'
+          && !args.includes('graphql')
+        ) {
+          const number = Math.max(0, ...issues.map((entry) => entry.number)) + 1;
+          const title = args.find((arg) => String(arg).startsWith('title='))?.slice('title='.length);
+          const body = args.find((arg) => String(arg).startsWith('body='))?.slice('body='.length);
+          const created = {
+            number,
+            title,
+            body,
+            html_url: `https://github.com/example/domain/issues/${number}`,
+            url: `https://github.com/example/domain/issues/${number}`,
+            state: 'OPEN',
+            stateReason: null,
+            createdAt: '2026-09-09T12:00:00Z',
+            updatedAt: '2026-09-09T12:00:00Z',
+            closedAt: null,
+          };
+          issues.push(created);
+          commentsByIssue.set(number, []);
+          writes.push('issue:create');
+          return JSON.stringify({
+            ...created,
+            state: 'open',
+            state_reason: null,
+            created_at: created.createdAt,
+            updated_at: created.updatedAt,
+            closed_at: null,
+          });
+        }
+        if (args[0] === 'project' && args[1] === 'item-add') {
+          const url = valueAfter(args, '--url');
+          const existing = items.find((entry) => entry.issue.url === url);
+          if (existing) return JSON.stringify({ id: existing.id });
+          const targetIssue = issues.find((entry) => entry.url === url);
+          const projectItem = {
+            id: `item-${targetIssue.number}`,
+            updatedAt: '2026-09-09T12:00:00Z',
+            issue: targetIssue,
+            fields: {},
+          };
+          items.push(projectItem);
+          writes.push('project:add');
+          return JSON.stringify({ id: projectItem.id });
         }
         if (query.includes('comments(first:100')) {
           const numberArg = args.find((arg) => String(arg).startsWith('number='));
@@ -498,6 +629,232 @@ test('Todoist repair reconciles exact Issue, comments, fields, and writes revisi
       assert.equal(state.writes.length, writesAfterRepair);
 });
 
+test('Todoist apply repairs 215 interrupted items with bounded full-list reads and exact reruns', async () => {
+      const taskCount = 215;
+      const snapshot = {
+        format: 'pan-todoist-active-snapshot',
+        version: 1,
+        capturedAt: '2026-09-09T00:00:00Z',
+        user: { id: 'me' },
+        projects: [],
+        sections: [],
+        labels: [],
+        excluded: [],
+        tasks: Array.from({ length: taskCount }, (_, index) => ({
+          id: `bulk-${index + 1}`,
+          content: `Bulk task ${index + 1}`,
+          description: `Imported description ${index + 1}.`,
+          priority: 2,
+          comments: [],
+        })),
+      };
+      const records = todoistImportRecords(snapshot);
+      const state = fakeGitHubState();
+      state.issues.length = 0;
+      state.items.length = 0;
+      state.commentsByIssue.clear();
+      for (const [index, record] of records.entries()) {
+        const number = index + 1;
+        const url = `https://github.com/example/domain/issues/${number}`;
+        const importedBody = `Pan: Todoist source task ${record.sourceId}\n\n${record.body}`;
+        const issue = {
+          number,
+          title: record.title,
+          body: upsertCurrentActionBlock(importedBody, renderCurrentActionBlock({
+            status: 'ready-for-human',
+            action: 'act',
+            detail: 'Perform or reconsider the imported active task.',
+            revision: 1,
+            updatedAt: '2026-09-09T00:00:00.000Z',
+          })),
+          html_url: url,
+          url,
+          state: 'OPEN',
+          stateReason: null,
+          createdAt: '2026-09-09T00:00:00Z',
+          updatedAt: '2026-09-09T00:00:00Z',
+          closedAt: null,
+        };
+        state.issues.push(issue);
+        state.items.push({
+          id: `item-${number}`,
+          updatedAt: '2026-09-09T00:00:00Z',
+          issue,
+          fields: {},
+        });
+        state.commentsByIssue.set(number, []);
+      }
+
+      const statusField = state.fields.find((field) => field.name === 'Status');
+      const liveGh = state.gh;
+      let injectedFailure = false;
+      state.gh = async (args) => {
+        const query = args.find((arg) => String(arg).startsWith('query=')) ?? '';
+        if (
+          !injectedFailure
+          && query.includes('mutation TodoistProjectFields')
+          && query.includes('itemId:"item-108"')
+          && query.includes(`fieldId:"${statusField.id}"`)
+        ) {
+          injectedFailure = true;
+          throw new Error('injected independent field failure');
+        }
+        return liveGh(args);
+      };
+
+      const { store } = await fakeStore(state);
+      const firstPlan = planTodoistImport(snapshot, await store.todoistSourceIndex());
+      const firstReport = await applyTodoistImport(firstPlan, store, snapshot);
+      assert.equal(firstReport.partial, true);
+      assert.equal(
+        firstReport.results.filter((result) => result.outcome === 'repaired').length,
+        taskCount - 1,
+      );
+      assert.match(
+        firstReport.results.find((result) => result.sourceId === 'bulk-108').error,
+        /injected independent field failure/,
+      );
+
+      state.gh = liveGh;
+      const { store: resumedStore } = await fakeStore(state);
+      const resumedPlan = planTodoistImport(
+        snapshot,
+        await resumedStore.todoistSourceIndex(),
+      );
+      const resumedReport = await applyTodoistImport(resumedPlan, resumedStore, snapshot);
+      assert.equal(resumedReport.partial, false);
+      assert.equal(
+        resumedReport.results.filter((result) => result.outcome === 'repaired').length,
+        1,
+      );
+      assert.equal(
+        resumedReport.results.filter((result) => result.outcome === 'verified').length,
+        taskCount - 1,
+      );
+
+      const verification = await verifyTodoistImport(snapshot, resumedStore);
+      assert.equal(verification.complete, true);
+      assert.equal(verification.results.length, taskCount);
+      assert.equal(
+        state.issues.flatMap((issue) =>
+          issue.body.match(/^Pan: Todoist source task [^\r\n]+$/gm) ?? []).length,
+        taskCount,
+      );
+      assert.equal(new Set(state.issues.map((issue) => issue.url)).size, taskCount);
+      assert.equal(new Set(state.items.map((item) => item.issue.url)).size, taskCount);
+      assert.equal(
+        state.queries.filter((query) => query.includes('issues(first:100')).length,
+        2,
+      );
+      assert.equal(
+        state.queries.filter((query) => query.includes('items(first:100')).length,
+        2,
+      );
+});
+
+test('Todoist create updates the run index and verifies without another full scan', async () => {
+      const snapshot = {
+        format: 'pan-todoist-active-snapshot',
+        version: 1,
+        capturedAt: '2026-09-09T00:00:00Z',
+        user: { id: 'me' },
+        projects: [],
+        sections: [],
+        labels: [],
+        excluded: [],
+        tasks: [{
+          id: 'new-1',
+          content: 'New imported task',
+          description: 'Created during this run.',
+          priority: 2,
+          comments: [],
+        }],
+      };
+      const state = fakeGitHubState();
+      state.issues.length = 0;
+      state.items.length = 0;
+      state.commentsByIssue.clear();
+      const { store } = await fakeStore(state);
+      const plan = planTodoistImport(snapshot, await store.todoistSourceIndex());
+
+      const report = await applyTodoistImport(plan, store, snapshot);
+      const verification = await verifyTodoistImport(snapshot, store);
+
+      assert.equal(report.partial, false);
+      assert.equal(report.results[0].outcome, 'created');
+      assert.equal(verification.complete, true);
+      assert.equal(state.issues.length, 1);
+      assert.equal(state.items.length, 1);
+      assert.equal(
+        state.queries.filter((query) => query.includes('issues(first:100')).length,
+        1,
+      );
+      assert.equal(
+        state.queries.filter((query) => query.includes('items(first:100')).length,
+        1,
+      );
+});
+
+test('Todoist create race fails closed when another source Issue appears', async () => {
+      const snapshot = {
+        format: 'pan-todoist-active-snapshot',
+        version: 1,
+        capturedAt: '2026-09-09T00:00:00Z',
+        user: { id: 'me' },
+        projects: [],
+        sections: [],
+        labels: [],
+        excluded: [],
+        tasks: [{
+          id: 'race-1',
+          content: 'Race-safe import',
+          description: '',
+          priority: 2,
+          comments: [],
+        }],
+      };
+      const state = fakeGitHubState();
+      state.issues.length = 0;
+      state.items.length = 0;
+      state.commentsByIssue.clear();
+      const liveGh = state.gh;
+      let raced = false;
+      state.gh = async (args) => {
+        if (
+          !raced
+          && args[0] === 'api'
+          && args[1] === 'repos/example/domain/issues'
+          && !args.includes('graphql')
+        ) {
+          raced = true;
+          const body = args.find((arg) => String(arg).startsWith('body='))?.slice('body='.length);
+          state.issues.push({
+            number: 1,
+            title: 'Concurrent duplicate',
+            body,
+            html_url: 'https://github.com/example/domain/issues/1',
+            url: 'https://github.com/example/domain/issues/1',
+            state: 'OPEN',
+            stateReason: null,
+            createdAt: '2026-09-09T12:00:00Z',
+            updatedAt: '2026-09-09T12:00:00Z',
+            closedAt: null,
+          });
+          state.commentsByIssue.set(1, []);
+        }
+        return liveGh(args);
+      };
+      const { store } = await fakeStore(state);
+      const plan = planTodoistImport(snapshot, await store.todoistSourceIndex());
+
+      const report = await applyTodoistImport(plan, store, snapshot);
+
+      assert.equal(report.partial, true);
+      assert.match(report.results[0].error, /changed after the Todoist run snapshot/);
+      assert.equal(state.issues.length, 2);
+      assert.equal(state.items.length, 0);
+});
+
 test('Todoist repair completes an exact interrupted revision-last commit', async () => {
       const { store, state } = await fakeStore();
       const record = {
@@ -514,8 +871,9 @@ test('Todoist repair completes an exact interrupted revision-last commit', async
       await store.importTodoistTask(record);
       state.item.fields['task-revision'] = '1';
       state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
 
-      const result = await store.importTodoistTask(record);
+      const result = await resumedStore.importTodoistTask(record);
 
       assert.equal(result.outcome, 'repaired');
       assert.deepEqual(state.writes, ['project:task-revision']);
@@ -540,9 +898,10 @@ test('Todoist revision-last recovery rejects independent priority drift without 
       state.item.fields['task-revision'] = '1';
       state.item.fields.priority = 'low';
       state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
 
       await assert.rejects(
-        store.importTodoistTask(record),
+        resumedStore.importTodoistTask(record),
         /revision-last recovery.*non-revision projection drift/,
       );
       assert.equal(state.item.fields.priority, 'low');
@@ -570,8 +929,9 @@ test('Todoist revision-last recovery recreates a missing transition receipt befo
       );
       state.comments.splice(transitionIndex, 1);
       state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
 
-      const result = await store.importTodoistTask(record);
+      const result = await resumedStore.importTodoistTask(record);
 
       assert.equal(result.outcome, 'repaired');
       assert.deepEqual(state.writes, ['issue:comment', 'project:task-revision']);

@@ -329,13 +329,24 @@ export function planTodoistImport(snapshot, sourceIndex = new Map()) {
   };
 }
 
-export async function applyTodoistImport(plan, store, snapshot) {
+export async function applyTodoistImport(plan, store, snapshot, { onProgress } = {}) {
   const scope = todoistSnapshotScope(snapshot);
   const eligibleIds = new Set(scope.tasks.map((task) => String(task.id)));
   const excludedById = new Map(scope.excluded.map((excluded) => [excluded.id, excluded]));
   const reportedExcluded = new Set();
   const results = [];
   let failed = false;
+  const checkpoint = async () => {
+    if (!onProgress) return;
+    await onProgress({
+      format: 'pan-todoist-import-report',
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      inProgress: true,
+      partial: true,
+      results: structuredClone(results),
+    });
+  };
   for (const action of plan.actions) {
     const sourceId = String(action.sourceId);
     const excluded = excludedById.get(sourceId);
@@ -347,6 +358,7 @@ export async function applyTodoistImport(plan, store, snapshot) {
           reason: excluded.reason,
         });
         reportedExcluded.add(sourceId);
+        await checkpoint();
       }
       continue;
     }
@@ -356,11 +368,13 @@ export async function applyTodoistImport(plan, store, snapshot) {
         action: 'excluded-assignee',
         reason: 'assigned-to-another-user',
       });
+      await checkpoint();
       continue;
     }
     if (action.action === 'conflict') {
       results.push(action);
       failed = true;
+      await checkpoint();
       continue;
     }
     if (!eligibleIds.has(sourceId)) {
@@ -371,6 +385,7 @@ export async function applyTodoistImport(plan, store, snapshot) {
         plannedAction: action.action,
         error: 'planned source task is not eligible in the supplied snapshot',
       });
+      await checkpoint();
       continue;
     }
     try {
@@ -385,6 +400,7 @@ export async function applyTodoistImport(plan, store, snapshot) {
         error: error.message,
       });
     }
+    await checkpoint();
   }
   for (const excluded of scope.excluded) {
     if (reportedExcluded.has(excluded.id)) continue;
@@ -393,6 +409,7 @@ export async function applyTodoistImport(plan, store, snapshot) {
       action: 'excluded-assignee',
       reason: excluded.reason,
     });
+    await checkpoint();
   }
   return {
     format: 'pan-todoist-import-report',

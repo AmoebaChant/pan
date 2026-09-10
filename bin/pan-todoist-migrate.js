@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -92,10 +92,16 @@ async function readSnapshot(file) {
   return JSON.parse(await readFile(file, 'utf8'));
 }
 
+async function writePrivateJson(file, rendered) {
+  const temporary = `${file}.tmp-${process.pid}`;
+  await writeFile(temporary, rendered, { mode: 0o600 });
+  await rename(temporary, file);
+}
+
 async function output(value, reportPath) {
   const rendered = `${JSON.stringify(value, null, 2)}\n`;
   process.stdout.write(rendered);
-  if (reportPath) await writeFile(reportPath, rendered, { mode: 0o600 });
+  if (reportPath) await writePrivateJson(reportPath, rendered);
 }
 
 async function liveStore(options) {
@@ -144,7 +150,16 @@ export async function runMigrationCommand(options) {
     };
   }
   if (options.command === 'apply') {
-    const report = await applyTodoistImport(plan, store, snapshot);
+    const report = await applyTodoistImport(plan, store, snapshot, {
+      onProgress: options.report
+        ? async (checkpoint) => {
+            await writePrivateJson(
+              options.report,
+              `${JSON.stringify(checkpoint, null, 2)}\n`,
+            );
+          }
+        : undefined,
+    });
     await output(report, options.report);
     return { exitCode: report.partial ? 2 : 0 };
   }

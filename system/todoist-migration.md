@@ -36,7 +36,12 @@ recurring Issue it follows the required first-line occurrence marker; otherwise
 it is the first line. Source comments use
 `Pan: Todoist source comment <id>`. Re-running discovers those markers through
 a fully paginated Issue read, repairs missing comments or Project membership,
-and never creates a duplicate.
+and never creates a duplicate. A command snapshots and indexes all source
+markers and Project items once. Per-task reconciliation then uses targeted live
+Issue and Project-item reads, updates the in-memory index only after verified
+writes, and never repeats repository-wide or Project-wide scans. A changed
+source-marker set, Issue count, exact Issue projection, Project membership, or
+Project-item projection fails closed instead of trusting stale cached success.
 
 Todoist due dates map to `next-action-date` only as imported human attention
 evidence. A Todoist deadline maps to Pan `deadline`. Recurrence text and the
@@ -56,7 +61,9 @@ Todoist credentials are supplied through an environment variable named by
 - `plan` reads a snapshot or Todoist live plus live GitHub state and prints the
   exact create/repair/exclude actions. It writes nothing.
 - `apply --confirm-import` performs only that plan, re-reading before every
-  task and verifying every Issue/comment/Project write.
+  task and verifying every Issue/comment/Project write. When `--report` is
+  supplied, it atomically replaces the private report after every completed
+  task, so termination leaves a durable partial checkpoint.
 - `verify` performs the same complete reads and reports missing, duplicated, or
   mismatched records without writing.
 - `recovery-plan` translates the **current live pilot state** back to the
@@ -174,8 +181,10 @@ Tasks are independent import units. A failure for one task does not roll back a
 previously verified task and does not authorize continuing writes for that
 failed task. The tool continues with other independent tasks, exits nonzero,
 and reports the exact partial result. Re-running is the recovery operation:
-verified markers are reused, incomplete units are repaired, and duplicates or
-conflicting source markers fail closed.
+it takes a fresh run snapshot, reuses verified markers and Project membership,
+repairs incomplete units (including an Issue at revision 1 whose newly added
+Project item still has unset lifecycle fields), and fails closed on duplicates,
+concurrent create races, stale revisions, or conflicting source markers.
 
 An Issue creation that succeeds before Project or comment setup remains
 discoverable by its source marker. Verification never claims a complete import

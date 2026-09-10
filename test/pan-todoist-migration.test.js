@@ -185,11 +185,18 @@ test('partial import continues independent tasks and reports failure without rol
       };
     },
   };
-  const report = await applyTodoistImport(plan, store, snapshot);
+  const checkpoints = [];
+  const report = await applyTodoistImport(plan, store, snapshot, {
+    onProgress(checkpoint) {
+      checkpoints.push(checkpoint);
+    },
+  });
   assert.deepEqual(attempted, ['1', '2']);
   assert.equal(report.partial, true);
   assert.equal(report.results.find((result) => result.sourceId === '1').outcome, 'failed');
   assert.equal(report.results.find((result) => result.sourceId === '2').outcome, 'created');
+  assert.deepEqual(checkpoints.map((checkpoint) => checkpoint.results.length), [1, 2, 3]);
+  assert.equal(checkpoints.at(-1).inProgress, true);
 });
 
 function assignmentSnapshot(tasks) {
