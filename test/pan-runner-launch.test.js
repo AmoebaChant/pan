@@ -87,6 +87,7 @@ function item({
       body: 'body',
       url: `https://github.com/example/domain/issues/${number}`,
       repo: 'example/domain',
+      state: 'OPEN',
     },
     fields: {
       [FIELD.status]: status,
@@ -1328,6 +1329,7 @@ function projectItem({
       body: '',
       url: `https://github.com/example/domain/issues/${number}`,
       repo: 'example/domain',
+      state: 'OPEN',
     },
     fields: {
       [FIELD.status]: status,

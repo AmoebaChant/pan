@@ -169,6 +169,11 @@ operator preflight confirms there is no live/uncertain launcher, pending result,
 checkpoint receipt, or terminal-release journal, that tuple is **historical
 provenance**, not workspace ownership. Migration records
 `resource-semantics=historical-provenance`; migration and rollback preserve it.
+That marker is immutable through routine browser and service mutations:
+metadata-only edits may preserve it, but no hold, handoff, worker-state edit,
+authorization edit, or resume may clear or reclassify it. Only checked operator
+migration or rollback may touch the record, and those operations preserve the
+historical semantics.
 Runners and cleanup paths must not use terminal provenance as authority to
 adopt a session, finalize a result, or release a workspace. Any active,
 uncertain, partial, or contradictory evidence — including a pending result,

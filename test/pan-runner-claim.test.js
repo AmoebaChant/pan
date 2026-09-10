@@ -41,6 +41,7 @@ function item({
       body: '',
       url: `https://github.com/example/domain/issues/${number}`,
       repo: 'example/domain',
+      state: 'OPEN',
     },
     fields: {
       [FIELD.status]: status,

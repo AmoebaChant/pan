@@ -338,6 +338,7 @@ async function sweepExpiredItems(
     const item = items[index];
     const newLifecycle = lifecycleVersion === 2;
     const runningStatus = newLifecycle ? 'ai-executing' : 'in-progress';
+    if (val(item, FIELD.resourceSemantics, '')) continue;
     if (statusOf(item) !== runningStatus || isSupervised(item)) continue;
     if (newLifecycle && !['starting', 'running', 'waiting-human'].includes(workerStateOf(item))) {
       continue;
@@ -360,6 +361,7 @@ async function sweepExpiredItems(
     if (!fresh) continue;
 
     current[index] = fresh;
+    if (val(fresh, FIELD.resourceSemantics, '')) continue;
     if (statusOf(fresh) !== runningStatus || isSupervised(fresh)) continue;
     if (newLifecycle && !['starting', 'running', 'waiting-human'].includes(workerStateOf(fresh))) {
       continue;
@@ -430,6 +432,12 @@ function selectCandidates(items, cfg, playbooks, active, { now, warn }) {
   };
 
   const canRun = (item, { resume = false } = {}) => {
+    if (item.issue?.state !== 'OPEN') return false;
+    if (['historical-provenance', 'held-affinity'].includes(
+      val(item, FIELD.resourceSemantics, ''),
+    )) {
+      return false;
+    }
     if (newLifecycle) {
       if (val(item, FIELD.executionAuthorized, '') !== 'yes') return false;
       if (String(val(item, FIELD.dependencies, '')).trim()) return false;

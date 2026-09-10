@@ -32,6 +32,7 @@ function projectItem({
       body: '',
       url: `https://github.com/example/domain/issues/${number}`,
       repo: 'example/domain',
+      state: 'OPEN',
     },
     fields: {
       [FIELD.status]: 'in-progress',
@@ -284,6 +285,47 @@ test('persistent resource semantics cannot regain execution authority', async ()
 
     assert.deepEqual(result.candidates, [], resourceSemantics);
   }
+});
+
+test('resume candidates require an open Issue and ordinary retained affinity', async () => {
+  const resumable = projectItem({ id: 'resume-open', number: 25 });
+  Object.assign(resumable.fields, {
+    [FIELD.status]: 'ready-for-ai',
+    [FIELD.nextAction]: 'execute',
+    [FIELD.executionAuthorized]: 'yes',
+    [FIELD.dependencies]: '',
+    [FIELD.workerState]: 'paused',
+    [FIELD.claimedBy]: '',
+    [FIELD.leaseUntil]: '',
+    [FIELD.machine]: 'machine-a',
+    [FIELD.sessionId]: 'session-25',
+    [FIELD.claimGeneration]: 'generation-25',
+    [FIELD.resourceSemantics]: '',
+  });
+  const closed = clone(resumable);
+  closed.itemId = 'resume-closed';
+  closed.issue.number = 26;
+  closed.issue.state = 'CLOSED';
+  const historical = clone(resumable);
+  historical.itemId = 'resume-historical';
+  historical.issue.number = 27;
+  historical.fields[FIELD.resourceSemantics] = 'historical-provenance';
+  const held = clone(resumable);
+  held.itemId = 'resume-held';
+  held.issue.number = 28;
+  held.fields[FIELD.resourceSemantics] = 'held-affinity';
+  const source = [closed, historical, held, resumable];
+  const { options } = pollOptions(source, {
+    cfg: {
+      identity: 'runner-a',
+      machine: 'machine-a',
+      lifecycleVersion: 2,
+    },
+  });
+
+  const result = await preparePoll(source, options);
+
+  assert.deepEqual(result.candidates.map((item) => item.itemId), ['resume-open']);
 });
 
 test('terminal tasks have stale lease fields cleared and confirmed', async () => {

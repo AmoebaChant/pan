@@ -165,6 +165,56 @@ test('task service refuses success-shaped writes against a live worker', async (
   assert.equal(edit.status, 409);
 });
 
+test('task service keeps historical provenance immutable and non-runnable', async (t) => {
+  const store = new DemoTaskStore();
+  const historical = store.state.tasks.find((task) => task.id === 'demo-1');
+  Object.assign(historical, {
+    status: 'done',
+    nextAction: 'none',
+    executionAuthorized: 'no',
+    workerState: 'stopped',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: 'generation-a',
+    resourceSemantics: 'historical-provenance',
+  });
+  const service = createTaskHttpServer(store);
+  const address = await service.listen({ port: 0 });
+  t.after(() => service.close());
+  const detail = await (await fetch(`${address.url}/api/tasks/demo-1`)).json();
+  const mutations = [
+    { operation: 'edit', changes: { workerState: 'paused' } },
+    { operation: 'edit', changes: { resourceSemantics: '' } },
+    { operation: 'hold', detail: 'Hold historical evidence.' },
+    { operation: 'handoff-ai', detail: 'Resume historical evidence.' },
+    { operation: 'handoff-human', action: 'review', detail: 'Review historical evidence.' },
+    { operation: 'external-wait', detail: 'Wait on historical evidence.' },
+  ];
+
+  for (const mutation of mutations) {
+    const response = await fetch(`${address.url}/api/tasks/demo-1/actions`, {
+      method: 'POST',
+      headers: {
+        Origin: address.url,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        revision: detail.revision,
+        projection: detail.projection,
+        ...mutation,
+      }),
+    });
+    assert.equal(response.status, 409, mutation.operation);
+    assert.match((await response.json()).error, /historical provenance/);
+  }
+
+  const unchanged = await (await fetch(`${address.url}/api/tasks/demo-1`)).json();
+  assert.equal(unchanged.status, 'done');
+  assert.equal(unchanged.workerState, 'stopped');
+  assert.equal(unchanged.executionAuthorized, 'no');
+  assert.equal(unchanged.resourceSemantics, 'historical-provenance');
+});
+
 test('task UI exposes everyday views and honest worker-terminal language', async (t) => {
   const service = createTaskHttpServer(new DemoTaskStore());
   const address = await service.listen({ port: 0 });

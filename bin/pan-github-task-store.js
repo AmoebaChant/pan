@@ -1726,6 +1726,35 @@ export class GitHubTaskStore {
     return { item, liveRevision };
   }
 
+  #assertHistoricalProvenanceMutation(item, operation, input) {
+    if (item.fields['resource-semantics'] !== 'historical-provenance') return;
+    const changes = operation === 'edit' ? (input.changes ?? {}) : {};
+    const protectedChanges = [
+      ['status', item.fields.Status],
+      ['nextAction', item.fields['next-action']],
+      ['workerState', item.fields['worker-state']],
+      ['executionAuthorized', item.fields['execution-authorized']],
+      ['resourceSemantics', 'historical-provenance'],
+    ];
+    const changesHistoricalEvidence = protectedChanges.some(
+      ([name, current]) =>
+        changes[name] !== undefined
+        && changes[name] !== current,
+    );
+    if (
+      changesHistoricalEvidence
+      || ['hold', 'handoff-ai', 'handoff-human', 'external-wait'].includes(operation)
+    ) {
+      throw Object.assign(
+        new Error(
+          `${operation} cannot reclassify or resume historical provenance; ` +
+          'only checked operator migration or rollback may preserve this evidence',
+        ),
+        { statusCode: 409 },
+      );
+    }
+  }
+
   #assertNoLiveWorker(item, operation) {
     const workerState = item.fields['worker-state'] ?? '';
     const claimedBy = item.fields['claimed-by'] ?? '';
@@ -1777,6 +1806,28 @@ export class GitHubTaskStore {
   }) {
     if (!validLifecyclePair(status, action)) {
       throw new Error(`invalid transition target ${status}/${action}`);
+    }
+    if (
+      item.fields['resource-semantics'] === 'historical-provenance'
+      && (
+        !['done', 'rejected'].includes(status)
+        || (
+          workerState !== undefined
+          && workerState !== item.fields['worker-state']
+        )
+        || (
+          resourceSemantics !== undefined
+          && resourceSemantics !== 'historical-provenance'
+        )
+      )
+    ) {
+      throw Object.assign(
+        new Error(
+          'transition cannot reclassify or resume historical provenance; ' +
+          'only checked operator migration or rollback may preserve this evidence',
+        ),
+        { statusCode: 409 },
+      );
     }
     const nextRevision = liveRevision + 1;
     await this.#setSelect(item.itemId, 'next-action', action);
@@ -2175,6 +2226,7 @@ export class GitHubTaskStore {
     if (!this.binding.allowedRepos.has(item.issue.repo)) {
       throw Object.assign(new Error('task repository is outside the configured boundary'), { statusCode: 403 });
     }
+    this.#assertHistoricalProvenanceMutation(item, operation, input);
 
     if (operation === 'edit') {
       const changes = input.changes ?? {};

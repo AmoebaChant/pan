@@ -1817,6 +1817,12 @@ export class Runner {
     // Re-read and re-confirm dispatchable + unleased.
     const fresh = await this.deps.readItemById(item.itemId);
     if (!fresh || !fresh.issue) return false;
+    if (fresh.issue.state !== 'OPEN') return false;
+    if (['historical-provenance', 'held-affinity'].includes(
+      val(fresh, FIELD.resourceSemantics, ''),
+    )) {
+      return false;
+    }
     const previousStatus = statusOf(fresh);
     const previousWorkerState = workerStateOf(fresh);
     const newLifecycle = this.usesOutcomeLifecycle();

@@ -239,7 +239,9 @@ workspace release.
 - Stopped paused/checkpointed session → preserve state root and workspace.
 - Resume → only after an explicit live `ready-for-ai/execute` transition with
   `worker-state=paused`; require the same session/machine/slot/generation, no
-  pending result, and capacity. A resume retains its generation.
+  pending result, an open Issue, empty `resource-semantics`, and capacity. A
+  resume retains its generation. Closed Issues and historical/held provenance
+  are never dispatch or resume candidates.
 - Deliberate hold or human checkpoint → never automatic resume.
 
 Process exit alone never frees a workspace. Slot occupancy includes active,

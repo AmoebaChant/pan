@@ -863,6 +863,102 @@ test('browser terminal actions refuse retained checkpoint affinity before any wr
       }
 });
 
+test('browser mutations cannot turn historical provenance into resumable work', async () => {
+      const mutations = [
+        { operation: 'edit', changes: { workerState: 'paused' } },
+        { operation: 'edit', changes: { resourceSemantics: 'held-affinity' } },
+        { operation: 'hold', detail: 'Hold this historical record.' },
+        { operation: 'handoff-ai', detail: 'Resume this historical record.' },
+        { operation: 'handoff-human', action: 'review', detail: 'Review this record.' },
+        { operation: 'external-wait', detail: 'Wait on this historical record.' },
+      ];
+      for (const mutation of mutations) {
+        const state = fakeGitHubState();
+        state.issue.body = renderCurrentActionBlock({
+          status: 'done',
+          action: 'none',
+          detail: 'Outcome complete.',
+          revision: 3,
+          updatedAt: '2026-09-01T00:00:00.000Z',
+        });
+        state.issue.state = 'CLOSED';
+        state.issue.stateReason = 'COMPLETED';
+        Object.assign(state.item.fields, {
+          Status: 'done',
+          'next-action': 'none',
+          playbook: 'isolated',
+          'execution-authorized': 'no',
+          'worker-state': 'stopped',
+          machine: 'machine-a',
+          'session-id': 'session-a',
+          'claim-generation': 'generation-a',
+          'resource-semantics': 'historical-provenance',
+          'task-revision': '3',
+        });
+        const { store } = await fakeStore(state);
+        const detail = await store.detail('item-1');
+        const beforeFields = structuredClone(state.item.fields);
+        const beforeWrites = state.writes.length;
+
+        await assert.rejects(
+          store.mutate({
+            itemId: detail.itemId,
+            revision: detail.revision,
+            projection: detail.projection,
+            ...mutation,
+          }),
+          /cannot reclassify or resume historical provenance/,
+        );
+
+        assert.equal(state.writes.length, beforeWrites, mutation.operation);
+        assert.deepEqual(state.item.fields, beforeFields, mutation.operation);
+        assert.equal(state.issue.state, 'CLOSED');
+        assert.equal(state.issue.stateReason, 'COMPLETED');
+      }
+});
+
+test('browser handoff resumes a legitimate open nonterminal checkpoint', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = renderCurrentActionBlock({
+        status: 'ready-for-human',
+        action: 'approve',
+        detail: 'Approve the checkpoint.',
+        revision: 1,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      });
+      Object.assign(state.item.fields, {
+        Status: 'ready-for-human',
+        'next-action': 'approve',
+        playbook: 'isolated',
+        'execution-authorized': 'no',
+        'worker-state': 'checkpointed',
+        machine: 'machine-a',
+        'session-id': 'session-a',
+        'claim-generation': 'generation-a',
+        'resource-semantics': '',
+      });
+      const { store } = await fakeStore(state);
+      const detail = await store.detail('item-1');
+
+      await store.mutate({
+        itemId: detail.itemId,
+        revision: detail.revision,
+        projection: detail.projection,
+        operation: 'handoff-ai',
+        detail: 'Continue from the approved checkpoint.',
+      });
+
+      assert.equal(state.issue.state, 'OPEN');
+      assert.equal(state.item.fields.Status, 'ready-for-ai');
+      assert.equal(state.item.fields['next-action'], 'execute');
+      assert.equal(state.item.fields['execution-authorized'], 'yes');
+      assert.equal(state.item.fields['worker-state'], 'paused');
+      assert.equal(state.item.fields['resource-semantics'], '');
+      assert.equal(state.item.fields.machine, 'machine-a');
+      assert.equal(state.item.fields['session-id'], 'session-a');
+      assert.equal(state.item.fields['claim-generation'], 'generation-a');
+});
+
 test('checked lifecycle rollback preserves pilot progress and is idempotent after a fresh live plan', async () => {
       const state = fakeGitHubState();
       const baseBody = '# Outcome\n\nKeep the completed pilot analysis.';

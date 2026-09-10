@@ -85,6 +85,35 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function assertHistoricalProvenanceMutation(task, input) {
+  if (task.resourceSemantics !== 'historical-provenance') return;
+  const operation = input.operation;
+  const changes = operation === 'edit' ? (input.changes ?? {}) : {};
+  const protectedChanges = [
+    ['status', task.status],
+    ['nextAction', task.nextAction],
+    ['workerState', task.workerState],
+    ['executionAuthorized', task.executionAuthorized],
+    ['resourceSemantics', 'historical-provenance'],
+  ];
+  if (
+    protectedChanges.some(
+      ([name, current]) =>
+        changes[name] !== undefined
+        && changes[name] !== current,
+    )
+    || ['hold', 'handoff-ai', 'handoff-human', 'external-wait'].includes(operation)
+  ) {
+    throw Object.assign(
+      new Error(
+        `${operation} cannot reclassify or resume historical provenance; ` +
+        'only checked operator migration or rollback may preserve this evidence',
+      ),
+      { statusCode: 409 },
+    );
+  }
+}
+
 export class DemoTaskStore {
   constructor() {
     this.state = demoTasks();
@@ -192,6 +221,7 @@ export class DemoTaskStore {
     if (input.projection !== task.projection) {
       throw Object.assign(new Error('stale task projection'), { statusCode: 409 });
     }
+    assertHistoricalProvenanceMutation(task, input);
     if (['starting', 'running', 'waiting-human', 'uncertain'].includes(task.workerState)) {
       throw Object.assign(new Error('fixture worker must be continued in its terminal'), { statusCode: 409 });
     }

@@ -43,6 +43,7 @@ function item({
       body,
       url: `https://github.com/example/domain/issues/${number}`,
       repo: 'example/domain',
+      state: 'OPEN',
     },
     fields: {
       [FIELD.status]: status,
@@ -374,6 +375,20 @@ test('retained slot affinity does not make its own explicit resume look busy', a
   assert.equal(result.claimed, 1);
   assert.equal(store.get(source.itemId).fields[FIELD.machine], 'machine-a::primary');
   assert.equal(store.get(source.itemId).fields[FIELD.claimGeneration], generation);
+});
+
+test('claim re-read rejects closed Issues and persistent resource semantics before writes', async () => {
+  for (const blockedBy of ['closed', 'historical-provenance', 'held-affinity']) {
+    const source = item({ id: `claim-${blockedBy}`, number: 96 });
+    const { runner, store, writes, launches } = runnerHarness(source);
+    const fresh = store.get(source.itemId);
+    if (blockedBy === 'closed') fresh.issue.state = 'CLOSED';
+    else fresh.fields[FIELD.resourceSemantics] = blockedBy;
+
+    assert.equal(await runner.claimAndLaunch(source), false, blockedBy);
+    assert.deepEqual(writes, [], blockedBy);
+    assert.deepEqual(launches, [], blockedBy);
+  }
 });
 
 test('a stale worker generation cannot write a human checkpoint', async () => {
