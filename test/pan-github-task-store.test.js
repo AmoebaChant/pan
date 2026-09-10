@@ -194,7 +194,7 @@ test('both Project readers paginate beyond the first fieldValues page and reject
   }
 });
 
-function fakeGitHubState() {
+function fakeGitHubState({ projectReadNodes = null } = {}) {
       const fields = CANONICAL_FIELDS.map((field, index) => ({
         __typename: field.type === 'single-select' ? 'ProjectV2SingleSelectField' : 'ProjectV2Field',
         id: `field-${index}`,
@@ -262,6 +262,7 @@ function fakeGitHubState() {
       const commentsByIssue = new Map([[issue.number, comments]]);
       const writes = [];
       const queries = [];
+      let projectReadCount = 0;
       const node = (projectItem = item) => ({
         id: projectItem.id,
         updatedAt: projectItem.updatedAt,
@@ -312,11 +313,16 @@ function fakeGitHubState() {
           });
         }
         if (query.includes('items(first:100')) {
+          let nodes = items.map((entry) => node(entry));
+          if (projectReadNodes) {
+            nodes = projectReadNodes(nodes, projectReadCount);
+          }
+          projectReadCount += 1;
           return JSON.stringify({
             data: {
               user: {
                 projectV2: {
-                  items: { nodes: items.map((entry) => node(entry)), pageInfo: { hasNextPage: false, endCursor: null } },
+                  items: { nodes, pageInfo: { hasNextPage: false, endCursor: null } },
                 },
               },
             },
@@ -889,6 +895,215 @@ test('verified legacy checkpoint and deliberate hold migrations clear only stale
       }
 });
 
+test('lifecycle plan and apply use one canonical projection across production-shaped independent reads', async () => {
+      const state = fakeGitHubState({
+        projectReadNodes(nodes, readIndex) {
+          const shaped = structuredClone(nodes);
+          for (const node of shaped) {
+            node.fieldValues.nodes.reverse();
+            const present = new Set(node.fieldValues.nodes.map((value) => value.field?.name));
+            if (readIndex % 2 === 0) {
+              for (const field of CANONICAL_FIELDS) {
+                if (present.has(field.name)) continue;
+                if (field.type === 'single-select') {
+                  node.fieldValues.nodes.push({
+                    __typename: 'ProjectV2ItemFieldSingleSelectValue',
+                    name: '',
+                    field: { name: field.name },
+                  });
+                } else if (field.type === 'date') {
+                  node.fieldValues.nodes.push({
+                    __typename: 'ProjectV2ItemFieldDateValue',
+                    date: '',
+                    field: { name: field.name },
+                  });
+                } else {
+                  node.fieldValues.nodes.push({
+                    __typename: 'ProjectV2ItemFieldTextValue',
+                    text: '',
+                    field: { name: field.name },
+                  });
+                }
+              }
+              node.content.stateReason ??= null;
+              node.content.closedAt ??= null;
+              if (node.content.body === '') node.content.body = null;
+            } else {
+              node.fieldValues.nodes = node.fieldValues.nodes.filter((value) =>
+                value.text !== '' && value.name !== '' && value.date !== '');
+              if (node.content.stateReason == null) delete node.content.stateReason;
+              if (node.content.closedAt == null) delete node.content.closedAt;
+              if (node.content.body == null) delete node.content.body;
+            }
+          }
+          return readIndex % 2 === 0 ? shaped : shaped.reverse();
+        },
+      });
+      const cases = [
+        { name: 'untriaged-unassigned', status: 'untriaged', owner: 'unassigned', body: '' },
+        { name: 'untriaged-human', status: 'untriaged', owner: 'human', body: '' },
+        { name: 'needs-detail-human', status: 'needs-detail', owner: 'human' },
+        { name: 'needs-detail-agent', status: 'needs-detail', owner: 'agent' },
+        { name: 'ready-human', status: 'ready', owner: 'human' },
+        { name: 'ready-agent', status: 'ready', owner: 'agent', authorization: 'execute' },
+        { name: 'ready-unassigned', status: 'ready', owner: 'unassigned' },
+        { name: 'paused-human', status: 'paused', owner: 'human' },
+        { name: 'paused-unassigned', status: 'paused', owner: 'unassigned' },
+        { name: 'in-progress-human', status: 'in-progress', owner: 'human' },
+        { name: 'in-review-human', status: 'in-review', owner: 'human' },
+        { name: 'in-review-agent', status: 'in-review', owner: 'agent' },
+        { name: 'blocked-human', status: 'blocked', owner: 'human' },
+        { name: 'blocked-unassigned', status: 'blocked', owner: 'unassigned' },
+        { name: 'done', status: 'done', owner: 'human', terminal: 'COMPLETED' },
+        { name: 'rejected', status: 'rejected', owner: 'human', terminal: 'NOT_PLANNED' },
+        {
+          name: 'done-terminal-provenance',
+          status: 'done',
+          owner: 'agent',
+          terminal: 'COMPLETED',
+          provenance: true,
+        },
+        {
+          name: 'rejected-terminal-provenance',
+          status: 'rejected',
+          owner: 'agent',
+          terminal: 'NOT_PLANNED',
+          provenance: true,
+        },
+        { name: 'verified-checkpoint-stale-claim', status: 'paused', owner: 'agent', cutover: 'verifiedHumanCheckpoint', staleClaim: true },
+        { name: 'verified-checkpoint', status: 'paused', owner: 'agent', cutover: 'verifiedHumanCheckpoint' },
+        { name: 'verified-hold-stale-claim', status: 'blocked', owner: 'agent', cutover: 'verifiedDeliberateHold', staleClaim: true },
+        { name: 'verified-hold', status: 'blocked', owner: 'agent', cutover: 'verifiedDeliberateHold' },
+        { name: 'durable-hold', status: 'blocked', owner: 'human', durableHold: true },
+      ];
+      const configure = (item, issue, entry, index) => {
+        item.id = `item-${index + 1}`;
+        item.updatedAt = `2026-09-${String((index % 8) + 1).padStart(2, '0')}T00:00:00Z`;
+        issue.number = index + 1;
+        issue.title = entry.name;
+        issue.url = `https://github.com/example/domain/issues/${index + 1}`;
+        issue.html_url = issue.url;
+        issue.body = Object.hasOwn(entry, 'body') ? entry.body : `Legacy outcome ${entry.name}.`;
+        issue.state = entry.terminal ? 'CLOSED' : 'OPEN';
+        issue.stateReason = entry.terminal ?? null;
+        issue.closedAt = entry.terminal ? '2026-09-09T00:00:00Z' : null;
+        item.fields = {
+          Status: entry.status,
+          'next-action': '',
+          owner: entry.owner,
+          priority: index % 2 ? 'normal' : 'high',
+          'next-action-date': entry.terminal ? '2026-09-01' : '',
+          deadline: index % 3 ? '' : '2026-09-30',
+          playbook: entry.authorization === 'execute' ? 'tool-development' : '',
+          workstream: index % 4 ? '' : 'product',
+          'execution-authorized': '',
+          dependencies: '',
+          'worker-state': '',
+          'needs-human-since': '',
+          'claimed-by': '',
+          'lease-until': '',
+          machine: '',
+          'session-id': '',
+          'claim-generation': '',
+          'resource-semantics': '',
+          'task-revision': '',
+        };
+        if (entry.provenance) {
+          item.fields.machine = `machine-${index}`;
+          item.fields['session-id'] = `session-${index}`;
+        }
+        if (entry.cutover) {
+          item.fields['needs-human-since'] = '2026-09-09T07:30:00.000Z';
+          item.fields.machine = `machine-${index}`;
+          item.fields['session-id'] = `session-${index}`;
+          if (entry.staleClaim) {
+            item.fields['claimed-by'] = 'old-runner';
+            item.fields['lease-until'] = '2026-09-09T08:00:00.000Z';
+          }
+        }
+        if (entry.durableHold) {
+          issue.body = renderCurrentActionBlock({
+            status: 'deliberate-hold',
+            action: 'hold',
+            detail: 'Keep this outcome deliberately paused.',
+            revision: 1,
+            updatedAt: '2026-09-09T01:00:00.000Z',
+          });
+          item.fields['worker-state'] = 'checkpointed';
+          item.fields.machine = `machine-${index}`;
+          item.fields['session-id'] = `session-${index}`;
+          item.fields['claim-generation'] = `generation-${index}`;
+          item.fields['task-revision'] = '1';
+        }
+      };
+      configure(state.item, state.issue, cases[0], 0);
+      for (let index = 1; index < cases.length; index += 1) {
+        const issue = structuredClone(state.issue);
+        const item = {
+          id: '',
+          updatedAt: '',
+          issue,
+          fields: {},
+        };
+        configure(item, issue, cases[index], index);
+        state.issues.push(issue);
+        state.items.push(item);
+        state.commentsByIssue.set(issue.number, []);
+      }
+      const { store } = await fakeStore(state);
+      const tasks = (await store.list()).tasks;
+      const byId = new Map(tasks.map((task) => [task.itemId, task]));
+      const authorizations = [];
+      for (const [index, entry] of cases.entries()) {
+        const task = byId.get(`item-${index + 1}`);
+        if (entry.authorization === 'execute') {
+          authorizations.push({
+            itemId: task.itemId,
+            playbook: task.playbook,
+            dependencies: task.dependencies,
+            executionAuthorized: true,
+          });
+        }
+        if (entry.cutover) {
+          authorizations.push(verifiedCutover(task, entry.cutover));
+        }
+      }
+      const plan = planLifecycleMigration(tasks, {
+        now: Date.parse('2026-09-09T12:00:00.000Z'),
+        authorizations,
+      });
+      assert.equal(plan.actions.length, 23);
+      assert.deepEqual(
+        plan.actions.filter((action) => action.action !== 'migrate'),
+        [],
+      );
+
+      const report = await applyLifecycleMigration(plan, store);
+
+      assert.equal(
+        report.partial,
+        false,
+        JSON.stringify(report.results.filter((result) => result.outcome !== 'migrated')),
+      );
+      assert.equal(report.results.length, 23);
+      assert.deepEqual(
+        report.results.filter((result) => result.outcome !== 'migrated'),
+        [],
+      );
+      assert.equal(
+        state.items.find((item) => item.id === 'item-17').fields['resource-semantics'],
+        'historical-provenance',
+      );
+      assert.equal(
+        state.items.find((item) => item.id === 'item-19').fields['resource-semantics'],
+        'held-affinity',
+      );
+      assert.equal(
+        state.items.find((item) => item.id === 'item-21').fields['resource-semantics'],
+        'held-affinity',
+      );
+});
+
 test('verified cutover apply refuses stale claim changes before clearing ownership', async () => {
       const state = fakeGitHubState();
       state.item.fields.Status = 'paused';
@@ -1117,6 +1332,26 @@ test('lifecycle migration refuses playbook or Issue drift from its complete plan
       assert.equal(plan.actions[0].action, 'migrate');
       state.item.fields.playbook = 'changed-after-plan';
       state.issue.title = 'Changed after plan';
+      const before = state.writes.length;
+
+      await assert.rejects(
+        store.migrateLegacyItem(plan.actions[0]),
+        /changed after the migration plan/,
+      );
+      assert.equal(state.writes.length, before);
+});
+
+test('legacy execution authorization default still rejects a substantive live change', async () => {
+      const state = fakeGitHubState();
+      state.item.fields.Status = 'ready';
+      state.item.fields['next-action'] = '';
+      state.item.fields.owner = 'human';
+      state.item.fields['execution-authorized'] = '';
+      state.item.fields['task-revision'] = '';
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleMigration((await store.list()).tasks);
+      assert.equal(plan.actions[0].expected.executionAuthorized, 'no');
+      state.item.fields['execution-authorized'] = 'yes';
       const before = state.writes.length;
 
       await assert.rejects(

@@ -64,11 +64,28 @@ export function runGh(args, { input = null } = {}) {
 }
 
 function projectionFingerprint(item) {
+  const issue = item.issue ?? {};
+  const fields = Object.fromEntries(
+    Object.entries(item.fields ?? {})
+      .filter(([, value]) => value != null && value !== '')
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
+  );
   return createHash('sha256').update(JSON.stringify({
     itemId: item.itemId,
-    projectUpdatedAt: item.projectUpdatedAt,
-    issue: item.issue,
-    fields: Object.fromEntries(Object.entries(item.fields).sort(([a], [b]) => a.localeCompare(b))),
+    projectUpdatedAt: item.projectUpdatedAt ?? null,
+    issue: {
+      number: issue.number ?? null,
+      title: issue.title ?? '',
+      body: issue.body ?? '',
+      url: issue.url ?? '',
+      repo: issue.repo ?? '',
+      state: issue.state ?? '',
+      stateReason: issue.stateReason ?? null,
+      createdAt: issue.createdAt ?? null,
+      updatedAt: issue.updatedAt ?? null,
+      closedAt: issue.closedAt ?? null,
+    },
+    fields,
   })).digest('hex');
 }
 
@@ -127,15 +144,19 @@ export async function loadTaskServiceBinding(configPath, checkoutPath) {
 
 function fieldValueNodes(nodes) {
   const fields = {};
+  const seen = new Set();
   for (const value of nodes ?? []) {
     const name = value.field?.name;
     if (!name) continue;
-    if (Object.hasOwn(fields, name)) {
+    if (seen.has(name)) {
       throw new Error(`Project item returned duplicate values for field "${name}"`);
     }
-    if (typeof value.text === 'string') fields[name] = value.text;
-    else if (typeof value.name === 'string') fields[name] = value.name;
-    else if (typeof value.date === 'string') fields[name] = value.date;
+    seen.add(name);
+    let fieldValue;
+    if (typeof value.text === 'string') fieldValue = value.text;
+    else if (typeof value.name === 'string') fieldValue = value.name;
+    else if (typeof value.date === 'string') fieldValue = value.date;
+    if (fieldValue) fields[name] = fieldValue;
   }
   return fields;
 }
@@ -170,18 +191,18 @@ function parseItem(node) {
   if (node.content?.__typename !== 'Issue') return null;
   return {
     itemId: node.id,
-    projectUpdatedAt: node.updatedAt,
+    projectUpdatedAt: node.updatedAt ?? null,
     issue: {
-      number: node.content.number,
-      title: node.content.title,
+      number: node.content.number ?? null,
+      title: node.content.title ?? '',
       body: node.content.body ?? '',
-      url: node.content.url,
+      url: node.content.url ?? '',
       repo: node.content.repository?.nameWithOwner ?? '',
-      state: node.content.state,
-      stateReason: node.content.stateReason,
-      createdAt: node.content.createdAt,
-      updatedAt: node.content.updatedAt,
-      closedAt: node.content.closedAt,
+      state: node.content.state ?? '',
+      stateReason: node.content.stateReason ?? null,
+      createdAt: node.content.createdAt ?? null,
+      updatedAt: node.content.updatedAt ?? null,
+      closedAt: node.content.closedAt ?? null,
     },
     fields: fieldValueNodes(node.fieldValues?.nodes),
   };
@@ -1405,7 +1426,7 @@ export class GitHubTaskStore {
       || item.fields.Status !== expected.status
       || (item.fields['next-action'] || '') !== (expected.nextAction || '')
       || (item.fields['worker-state'] || '') !== (expected.workerState || '')
-      || (item.fields['execution-authorized'] || '') !== (expected.executionAuthorized || '')
+      || (item.fields['execution-authorized'] || 'no') !== (expected.executionAuthorized || 'no')
       || (item.fields.dependencies || '') !== (expected.dependencies || '')
       || (item.fields.playbook || '') !== (expected.playbook || '')
       || (item.fields['claimed-by'] || '') !== (expected.claimedBy || '')
