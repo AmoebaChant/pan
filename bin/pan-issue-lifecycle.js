@@ -82,13 +82,33 @@ export async function ensureIssueRejected(runGh, repoSlug, number) {
   }
 }
 
-export async function ensureIssueComment(
-  runGh,
-  repoSlug,
-  number,
-  marker,
-  body,
-) {
+function commentMarkerPlacement(marker) {
+  if (
+    /^Pan: task transition (?:0|[1-9]\d*)$/.test(marker)
+    || /^Pan: next occurrence https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/[1-9]\d*$/
+      .test(marker)
+  ) {
+    return 'first';
+  }
+  if (
+    /^<!-- pan-result:[A-Za-z0-9._:-]+ -->$/.test(marker)
+    || /^<!-- pan-finalization-failed:[A-Za-z0-9._:-]+ -->$/.test(marker)
+  ) {
+    return 'last';
+  }
+  throw new Error(`invalid Pan Issue comment marker: ${JSON.stringify(marker)}`);
+}
+
+function markerMatch(body, marker, placement) {
+  const lines = String(body ?? '').replace(/\r\n/g, '\n').trimEnd().split('\n');
+  const occurrences = lines.filter((line) => line === marker).length;
+  const canonical = placement === 'first'
+    ? lines[0] === marker
+    : lines.at(-1) === marker;
+  return { occurrences, canonical: occurrences === 1 && canonical };
+}
+
+async function readIssueComments(runGh, repoSlug, number) {
   const raw = await runGh([
     'api',
     '--paginate',
@@ -99,14 +119,44 @@ export async function ensureIssueComment(
   if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
     throw new Error(`GitHub returned invalid comments for ${repoSlug}#${number}.`);
   }
-  if (
-    pages
-      .flat()
-      .some((comment) => typeof comment.body === 'string' && comment.body.includes(marker))
-  ) {
+  return pages.flat();
+}
+
+export async function ensureIssueComment(
+  runGh,
+  repoSlug,
+  number,
+  marker,
+  body,
+) {
+  const placement = commentMarkerPlacement(marker);
+  const comments = await readIssueComments(runGh, repoSlug, number);
+  const exact = [];
+  for (const comment of comments) {
+    const match = markerMatch(comment.body, marker, placement);
+    if (match.occurrences > 0 && !match.canonical) {
+      throw new Error(
+        `${repoSlug}#${number} has a non-canonical placement for marker ${marker}.`,
+      );
+    }
+    if (match.canonical) exact.push(comment);
+  }
+  if (exact.length > 1) {
+    throw new Error(`${repoSlug}#${number} has duplicate exact marker ${marker}.`);
+  }
+  if (exact.length === 1) {
     return;
   }
 
+  const markerInBody = markerMatch(body, marker, placement);
+  if (markerInBody.occurrences > 0 && !markerInBody.canonical) {
+    throw new Error(`comment body has a non-canonical placement for marker ${marker}.`);
+  }
+  const markedBody = markerInBody.canonical
+    ? body
+    : placement === 'first'
+      ? `${marker}\n\n${body}`
+      : `${body}\n\n${marker}`;
   await runGh([
     'issue',
     'comment',
@@ -114,8 +164,24 @@ export async function ensureIssueComment(
     '--repo',
     repoSlug,
     '--body',
-    body.includes(marker) ? body : `${body}\n\n${marker}`,
+    markedBody,
   ]);
+  const confirmed = await readIssueComments(runGh, repoSlug, number);
+  const confirmedMatches = [];
+  for (const comment of confirmed) {
+    const match = markerMatch(comment.body, marker, placement);
+    if (match.occurrences > 0 && !match.canonical) {
+      throw new Error(
+        `${repoSlug}#${number} has a non-canonical placement for marker ${marker}.`,
+      );
+    }
+    if (match.canonical) confirmedMatches.push(comment);
+  }
+  if (confirmedMatches.length !== 1) {
+    throw new Error(
+      `GitHub did not verify exactly one canonical marker ${marker} for ${repoSlug}#${number}.`,
+    );
+  }
 }
 
 async function readIssueBody(runGh, repoSlug, number) {

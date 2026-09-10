@@ -155,6 +155,72 @@ test('completion comments are added once with a durable marker', async () => {
   assert.match(comments[0].body, /pan-result:session-42/);
 });
 
+test('comment markers require exact canonical placement and ignore near matches', async () => {
+  const marker = '<!-- pan-result:session-42:generation-1 -->';
+  const comments = [{ body: `quoted ${marker} text is not a receipt` }];
+  let created = 0;
+  const runGh = async (args) => {
+    if (args[0] === 'api') return JSON.stringify([comments]);
+    if (args[0] === 'issue' && args[1] === 'comment') {
+      created += 1;
+      comments.push({ body: args[args.indexOf('--body') + 1] });
+      return '';
+    }
+    throw new Error('unexpected call');
+  };
+
+  await ensureIssueComment(runGh, 'example/tasks', 42, marker, 'Worker finished.');
+
+  assert.equal(created, 1);
+  assert.equal(comments.at(-1).body, `Worker finished.\n\n${marker}`);
+});
+
+test('comment markers reject duplicate exact receipts and non-canonical placement', async () => {
+  const marker = 'Pan: task transition 7';
+  await assert.rejects(
+    ensureIssueComment(
+      async () => JSON.stringify([[
+        { body: `${marker}\n\nFirst.` },
+        { body: `${marker}\n\nSecond.` },
+      ]]),
+      'example/tasks',
+      42,
+      marker,
+      `${marker}\n\nTransition.`,
+    ),
+    /duplicate exact marker/,
+  );
+  await assert.rejects(
+    ensureIssueComment(
+      async () => JSON.stringify([[{ body: `Prefix\n${marker}\n\nTransition.` }]]),
+      'example/tasks',
+      42,
+      marker,
+      `${marker}\n\nTransition.`,
+    ),
+    /non-canonical placement/,
+  );
+});
+
+test('comment creation re-reads and refuses success without the canonical receipt', async () => {
+  const marker = '<!-- pan-result:session-42 -->';
+  let writes = 0;
+  const runGh = async (args) => {
+    if (args[0] === 'api') return JSON.stringify([[]]);
+    if (args[0] === 'issue' && args[1] === 'comment') {
+      writes += 1;
+      return '';
+    }
+    throw new Error('unexpected call');
+  };
+
+  await assert.rejects(
+    ensureIssueComment(runGh, 'example/tasks', 42, marker, 'Worker finished.'),
+    /did not verify exactly one canonical marker/,
+  );
+  assert.equal(writes, 1);
+});
+
 test('current-next-action updates preserve body content and add idempotent transition history', async () => {
   let body = [
     '# Outcome',

@@ -1068,7 +1068,15 @@ export class GitHubTaskStore {
       || commentChanges.length > 0
       || issueProjectionChanged
     );
-    const needsRepair = needsRevision || transitionOccurrences.length !== 1;
+    const revisionLastRecovery = (
+      !needsRevision
+      && currentBlock.revision === currentRevision + 1
+    );
+    const needsRepair = (
+      needsRevision
+      || transitionOccurrences.length !== 1
+      || revisionLastRecovery
+    );
     let finalRevision = currentRevision;
     if (needsRevision) {
       if (
@@ -1094,6 +1102,8 @@ export class GitHubTaskStore {
           }),
         };
       }
+    } else if (revisionLastRecovery) {
+      finalRevision = currentBlock.revision;
     } else if (currentBlock.revision !== currentRevision) {
       throw new Error(`Todoist source ${sourceId} has mismatched Issue and Project revisions`);
     }
@@ -1364,12 +1374,15 @@ export class GitHubTaskStore {
     if (!item) throw new Error('legacy Project item no longer exists');
     const expected = action.expected;
     if (
-      (item.fields.owner || 'unassigned') !== expected.owner
+      typeof expected.projection !== 'string'
+      || projectionFingerprint(item) !== expected.projection
+      || (item.fields.owner || 'unassigned') !== expected.owner
       || item.fields.Status !== expected.status
       || (item.fields['next-action'] || '') !== (expected.nextAction || '')
       || (item.fields['worker-state'] || '') !== (expected.workerState || '')
       || (item.fields['execution-authorized'] || '') !== (expected.executionAuthorized || '')
       || (item.fields.dependencies || '') !== (expected.dependencies || '')
+      || (item.fields.playbook || '') !== (expected.playbook || '')
       || (item.fields['claimed-by'] || '') !== (expected.claimedBy || '')
       || (item.fields['lease-until'] || '') !== (expected.leaseUntil || '')
       || (item.fields.machine || '') !== (expected.machine || '')
@@ -1523,6 +1536,157 @@ export class GitHubTaskStore {
     };
   }
 
+  async rollbackLifecycleItem(action) {
+    const item = await this.#item(action.itemId);
+    if (!item) throw new Error('rollback Project item no longer exists');
+    if (
+      !action.expected
+      || typeof action.expected.projection !== 'string'
+      || projectionFingerprint(item) !== action.expected.projection
+      || (item.fields.playbook || '') !== (action.expected.playbook || '')
+    ) {
+      throw new Error('rollback item changed after the current-state plan was generated');
+    }
+    if (
+      item.fields['claimed-by']
+      || item.fields['lease-until']
+      || ['starting', 'running', 'waiting-human', 'uncertain']
+        .includes(item.fields['worker-state'])
+    ) {
+      throw new Error('rollback refuses a live or uncertain worker');
+    }
+    const source = action.source;
+    const target = action.legacyTarget;
+    if (
+      !source
+      || !validLifecyclePair(source.status, source.nextAction)
+      || !target
+      || !['unassigned', 'human', 'agent'].includes(target.owner)
+      || !['untriaged', 'needs-detail', 'ready', 'in-progress', 'paused', 'in-review', 'blocked', 'done', 'rejected']
+        .includes(target.status)
+    ) {
+      throw new Error('rollback plan has an invalid source or legacy target');
+    }
+    if (
+      ['done', 'rejected'].includes(source.status)
+        ? (
+          item.issue.state !== 'CLOSED'
+          || item.issue.stateReason !== (source.status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
+        )
+        : item.issue.state !== 'OPEN'
+    ) {
+      throw new Error('rollback refuses to reverse external Issue state');
+    }
+    const currentBlock = parseCurrentActionBlock(item.issue.body);
+    const currentRevision = parseRevision(item.fields['task-revision'] || '');
+    if (
+      !currentBlock
+      || currentBlock.status !== source.status
+      || currentBlock.action !== source.nextAction
+      || currentBlock.detail !== source.detail
+      || ![currentRevision, currentRevision + 1].includes(currentBlock.revision)
+    ) {
+      throw new Error('rollback source no longer matches the Issue current-action projection');
+    }
+    if (
+      ![source.status, target.status].includes(item.fields.Status)
+      || ![action.expected.owner, target.owner].includes(item.fields.owner || 'unassigned')
+    ) {
+      throw new Error('rollback Project fields are not a monotonic source-to-target state');
+    }
+    const preservedFields = { ...item.fields };
+    const originalBaseBody = `${
+      item.issue.body.slice(0, currentBlock.start)
+    }${item.issue.body.slice(currentBlock.end)}`.trim();
+    const nextRevision = currentBlock.revision === currentRevision + 1
+      ? currentBlock.revision
+      : currentRevision + 1;
+    if (currentBlock.revision === currentRevision) {
+      await updateIssueCurrentAction(
+        this.gh,
+        item.issue.repo,
+        item.issue.number,
+        {
+          expectedRevision: currentRevision,
+          revision: nextRevision,
+          status: source.status,
+          action: source.nextAction,
+          detail: source.detail,
+          actor: 'Pan lifecycle rollback',
+          claimGeneration: item.fields['claim-generation'] || '',
+          fromStatus: source.status,
+          fromAction: source.nextAction,
+          updatedAt: this.now().toISOString(),
+        },
+      );
+    } else {
+      await ensureIssueComment(
+        this.gh,
+        item.issue.repo,
+        item.issue.number,
+        transitionMarker(nextRevision),
+        transitionComment({
+          revision: nextRevision,
+          fromStatus: source.status,
+          fromAction: source.nextAction,
+          toStatus: source.status,
+          toAction: source.nextAction,
+          detail: source.detail,
+          actor: 'Pan lifecycle rollback',
+          claimGeneration: item.fields['claim-generation'] || '',
+        }),
+      );
+    }
+    if ((item.fields.owner || 'unassigned') !== target.owner) {
+      await this.#setSelect(item.itemId, 'owner', target.owner);
+    }
+    if (item.fields.Status !== target.status) {
+      await this.#setSelect(item.itemId, 'Status', target.status);
+    }
+    if (currentRevision !== nextRevision) {
+      await this.#setText(item.itemId, 'task-revision', String(nextRevision));
+    }
+    const confirmed = await this.#item(item.itemId);
+    const confirmedBlock = confirmed
+      ? parseCurrentActionBlock(confirmed.issue.body)
+      : null;
+    const confirmedBaseBody = confirmed && confirmedBlock
+      ? `${
+        confirmed.issue.body.slice(0, confirmedBlock.start)
+      }${confirmed.issue.body.slice(confirmedBlock.end)}`.trim()
+      : '';
+    const preservedFieldNames = Object.keys(preservedFields).filter(
+      (name) => !['owner', 'Status', 'task-revision'].includes(name),
+    );
+    if (
+      !confirmed
+      || (confirmed.fields.owner || 'unassigned') !== target.owner
+      || confirmed.fields.Status !== target.status
+      || parseRevision(confirmed.fields['task-revision'] || '') !== nextRevision
+      || !confirmedBlock
+      || confirmedBlock.revision !== nextRevision
+      || confirmedBlock.status !== source.status
+      || confirmedBlock.action !== source.nextAction
+      || confirmedBlock.detail !== source.detail
+      || confirmed.issue.title !== item.issue.title
+      || confirmed.issue.state !== item.issue.state
+      || confirmed.issue.stateReason !== item.issue.stateReason
+      || confirmedBaseBody !== originalBaseBody
+      || preservedFieldNames.some(
+        (name) => (confirmed.fields[name] || '') !== (preservedFields[name] || ''),
+      )
+    ) {
+      throw new Error('GitHub did not verify the complete lifecycle rollback');
+    }
+    return {
+      itemId: item.itemId,
+      issueUrl: item.issue.url,
+      outcome: 'rolled-back',
+      revision: nextRevision,
+      legacyTarget: target,
+    };
+  }
+
   async #assertMutable(input) {
     const item = await this.#item(input.itemId);
     if (!item) throw Object.assign(new Error('task not found'), { statusCode: 404 });
@@ -1554,6 +1718,22 @@ export class GitHubTaskStore {
         new Error(
           `${operation} would disturb a live or uncertain worker; continue in the worker terminal ` +
           'or checkpoint it first',
+        ),
+        { statusCode: 409 },
+      );
+    }
+  }
+
+  #assertNoRetainedAffinity(item, operation) {
+    if (
+      item.fields.machine
+      || item.fields['session-id']
+      || item.fields['claim-generation']
+    ) {
+      throw Object.assign(
+        new Error(
+          `${operation} cannot complete a task with retained workspace affinity; ` +
+          'resume it or use checked runner/operator terminal cleanup',
         ),
         { statusCode: 409 },
       );
@@ -1752,6 +1932,10 @@ export class GitHubTaskStore {
       || fieldChanges.length > 0
       || !blockMatches
     );
+    const revisionLastRecovery = (
+      !needsRevision
+      && block.revision === currentRevision + 1
+    );
     let finalRevision = currentRevision;
     if (needsRevision) {
       if (blockMatches && block.revision === currentRevision + 1) {
@@ -1771,6 +1955,8 @@ export class GitHubTaskStore {
           }),
         };
       }
+    } else if (revisionLastRecovery) {
+      finalRevision = block.revision;
     } else if (block.revision !== currentRevision) {
       throw new Error('recurring successor Issue and Project revisions disagree');
     }
@@ -2093,6 +2279,7 @@ export class GitHubTaskStore {
         detail: text(input.detail, 'detail', 2000, { allowEmpty: false }),
       });
     } else if (operation === 'finish') {
+      this.#assertNoRetainedAffinity(item, operation);
       const recurring = isRecurringBody(item.issue.body);
       if (recurring) {
         await this.#createRecurringSuccessor(item);
@@ -2137,6 +2324,7 @@ export class GitHubTaskStore {
         needsHumanSince: '',
       });
     } else if (operation === 'reject') {
+      this.#assertNoRetainedAffinity(item, operation);
       const recurring = isRecurringBody(item.issue.body);
       if (recurring) {
         await this.#assertRecurringCancellationSafe(item);

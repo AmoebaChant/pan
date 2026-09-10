@@ -1,8 +1,30 @@
 import {
+  legacyRecoveryTarget,
   parseRevision,
   validLifecyclePair,
   WORKER_STATES,
 } from './pan-task-model.js';
+
+const ACTIVE_WORKER_STATES = new Set(['starting', 'running', 'waiting-human']);
+const RETAINED_WORKER_STATES = new Set([
+  'starting',
+  'running',
+  'waiting-human',
+  'checkpointed',
+  'paused',
+  'uncertain',
+]);
+const LEGACY_STATUSES = new Set([
+  'untriaged',
+  'needs-detail',
+  'ready',
+  'in-progress',
+  'paused',
+  'in-review',
+  'blocked',
+  'done',
+  'rejected',
+]);
 
 function hasLiveLease(task, now) {
   if (!task.leaseUntil) return false;
@@ -164,6 +186,63 @@ function currentLifecycleTarget(task) {
   };
 }
 
+function resourceTuple(task) {
+  return [
+    task.machine || '',
+    task.sessionId || '',
+    task.claimGeneration || '',
+  ];
+}
+
+function hasResourceEvidence(task) {
+  return !!(
+    resourceTuple(task).some(Boolean)
+    || task.claimedBy
+    || task.leaseUntil
+    || RETAINED_WORKER_STATES.has(task.workerState)
+  );
+}
+
+function invalidRuntimeReason(
+  task,
+  status = task.status,
+  canonical = validLifecyclePair(task.status, task.nextAction),
+) {
+  const tuple = resourceTuple(task);
+  const tupleComplete = tuple.every(Boolean);
+  const tupleEmpty = tuple.every((value) => !value);
+  if (canonical && !tupleComplete && !tupleEmpty) {
+    return 'machine, session-id, and claim-generation must be all present or all empty';
+  }
+  if (
+    ['done', 'rejected'].includes(status)
+    && hasResourceEvidence(task)
+  ) {
+    return 'terminal state retains worker or workspace ownership';
+  }
+  if (
+    canonical
+    &&
+    status === 'ai-executing'
+    && !tupleComplete
+  ) {
+    return 'ai-executing state has no complete workspace owner tuple';
+  }
+  if (
+    canonical
+    &&
+    ACTIVE_WORKER_STATES.has(task.workerState)
+    && (
+      !tupleComplete
+      || !task.claimedBy
+      || !task.leaseUntil
+    )
+  ) {
+    return 'executing/running state has no complete live owner tuple';
+  }
+  return '';
+}
+
 function currentTupleComplete(task) {
   if (!validLifecyclePair(task.status, task.nextAction)) return false;
   let revision;
@@ -189,8 +268,9 @@ function currentTupleComplete(task) {
   ) {
     return false;
   }
-  const tuple = [task.machine, task.sessionId, task.claimGeneration].map((value) => value || '');
+  const tuple = resourceTuple(task);
   if (tuple.some(Boolean) && !tuple.every(Boolean)) return false;
+  if (invalidRuntimeReason(task)) return false;
   if (
     ['done', 'rejected'].includes(task.status)
     && (
@@ -204,7 +284,35 @@ function currentTupleComplete(task) {
   ) {
     return false;
   }
+  if (
+    !['done', 'rejected'].includes(task.status)
+    && task.issueState
+    && task.issueState !== 'OPEN'
+  ) {
+    return false;
+  }
   return true;
+}
+
+function expectedProjection(task) {
+  return {
+    projection: task.projection,
+    owner: task.legacyOwner || 'unassigned',
+    status: task.status,
+    nextAction: task.nextAction,
+    workerState: task.workerState,
+    executionAuthorized: task.executionAuthorized,
+    dependencies: task.dependencies,
+    playbook: task.playbook,
+    claimedBy: task.claimedBy,
+    leaseUntil: task.leaseUntil,
+    machine: task.machine,
+    sessionId: task.sessionId,
+    claimGeneration: task.claimGeneration,
+    revision: task.revision,
+    issueState: task.issueState,
+    issueStateReason: task.issueStateReason,
+  };
 }
 
 export function planLifecycleMigration(tasks, options = {}) {
@@ -219,13 +327,10 @@ export function planLifecycleMigration(tasks, options = {}) {
         ...options,
         authorization: authorizations.get(task.itemId),
       });
+    const invalidReason = task.bodyConflict || invalidRuntimeReason(task);
     const requiresCutoverHold = target.requiresCutoverHold
-      || (
-        !!task.sessionId
-        && ['starting', 'running', 'waiting-human', 'paused', 'checkpointed', 'uncertain']
-          .includes(task.workerState)
-      );
-    if (currentTupleComplete(task) && !requiresCutoverHold) {
+      || hasResourceEvidence(task);
+    if (currentTupleComplete(task) && !requiresCutoverHold && !invalidReason) {
       return {
         itemId: task.itemId,
         issueUrl: task.url,
@@ -237,29 +342,17 @@ export function planLifecycleMigration(tasks, options = {}) {
     return {
       itemId: task.itemId,
       issueUrl: task.url,
-      action: requiresCutoverHold
+      action: invalidReason
+        ? 'invalid-state'
+        : requiresCutoverHold
         ? 'requires-cutover-hold'
         : requiresAuthorization
           ? 'requires-authorization'
           : alreadyCurrent
             ? 'repair-current'
             : 'migrate',
-      expected: {
-        owner: task.legacyOwner || 'unassigned',
-        status: task.status,
-        nextAction: task.nextAction,
-        workerState: task.workerState,
-        executionAuthorized: task.executionAuthorized,
-        dependencies: task.dependencies,
-        claimedBy: task.claimedBy,
-        leaseUntil: task.leaseUntil,
-        machine: task.machine,
-        sessionId: task.sessionId,
-        claimGeneration: task.claimGeneration,
-        revision: task.revision,
-        issueState: task.issueState,
-        issueStateReason: task.issueStateReason,
-      },
+      ...(invalidReason ? { reason: invalidReason } : {}),
+      expected: expectedProjection(task),
       target,
       preserve: {
         nextActionDate: task.nextActionDate,
@@ -292,6 +385,7 @@ export async function applyLifecycleMigration(plan, store) {
       action.action === 'already-current'
       || action.action === 'requires-cutover-hold'
       || action.action === 'requires-authorization'
+      || action.action === 'invalid-state'
     ) {
       results.push(action);
       if (action.action !== 'already-current') partial = true;
@@ -310,6 +404,167 @@ export async function applyLifecycleMigration(plan, store) {
   }
   return {
     format: 'pan-lifecycle-migration-report',
+    version: 1,
+    completedAt: new Date().toISOString(),
+    partial,
+    results,
+  };
+}
+
+function rollbackSource(task) {
+  if (validLifecyclePair(task.status, task.nextAction)) {
+    return {
+      status: task.status,
+      nextAction: task.nextAction,
+      detail: task.nextActionDetail,
+      legacyProjectState: false,
+    };
+  }
+  if (
+    LEGACY_STATUSES.has(task.status)
+    && validLifecyclePair(task.currentActionStatus, task.currentActionAction)
+  ) {
+    return {
+      status: task.currentActionStatus,
+      nextAction: task.currentActionAction,
+      detail: task.nextActionDetail,
+      legacyProjectState: true,
+    };
+  }
+  return null;
+}
+
+function rollbackInvalidReason(task, source) {
+  if (!source) return 'task has neither a complete current pair nor a recoverable rollback projection';
+  let revision;
+  try {
+    revision = parseRevision(task.revision);
+  } catch {
+    return 'task revision is invalid';
+  }
+  if (
+    task.bodyConflict
+    || task.currentActionStatus !== source.status
+    || task.currentActionAction !== source.nextAction
+    || ![revision, revision + 1].includes(task.currentActionRevision)
+  ) {
+    return 'Issue current-action projection does not match the rollback source';
+  }
+  if (!WORKER_STATES.includes(task.workerState)) return 'worker-state is invalid';
+  const runtimeReason = invalidRuntimeReason(task, source.status, true);
+  if (runtimeReason) return runtimeReason;
+  if (
+    ['done', 'rejected'].includes(source.status)
+      ? (
+        task.issueState !== 'CLOSED'
+        || task.issueStateReason !== (source.status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
+      )
+      : task.issueState !== 'OPEN'
+  ) {
+    return 'Issue state cannot be reversed safely from the current live projection';
+  }
+  return '';
+}
+
+export function planLifecycleRollback(tasks) {
+  const actions = tasks.map((task) => {
+    const source = rollbackSource(task);
+    const invalidReason = rollbackInvalidReason(task, source);
+    let target = null;
+    if (!invalidReason) {
+      target = legacyRecoveryTarget({
+        status: source.status,
+        action: source.nextAction,
+        workerState: task.workerState,
+      });
+    }
+    const alreadyRolledBack = !!(
+      target
+      && source.legacyProjectState
+      && task.status === target.status
+      && (task.legacyOwner || 'unassigned') === target.owner
+      && task.currentActionRevision === parseRevision(task.revision)
+    );
+    const active = !!(
+      task.claimedBy
+      || task.leaseUntil
+      || ACTIVE_WORKER_STATES.has(task.workerState)
+    );
+    return {
+      itemId: task.itemId,
+      issueUrl: task.url,
+      action: invalidReason
+        ? 'invalid-state'
+        : active
+          ? 'requires-cutover-hold'
+          : alreadyRolledBack
+            ? 'already-rolled-back'
+            : 'rollback',
+      ...(invalidReason ? { reason: invalidReason } : {}),
+      expected: expectedProjection(task),
+      current: {
+        status: task.status,
+        nextAction: task.nextAction,
+        workerState: task.workerState,
+        revision: task.revision,
+      },
+      source: source && {
+        status: source.status,
+        nextAction: source.nextAction,
+        detail: source.detail,
+      },
+      legacyTarget: target,
+      preserve: {
+        nextActionDate: task.nextActionDate,
+        deadline: task.deadline,
+        priority: task.priority,
+        playbook: task.playbook,
+        workstream: task.workstream,
+        dependencies: task.dependencies,
+        executionAuthorized: task.executionAuthorized,
+        workerState: task.workerState,
+        needsHumanSince: task.needsHumanSince,
+        machine: task.machine,
+        sessionId: task.sessionId,
+        claimGeneration: task.claimGeneration,
+      },
+    };
+  });
+  return {
+    format: 'pan-lifecycle-rollback-plan',
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    source: 'current-live-state',
+    actions,
+    counts: Object.fromEntries(
+      [...new Set(actions.map((action) => action.action))]
+        .map((name) => [name, actions.filter((action) => action.action === name).length]),
+    ),
+  };
+}
+
+export async function applyLifecycleRollback(plan, store) {
+  const results = [];
+  let partial = false;
+  for (const action of plan.actions) {
+    if (action.action !== 'rollback') {
+      results.push(action);
+      if (action.action !== 'already-rolled-back') partial = true;
+      continue;
+    }
+    try {
+      results.push(await store.rollbackLifecycleItem(action));
+    } catch (error) {
+      partial = true;
+      results.push({
+        itemId: action.itemId,
+        outcome: 'failed',
+        error: error.message,
+      });
+    }
+  }
+  return {
+    format: 'pan-lifecycle-rollback-report',
     version: 1,
     completedAt: new Date().toISOString(),
     partial,

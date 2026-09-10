@@ -56,6 +56,10 @@ Todoist credentials are supplied through an environment variable named by
 - `recovery-plan` translates the **current live pilot state** back to the
   retained legacy `owner`/Status vocabulary. It does not replay a stale
   baseline over newer work.
+- `recovery-apply --confirm-writers-stopped` re-reads and checks that plan,
+  then applies only the compatible legacy `owner`/Status projection with
+  revision last. It preserves the current Issue, comments, dates, playbook,
+  dependencies, recurrence, and session/resource evidence.
 
 Lifecycle schema migration is a separate, writer-exclusive cutover:
 
@@ -74,11 +78,13 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
 5. Run another plan against current live state. Do not restart writers until it
    reports no authorization, cutover-hold, or repair actions.
 
-For rollback, keep writers stopped and generate
-`pan-todoist-migrate recovery-plan` from current live state. Review that plan
-against the saved baseline, then apply the retained legacy fields with the
-schema tooling. Never replay the baseline over newer Issues, comments, dates,
-session evidence, or results.
+For rollback, keep writers stopped, generate
+`pan-todoist-migrate recovery-plan` (or `pan-lifecycle-migrate rollback-plan`)
+from current live state, review it, then run `recovery-apply` (or
+`rollback-apply`) with `--confirm-writers-stopped`. Apply verifies the complete
+live projection before each item, preserves trial progress, and refuses active,
+uncertain, stale, or externally inconsistent items. Never replay the baseline
+over newer Issues, comments, dates, session evidence, or results.
 
 The optional `--report` path receives a machine-readable report. Reports
 distinguish `created`, `repaired`, `verified`, `excluded-assignee`, `conflict`,
@@ -115,7 +121,8 @@ liveness, and claim fields:
 | `done` | `done` |
 | `rejected` | `rejected` |
 
-The plan preserves current dates, Issue text, comments, sessions, results, and
-recurrence markers. Applying a rollback is intentionally not part of the
-overnight implementation command: an operator reviews the live plan and uses
-the documented schema tools during an authorized cutover.
+The plan and checked apply preserve current dates, Issue text, comments,
+sessions, results, playbook/dependency text, and recurrence markers. Apply does
+not reopen or re-close Issues, reverse Todoist state, clear affinity, or infer
+that an active/uncertain worker is safe. A fresh post-apply plan reports
+`already-rolled-back`, making the operation idempotent.

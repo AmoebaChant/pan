@@ -40,7 +40,10 @@ dependencies, hold, explicit human↔AI handoff, finish/reject, and recurrence
 basics. Details show the current-next-action block, history, artifacts, worker
 liveness, and session/workspace affinity. Discuss/open presents the honest
 worker terminal/machine instruction; it does not pretend browser chat is a
-worker conversation.
+worker conversation. Finish/reject is refused while machine/session/generation
+affinity remains, even for a stopped or checkpointed task; terminal completion
+must resume the generation or use checked runner/operator cleanup so local
+result and checkpoint evidence is not pruned or orphaned.
 
 Daily commitment still requires the existing explicit briefing approval flow.
 An everyday edit may schedule a specific date only when the user directly asks

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { parseMigrationCli } from '../bin/pan-todoist-migrate.js';
 import {
   applyTodoistImport,
   planTodoistImport,
@@ -196,6 +197,19 @@ test('recovery plan translates current live pilot state and preserves current sc
       nextAction: 'execute',
       workerState: 'paused',
       revision: 9,
+      issueState: 'OPEN',
+      issueStateReason: null,
+      currentActionStatus: 'ai-executing',
+      currentActionAction: 'execute',
+      currentActionRevision: 9,
+      nextActionDetail: 'Continue the pilot.',
+      legacyOwner: 'unassigned',
+      executionAuthorized: 'yes',
+      dependencies: '',
+      playbook: 'pilot',
+      claimedBy: '',
+      leaseUntil: '',
+      projection: 'projection',
       nextActionDate: '2026-09-20',
       deadline: '2026-09-30',
       machine: 'machine-a::primary',
@@ -207,4 +221,23 @@ test('recovery plan translates current live pilot state and preserves current sc
   assert.deepEqual(plan.actions[0].legacyTarget, { owner: 'agent', status: 'paused' });
   assert.equal(plan.actions[0].preserve.nextActionDate, '2026-09-20');
   assert.equal(plan.actions[0].current.revision, 9);
+});
+
+test('Todoist recovery apply CLI is checked and uses no stale snapshot', () => {
+  assert.throws(
+    () => parseMigrationCli([
+      'recovery-apply',
+      '--config', '/config',
+      '--checkout', '/pan',
+    ]),
+    /confirm-writers-stopped/,
+  );
+  const parsed = parseMigrationCli([
+    'recovery-apply',
+    '--config', '/config',
+    '--checkout', '/pan',
+    '--confirm-writers-stopped',
+  ]);
+  assert.equal(parsed.command, 'recovery-apply');
+  assert.equal(parsed.snapshot, undefined);
 });

@@ -83,6 +83,15 @@ node bin/pan-lifecycle-migrate.js apply \
   --authorization /absolute/path/to/authorization.json \
   --confirm-writers-stopped \
   --report /absolute/path/to/cutover.json
+node bin/pan-lifecycle-migrate.js rollback-plan \
+  --config /absolute/path/to/machine.json \
+  --checkout /absolute/path/to/pan \
+  --report /absolute/path/to/rollback.json
+node bin/pan-lifecycle-migrate.js rollback-apply \
+  --config /absolute/path/to/machine.json \
+  --checkout /absolute/path/to/pan \
+  --confirm-writers-stopped \
+  --report /absolute/path/to/rollback-result.json
 ```
 
 The authorization document has format
@@ -94,9 +103,12 @@ repairs partial current tuples, and flags active or paused sessions as
 Apply is idempotent, re-reads every item, preserves legacy owner/options for
 rollback, refuses changed/live items, and verifies the full Issue/Project
 projection with revision last. Stop every runner, UI, briefing session, and
-other writer before cutover. Re-run plan afterward, and use the current-state
-Todoist `recovery-plan` rather than replaying the baseline if rollback is
-needed.
+other writer before cutover. Rollback plan/apply translates the current live
+pilot projection to compatible retained legacy `owner`/`Status` values. It
+preserves all trial progress and resource evidence, refuses active, uncertain,
+stale, or externally inconsistent items, and never replays the baseline or
+reverses Issue/Todoist side effects. The Todoist CLI exposes the same operation
+as `recovery-plan` and `recovery-apply`.
 
 ## Daily Briefing MCP service
 

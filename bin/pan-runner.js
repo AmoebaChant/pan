@@ -160,6 +160,8 @@ const FINALIZATION_RETRY_BASE_MS = 5000;
 const LEGACY_OCCUPANCY_DIR = 'legacy-launcher-occupancy';
 const RESULT_CONSUMED_FILE = 'result-consumed.json';
 const RESULT_CONSUMED_VERSION = 1;
+const TERMINAL_RELEASE_FILE = 'terminal-release.json';
+const TERMINAL_RELEASE_VERSION = 1;
 const CHECKPOINT_RECEIPT_FILE = 'checkpoint-consumed.json';
 const CHECKPOINT_RECEIPT_VERSION = 2;
 
@@ -197,6 +199,51 @@ async function resultIsConsumed(attempt) {
     );
   } catch {
     return false;
+  }
+}
+
+function terminalReleaseJournalMatches(w, resultBytes, journal) {
+  return !!(
+    journal
+    && journal.panRunnerTerminalRelease === true
+    && journal.version === TERMINAL_RELEASE_VERSION
+    && ['prepared', 'released'].includes(journal.phase)
+    && journal.launchId === w.launchId
+    && journal.sessionId === w.sessionId
+    && journal.itemId === w.itemId
+    && journal.number === w.issueNumber
+    && journal.claimGeneration === w.claimGeneration
+    && journal.resultSha256 === resultDigest(resultBytes)
+    && ['done'].includes(journal.status)
+    && journal.nextAction === 'none'
+    && typeof journal.detail === 'string'
+    && Number.isInteger(journal.revision)
+    && journal.revision >= 0
+    && typeof journal.expectedClaimedBy === 'string'
+    && typeof journal.expectedLeaseUntil === 'string'
+    && typeof journal.expectedMachine === 'string'
+    && journal.expectedMachine
+  );
+}
+
+async function readTerminalReleaseJournal(w, resultBytes) {
+  if (!w.attemptDir) {
+    throw new Error('terminal release recovery requires an attempt directory');
+  }
+  const journalPath = path.join(w.attemptDir, TERMINAL_RELEASE_FILE);
+  if (!existsSync(journalPath)) {
+    return { present: false, valid: true, journal: null, journalPath };
+  }
+  try {
+    const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+    return {
+      present: true,
+      valid: terminalReleaseJournalMatches(w, resultBytes, journal),
+      journal,
+      journalPath,
+    };
+  } catch {
+    return { present: true, valid: false, journal: null, journalPath };
   }
 }
 
@@ -3796,10 +3843,10 @@ child.on('exit', (code, signal) => {
       : outcome === 'external-waiting'
         ? 'wait'
         : action;
+    const detail = result.details || result.summary;
     const fresh = await this.deps.readItemById(w.itemId);
     if (!fresh) {
-      await this.stopFinalizedWorker(w);
-      return true;
+      throw new Error('result finalization cannot record a receipt because its Project item disappeared');
     }
     const currentClaimedBy = val(fresh, FIELD.claimedBy, '');
     const activeOwned = (
@@ -3811,30 +3858,49 @@ child.on('exit', (code, signal) => {
       && val(fresh, FIELD.nextAction, '') === nextAction
       && (!currentClaimedBy || currentClaimedBy === this.cfg.identity)
     );
-    const releasedTerminal = (
+    let releaseJournalState = outcome === 'done'
+      ? await readTerminalReleaseJournal(w, resultBytes)
+      : { present: false, valid: true, journal: null };
+    if (releaseJournalState.present && !releaseJournalState.valid) {
+      throw new Error('terminal release journal is unreadable or does not match the owned result');
+    }
+    const revision = parseRevision(val(fresh, FIELD.taskRevision, ''));
+    const block = parseCurrentActionBlock(fresh.issue?.body ?? '');
+    const terminalProjectionMatches = (
       outcome === 'done'
       && partiallyFinalized
       && workerStateOf(fresh) === 'stopped'
       && !val(fresh, FIELD.needsHumanSince, '')
       && !val(fresh, FIELD.nextActionDate, '')
-      && !currentClaimedBy
-      && !val(fresh, FIELD.leaseUntil, '')
-      && !val(fresh, FIELD.machine, '')
-      && !val(fresh, FIELD.sessionId, '')
-      && !val(fresh, FIELD.claimGeneration, '')
+      && block
+      && block.revision === revision
+      && block.status === status
+      && block.action === nextAction
+      && block.detail === detail
     );
-    if (releasedTerminal) {
+    const expectedMachine = formatAffinity(this.cfg.machine, w.slot);
+    const releaseTupleMatchesManifest = (
+      terminalProjectionMatches
+      && [this.cfg.identity, ''].includes(currentClaimedBy)
+      && [expectedMachine, ''].includes(val(fresh, FIELD.machine, ''))
+      && [w.sessionId, ''].includes(val(fresh, FIELD.sessionId, ''))
+      && [w.claimGeneration, ''].includes(val(fresh, FIELD.claimGeneration, ''))
+    );
+    if (releaseTupleMatchesManifest && !releaseJournalState.present) {
+      releaseJournalState = await this.prepareTerminalReleaseJournal(
+        w,
+        resultBytes,
+        fresh,
+        { status, nextAction, detail, revision },
+      );
+    }
+    const recoverableTerminalRelease = (
+      releaseTupleMatchesManifest
+      && releaseJournalState.present
+      && this.terminalReleaseTupleIsMonotonic(fresh, releaseJournalState.journal)
+    );
+    if (recoverableTerminalRelease) {
       const revision = parseRevision(val(fresh, FIELD.taskRevision, ''));
-      const block = parseCurrentActionBlock(fresh.issue?.body ?? '');
-      if (
-        !block
-        || block.revision !== revision
-        || block.status !== status
-        || block.action !== nextAction
-        || block.detail !== (result.details || result.summary)
-      ) {
-        throw new Error('released terminal result does not have a complete matching action projection');
-      }
       await this.deps.ensureIssueClosed(
         this.deps.gh,
         this.issueRepoOf(w),
@@ -3860,10 +3926,15 @@ child.on('exit', (code, signal) => {
           fromAction: nextAction,
           toStatus: status,
           toAction: nextAction,
-          detail: result.details || result.summary,
+          detail,
           actor: this.cfg.identity,
           claimGeneration: w.claimGeneration,
         }),
+      );
+      await this.completeTerminalRelease(
+        w,
+        releaseJournalState.journal,
+        { status, nextAction, detail, revision },
       );
       return this.finishFinalization(w, status, resultPath, resultBytes);
     }
@@ -3874,12 +3945,11 @@ child.on('exit', (code, signal) => {
       || val(fresh, FIELD.sessionId, '') !== w.sessionId
       || !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
     ) {
-      logErr(`#${w.issueNumber} result generation/ownership is stale; stopping without writes`);
-      await this.stopFinalizedWorker(w);
-      return true;
+      throw new Error(
+        `#${w.issueNumber} result generation/ownership is stale and cannot be receipted`,
+      );
     }
 
-    const detail = result.details || result.summary;
     const needsHumanSince = outcome === 'needs-human' ? new Date().toISOString() : '';
     const workerState = outcome === 'done' ? 'stopped' : 'checkpointed';
 
@@ -3893,6 +3963,7 @@ child.on('exit', (code, signal) => {
       partiallyFinalized,
       summary: result.summary,
       resultDetails: result.details,
+      resultBytes,
     });
     return this.finishFinalization(w, status, resultPath, resultBytes);
   }
@@ -3907,6 +3978,7 @@ child.on('exit', (code, signal) => {
     partiallyFinalized,
     summary,
     resultDetails,
+    resultBytes,
   }) {
     let fresh = initial;
     const originalStatus = statusOf(fresh);
@@ -4069,9 +4141,6 @@ child.on('exit', (code, signal) => {
       );
     }
 
-    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
-    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
-
     const confirmed = await this.deps.readItemById(w.itemId);
     const confirmedBlock = confirmed
       ? parseCurrentActionBlock(confirmed.issue?.body ?? '')
@@ -4088,8 +4157,7 @@ child.on('exit', (code, signal) => {
       || confirmedBlock.status !== status
       || confirmedBlock.action !== nextAction
       || confirmedBlock.detail !== detail
-      || val(confirmed, FIELD.claimedBy, '')
-      || val(confirmed, FIELD.leaseUntil, '')
+      || ![this.cfg.identity, ''].includes(val(confirmed, FIELD.claimedBy, ''))
       || val(confirmed, FIELD.claimGeneration, '') !== w.claimGeneration
       || val(confirmed, FIELD.sessionId, '') !== w.sessionId
       || !affinityMatchesMachine(val(confirmed, FIELD.machine, ''), this.cfg.machine)
@@ -4100,34 +4168,203 @@ child.on('exit', (code, signal) => {
       );
     }
     if (outcome === 'done') {
-      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.machine, '');
-      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.sessionId, '');
-      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimGeneration, '');
+      const journalState = await this.prepareTerminalReleaseJournal(
+        w,
+        resultBytes,
+        confirmed,
+        { status, nextAction, detail, revision: finalRevision },
+      );
+      await this.completeTerminalRelease(
+        w,
+        journalState.journal,
+        { status, nextAction, detail, revision: finalRevision },
+      );
+    } else {
+      if (val(confirmed, FIELD.leaseUntil, '')) {
+        await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+      }
+      if (val(confirmed, FIELD.claimedBy, '')) {
+        await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+      }
       const released = await this.deps.readItemById(w.itemId);
-      const releasedBlock = released
-        ? parseCurrentActionBlock(released.issue?.body ?? '')
-        : null;
       if (
         !released
         || statusOf(released) !== status
         || val(released, FIELD.nextAction, '') !== nextAction
         || workerStateOf(released) !== workerState
-        || val(released, FIELD.nextActionDate, '')
-        || val(released, FIELD.needsHumanSince, '')
+        || val(released, FIELD.needsHumanSince, '') !== needsHumanSince
         || val(released, FIELD.claimedBy, '')
         || val(released, FIELD.leaseUntil, '')
-        || val(released, FIELD.machine, '')
-        || val(released, FIELD.sessionId, '')
-        || val(released, FIELD.claimGeneration, '')
-        || parseRevision(val(released, FIELD.taskRevision, '')) !== finalRevision
-        || !releasedBlock
-        || releasedBlock.revision !== finalRevision
-        || releasedBlock.status !== status
-        || releasedBlock.action !== nextAction
-        || releasedBlock.detail !== detail
+        || val(released, FIELD.claimGeneration, '') !== w.claimGeneration
+        || val(released, FIELD.sessionId, '') !== w.sessionId
+        || !affinityMatchesMachine(val(released, FIELD.machine, ''), this.cfg.machine)
       ) {
-        throw new Error('GitHub did not confirm terminal resource release before receipt');
+        throw new Error('GitHub did not confirm checkpoint result lease release');
       }
+    }
+  }
+
+  async prepareTerminalReleaseJournal(w, resultBytes, item, {
+    status,
+    nextAction,
+    detail,
+    revision,
+  }) {
+    const existing = await readTerminalReleaseJournal(w, resultBytes);
+    if (existing.present) {
+      if (!existing.valid) {
+        throw new Error('terminal release journal is unreadable or does not match the owned result');
+      }
+      if (
+        existing.journal.status !== status
+        || existing.journal.nextAction !== nextAction
+        || existing.journal.detail !== detail
+        || existing.journal.revision !== revision
+      ) {
+        throw new Error('terminal release journal conflicts with the finalized projection');
+      }
+      return existing;
+    }
+    const expectedClaimedBy = val(item, FIELD.claimedBy, '') || this.cfg.identity;
+    const expectedLeaseUntil = val(item, FIELD.leaseUntil, '');
+    const expectedMachine = val(item, FIELD.machine, '') || formatAffinity(this.cfg.machine, w.slot);
+    const expectedSessionId = val(item, FIELD.sessionId, '');
+    const expectedClaimGeneration = val(item, FIELD.claimGeneration, '');
+    if (
+      expectedClaimedBy !== this.cfg.identity
+      || !expectedMachine
+      || (expectedSessionId && expectedSessionId !== w.sessionId)
+      || (expectedClaimGeneration && expectedClaimGeneration !== w.claimGeneration)
+      || !affinityMatchesMachine(expectedMachine, this.cfg.machine)
+      || (w.slot != null && splitAffinity(expectedMachine).slot !== w.slot)
+    ) {
+      throw new Error('terminal resource release cannot be journaled without the exact owned tuple');
+    }
+    const journal = {
+      panRunnerTerminalRelease: true,
+      version: TERMINAL_RELEASE_VERSION,
+      phase: 'prepared',
+      launchId: w.launchId,
+      sessionId: w.sessionId,
+      itemId: w.itemId,
+      number: w.issueNumber,
+      claimGeneration: w.claimGeneration,
+      resultSha256: resultDigest(resultBytes),
+      status,
+      nextAction,
+      detail,
+      revision,
+      expectedClaimedBy,
+      expectedLeaseUntil,
+      expectedMachine,
+      reconstructedFromReleasedTuple: (
+        !val(item, FIELD.machine, '')
+        || !expectedSessionId
+        || !expectedClaimGeneration
+      ),
+      preparedAt: new Date().toISOString(),
+    };
+    await atomicWriteJson(existing.journalPath, journal);
+    const confirmed = await readTerminalReleaseJournal(w, resultBytes);
+    if (!confirmed.present || !confirmed.valid) {
+      throw new Error('terminal resource release was not durably journaled');
+    }
+    return confirmed;
+  }
+
+  terminalReleaseTupleIsMonotonic(item, journal) {
+    return !!(
+      item
+      && [journal.expectedClaimedBy, ''].includes(val(item, FIELD.claimedBy, ''))
+      && [journal.expectedLeaseUntil, ''].includes(val(item, FIELD.leaseUntil, ''))
+      && [journal.expectedMachine, ''].includes(val(item, FIELD.machine, ''))
+      && [journal.sessionId, ''].includes(val(item, FIELD.sessionId, ''))
+      && [journal.claimGeneration, ''].includes(val(item, FIELD.claimGeneration, ''))
+    );
+  }
+
+  terminalReleaseProjectionMatches(item, {
+    status,
+    nextAction,
+    detail,
+    revision,
+  }) {
+    const block = item ? parseCurrentActionBlock(item.issue?.body ?? '') : null;
+    return !!(
+      item
+      && statusOf(item) === status
+      && val(item, FIELD.nextAction, '') === nextAction
+      && workerStateOf(item) === 'stopped'
+      && !val(item, FIELD.nextActionDate, '')
+      && !val(item, FIELD.needsHumanSince, '')
+      && parseRevision(val(item, FIELD.taskRevision, '')) === revision
+      && block
+      && block.revision === revision
+      && block.status === status
+      && block.action === nextAction
+      && block.detail === detail
+    );
+  }
+
+  async completeTerminalRelease(w, journal, {
+    status,
+    nextAction,
+    detail,
+    revision,
+  }) {
+    let current = await this.deps.readItemById(w.itemId);
+    if (
+      !this.terminalReleaseProjectionMatches(
+        current,
+        { status, nextAction, detail, revision },
+      )
+      || !this.terminalReleaseTupleIsMonotonic(current, journal)
+    ) {
+      throw new Error('terminal release no longer matches its journaled result projection');
+    }
+    const releaseFields = [
+      FIELD.leaseUntil,
+      FIELD.claimedBy,
+      FIELD.machine,
+      FIELD.sessionId,
+      FIELD.claimGeneration,
+    ];
+    if (
+      journal.phase === 'released'
+      && releaseFields.some((field) => val(current, field, ''))
+    ) {
+      throw new Error('released terminal journal conflicts with retained resource fields');
+    }
+    for (const field of releaseFields) {
+      if (val(current, field, '')) {
+        await this.deps.setTextField(this.cfg, this.meta, w.itemId, field, '');
+        current = await this.deps.readItemById(w.itemId);
+        if (
+          !this.terminalReleaseProjectionMatches(
+            current,
+            { status, nextAction, detail, revision },
+          )
+          || !this.terminalReleaseTupleIsMonotonic(current, journal)
+        ) {
+          throw new Error(`terminal release lost its expected tuple while clearing ${field}`);
+        }
+      }
+    }
+    if (
+      !this.terminalReleaseProjectionMatches(
+        current,
+        { status, nextAction, detail, revision },
+      )
+      || releaseFields.some((field) => val(current, field, ''))
+    ) {
+      throw new Error('GitHub did not confirm terminal resource release before receipt');
+    }
+    if (journal.phase !== 'released') {
+      await atomicWriteJson(path.join(w.attemptDir, TERMINAL_RELEASE_FILE), {
+        ...journal,
+        phase: 'released',
+        releasedAt: new Date().toISOString(),
+      });
     }
   }
 
@@ -4140,7 +4377,8 @@ child.on('exit', (code, signal) => {
       if (!currentResultBytes.equals(resultBytes)) {
         throw new Error('result.json changed while finalization was in progress');
       }
-      await atomicWriteJson(path.join(w.attemptDir, RESULT_CONSUMED_FILE), {
+      const receiptPath = path.join(w.attemptDir, RESULT_CONSUMED_FILE);
+      const receipt = {
         panRunnerResultConsumed: true,
         version: RESULT_CONSUMED_VERSION,
         launchId: w.launchId,
@@ -4149,7 +4387,19 @@ child.on('exit', (code, signal) => {
         number: w.issueNumber,
         resultSha256: resultDigest(resultBytes),
         consumedAt: new Date().toISOString(),
-      });
+      };
+      await atomicWriteJson(receiptPath, receipt);
+      const confirmedReceipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+      if (!resultConsumptionReceiptMatches({
+        launchId: w.launchId,
+        attempt: {
+          sessionId: w.sessionId,
+          itemId: w.itemId,
+          number: w.issueNumber,
+        },
+      }, resultBytes, confirmedReceipt)) {
+        throw new Error('result consumption receipt was not durably verified');
+      }
     } catch (e) {
       return this.handleFinalizationFailure(w, e, status);
     }
@@ -4317,43 +4567,11 @@ child.on('exit', (code, signal) => {
   }
 
   async releaseCheckpointWorker(w, checkpoint) {
-    const fresh = await this.deps.readItemById(w.itemId);
-    const alreadyReleased = (
-      fresh
-      && statusOf(fresh) === 'ready-for-human'
-      && workerStateOf(fresh) === 'checkpointed'
-      && !val(fresh, FIELD.claimedBy, '')
-      && !val(fresh, FIELD.leaseUntil, '')
-    );
-    if (
-      !fresh
-      || statusOf(fresh) !== 'ready-for-human'
-      || (!alreadyReleased && workerStateOf(fresh) !== 'waiting-human')
-      || (!alreadyReleased && val(fresh, FIELD.claimedBy, '') !== this.cfg.identity)
-      || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
-      || val(fresh, FIELD.sessionId, '') !== w.sessionId
-      || !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
-    ) {
-      throw new Error('checkpoint release lost task or generation ownership');
-    }
     if (!w.attemptDir || !w.launchId) {
       throw new Error('checkpoint release requires a durable launch attempt');
     }
+    let fresh = await this.deps.readItemById(w.itemId);
     const receiptPath = path.join(w.attemptDir, CHECKPOINT_RECEIPT_FILE);
-    const checkpointReceipt = {
-      panRunnerCheckpoint: true,
-      version: CHECKPOINT_RECEIPT_VERSION,
-      phase: 'prepared',
-      launchId: w.launchId,
-      sessionId: w.sessionId,
-      itemId: w.itemId,
-      number: w.issueNumber,
-      claimGeneration: w.claimGeneration,
-      action: checkpoint.action,
-      detail: checkpoint.detail,
-      since: checkpoint.since,
-      preparedAt: checkpoint.preparedAt || new Date().toISOString(),
-    };
     const existing = await readCheckpointReceipt({
       launchId: w.launchId,
       attemptDir: w.attemptDir,
@@ -4368,17 +4586,88 @@ child.on('exit', (code, signal) => {
       throw new Error('checkpoint release receipt is unreadable or does not match the owned attempt');
     }
     if (
-      existing.present
-      && (
-        existing.receipt.action !== checkpointReceipt.action
-        || existing.receipt.detail !== checkpointReceipt.detail
-        || existing.receipt.since !== checkpointReceipt.since
-      )
+      !fresh
+      || statusOf(fresh) !== 'ready-for-human'
+      || val(fresh, FIELD.claimGeneration, '') !== w.claimGeneration
+      || val(fresh, FIELD.sessionId, '') !== w.sessionId
+      || !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
+    ) {
+      throw new Error('checkpoint release lost task or generation ownership');
+    }
+    let receipt = existing.receipt;
+    if (!existing.present) {
+      if (
+        workerStateOf(fresh) !== 'waiting-human'
+        || val(fresh, FIELD.claimedBy, '') !== this.cfg.identity
+      ) {
+        throw new Error('checkpoint release requires the exact live pre-release tuple');
+      }
+      receipt = {
+        panRunnerCheckpoint: true,
+        version: CHECKPOINT_RECEIPT_VERSION,
+        phase: 'prepared',
+        launchId: w.launchId,
+        sessionId: w.sessionId,
+        itemId: w.itemId,
+        number: w.issueNumber,
+        claimGeneration: w.claimGeneration,
+        action: checkpoint.action,
+        detail: checkpoint.detail,
+        since: checkpoint.since,
+        expectedClaimedBy: val(fresh, FIELD.claimedBy, ''),
+        expectedLeaseUntil: val(fresh, FIELD.leaseUntil, ''),
+        expectedMachine: val(fresh, FIELD.machine, ''),
+        preparedAt: checkpoint.preparedAt || new Date().toISOString(),
+      };
+      await atomicWriteJson(receiptPath, receipt);
+    } else {
+      receipt = {
+        ...receipt,
+        expectedClaimedBy: receipt.expectedClaimedBy ?? this.cfg.identity,
+        expectedLeaseUntil: receipt.expectedLeaseUntil ?? val(fresh, FIELD.leaseUntil, ''),
+        expectedMachine: receipt.expectedMachine ?? val(fresh, FIELD.machine, ''),
+      };
+    }
+    if (
+      receipt.action !== checkpoint.action
+      || receipt.detail !== checkpoint.detail
+      || receipt.since !== checkpoint.since
     ) {
       throw new Error('checkpoint release receipt conflicts with the current checkpoint');
     }
-    let receipt = existing.receipt ?? checkpointReceipt;
-    if (!existing.present) await atomicWriteJson(receiptPath, receipt);
+    const tupleIsMonotonic = (item) => {
+      const block = item ? parseCurrentActionBlock(item.issue?.body ?? '') : null;
+      return !!(
+        item
+        && statusOf(item) === 'ready-for-human'
+        && val(item, FIELD.nextAction, '') === receipt.action
+        && val(item, FIELD.needsHumanSince, '') === receipt.since
+        && block
+        && block.status === 'ready-for-human'
+        && block.action === receipt.action
+        && block.detail === receipt.detail
+        && ['waiting-human', 'checkpointed'].includes(workerStateOf(item))
+        && [receipt.expectedClaimedBy, ''].includes(val(item, FIELD.claimedBy, ''))
+        && [receipt.expectedLeaseUntil, ''].includes(val(item, FIELD.leaseUntil, ''))
+        && val(item, FIELD.claimGeneration, '') === w.claimGeneration
+        && val(item, FIELD.sessionId, '') === w.sessionId
+        && val(item, FIELD.machine, '') === receipt.expectedMachine
+        && affinityMatchesMachine(val(item, FIELD.machine, ''), this.cfg.machine)
+      );
+    };
+    if (!tupleIsMonotonic(fresh)) {
+      throw new Error('checkpoint release no longer matches its journaled ownership tuple');
+    }
+    if (
+      receipt.phase === 'prepared'
+      && (
+        workerStateOf(fresh) !== 'waiting-human'
+        || val(fresh, FIELD.claimedBy, '') !== receipt.expectedClaimedBy
+        || val(fresh, FIELD.leaseUntil, '') !== receipt.expectedLeaseUntil
+      )
+    ) {
+      throw new Error('prepared checkpoint journal conflicts with partially released Project state');
+    }
 
     const resultPath = path.join(w.panDir, 'result.json');
     if (existsSync(resultPath)) {
@@ -4400,7 +4689,21 @@ child.on('exit', (code, signal) => {
       await atomicWriteJson(receiptPath, receipt);
     }
 
-    if (!alreadyReleased) {
+    fresh = await this.deps.readItemById(w.itemId);
+    if (!tupleIsMonotonic(fresh)) {
+      throw new Error('checkpoint release lost its expected tuple after stopping the launcher');
+    }
+    if (
+      receipt.phase === 'released'
+      && (
+        workerStateOf(fresh) !== 'checkpointed'
+        || val(fresh, FIELD.claimedBy, '')
+        || val(fresh, FIELD.leaseUntil, '')
+      )
+    ) {
+      throw new Error('released checkpoint journal conflicts with Project ownership');
+    }
+    if (workerStateOf(fresh) !== 'checkpointed') {
       await this.deps.setSelectField(
         this.cfg,
         this.meta,
@@ -4408,19 +4711,27 @@ child.on('exit', (code, signal) => {
         FIELD.workerState,
         'checkpointed',
       );
+      fresh = await this.deps.readItemById(w.itemId);
+      if (!tupleIsMonotonic(fresh)) {
+        throw new Error('checkpoint release lost its tuple after worker-state update');
+      }
+    }
+    if (val(fresh, FIELD.leaseUntil, '')) {
       await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+      fresh = await this.deps.readItemById(w.itemId);
+      if (!tupleIsMonotonic(fresh)) {
+        throw new Error('checkpoint release lost its tuple after lease cleanup');
+      }
+    }
+    if (val(fresh, FIELD.claimedBy, '')) {
       await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
     }
     const confirmed = await this.deps.readItemById(w.itemId);
     if (
-      !confirmed
-      || statusOf(confirmed) !== 'ready-for-human'
+      !tupleIsMonotonic(confirmed)
       || workerStateOf(confirmed) !== 'checkpointed'
       || val(confirmed, FIELD.claimedBy, '')
       || val(confirmed, FIELD.leaseUntil, '')
-      || val(confirmed, FIELD.claimGeneration, '') !== w.claimGeneration
-      || val(confirmed, FIELD.sessionId, '') !== w.sessionId
-      || !affinityMatchesMachine(val(confirmed, FIELD.machine, ''), this.cfg.machine)
     ) {
       throw new Error('GitHub did not confirm durable checkpoint release');
     }

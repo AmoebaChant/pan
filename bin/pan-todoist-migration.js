@@ -1,4 +1,4 @@
-import { legacyRecoveryTarget } from './pan-task-model.js';
+import { planLifecycleRollback } from './pan-lifecycle-migration.js';
 
 const TODOIST_PAGE_SIZE = 200;
 
@@ -295,32 +295,5 @@ export async function applyTodoistImport(plan, store) {
 }
 
 export function recoveryPlan(tasks) {
-  return {
-    format: 'pan-pilot-recovery-plan',
-    version: 1,
-    generatedAt: new Date().toISOString(),
-    source: 'current-live-state',
-    actions: tasks.map((task) => ({
-      itemId: task.itemId,
-      issueUrl: task.url,
-      current: {
-        status: task.status,
-        nextAction: task.nextAction,
-        workerState: task.workerState,
-        revision: task.revision,
-      },
-      legacyTarget: legacyRecoveryTarget({
-        status: task.status,
-        action: task.nextAction,
-        workerState: task.workerState,
-      }),
-      preserve: {
-        nextActionDate: task.nextActionDate,
-        deadline: task.deadline,
-        machine: task.machine,
-        sessionId: task.sessionId,
-        claimGeneration: task.claimGeneration,
-      },
-    })),
-  };
+  return planLifecycleRollback(tasks);
 }

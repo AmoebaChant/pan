@@ -124,6 +124,11 @@ partial write, or failed verification reports a conflict and stops. It never
 returns a success-shaped fallback. The next live read exposes the partial state
 for explicit retry or recovery.
 
+Idempotent Issue comments use one exact canonical marker: transition and
+recurrence markers are the first line; hidden result/finalization markers are
+the final line. Near matches do not count. Duplicate exact markers or
+non-canonical placement are conflicts, and creation is re-read before success.
+
 Runner claims additionally mint a random `claim-generation`. That generation,
 not only `claimed-by`, binds all attention, result, lease, and cleanup writes to
 one launch lineage. A stale worker or browser cannot complete, clear attention,

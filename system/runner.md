@@ -206,9 +206,14 @@ For every valid result the runner:
 4. for `done`, clears/verifies attention date, closes/verifies the Issue, then
    writes terminal state;
 5. increments revision last and confirms;
-6. clears active lease/claim after state confirmation;
-7. writes a digest-bound `result-consumed.json`; and
-8. writes `worker.stop`.
+6. for terminal workspace release, writes a digest/generation-bound release
+   journal before clearing any lease/claim/machine/session/generation field;
+7. clears and verifies every remaining release field, recovering any
+   monotonic interrupted prefix from that journal or, for a pre-journal crash,
+   reconstructing it only from the exact terminal projection plus immutable
+   result/manifest evidence;
+8. writes and re-reads a digest-bound `result-consumed.json`; and
+9. writes `worker.stop`.
 
 No generic review is inserted because AI acted. The playbook decides whether
 review, merge, rollout, restart, or live validation remains. A worker whose

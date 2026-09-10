@@ -10,8 +10,10 @@ import {
 } from './pan-github-task-store.js';
 import {
   applyLifecycleMigration,
+  applyLifecycleRollback,
   parseMigrationAuthorizations,
   planLifecycleMigration,
+  planLifecycleRollback,
 } from './pan-lifecycle-migration.js';
 
 const HELP = `Pan additive lifecycle migration
@@ -19,18 +21,25 @@ const HELP = `Pan additive lifecycle migration
 Usage:
   node bin/pan-lifecycle-migrate.js plan --config <path> --checkout <path> [--authorization <path>] [--report <path>]
   node bin/pan-lifecycle-migrate.js apply --config <path> --checkout <path> --authorization <path> --confirm-writers-stopped [--report <path>]
+  node bin/pan-lifecycle-migrate.js rollback-plan --config <path> --checkout <path> [--report <path>]
+  node bin/pan-lifecycle-migrate.js rollback-apply --config <path> --checkout <path> --confirm-writers-stopped [--report <path>]
 
 Plan is read-only. Agent-owned work is not authorized by legacy owner alone:
 the authorization file must explicitly approve each item and exactly match its
 playbook and dependency text. Apply refuses every legacy active/paused session
 and never changes the retained owner field/options. Stop every runner, task UI,
 briefing writer, and other Project writer for the Domain before applying.
+Rollback is generated from current live pilot state, preserves all work and
+resource evidence, changes only the retained legacy owner/Status projection,
+and refuses active, uncertain, stale, or externally inconsistent items.
 `;
 
 export function parseLifecycleCli(argv) {
   const [command, ...rest] = argv;
   if (!command || command === '--help' || command === 'help') return { help: true };
-  if (!['plan', 'apply'].includes(command)) throw new Error(`unknown command: ${command}`);
+  if (!['plan', 'apply', 'rollback-plan', 'rollback-apply'].includes(command)) {
+    throw new Error(`unknown command: ${command}`);
+  }
   const { values } = parseArgs({
     args: rest,
     options: {
@@ -54,8 +63,8 @@ export function parseLifecycleCli(argv) {
   if (command === 'apply' && !values.authorization) {
     throw new Error('apply requires --authorization');
   }
-  if (command === 'apply' && !values['confirm-writers-stopped']) {
-    throw new Error('apply requires --confirm-writers-stopped');
+  if (['apply', 'rollback-apply'].includes(command) && !values['confirm-writers-stopped']) {
+    throw new Error(`${command} requires --confirm-writers-stopped`);
   }
   return {
     help: false,
@@ -80,14 +89,21 @@ export async function runLifecycleCommand(options) {
   const authorizations = options.authorization
     ? parseMigrationAuthorizations(JSON.parse(await readFile(options.authorization, 'utf8')))
     : [];
-  const plan = planLifecycleMigration(current.tasks, { authorizations });
-  if (options.command === 'plan') {
+  const rollback = options.command.startsWith('rollback-');
+  const plan = rollback
+    ? planLifecycleRollback(current.tasks)
+    : planLifecycleMigration(current.tasks, { authorizations });
+  if (options.command.endsWith('plan')) {
     await emit(plan, options.report);
     return {
-      exitCode: plan.actions.some((action) => action.action === 'requires-cutover-hold') ? 2 : 0,
+      exitCode: plan.actions.some((action) =>
+        ['requires-cutover-hold', 'requires-authorization', 'invalid-state']
+          .includes(action.action)) ? 2 : 0,
     };
   }
-  const report = await applyLifecycleMigration(plan, store);
+  const report = rollback
+    ? await applyLifecycleRollback(plan, store)
+    : await applyLifecycleMigration(plan, store);
   await emit(report, options.report);
   return { exitCode: report.partial ? 2 : 0 };
 }

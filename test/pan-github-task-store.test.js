@@ -8,9 +8,15 @@ import {
 } from '../bin/pan-github-task-store.js';
 import { completeItemFieldValues } from '../bin/pan-runner.js';
 import { CANONICAL_FIELDS } from '../bin/pan-project-schema.js';
-import { planLifecycleMigration } from '../bin/pan-lifecycle-migration.js';
 import {
+  applyLifecycleRollback,
+  planLifecycleMigration,
+  planLifecycleRollback,
+} from '../bin/pan-lifecycle-migration.js';
+import {
+  parseCurrentActionBlock,
   renderCurrentActionBlock,
+  transitionComment,
   upsertCurrentActionBlock,
 } from '../bin/pan-task-model.js';
 
@@ -214,6 +220,8 @@ function fakeGitHubState() {
           'task-revision': '1',
         },
       };
+      const issues = [issue];
+      const items = [item];
       const comments = [{
         id: 'comment-1',
         author: { login: 'pan' },
@@ -222,25 +230,26 @@ function fakeGitHubState() {
         url: `${issue.url}#issuecomment-1`,
         body: 'Pan: Todoist source comment c1\n\nstale',
       }];
+      const commentsByIssue = new Map([[issue.number, comments]]);
       const writes = [];
-      const node = () => ({
-        id: item.id,
-        updatedAt: item.updatedAt,
+      const node = (projectItem = item) => ({
+        id: projectItem.id,
+        updatedAt: projectItem.updatedAt,
         content: {
           __typename: 'Issue',
-          number: issue.number,
-          title: issue.title,
-          body: issue.body,
-          url: issue.url,
-          state: issue.state,
-          stateReason: issue.stateReason,
-          createdAt: issue.createdAt,
-          updatedAt: issue.updatedAt,
-          closedAt: issue.closedAt,
+          number: projectItem.issue.number,
+          title: projectItem.issue.title,
+          body: projectItem.issue.body,
+          url: projectItem.issue.url,
+          state: projectItem.issue.state,
+          stateReason: projectItem.issue.stateReason,
+          createdAt: projectItem.issue.createdAt,
+          updatedAt: projectItem.issue.updatedAt,
+          closedAt: projectItem.issue.closedAt,
           repository: { nameWithOwner: 'example/domain' },
         },
         fieldValues: {
-          nodes: Object.entries(item.fields).filter(([, value]) => value !== '').map(([name, value]) => {
+          nodes: Object.entries(projectItem.fields).filter(([, value]) => value !== '').map(([name, value]) => {
             const field = fields.find((candidate) => candidate.name === name);
             if (field.dataType === 'SINGLE_SELECT') {
               return { __typename: 'ProjectV2ItemFieldSingleSelectValue', name: value, field: { name } };
@@ -276,7 +285,7 @@ function fakeGitHubState() {
             data: {
               user: {
                 projectV2: {
-                  items: { nodes: [node()], pageInfo: { hasNextPage: false, endCursor: null } },
+                  items: { nodes: items.map((entry) => node(entry)), pageInfo: { hasNextPage: false, endCursor: null } },
                 },
               },
             },
@@ -287,7 +296,7 @@ function fakeGitHubState() {
             data: {
               repository: {
                 issues: {
-                  nodes: [{ ...issue }],
+                  nodes: issues.map((entry) => ({ ...entry })),
                   pageInfo: { hasNextPage: false, endCursor: null },
                 },
               },
@@ -295,12 +304,14 @@ function fakeGitHubState() {
           });
         }
         if (query.includes('comments(first:100')) {
+          const numberArg = args.find((arg) => String(arg).startsWith('number='));
+          const issueComments = commentsByIssue.get(Number(String(numberArg).slice('number='.length))) ?? [];
           return JSON.stringify({
             data: {
               repository: {
                 issue: {
                   comments: {
-                    nodes: comments.map((comment) => ({ ...comment })),
+                    nodes: issueComments.map((comment) => ({ ...comment })),
                     pageInfo: { hasNextPage: false, endCursor: null },
                   },
                 },
@@ -310,60 +321,73 @@ function fakeGitHubState() {
         }
         if (args[0] === 'project' && args[1] === 'item-edit') {
           const field = byFieldId.get(valueAfter(args, '--field-id'));
+          const projectItem = items.find((entry) => entry.id === valueAfter(args, '--id')) ?? item;
           let value = '';
           if (args.includes('--single-select-option-id')) {
             value = byOptionId.get(valueAfter(args, '--single-select-option-id')).value;
           } else if (args.includes('--text')) value = valueAfter(args, '--text');
           else if (args.includes('--date')) value = valueAfter(args, '--date');
-          item.fields[field.name] = value;
+          projectItem.fields[field.name] = value;
           writes.push(`project:${field.name}`);
           return '';
         }
         if (args[0] === 'issue' && args[1] === 'edit') {
-          if (args.includes('--title')) issue.title = valueAfter(args, '--title');
-          if (args.includes('--body')) issue.body = valueAfter(args, '--body');
+          const targetIssue = issues.find((entry) => entry.number === Number(args[2])) ?? issue;
+          if (args.includes('--title')) targetIssue.title = valueAfter(args, '--title');
+          if (args.includes('--body')) targetIssue.body = valueAfter(args, '--body');
           writes.push('issue:edit');
           return '';
         }
         if (args[0] === 'issue' && args[1] === 'view') {
+          const targetIssue = issues.find((entry) => entry.number === Number(args[2])) ?? issue;
           if (valueAfter(args, '--json') === 'body') {
-            return JSON.stringify({ body: issue.body });
+            return JSON.stringify({ body: targetIssue.body });
           }
-          return JSON.stringify({ state: issue.state, stateReason: issue.stateReason });
+          return JSON.stringify({ state: targetIssue.state, stateReason: targetIssue.stateReason });
         }
         if (args[0] === 'issue' && args[1] === 'close') {
-          issue.state = 'CLOSED';
-          issue.stateReason = valueAfter(args, '--reason') === 'not planned'
+          const targetIssue = issues.find((entry) => entry.number === Number(args[2])) ?? issue;
+          targetIssue.state = 'CLOSED';
+          targetIssue.stateReason = valueAfter(args, '--reason') === 'not planned'
             ? 'NOT_PLANNED'
             : 'COMPLETED';
           writes.push('issue:close');
           return '';
         }
         if (args[0] === 'issue' && args[1] === 'comment') {
-          comments.push({
-            id: `comment-${comments.length + 1}`,
+          const issueNumber = Number(args[2]);
+          const issueComments = commentsByIssue.get(issueNumber) ?? [];
+          const targetIssue = issues.find((entry) => entry.number === issueNumber) ?? issue;
+          issueComments.push({
+            id: `comment-${issueNumber}-${issueComments.length + 1}`,
             author: { login: 'pan' },
             createdAt: '2026-09-09T00:00:00Z',
             updatedAt: '2026-09-09T00:00:00Z',
-            url: `${issue.url}#issuecomment-${comments.length + 1}`,
+            url: `${targetIssue.url}#issuecomment-${issueComments.length + 1}`,
             body: valueAfter(args, '--body'),
           });
+          commentsByIssue.set(issueNumber, issueComments);
           writes.push('issue:comment');
           return '';
         }
         if (args[0] === 'api' && args.includes('--paginate')) {
-          return JSON.stringify([comments.map((comment) => ({ body: comment.body }))]);
+          const match = String(args.at(-1)).match(/\/issues\/(\d+)\/comments/);
+          const issueComments = commentsByIssue.get(Number(match?.[1])) ?? [];
+          return JSON.stringify([issueComments.map((comment) => ({ body: comment.body }))]);
         }
         if (args[0] === 'api' && args.includes('-X') && args.includes('PATCH')) {
           const endpoint = args.find((arg) => String(arg).includes('/issues/comments/'));
           const id = endpoint.split('/').at(-1);
-          comments.find((comment) => comment.id === id).body = valueAfter(args, '-f').replace(/^body=/, '');
+          const target = [...commentsByIssue.values()]
+            .flat()
+            .find((comment) => comment.id === id);
+          target.body = valueAfter(args, '-f').replace(/^body=/, '');
           writes.push('comment:edit');
           return '{}';
         }
         throw new Error(`unexpected fake gh call: ${args.join(' ')}`);
       };
-      return { fields, issue, item, comments, writes, gh };
+      return { fields, issue, item, issues, items, comments, commentsByIssue, writes, gh };
     }
 
 async function fakeStore(state = fakeGitHubState()) {
@@ -410,6 +434,152 @@ test('Todoist repair reconciles exact Issue, comments, fields, and writes revisi
       assert.equal(state.writes.length, writesAfterRepair);
 });
 
+test('Todoist repair completes an exact interrupted revision-last commit', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      state.item.fields['task-revision'] = '1';
+      state.writes.length = 0;
+
+      const result = await store.importTodoistTask(record);
+
+      assert.equal(result.outcome, 'repaired');
+      assert.deepEqual(state.writes, ['project:task-revision']);
+      assert.equal(state.item.fields['task-revision'], '2');
+      assert.equal(parseCurrentActionBlock(state.issue.body).revision, 2);
+});
+
+test('Todoist revision-last recovery recreates a missing transition receipt before commit', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      state.item.fields['task-revision'] = '1';
+      const transitionIndex = state.comments.findIndex(
+        (comment) => comment.body.startsWith('Pan: task transition 2'),
+      );
+      state.comments.splice(transitionIndex, 1);
+      state.writes.length = 0;
+
+      const result = await store.importTodoistTask(record);
+
+      assert.equal(result.outcome, 'repaired');
+      assert.deepEqual(state.writes, ['issue:comment', 'project:task-revision']);
+      assert.equal(
+        state.comments.filter((comment) => comment.body.startsWith('Pan: task transition 2')).length,
+        1,
+      );
+});
+
+test('recurrence repair completes an exact interrupted revision-last commit', async () => {
+      const state = fakeGitHubState();
+      const currentBody = recurring('2026-09-04', 'Every Friday.');
+      state.issue.body = upsertCurrentActionBlock(currentBody, renderCurrentActionBlock({
+        status: 'ready-for-human',
+        action: 'act',
+        detail: 'Perform this occurrence.',
+        revision: 1,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      }));
+      state.item.fields.Status = 'ready-for-human';
+      state.item.fields['next-action'] = 'act';
+      state.item.fields['next-action-date'] = '2026-09-04';
+      const successor = {
+        number: 2,
+        title: state.issue.title,
+        body: upsertCurrentActionBlock([
+          'Pan: recurrence occurrence 2026-09-11',
+          `Pan: previous occurrence ${state.issue.url}`,
+          '',
+          '# Outcome',
+          '',
+          'Keep the recurring commitment.',
+          '',
+          '## Recurrence',
+          '',
+          'Every Friday.',
+        ].join('\n'), renderCurrentActionBlock({
+          status: 'ready-for-human',
+          action: 'act',
+          detail: 'Perform the recurrence occurrence scheduled for 2026-09-11.',
+          revision: 2,
+          updatedAt: '2026-09-09T12:00:00.000Z',
+        })),
+        url: 'https://github.com/example/domain/issues/2',
+        state: 'OPEN',
+        stateReason: null,
+        createdAt: '2026-09-09T12:00:00.000Z',
+        updatedAt: '2026-09-09T12:00:00.000Z',
+        closedAt: null,
+      };
+      const successorItem = {
+        id: 'item-2',
+        updatedAt: '2026-09-09T12:00:00.000Z',
+        issue: successor,
+        fields: {
+          ...state.item.fields,
+          Status: 'ready-for-human',
+          'next-action': 'act',
+          'execution-authorized': 'no',
+          'worker-state': 'idle',
+          'next-action-date': '2026-09-11',
+          playbook: '',
+          dependencies: '',
+          'task-revision': '1',
+        },
+      };
+      state.issues.push(successor);
+      state.items.push(successorItem);
+      state.commentsByIssue.set(2, [{
+        id: 'transition-2',
+        author: { login: 'pan' },
+        createdAt: '2026-09-09T12:00:00.000Z',
+        updatedAt: '2026-09-09T12:00:00.000Z',
+        url: `${successor.url}#issuecomment-transition-2`,
+        body: transitionComment({
+          revision: 2,
+          fromStatus: 'ready-for-human',
+          fromAction: 'act',
+          toStatus: 'ready-for-human',
+          toAction: 'act',
+          detail: 'Perform the recurrence occurrence scheduled for 2026-09-11.',
+          actor: 'Pan recurrence rollover',
+        }),
+      }]);
+      const { store } = await fakeStore(state);
+      const detail = await store.detail('item-1');
+
+      await store.mutate({
+        itemId: detail.itemId,
+        revision: detail.revision,
+        projection: detail.projection,
+        operation: 'finish',
+        detail: 'Occurrence complete.',
+      });
+
+      assert.equal(successorItem.fields['task-revision'], '2');
+      assert.equal(parseCurrentActionBlock(successor.body).revision, 2);
+});
+
 test('Todoist import fails closed on duplicate source comment markers', async () => {
       const state = fakeGitHubState();
       state.comments.push({ ...state.comments[0], id: 'comment-duplicate' });
@@ -448,15 +618,12 @@ test('task mutation requires an exact Issue and Project projection before writes
       await assert.rejects(store.detail('foreign-item'), /task not found/);
 });
 
-test('terminal lifecycle migration always closes the Issue and repairs the full tuple with revision last', async () => {
+test('terminal lifecycle migration closes the Issue and writes revision last only without retained resources', async () => {
       const state = fakeGitHubState();
       state.item.fields.Status = 'done';
       state.item.fields['next-action'] = '';
       state.item.fields['next-action-date'] = '2026-09-01';
       state.item.fields['worker-state'] = '';
-      state.item.fields.machine = 'old-machine';
-      state.item.fields['session-id'] = 'old-session';
-      state.item.fields['claim-generation'] = 'old-generation';
       state.item.fields['task-revision'] = '';
       const { store } = await fakeStore(state);
       const task = (await store.list()).tasks[0];
@@ -474,6 +641,132 @@ test('terminal lifecycle migration always closes the Issue and repairs the full 
       assert.equal(state.item.fields['session-id'], '');
       assert.equal(state.item.fields['claim-generation'], '');
       assert.equal(state.writes.at(-1), 'project:task-revision');
+});
+
+test('lifecycle migration refuses playbook or Issue drift from its complete planned projection', async () => {
+      const state = fakeGitHubState();
+      state.item.fields.Status = 'ready';
+      state.item.fields['next-action'] = '';
+      state.item.fields.owner = 'human';
+      state.item.fields['worker-state'] = '';
+      state.item.fields['task-revision'] = '';
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleMigration((await store.list()).tasks);
+      assert.equal(plan.actions[0].action, 'migrate');
+      state.item.fields.playbook = 'changed-after-plan';
+      state.issue.title = 'Changed after plan';
+      const before = state.writes.length;
+
+      await assert.rejects(
+        store.migrateLegacyItem(plan.actions[0]),
+        /changed after the migration plan/,
+      );
+      assert.equal(state.writes.length, before);
+});
+
+test('browser terminal actions refuse retained checkpoint affinity before any write', async () => {
+      for (const operation of ['finish', 'reject']) {
+        const state = fakeGitHubState();
+        state.issue.body = renderCurrentActionBlock({
+          status: 'ready-for-human',
+          action: 'approve',
+          detail: 'Approve the completed worker output.',
+          revision: 1,
+          updatedAt: '2026-09-01T00:00:00.000Z',
+        });
+        state.item.fields.Status = 'ready-for-human';
+        state.item.fields['next-action'] = 'approve';
+        state.item.fields['worker-state'] = 'checkpointed';
+        state.item.fields.machine = 'machine-a';
+        state.item.fields['session-id'] = 'session-a';
+        state.item.fields['claim-generation'] = 'generation-a';
+        const { store } = await fakeStore(state);
+        const detail = await store.detail('item-1');
+        const before = state.writes.length;
+
+        await assert.rejects(
+          store.mutate({
+            itemId: detail.itemId,
+            revision: detail.revision,
+            projection: detail.projection,
+            operation,
+            detail: operation === 'finish' ? 'Complete.' : 'Reject.',
+          }),
+          /retained workspace affinity/,
+        );
+        assert.equal(state.writes.length, before);
+        assert.equal(state.issue.state, 'OPEN');
+        assert.equal(state.item.fields.machine, 'machine-a');
+        assert.equal(state.item.fields['session-id'], 'session-a');
+        assert.equal(state.item.fields['claim-generation'], 'generation-a');
+      }
+});
+
+test('checked lifecycle rollback preserves pilot progress and is idempotent after a fresh live plan', async () => {
+      const state = fakeGitHubState();
+      const baseBody = '# Outcome\n\nKeep the completed pilot analysis.';
+      state.issue.body = upsertCurrentActionBlock(baseBody, renderCurrentActionBlock({
+        status: 'external-waiting',
+        action: 'wait',
+        detail: 'Wait for the permit.',
+        revision: 3,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      }));
+      state.item.fields.Status = 'external-waiting';
+      state.item.fields['next-action'] = 'wait';
+      state.item.fields.priority = 'urgent';
+      state.item.fields.playbook = 'permit-monitor';
+      state.item.fields.dependencies = 'County review';
+      state.item.fields['next-action-date'] = '2026-09-20';
+      state.item.fields.deadline = '2026-09-30';
+      state.item.fields['task-revision'] = '3';
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleRollback((await store.list()).tasks);
+      assert.equal(plan.actions[0].action, 'rollback');
+
+      const report = await applyLifecycleRollback(plan, store);
+
+      assert.equal(report.partial, false);
+      assert.equal(state.item.fields.owner, 'human');
+      assert.equal(state.item.fields.Status, 'blocked');
+      assert.equal(state.item.fields['next-action'], 'wait');
+      assert.equal(state.item.fields.priority, 'urgent');
+      assert.equal(state.item.fields.playbook, 'permit-monitor');
+      assert.equal(state.item.fields.dependencies, 'County review');
+      assert.equal(state.item.fields['next-action-date'], '2026-09-20');
+      assert.equal(state.item.fields.deadline, '2026-09-30');
+      assert.equal(state.item.fields['task-revision'], '4');
+      assert.match(state.issue.body, /Keep the completed pilot analysis/);
+      assert.equal(parseCurrentActionBlock(state.issue.body).status, 'external-waiting');
+      assert.equal(state.writes.at(-1), 'project:task-revision');
+
+      const writes = state.writes.length;
+      const secondPlan = planLifecycleRollback((await store.list()).tasks);
+      assert.equal(secondPlan.actions[0].action, 'already-rolled-back');
+      const second = await applyLifecycleRollback(secondPlan, store);
+      assert.equal(second.partial, false);
+      assert.equal(state.writes.length, writes);
+});
+
+test('checked lifecycle rollback refuses stale complete projection without writes', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = renderCurrentActionBlock({
+        status: 'ready-for-human',
+        action: 'act',
+        detail: 'Perform the next action.',
+        revision: 1,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      });
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleRollback((await store.list()).tasks);
+      state.issue.title = 'Externally changed';
+      const before = state.writes.length;
+
+      const report = await applyLifecycleRollback(plan, store);
+
+      assert.equal(report.partial, true);
+      assert.match(report.results[0].error, /changed after the current-state plan/);
+      assert.equal(state.writes.length, before);
 });
 
 test('recurring cancellation refuses an existing or unverifiable successor before clearing its date', async () => {

@@ -79,6 +79,13 @@ node bin/pan-lifecycle-migrate.js plan \
   --config /absolute/path/to/config.json --checkout "$PWD" \
   --authorization /absolute/path/to/authorization.json \
   --report /absolute/path/to/current-state.json
+node bin/pan-lifecycle-migrate.js rollback-plan \
+  --config /absolute/path/to/config.json --checkout "$PWD" \
+  --report /absolute/path/to/rollback.json
+node bin/pan-lifecycle-migrate.js rollback-apply \
+  --config /absolute/path/to/config.json --checkout "$PWD" \
+  --confirm-writers-stopped \
+  --report /absolute/path/to/rollback-result.json
 ```
 
 The authorization document is
@@ -86,10 +93,14 @@ The authorization document is
 each item contains exact `itemId`, `playbook`, `dependencies`, and
 `"executionAuthorized":true`. Legacy ownership alone never authorizes AI.
 Paused or otherwise retained sessions require operator reconciliation and are
-not migrated automatically. For rollback, keep all writers stopped, generate a
-current-live-state `pan-todoist-migrate recovery-plan`, compare it with the
-baseline, and apply the reviewed legacy mapping; never replay stale baseline
-state over newer work.
+not migrated automatically. Rollback is generated only from current live pilot
+state, checks the complete Issue/Project projection again before every write,
+preserves dates, playbooks, dependencies, worker/session evidence, Issue text,
+comments, and recurrence progress, and changes only the retained legacy
+`owner`/`Status` projection plus revision history. It refuses active,
+uncertain, stale, or externally inconsistent items. The equivalent
+`pan-todoist-migrate recovery-plan` / `recovery-apply` commands are available
+for the Todoist migration workflow. Never replay stale baseline state.
 
 ## Local Daily Briefing UI
 

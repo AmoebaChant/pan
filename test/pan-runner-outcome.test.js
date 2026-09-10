@@ -547,7 +547,7 @@ test('matching done/none without the other completion invariants is fully repair
   assert.ok(harness.calls.indexOf('issue-action') < harness.calls.indexOf(FIELD.claimedBy));
 });
 
-test('terminal state released before a receipt can still finish the same manifest result idempotently', async (t) => {
+test('terminal state released without its prior journal is reconstructed from exact attempt/result evidence', async (t) => {
   const harness = await finalizationHarness(t, 'done');
   const live = harness.store.get(harness.worker.itemId);
   live.fields[FIELD.status] = 'done';
@@ -576,11 +576,70 @@ test('terminal state released before a receipt can still finish the same manifes
     harness.result,
   ), true);
   assert.equal(
+    JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'terminal-release.json')))
+      .reconstructedFromReleasedTuple,
+    true,
+  );
+  assert.equal(
     JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')))
       .panRunnerResultConsumed,
     true,
   );
   assert.equal(harness.calls.some((call) => call === 'Status:done'), false);
+});
+
+test('terminal release journal recovers a crash after machine clear and never reports success without a receipt', async (t) => {
+  const harness = await finalizationHarness(t, 'done');
+  const originalSetText = harness.runner.deps.setTextField;
+  let injected = false;
+  harness.runner.deps.setTextField = async (...args) => {
+    if (args[3] === FIELD.sessionId && !injected) {
+      injected = true;
+      throw new Error('injected session clear failure');
+    }
+    return originalSetText(...args);
+  };
+
+  await assert.rejects(
+    harness.runner.finalizeOutcomeLifecycle(
+      harness.worker,
+      harness.resultPath,
+      harness.bytes,
+      harness.result,
+    ),
+    /injected session clear failure/,
+  );
+
+  const partial = harness.store.get(harness.worker.itemId);
+  assert.equal(partial.fields[FIELD.status], 'done');
+  assert.equal(partial.fields[FIELD.workerState], 'stopped');
+  assert.equal(partial.fields[FIELD.machine], '');
+  assert.equal(partial.fields[FIELD.sessionId], harness.worker.sessionId);
+  assert.equal(partial.fields[FIELD.claimGeneration], harness.worker.claimGeneration);
+  assert.equal(
+    await readFile(path.join(harness.worker.attemptDir, 'terminal-release.json'), 'utf8')
+      .then((value) => JSON.parse(value).phase),
+    'prepared',
+  );
+  await assert.rejects(
+    readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')),
+    /ENOENT/,
+  );
+
+  harness.runner.deps.setTextField = originalSetText;
+  assert.equal(await harness.runner.finalizeOutcomeLifecycle(
+    harness.worker,
+    harness.resultPath,
+    harness.bytes,
+    harness.result,
+  ), true);
+  assert.equal(partial.fields[FIELD.sessionId], '');
+  assert.equal(partial.fields[FIELD.claimGeneration], '');
+  assert.equal(
+    JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')))
+      .panRunnerResultConsumed,
+    true,
+  );
 });
 
 test('checkpoint release journals first, confirms the owned launcher stopped, then releases Project ownership', async (t) => {
@@ -590,6 +649,14 @@ test('checkpoint release journals first, confirms the owned launcher stopped, th
   live.fields[FIELD.status] = 'ready-for-human';
   live.fields[FIELD.nextAction] = 'approve';
   live.fields[FIELD.workerState] = 'waiting-human';
+  live.fields[FIELD.needsHumanSince] = '2026-09-09T20:00:00.000Z';
+  live.issue.body = renderCurrentActionBlock({
+    status: 'ready-for-human',
+    action: 'approve',
+    detail: 'Approve the rollout.',
+    revision: 4,
+    updatedAt: '2026-09-09T20:00:00.000Z',
+  });
   const receiptPath = path.join(harness.worker.attemptDir, 'checkpoint-consumed.json');
   let stopConfirmed = false;
   harness.runner.confirmCheckpointWorkerStopped = async (worker) => {
@@ -627,4 +694,62 @@ test('checkpoint release journals first, confirms the owned launcher stopped, th
     since: '2026-09-09T20:00:00.000Z',
   }), true);
   assert.equal(harness.calls.length, projectWrites, 'released checkpoint recovery is idempotent');
+});
+
+test('checkpoint release recovers every monotonic field-write prefix after worker-state is checkpointed', async (t) => {
+  const harness = await finalizationHarness(t, 'needs-human');
+  await rm(harness.resultPath);
+  const live = harness.store.get(harness.worker.itemId);
+  live.fields[FIELD.status] = 'ready-for-human';
+  live.fields[FIELD.nextAction] = 'approve';
+  live.fields[FIELD.workerState] = 'waiting-human';
+  live.fields[FIELD.needsHumanSince] = '2026-09-09T20:00:00.000Z';
+  live.issue.body = renderCurrentActionBlock({
+    status: 'ready-for-human',
+    action: 'approve',
+    detail: 'Approve the rollout.',
+    revision: 4,
+    updatedAt: '2026-09-09T20:00:00.000Z',
+  });
+  harness.runner.confirmCheckpointWorkerStopped = async () => true;
+  const originalSetText = harness.runner.deps.setTextField;
+  let injected = false;
+  harness.runner.deps.setTextField = async (...args) => {
+    if (args[3] === FIELD.leaseUntil && !injected) {
+      injected = true;
+      throw new Error('injected lease clear failure');
+    }
+    return originalSetText(...args);
+  };
+
+  await assert.rejects(
+    harness.runner.releaseCheckpointWorker(harness.worker, {
+      action: 'approve',
+      detail: 'Approve the rollout.',
+      since: '2026-09-09T20:00:00.000Z',
+    }),
+    /injected lease clear failure/,
+  );
+  assert.equal(live.fields[FIELD.workerState], 'checkpointed');
+  assert.equal(live.fields[FIELD.claimedBy], 'runner-a');
+  assert.equal(live.fields[FIELD.leaseUntil], '2030-01-01T00:00:00.000Z');
+  assert.equal(
+    JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'checkpoint-consumed.json')))
+      .phase,
+    'stopped',
+  );
+
+  harness.runner.deps.setTextField = originalSetText;
+  assert.equal(await harness.runner.releaseCheckpointWorker(harness.worker, {
+    action: 'approve',
+    detail: 'Approve the rollout.',
+    since: '2026-09-09T20:00:00.000Z',
+  }), true);
+  assert.equal(live.fields[FIELD.claimedBy], '');
+  assert.equal(live.fields[FIELD.leaseUntil], '');
+  assert.equal(
+    JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'checkpoint-consumed.json')))
+      .phase,
+    'released',
+  );
 });

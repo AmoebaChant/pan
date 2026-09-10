@@ -3,8 +3,10 @@ import test from 'node:test';
 import { parseLifecycleCli } from '../bin/pan-lifecycle-migrate.js';
 import {
   applyLifecycleMigration,
+  applyLifecycleRollback,
   parseMigrationAuthorizations,
   planLifecycleMigration,
+  planLifecycleRollback,
   translateLegacyTask,
 } from '../bin/pan-lifecycle-migration.js';
 
@@ -26,6 +28,10 @@ function legacy(overrides = {}) {
     leaseUntil: '',
     machine: '',
     sessionId: '',
+    claimGeneration: '',
+    issueState: 'OPEN',
+    issueStateReason: null,
+    projection: 'projection-1',
     revision: 0,
     ...overrides,
   };
@@ -211,6 +217,148 @@ test('partial current tuples are repaired and retained paused sessions require c
   };
   assert.equal(
     planLifecycleMigration([terminalButRunning]).actions[0].action,
-    'requires-cutover-hold',
+    'invalid-state',
+  );
+});
+
+test('migration holds every resource-bearing legacy item regardless of human-facing status', () => {
+  for (const status of ['in-review', 'blocked', 'ready']) {
+    const action = planLifecycleMigration([
+      legacy({
+        legacyOwner: 'human',
+        status,
+        machine: 'machine-a',
+        sessionId: 'session-a',
+        claimGeneration: 'generation-a',
+        workerState: 'checkpointed',
+      }),
+    ]).actions[0];
+    assert.equal(action.action, 'requires-cutover-hold', status);
+    assert.equal(action.expected.playbook, 'tool-development');
+    assert.equal(action.expected.projection, 'projection-1');
+  }
+});
+
+test('migration rejects ownerless executing and running tuples', () => {
+  const current = legacy({
+    status: 'ai-executing',
+    nextAction: 'execute',
+    executionAuthorized: 'yes',
+    workerState: 'running',
+    revision: 4,
+    currentActionStatus: 'ai-executing',
+    currentActionAction: 'execute',
+    currentActionRevision: 4,
+  });
+  const action = planLifecycleMigration([current]).actions[0];
+  assert.equal(action.action, 'invalid-state');
+  assert.match(action.reason, /owner tuple/);
+});
+
+test('migration rejects an ambiguous Issue action block instead of attempting repair', () => {
+  const action = planLifecycleMigration([
+    legacy({
+      status: 'ready-for-human',
+      nextAction: 'act',
+      executionAuthorized: 'no',
+      workerState: 'idle',
+      revision: 3,
+      bodyConflict: 'multiple current-action blocks',
+    }),
+  ]).actions[0];
+  assert.equal(action.action, 'invalid-state');
+  assert.match(action.reason, /multiple current-action blocks/);
+});
+
+test('rollback dry-run derives only current live state and flags unsafe execution', () => {
+  const current = legacy({
+    status: 'ready-for-human',
+    nextAction: 'approve',
+    legacyOwner: 'unassigned',
+    executionAuthorized: 'no',
+    workerState: 'idle',
+    revision: 4,
+    currentActionStatus: 'ready-for-human',
+    currentActionAction: 'approve',
+    currentActionRevision: 4,
+    nextActionDetail: 'Approve the rollout.',
+  });
+  const plan = planLifecycleRollback([current]);
+  assert.equal(plan.source, 'current-live-state');
+  assert.equal(plan.actions[0].action, 'rollback');
+  assert.deepEqual(plan.actions[0].legacyTarget, { owner: 'human', status: 'ready' });
+  assert.equal(plan.actions[0].expected.projection, 'projection-1');
+
+  const unsafe = planLifecycleRollback([{
+    ...current,
+    status: 'ai-executing',
+    nextAction: 'execute',
+    workerState: 'running',
+    claimedBy: '',
+    leaseUntil: '',
+    currentActionStatus: 'ai-executing',
+    currentActionAction: 'execute',
+  }]).actions[0];
+  assert.equal(unsafe.action, 'invalid-state');
+});
+
+test('rollback apply continues independent items and treats a fresh re-plan as idempotent', async () => {
+  const current = legacy({
+    status: 'external-waiting',
+    nextAction: 'wait',
+    legacyOwner: 'unassigned',
+    executionAuthorized: 'no',
+    workerState: 'idle',
+    revision: 6,
+    currentActionStatus: 'external-waiting',
+    currentActionAction: 'wait',
+    currentActionRevision: 6,
+    nextActionDetail: 'Wait for the permit.',
+  });
+  const plan = planLifecycleRollback([current]);
+  const visited = [];
+  const report = await applyLifecycleRollback(plan, {
+    async rollbackLifecycleItem(action) {
+      visited.push(action.itemId);
+      return { itemId: action.itemId, outcome: 'rolled-back', revision: 7 };
+    },
+  });
+  assert.equal(report.partial, false);
+  assert.deepEqual(visited, ['item-1']);
+
+  const replanned = planLifecycleRollback([{
+    ...current,
+    status: 'blocked',
+    legacyOwner: 'human',
+    revision: 7,
+    currentActionRevision: 7,
+  }]);
+  assert.equal(replanned.actions[0].action, 'already-rolled-back');
+});
+
+test('rollback apply CLI requires writer exclusion but no forward authorization file', () => {
+  assert.throws(
+    () => parseLifecycleCli([
+      'rollback-apply',
+      '--config', '/config',
+      '--checkout', '/pan',
+    ]),
+    /confirm-writers-stopped/,
+  );
+  assert.deepEqual(
+    parseLifecycleCli([
+      'rollback-apply',
+      '--config', '/config',
+      '--checkout', '/pan',
+      '--confirm-writers-stopped',
+    ]),
+    {
+      help: false,
+      command: 'rollback-apply',
+      config: '/config',
+      checkout: '/pan',
+      authorization: undefined,
+      report: undefined,
+    },
   );
 });

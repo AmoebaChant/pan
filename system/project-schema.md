@@ -114,3 +114,8 @@ future authority:
 The translation preserves dates, deadlines, comments, Project order,
 recurrence markers, machine/session affinity, leases, and results. See
 [Todoist migration and recovery](todoist-migration.md) for reverse mapping.
+Every item with any worker/resource evidence is held for cutover, including
+legacy human-facing `in-review`, `blocked`, or `ready` items. Impossible
+terminal/resource combinations and canonical `ai-executing`/running tuples
+without a complete owner are invalid rather than “already current.” Plans bind
+the complete Issue/Project projection, including playbook text, before apply.
