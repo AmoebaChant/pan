@@ -331,6 +331,10 @@ async function waitForOwner(stateDir, inspect, timeoutMs = 5000) {
 
 export async function launchTask(task, config, backend, dependencies = {}) {
   const stateRoot = path.resolve(config.stateRoot);
+  const allowedTaskIds = new Set((config.taskIds ?? []).map(String));
+  if (allowedTaskIds.size > 0 && !allowedTaskIds.has(String(task.id))) {
+    throw new Error(`task ${task.id} is outside the runner taskIds allowlist`);
+  }
   await mkdir(path.join(stateRoot, 'runs'), { recursive: true, mode: 0o700 });
   const lock = await acquireTaskLock(stateRoot, task.id);
   if (!lock) return false;
@@ -405,6 +409,9 @@ export async function launchTask(task, config, backend, dependencies = {}) {
       expectedRevision: task.revision,
       worker: { state: 'starting', machine: config.machine, sessionId },
     });
+    if (allowedTaskIds.size > 0 && !allowedTaskIds.has(String(task.id))) {
+      throw new Error(`task ${task.id} is outside the runner taskIds allowlist`);
+    }
     await (dependencies.launchTerminal || launchTerminal)(
       stateDir,
       path.resolve(config.workingDirectory),

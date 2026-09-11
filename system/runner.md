@@ -53,8 +53,9 @@ resolved `playbookName` and private `playbookPath`, and private
 `domainInstructionsPath`. The runner snapshots those files plus current native
 reports into the launch state and gives the worker exact read/report commands.
 `taskIds`, when non-empty, is an additional exact allowlist applied after
-backend scope; it is suitable for a one-task demonstration but does not replace
-backend project scoping.
+backend scope and checked again by `launchTask` immediately before terminal
+spawn. It is suitable for a one-task demonstration but does not replace backend
+project scoping.
 
 Each poll inventories durable run and owner records, verifies both PID and
 process-start identity, and counts live sessions against capacity. An uncertain

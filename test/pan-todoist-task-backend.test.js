@@ -400,6 +400,28 @@ test('task lock contention happens before backend observation', async () => {
   }
 });
 
+test('launch rechecks the exact task allowlist before backend observation', async () => {
+  const root = testRoot();
+  const config = {
+    ...await runnerConfig(root),
+    taskIds: ['demo-task'],
+  };
+  const backend = backendFake({
+    id: 'real-task', revision: 'r1', worker: null, playbook: 'test-playbook',
+  });
+  try {
+    await assert.rejects(
+      launchTask({
+        id: 'real-task', revision: 'r1', playbook: 'test-playbook',
+      }, config, backend),
+      /outside the runner taskIds allowlist/,
+    );
+    assert.equal(backend.updates.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('terminal spawn error is awaited, reported, and recorded as stopped', async () => {
   const root = testRoot();
   const config = await runnerConfig(root);
