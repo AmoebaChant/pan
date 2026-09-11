@@ -1,6 +1,6 @@
 # Triage
 
-Triage turns live Domain Issues into clear next actions. It prepares work and
+Triage turns live Domain tasks into clear next actions. It prepares work and
 applies narrow standing permissions; it is not a coordinator and does not own
 execution. Read [project schema](project-schema.md),
 [outcome task lifecycle](task-lifecycle.md), [playbooks](playbooks.md), and,
@@ -10,20 +10,20 @@ Always read the complete live task set through the selected backend. For the
 GitHub compatibility backend, read the complete live Issue and Project sets. Use cursor pagination or
 `gh api --paginate`; a command limit that returns exactly its cap is not proof
 of completeness. Re-read a target immediately before mutation, require its
-expected `task-revision`, and verify afterward.
+expected backend revision, and verify afterward.
 
-## 1. Register every task
+## 1. Establish the authoritative queue
 
-Join the complete configured Domain Issue set and declared external backlog
-Issue sets to the complete Project item set by Issue URL. Add each missing
-Issue as a Project item. Registration is objective and approval-free; it never
-edits or reopens the Issue.
+For a Todoist-backed Domain, the fully paginated in-scope Todoist set is the
+queue. Do not re-register linked GitHub source records, dispatch from them, or
+build a fallback Project.
 
-New items start non-runnable until their exact pair is prepared. Prefer
-`ready-for-human/clarify` when information is missing. Do not use the retained
-legacy `owner` field to classify the task. When exactly one workstream declares
-an external backlog repository, initialize that workstream; leave it empty when
-ambiguous.
+For the GitHub compatibility backend, join the complete configured Domain Issue
+set and declared external backlog Issue sets to the Project by Issue URL and
+register missing Issues without editing or reopening them.
+
+New tasks start non-runnable until their exact next action is prepared. Prefer
+`ready-for-human/clarify` when information is missing.
 
 ## 2. Reconcile objective lifecycle facts
 
@@ -32,8 +32,9 @@ approval-free repairs:
 
 - verify and finish a partial terminal transition whose matching Issue closure
   and revision/generation evidence already prove the intended state;
-- reconcile a closed recurring occurrence under the recurrence contract,
-  creating at most one linked successor;
+- reconcile a completed recurring occurrence under the selected backend's
+  recurrence contract, creating a linked successor only when that backend
+  requires one;
 - add an unambiguous missing recurrence occurrence marker while preserving the
   attention date;
 - clear a stale `next-action-date` only from a settled terminal item;
@@ -76,30 +77,30 @@ Also prepare:
 - `dependencies`, empty only when the next step can start;
 - `workstream`, after verifying its README;
 - optional `deadline`, preserving its meaning as a deadline; and
-- a concise durable Current next action detail in the Issue body.
+- a concise durable Current next action detail in the task description.
 
 Do not set or move `next-action-date` merely because the next actor changes.
 Existing schedules survive handoffs. A newly prepared human checkpoint appears
 in Needs me but is not automatically committed to Today.
 
 Recurring occurrence availability is managed only by the recurrence lifecycle.
-Never prepare a recurring Issue as autonomously runnable AI work, and never
+Never prepare a recurring task as autonomously runnable AI work, and never
 create repeated successors in a scheduled catch-up loop.
 
-Preserve canonical Project order as precedence within equal priority.
+Preserve canonical backend order as precedence within equal priority.
 
 ## 4. Approval and writes
 
 Read and recommend freely. An explicit request authorizes that specific change.
-Otherwise preview current and proposed values, Issue link, exact next-action
+Otherwise preview current and proposed values, task link, exact next-action
 detail, authorization/dependencies, and any date/deadline effect, then obtain
 approval.
 
-Use the revision protocol. Update the Issue block and idempotent transition
-comment, increment `task-revision` last, re-read, and report only confirmed
-effects. A stale revision, worker generation mismatch, incomplete read, or
-failed verification stops the operation; never return a success-shaped
-fallback.
+Use the selected backend's revision protocol and common task tool. Preserve
+unmapped description text, add durable reports through the backend, re-read,
+and report only confirmed effects. A stale revision, worker generation
+mismatch, incomplete read, or failed verification stops the operation; never
+return a success-shaped fallback.
 
 Scope expansion, destructive actions, spending, publication, production
 changes, and other consequential decisions remain human unless a standing
@@ -126,7 +127,7 @@ Domain policy explicitly covers the exact action.
 
 A scheduled TRIAGE pass performs the same complete live reads. It may:
 
-- register missing Issues;
+- register missing records only when the selected backend contract requires it;
 - prepare research, summaries, dependencies, proposed next actions, and
   playbook recommendations;
 - apply the objective reconciliations above; and

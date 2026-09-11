@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { TaskBackendError } from './pan-task-backend.js';
@@ -147,9 +148,7 @@ export class TodoistTaskBackend {
       nextAction: metadata.nextAction || '',
       nextActionDetail: metadata.nextActionDetail || '',
       priority: NATIVE_TO_PRIORITY[task.priority] || 'normal',
-      nextActionDate: task.due?.is_recurring
-        ? (metadata.nextActionDate || '')
-        : (task.due?.date || ''),
+      nextActionDate: task.due?.date || '',
       deadline: task.deadline?.date || '',
       playbook: metadata.playbook || '',
       workstream: metadata.workstream || '',
@@ -210,7 +209,6 @@ export class TodoistTaskBackend {
       workstream: input.workstream || '',
       executionAuthorized: input.executionAuthorized === true,
       dependencies: input.dependencies ?? [],
-      ...(input.nextActionDate ? { nextActionDate: input.nextActionDate } : {}),
     };
     const body = {
       content: String(input.title).trim(),
@@ -243,6 +241,12 @@ export class TodoistTaskBackend {
         details: { expected: input.expectedRevision, actual: current.revision },
       });
     }
+    if (native.due?.is_recurring && input.nextActionDate === '') {
+      throw new TaskBackendError(
+        'a recurring task cannot be unscheduled without removing its native recurrence',
+        { code: 'unsupported-mapping' },
+      );
+    }
     const parsed = metadataFrom(native.description || '');
     const metadata = {
       ...parsed.metadata,
@@ -255,9 +259,6 @@ export class TodoistTaskBackend {
         ? {}
         : { executionAuthorized: input.executionAuthorized === true }),
       ...(input.dependencies === undefined ? {} : { dependencies: input.dependencies }),
-      ...(native.due?.is_recurring && input.nextActionDate !== undefined
-        ? { nextActionDate: input.nextActionDate }
-        : {}),
     };
     const body = {
       ...(input.title === undefined ? {} : { content: String(input.title).trim() }),
@@ -284,7 +285,50 @@ export class TodoistTaskBackend {
         code: 'invalid-input',
       });
     }
-    return this.canonical(await this.request('POST', `/tasks/${encodeURIComponent(id)}`, body));
+    let updated = await this.request('POST', `/tasks/${encodeURIComponent(id)}`, body);
+    if (native.due?.is_recurring && input.nextActionDate !== undefined) {
+      const uuid = randomUUID();
+      const form = new URLSearchParams({
+        sync_token: '*',
+        resource_types: '[]',
+        commands: JSON.stringify([{
+          type: 'item_update',
+          uuid,
+          args: {
+            id: String(id),
+            due: {
+              ...native.due,
+              date: input.nextActionDate,
+            },
+          },
+        }]),
+      });
+      const response = await this.fetch(`${this.baseUrl}/sync`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: form,
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || result?.sync_status?.[uuid] !== 'ok') {
+        throw new TaskBackendError(
+          `Todoist recurring date update failed${response.ok ? '' : ` with HTTP ${response.status}`}`,
+          {
+            code: 'partial-write',
+            status: response.ok ? null : response.status,
+            details: {
+              completedOperation: 'task metadata update',
+              failedOperation: 'recurring native due-date update',
+              response: result,
+            },
+          },
+        );
+      }
+      updated = await this.nativeTask(id);
+    }
+    return this.canonical(updated);
   }
 
   async report(id, input) {

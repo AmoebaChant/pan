@@ -121,23 +121,27 @@ test('update reads the task once before writing', async () => {
   assert.deepEqual(calls.map(([, method]) => method), ['GET', 'GET', 'POST']);
 });
 
-test('recurring attention date is metadata and never replaces native cadence', async () => {
-  let updateBody;
-  const recurring = {
+test('recurring attention date moves the native occurrence without replacing cadence', async () => {
+  let restBody;
+  let syncDue;
+  let recurring = {
     id: '1', content: 'Recurring', priority: 1, project_id: 'p',
     responsible_uid: null, updated_at: 'r1',
-    due: { date: '2026-09-11', string: 'every friday', is_recurring: true },
+    due: { date: '2026-09-11', string: 'every friday', lang: 'en', is_recurring: true },
     description: descriptionWithMetadata('', { status: 'ready-for-human' }),
   };
   const fetchImpl = async (url, options) => {
     if (url.endsWith('/user')) return response({ id: 'self' });
     if (options.method === 'GET') return response(recurring);
-    updateBody = JSON.parse(options.body);
-    return response({
-      ...recurring,
-      updated_at: 'r2',
-      description: updateBody.description,
-    });
+    if (url.endsWith('/sync')) {
+      const command = JSON.parse(options.body.get('commands'))[0];
+      syncDue = command.args.due;
+      recurring = { ...recurring, updated_at: 'r3', due: syncDue };
+      return response({ sync_status: { [command.uuid]: 'ok' } });
+    }
+    restBody = JSON.parse(options.body);
+    recurring = { ...recurring, updated_at: 'r2', description: restBody.description };
+    return response(recurring);
   };
   const backend = await new TodoistTaskBackend(
     { backend: 'todoist' },
@@ -147,9 +151,55 @@ test('recurring attention date is metadata and never replaces native cadence', a
     expectedRevision: 'r1',
     nextActionDate: '2026-09-18',
   });
-  assert.equal(updateBody.due_date, undefined);
-  assert.deepEqual(updated.native.due, recurring.due);
+  assert.equal(restBody.due_date, undefined);
+  assert.deepEqual(syncDue, {
+    date: '2026-09-18',
+    string: 'every friday',
+    lang: 'en',
+    is_recurring: true,
+  });
+  assert.equal(updated.recurring, true);
+  assert.equal(updated.native.due.string, 'every friday');
   assert.equal(updated.nextActionDate, '2026-09-18');
+});
+
+test('recurring dates cannot be cleared and failed native moves report partial writes', async () => {
+  let writes = 0;
+  const recurring = {
+    id: '1', content: 'Recurring', priority: 1, project_id: 'p',
+    responsible_uid: null, updated_at: 'r1',
+    due: { date: '2026-09-11', string: 'every friday', is_recurring: true },
+    description: '',
+  };
+  const fetchImpl = async (url, options) => {
+    if (url.endsWith('/user')) return response({ id: 'self' });
+    if (options.method === 'GET') return response(recurring);
+    writes += 1;
+    if (url.endsWith('/sync')) {
+      const command = JSON.parse(options.body.get('commands'))[0];
+      return response({ sync_status: { [command.uuid]: { error: 'invalid due' } } });
+    }
+    return response({ ...recurring, content: 'Changed', updated_at: 'r2' });
+  };
+  const backend = await new TodoistTaskBackend(
+    { backend: 'todoist' },
+    { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
+  ).initialize();
+  await assert.rejects(
+    backend.update('1', { expectedRevision: 'r1', nextActionDate: '' }),
+    (error) => error.code === 'unsupported-mapping',
+  );
+  assert.equal(writes, 0);
+  await assert.rejects(
+    backend.update('1', {
+      expectedRevision: 'r1',
+      title: 'Changed',
+      nextActionDate: '2026-09-18',
+    }),
+    (error) => error.code === 'partial-write'
+      && error.details?.completedOperation === 'task metadata update',
+  );
+  assert.equal(writes, 2);
 });
 
 test('reports are fully paginated after the scoped task read', async () => {

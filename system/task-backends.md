@@ -40,12 +40,22 @@ Todoist is the first non-GitHub adapter:
 | --- | --- |
 | title, description | native content and human-readable description |
 | priority | native priorities 1–4 map to low, normal, high, urgent |
-| next-action-date | native due date for non-recurring tasks; Pan metadata for recurring tasks |
+| next-action-date | native due date; recurring occurrence dates move through a recurrence-preserving native update |
 | deadline | native deadline when supported |
 | recurrence | native recurring due semantics; never rewritten by an attention-date update |
 | person responsibility | native `responsible_uid`; only the authenticated user and configured unassigned tasks are in scope |
 | lifecycle, next action, authorization, dependencies, playbook, workstream, worker observation | one visible, versioned `pan-task:v1` JSON block at the end of the description |
 | durable worker report | native task comment |
+
+The low/normal/high/urgent names are transport-neutral values. A Domain may
+define native P1–P4 as daily commitments; planning must honor that Domain
+meaning instead of treating the generic names as automatic urgency.
+
+For a recurring task, changing `nextActionDate` changes only the current native
+occurrence date while preserving the recurrence expression, language, timezone,
+and recurring marker. Clearing that date is unsupported because it would also
+remove the native recurrence. Pan must report a partial write if another
+metadata change succeeds but the native occurrence-date update fails.
 
 `reports <id>` fully paginates native comments after verifying that the task is
 inside configured scope. Reports therefore remain recoverable without using

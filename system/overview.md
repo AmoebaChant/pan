@@ -49,9 +49,9 @@ See [Outcome task lifecycle](task-lifecycle.md).
 
 ## The loop
 
-1. Issues arrive in the backlog (created by the user, by Pan, or added to the
-   Project from a declared external backlog repository — the external Issue stays
-   in its own repository and is only referenced by a Project item).
+1. Tasks arrive in the selected backend. For a GitHub-backed Domain, external
+   backlog Issues may be referenced by its Project. For a Todoist-backed
+   Domain, GitHub source links are reference history rather than another queue.
 2. **Triage** prepares the next action, dependencies, authorization, priority,
    and playbook. Scheduled triage may apply only standing permissions and
    objective reconciliations; scope expansion and consequential decisions
@@ -64,11 +64,11 @@ See [Outcome task lifecycle](task-lifecycle.md).
    safe capacity/resources, a runner claims and launches it. Dates never gate
    or order AI work. See [runner](runner.md).
 5. The **worker** does the task using the playbook's instructions, the full Pan
-   system context, and the Issue contents. If it needs the user, it signals the
-   runner, which records that on the Issue. See
+   system context, and the task contents. If it needs the user, it signals the
+   runner, which records a durable backend report. See
    [worker base instructions](worker-base-instructions.md).
 6. Findings and decisions are written back to **workstreams**; task lifecycle
-   and recurring occurrence history stay in GitHub. See
+   and recurring occurrence state stay in the selected backend. See
    [workstreams](workstreams.md).
 
 ## Reading these documents

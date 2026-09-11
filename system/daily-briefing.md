@@ -16,11 +16,11 @@ and [workstreams](workstreams.md).
 4. Reconcile the narrow objective facts permitted by triage, then re-read.
 5. Validate recurrence occurrence markers before proposing a date change.
 6. Treat missing pages, inaccessible sources, lifecycle/action mismatches,
-   stale revisions, and terminal/Issue-state conflicts as incomplete. Stop
+   stale revisions, and terminal/backend-state conflicts as incomplete. Stop
    before discretionary writes.
 
-GitHub is the canonical task store. Imported-source ids are provenance, not
-another queue to merge at briefing time.
+The Domain's selected backend is the canonical task store. Source links are
+provenance, not another queue to merge at briefing time.
 
 ## Recommend before changing dates
 
@@ -44,7 +44,7 @@ Recommend a realistically sized Today set. The focused proposal contains:
 Future or unscheduled tasks not selected for Today are considered but omitted
 from the focused review. Their dates stay unchanged.
 
-Show every proposed date change. Preserve Project order among otherwise
+Show every proposed date change. Preserve backend order among otherwise
 comparable tasks. Explain why each item belongs in its group. The user reviews
 Pan's recommendation; do not present an undecided accept/postpone queue.
 
@@ -59,11 +59,13 @@ For every nonterminal task:
   reconsiders it.
 
 A new `ready-for-human` checkpoint enters Needs me but not Today. Handoffs
-preserve explicit scheduling. Completion or rejection clears the date.
+preserve explicit scheduling. Completion or rejection clears a non-recurring
+date; completing a recurring occurrence advances it under native cadence.
 
-`deadline` is separate and never a not-before gate. A recurrence's nominal
-occurrence and cadence live in the Issue, never in the attention field.
-Changing planning does not change cadence.
+`deadline` is separate and never a not-before gate. For Todoist, the native due
+date is the human attention date. Moving a recurring task for an agreed plan
+must use the backend's recurrence-preserving occurrence-date operation; it must
+not replace the recurrence expression or cadence.
 
 No date gates or sorts AI execution. The briefing may show AI work because it
 affects the user's day, but does not date it merely because AI has the next
@@ -92,7 +94,7 @@ a disagreed recommendation "accepted."
 
 ## Durable planning guidance
 
-Preserve durable situational guidance in the authoritative Issue body:
+Preserve durable situational guidance in the authoritative task description:
 
 ```text
 Pan planning guidance: <faithful concise wording>
@@ -103,29 +105,30 @@ withdrawn. Preserve unrelated content. Vague language remains vague; do not
 turn "next week" or "on a quiet day" into an invented date.
 
 The browser, service, and conversation hold only drafts. If guidance cannot be
-preserved and verified in the Issue, do not claim the approved plan was fully
-applied.
+preserved and verified in the selected backend, do not claim the approved plan
+was fully applied.
 
 ## Apply the agreed plan
 
 After explicit agreement:
 
-1. Re-read the complete task set and every affected Issue.
-2. Require each expected `task-revision`.
+1. Re-read the complete task set and every affected task.
+2. Require each expected backend revision.
 3. Write and verify agreed planning guidance first.
-4. Set today's date on exactly the agreed Today tasks.
-5. Move or clear every agreed overdue/currently-today Not today task.
+4. Through the common task tool, set today's native attention date on exactly
+   the agreed Today tasks.
+5. Move or clear every agreed overdue/currently-today non-recurring Not today
+   task; move recurring occurrences without clearing their recurrence.
 6. Leave omitted future and empty dates unchanged.
-7. Increment each affected task revision last and verify the resulting Issue
-   block/Project projection.
+7. Verify each resulting backend record and revision.
 
 If any read, write, or verification fails, stop further writes and report the
 confirmed partial state. Never return a success-shaped fallback.
 
-Finish only when every affected write verifies, every terminal task has an
-empty attention date, and every nonterminal date is either empty, today, a
-future agreed date, or an explicitly unresolved past date the approved plan
-left visible for follow-up. Report the confirmed Today set and changes.
+Finish only when every affected write verifies and every nonterminal attention
+date is either empty, today, a future agreed date, or an explicitly unresolved
+past date the approved plan left visible for follow-up. Report the confirmed
+Today set and changes.
 
 ## Domain-specific considerations
 

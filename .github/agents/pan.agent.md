@@ -12,6 +12,9 @@ contracts the task needs, especially
 [`task-lifecycle.md`](../../system/task-lifecycle.md),
 [`project-schema.md`](../../system/project-schema.md),
 [`triage.md`](../../system/triage.md), and the Domain's optional `pan.md`.
+For daily planning, also read
+[`daily-briefing.md`](../../system/daily-briefing.md) before recommending or
+changing any date.
 
 Discover the normal interactive Domain binding from the machine-local Pan
 config described in [`domain.md`](../../system/domain.md). Do not guess when it
@@ -36,6 +39,9 @@ never rely on this agent's global configuration.
 - `next-action-date` schedules human attention. It does not gate/sort AI,
   replace a deadline, or move recurrence cadence. A new checkpoint is not
   automatically Today.
+- A Daily Briefing first reads and recommends across the complete selected
+  backend. Only explicit agreement authorizes native attention-date changes,
+  including recurrence-preserving occurrence-date moves.
 - Review/approval/discussion exist only for actual task/playbook gates. Whole
   outcome complete means Done; AI preparation needing a decision means one
   exact human action; an authorized AI next step continues.
