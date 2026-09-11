@@ -264,6 +264,21 @@ function fakeGitHubState({ projectReadNodes = null } = {}) {
         updatedAt: '2026-09-01T00:00:00Z',
         url: `${issue.url}#issuecomment-1`,
         body: 'Pan: Todoist source comment c1\n\nstale',
+      }, {
+        id: 'comment-transition-1',
+        author: { login: 'pan' },
+        createdAt: '2026-09-01T00:00:00Z',
+        updatedAt: '2026-09-01T00:00:00Z',
+        url: `${issue.url}#issuecomment-transition-1`,
+        body: transitionComment({
+          revision: 1,
+          fromStatus: '',
+          fromAction: '',
+          toStatus: 'ready-for-human',
+          toAction: 'act',
+          detail: 'Perform or reconsider the imported active task.',
+          actor: 'Pan Todoist migration',
+        }),
       }];
       const commentsByIssue = new Map([[issue.number, comments]]);
       const writes = [];
@@ -1134,12 +1149,218 @@ test('Todoist import conflicts on a transition receipt whose historical metadata
 
       await assert.rejects(
         resumedStore.importTodoistTask(record),
-        /unsafe metadata/,
+        /does not have the canonical schema/,
       );
       assert.deepEqual(state.writes, []);
       const verification = await resumedStore.verifyTodoistTask(record);
       assert.equal(verification.outcome, 'conflict');
-      assert.match(verification.error, /mismatched lifecycle transition receipt/);
+      assert.match(verification.error, /does not have the canonical schema/);
+});
+
+test('Todoist apply and verify reject a duplicate revision 1 receipt after revision 2', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      const importReceipt = state.comments.find(
+        (comment) => comment.body.startsWith('Pan: task transition 1'),
+      );
+      state.comments.push({
+        ...importReceipt,
+        id: 'comment-transition-1-duplicate',
+        url: `${state.issue.url}#issuecomment-transition-1-duplicate`,
+      });
+      state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
+
+      await assert.rejects(
+        resumedStore.importTodoistTask(record),
+        /duplicate lifecycle transition receipt revision 1/,
+      );
+      assert.deepEqual(state.writes, []);
+      const verification = await resumedStore.verifyTodoistTask(record);
+      assert.equal(verification.outcome, 'conflict');
+      assert.match(verification.error, /duplicate lifecycle transition receipt revision 1/);
+});
+
+test('Todoist apply and verify reject a non-canonical historical transition marker', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      state.comments.push({
+        id: 'comment-noncanonical-transition',
+        author: { login: 'pan' },
+        createdAt: '2026-09-09T00:00:00Z',
+        updatedAt: '2026-09-09T00:00:00Z',
+        url: `${state.issue.url}#issuecomment-noncanonical-transition`,
+        body: 'Historical note:\n\nPan: task transition 1',
+      });
+      state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
+
+      await assert.rejects(
+        resumedStore.importTodoistTask(record),
+        /non-canonical lifecycle transition receipt marker/,
+      );
+      assert.deepEqual(state.writes, []);
+      const verification = await resumedStore.verifyTodoistTask(record);
+      assert.equal(verification.outcome, 'conflict');
+      assert.match(verification.error, /non-canonical lifecycle transition receipt marker/);
+});
+
+test('Todoist apply and verify require the import receipt after revision 1', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      const importIndex = state.comments.findIndex(
+        (comment) => comment.body.startsWith('Pan: task transition 1'),
+      );
+      state.comments.splice(importIndex, 1);
+      state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
+
+      await assert.rejects(
+        resumedStore.importTodoistTask(record),
+        /missing Todoist import lifecycle transition receipt revision 1/,
+      );
+      assert.deepEqual(state.writes, []);
+      const verification = await resumedStore.verifyTodoistTask(record);
+      assert.equal(verification.outcome, 'conflict');
+      assert.match(
+        verification.error,
+        /missing Todoist import lifecycle transition receipt revision 1/,
+      );
+});
+
+test('Todoist apply and verify reject a transition receipt newer than the live task revision', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      state.comments.push({
+        id: 'comment-transition-3',
+        author: { login: 'pan' },
+        createdAt: '2026-09-09T13:00:00Z',
+        updatedAt: '2026-09-09T13:00:00Z',
+        url: `${state.issue.url}#issuecomment-transition-3`,
+        body: transitionComment({
+          revision: 3,
+          fromStatus: 'ready-for-human',
+          fromAction: 'act',
+          toStatus: 'ready-for-human',
+          toAction: 'act',
+          detail: 'Perform or reconsider the imported active task.',
+          actor: 'Pan Todoist migration',
+        }),
+      });
+      state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
+
+      await assert.rejects(
+        resumedStore.importTodoistTask(record),
+        /receipt revision 3 is not sensible for current revision 2/,
+      );
+      assert.deepEqual(state.writes, []);
+      const verification = await resumedStore.verifyTodoistTask(record);
+      assert.equal(verification.outcome, 'conflict');
+      assert.match(
+        verification.error,
+        /receipt revision 3 is not sensible for current revision 2/,
+      );
+});
+
+test('Todoist apply and verify accept complete multi-revision history and unrelated comments', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      state.item.fields['task-revision'] = '3';
+      state.issue.body = upsertCurrentActionBlock(
+        state.issue.body,
+        renderCurrentActionBlock({
+          status: 'ready-for-human',
+          action: 'act',
+          detail: 'Perform or reconsider the imported active task.',
+          revision: 3,
+          updatedAt: '2026-09-09T13:00:00.000Z',
+        }),
+      );
+      state.comments.push({
+        id: 'comment-transition-3',
+        author: { login: 'pan' },
+        createdAt: '2026-09-09T13:00:00Z',
+        updatedAt: '2026-09-09T13:00:00Z',
+        url: `${state.issue.url}#issuecomment-transition-3`,
+        body: transitionComment({
+          revision: 3,
+          fromStatus: 'external-waiting',
+          fromAction: 'wait',
+          toStatus: 'ready-for-human',
+          toAction: 'act',
+          detail: 'Perform or reconsider the imported active task.',
+          actor: 'Pan Todoist migration',
+        }),
+      }, {
+        id: 'comment-unrelated',
+        author: { login: 'person' },
+        createdAt: '2026-09-09T13:01:00Z',
+        updatedAt: '2026-09-09T13:01:00Z',
+        url: `${state.issue.url}#issuecomment-unrelated`,
+        body: 'This unrelated discussion remains valid history.',
+      });
+      state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
+
+      assert.equal((await resumedStore.importTodoistTask(record)).outcome, 'verified');
+      assert.deepEqual(state.writes, []);
+      assert.equal((await resumedStore.verifyTodoistTask(record)).outcome, 'verified');
 });
 
 test('Todoist verification rejects a non-canonical source receipt', async () => {

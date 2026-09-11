@@ -53,9 +53,15 @@ Issue and the non-destructive recovery action.
 Issue source markers and imported comment markers must occur exactly once in
 their canonical positions. Imported source-comment and lifecycle-transition
 receipts must match their complete canonical bodies, not merely their marker
-lines. A unique canonical receipt with reconstructable historical metadata can
-be repaired idempotently; duplicate, non-canonical, or ambiguous receipt
-metadata is a conflict.
+lines. For an imported task, apply and verify inspect every
+`Pan: task transition <revision>` occurrence across all Issue comments. Each
+must be a complete canonical transition receipt, each revision may occur at
+most once, no receipt may be revision zero or newer than the current task, and
+the original Todoist import receipt plus the current transition receipt must be
+present. Unrelated comments are ignored. A missing current receipt with
+reconstructable historical metadata can be repaired idempotently; corrupted,
+duplicate, non-canonical, or ambiguous historical receipts are a conflict and
+are never deleted.
 
 Todoist due dates map to `next-action-date` only as imported human attention
 evidence. A Todoist deadline maps to Pan `deadline`. Recurrence text and the

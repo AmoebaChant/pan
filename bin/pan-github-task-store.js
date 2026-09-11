@@ -210,6 +210,7 @@ function parseItem(node) {
 
 const TODOIST_SOURCE_TASK_PREFIX = 'Pan: Todoist source task ';
 const TODOIST_SOURCE_COMMENT_PREFIX = 'Pan: Todoist source comment ';
+const TASK_TRANSITION_PREFIX = 'Pan: task transition ';
 
 function markerLineOccurrences(body, marker, canonicalLine) {
   const lines = String(body ?? '').replace(/\r\n/g, '\n').split('\n');
@@ -320,6 +321,116 @@ function exactCommentMarkerState(comments, marker) {
     matches,
     canonical: matches.length === 1 && matches[0].canonical,
   };
+}
+
+function parseTransitionReceipt(body, revision) {
+  const marker = transitionMarker(revision);
+  const lines = String(body ?? '').split('\n');
+  if (
+    ![6, 7].includes(lines.length)
+    || lines[0] !== marker
+    || lines[1] !== ''
+    || !lines[2].startsWith('- From: ')
+    || !lines[3].startsWith('- To: ')
+    || !lines[4].startsWith('- Detail: ')
+    || !lines[5].startsWith('- Actor: ')
+    || (lines.length === 7 && !lines[6].startsWith('- Claim generation: '))
+  ) {
+    return null;
+  }
+  const parsePair = (value, { allowUnmigrated = false } = {}) => {
+    if (allowUnmigrated && value === '(unmigrated)/(unmigrated)') {
+      return { status: '', action: '' };
+    }
+    const separator = value.indexOf('/');
+    if (separator <= 0 || separator !== value.lastIndexOf('/')) return null;
+    const status = value.slice(0, separator);
+    const action = value.slice(separator + 1);
+    return validLifecyclePair(status, action) ? { status, action } : null;
+  };
+  const from = parsePair(lines[2].slice('- From: '.length), { allowUnmigrated: true });
+  const to = parsePair(lines[3].slice('- To: '.length));
+  if (!from || !to) return null;
+  const detailValue = lines[4].slice('- Detail: '.length);
+  const actor = lines[5].slice('- Actor: '.length);
+  const claimGeneration = lines.length === 7
+    ? lines[6].slice('- Claim generation: '.length)
+    : '';
+  const detail = detailValue === '(none)' ? '' : detailValue;
+  const canonical = transitionComment({
+    revision,
+    fromStatus: from.status,
+    fromAction: from.action,
+    toStatus: to.status,
+    toAction: to.action,
+    detail,
+    actor,
+    claimGeneration,
+  });
+  if (body !== canonical) return null;
+  return {
+    revision,
+    fromStatus: from.status,
+    fromAction: from.action,
+    toStatus: to.status,
+    toAction: to.action,
+    detail,
+    actor,
+    claimGeneration,
+    body,
+  };
+}
+
+function todoistTransitionHistory(
+  comments,
+  maxRevision,
+  { requireImport = maxRevision > 1 } = {},
+) {
+  const receipts = new Map();
+  for (const comment of comments) {
+    const occurrences = prefixedMarkerOccurrences(
+      comment.body,
+      TASK_TRANSITION_PREFIX,
+      (_lines, lineIndex) => lineIndex === 0,
+    );
+    for (const occurrence of occurrences) {
+      if (!occurrence.canonical || !/^[1-9]\d*$/.test(occurrence.sourceId)) {
+        throw new Error('non-canonical lifecycle transition receipt marker');
+      }
+      const revision = Number(occurrence.sourceId);
+      if (!Number.isSafeInteger(revision) || revision > maxRevision) {
+        throw new Error(
+          `lifecycle transition receipt revision ${occurrence.sourceId} ` +
+            `is not sensible for current revision ${maxRevision}`,
+        );
+      }
+      const receipt = parseTransitionReceipt(comment.body, revision);
+      if (!receipt) {
+        throw new Error(
+          `lifecycle transition receipt revision ${revision} does not have the canonical schema`,
+        );
+      }
+      if (receipts.has(revision)) {
+        throw new Error(`duplicate lifecycle transition receipt revision ${revision}`);
+      }
+      receipts.set(revision, receipt);
+    }
+  }
+  const importReceipt = receipts.get(1);
+  if (importReceipt && (
+    importReceipt.fromStatus
+    || importReceipt.fromAction
+    || importReceipt.toStatus !== 'ready-for-human'
+    || importReceipt.toAction !== 'act'
+    || importReceipt.actor !== 'Pan Todoist migration'
+    || importReceipt.claimGeneration
+  )) {
+    throw new Error('lifecycle transition receipt revision 1 is not the Todoist import receipt');
+  }
+  if (requireImport && !importReceipt) {
+    throw new Error('missing Todoist import lifecycle transition receipt revision 1');
+  }
+  return receipts;
 }
 
 function todoistTransitionReceiptExpectation(body, {
@@ -1666,6 +1777,7 @@ export class GitHubTaskStore {
     }
 
     let currentBlock = parseCurrentActionBlock(issue.body ?? '');
+    const observedBlockRevision = currentBlock?.revision ?? 0;
     const currentRevision = parseRevision(projectItem.fields['task-revision'] ?? '');
     const expectedFields = new Map([
       ['Status', 'ready-for-human'],
@@ -1775,13 +1887,17 @@ export class GitHubTaskStore {
     }
 
     const lifecycleMarker = transitionMarker(finalRevision);
-    const transitionState = exactCommentMarkerState(existingComments, lifecycleMarker);
-    if (transitionState.matches.length > 1) {
-      throw new Error(`Todoist source ${sourceId} has duplicate lifecycle transition receipts`);
+    let transitionHistory;
+    try {
+      transitionHistory = todoistTransitionHistory(
+        existingComments,
+        Math.max(currentRevision, observedBlockRevision),
+        { requireImport: finalRevision > 1 },
+      );
+    } catch (error) {
+      throw new Error(`Todoist source ${sourceId} has ${error.message}`);
     }
-    if (transitionState.matches.length === 1 && !transitionState.canonical) {
-      throw new Error(`Todoist source ${sourceId} has a non-canonical lifecycle transition receipt`);
-    }
+    const currentTransition = transitionHistory.get(finalRevision);
     const fallbackFromStatus = finalRevision === 1
       ? ''
       : projectItem.fields.Status || '';
@@ -1789,7 +1905,7 @@ export class GitHubTaskStore {
       ? ''
       : projectItem.fields['next-action'] || '';
     const expectedTransitionBody = todoistTransitionReceiptExpectation(
-      transitionState.matches[0]?.comment.body ?? '',
+      currentTransition?.body ?? '',
       {
         revision: finalRevision,
         detail: currentActionDetail,
@@ -1802,10 +1918,7 @@ export class GitHubTaskStore {
         `Todoist source ${sourceId} has a lifecycle transition receipt with unsafe metadata`,
       );
     }
-    if (
-      transitionState.matches.length !== 1
-      || transitionState.matches[0].comment.body !== expectedTransitionBody
-    ) {
+    if (!currentTransition || currentTransition.body !== expectedTransitionBody) {
       needsRepair = true;
     }
 
@@ -1906,10 +2019,16 @@ export class GitHubTaskStore {
         throw new Error(`GitHub did not verify exact Todoist comment ${comment.id}`);
       }
     }
-    const confirmedTransition = exactCommentMarkerState(existingComments, lifecycleMarker);
+    let confirmedTransitionHistory;
+    try {
+      confirmedTransitionHistory = todoistTransitionHistory(existingComments, finalRevision);
+    } catch (error) {
+      throw new Error(`GitHub did not verify Todoist lifecycle history: ${error.message}`);
+    }
+    const confirmedTransition = confirmedTransitionHistory.get(finalRevision);
     if (
-      !confirmedTransition.canonical
-      || confirmedTransition.matches[0].comment.body !== expectedTransitionBody
+      !confirmedTransition
+      || confirmedTransition.body !== expectedTransitionBody
     ) {
       throw new Error(`GitHub did not verify exact Todoist lifecycle transition ${finalRevision}`);
     }
@@ -2087,11 +2206,20 @@ export class GitHubTaskStore {
         };
       }
     }
-    const lifecycleMarker = transitionMarker(block.revision);
-    const transitionReceipt = exactCommentMarkerState(comments, lifecycleMarker);
-    const expectedTransitionBody = transitionReceipt.matches.length === 1
+    let transitionHistory;
+    try {
+      transitionHistory = todoistTransitionHistory(comments, block.revision);
+    } catch (error) {
+      return {
+        sourceId,
+        outcome: 'conflict',
+        error: error.message,
+      };
+    }
+    const transitionReceipt = transitionHistory.get(block.revision);
+    const expectedTransitionBody = transitionReceipt
       ? todoistTransitionReceiptExpectation(
-        transitionReceipt.matches[0].comment.body,
+        transitionReceipt.body,
         {
           revision: block.revision,
           detail: expectedDetail,
@@ -2101,9 +2229,9 @@ export class GitHubTaskStore {
       )
       : null;
     if (
-      !transitionReceipt.canonical
+      !transitionReceipt
       || !expectedTransitionBody
-      || transitionReceipt.matches[0].comment.body !== expectedTransitionBody
+      || transitionReceipt.body !== expectedTransitionBody
     ) {
       return {
         sourceId,
