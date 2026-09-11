@@ -55,8 +55,15 @@ reports into the launch state and gives the worker exact read/report commands.
 The headed Copilot command receives `--add-dir` only for the resolved working
 directory, its owned launch-state directory, the configured `pan-task`
 directory, and the backend-config directory. This satisfies Copilot's
-folder-trust boundary without granting broad home-directory access; tool
+path-access boundary without granting broad home-directory access; tool
 approvals remain separately controlled by the explicit `launchCommand`.
+Before launch, the runner also adds only the resolved working directory and
+owned launch-state directory to Copilot's `trustedFolders` in
+`copilotConfigPath` (default `~/.copilot/config.json`). It preserves leading
+`//` comments, unrelated settings, and existing trusted entries, then reads the
+file back and fails the launch if either exact entry cannot be verified. The
+per-run `trust.json` records which entries were newly added so they can be
+removed precisely after the session no longer needs them.
 `taskIds`, when non-empty, is an additional exact allowlist applied after
 backend scope and checked again by `launchTask` immediately before terminal
 spawn. It is suitable for a one-task demonstration but does not replace backend

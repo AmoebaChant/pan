@@ -10,6 +10,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { inspectProcess } from './pan-runner-runtime.js';
@@ -71,6 +72,62 @@ function runnerLockPath(stateRoot) {
 
 async function readJson(filename) {
   return JSON.parse(await readFile(filename, 'utf8'));
+}
+
+function parseCopilotConfig(raw) {
+  const lines = raw.split('\n');
+  let index = 0;
+  while (
+    index < lines.length
+    && (lines[index].trimStart().startsWith('//') || lines[index].trim() === '')
+  ) {
+    index += 1;
+  }
+  const header = lines.slice(0, index).join('\n');
+  const body = lines.slice(index).join('\n').trim();
+  const config = body ? JSON.parse(body) : {};
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('Copilot config must contain a JSON object');
+  }
+  if (config.trustedFolders !== undefined && !Array.isArray(config.trustedFolders)) {
+    throw new Error('Copilot config trustedFolders must be an array');
+  }
+  return { header, config };
+}
+
+export async function trustCopilotFolders(
+  configPath,
+  folderPaths,
+  dependencies = {},
+) {
+  const read = dependencies.readFile || readFile;
+  const write = dependencies.writeFile || writeFile;
+  const makeDirectory = dependencies.mkdir || mkdir;
+  let raw = '';
+  try {
+    raw = await read(configPath, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const { header, config } = parseCopilotConfig(raw);
+  const trusted = config.trustedFolders ?? [];
+  const requested = [...new Set(folderPaths.map((folder) => path.resolve(folder)))];
+  const added = requested.filter((folder) => !trusted.includes(folder));
+  if (added.length > 0) {
+    config.trustedFolders = [...trusted, ...added];
+    const output = `${header ? `${header}\n` : ''}${JSON.stringify(config, null, 2)}\n`;
+    await makeDirectory(path.dirname(configPath), { recursive: true, mode: 0o700 });
+    await write(configPath, output, { mode: 0o600 });
+  }
+  const verified = parseCopilotConfig(await read(configPath, 'utf8')).config;
+  if (!requested.every((folder) => verified.trustedFolders?.includes(folder))) {
+    throw new Error(`could not verify Copilot trustedFolders in ${configPath}`);
+  }
+  return {
+    configPath,
+    added,
+    alreadyTrusted: requested.filter((folder) => !added.includes(folder)),
+  };
 }
 
 export async function inspectLocalRuns(
@@ -395,6 +452,16 @@ export async function launchTask(task, config, backend, dependencies = {}) {
     await writeFile(
       path.join(stateDir, 'reports.json'),
       `${JSON.stringify(reports, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    const trust = await trustCopilotFolders(
+      path.resolve(config.copilotConfigPath || path.join(os.homedir(), '.copilot', 'config.json')),
+      [path.resolve(config.workingDirectory), stateDir],
+      dependencies,
+    );
+    await writeFile(
+      path.join(stateDir, 'trust.json'),
+      `${JSON.stringify({ ...trust, recordedAt: new Date().toISOString() }, null, 2)}\n`,
       { mode: 0o600 },
     );
     const taskCommand = `${process.execPath} ${config.panTaskCommand}`;

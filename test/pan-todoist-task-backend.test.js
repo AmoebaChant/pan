@@ -14,6 +14,7 @@ import {
   pollBackendTasks,
   reconcileStaleRuns,
   selectReadyForAi,
+  trustCopilotFolders,
 } from '../bin/pan-backend-runner.js';
 
 function response(body, status = 200) {
@@ -265,6 +266,26 @@ function testRoot() {
   return path.join(process.cwd(), `.pan-backend-test-${randomUUID()}`);
 }
 
+function parseConfigWithHeader(raw) {
+  return JSON.parse(raw.split('\n').filter((line) => !line.trimStart().startsWith('//')).join('\n'));
+}
+
+test('Copilot trust update fails closed on an unreadable config body', async () => {
+  const root = testRoot();
+  const configPath = path.join(root, 'config.json');
+  await mkdir(root, { recursive: true });
+  await writeFile(configPath, '// managed automatically\n{not json}\n');
+  try {
+    await assert.rejects(
+      trustCopilotFolders(configPath, [path.join(root, 'workspace')]),
+      /JSON/,
+    );
+    assert.equal(await readFile(configPath, 'utf8'), '// managed automatically\n{not json}\n');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function runnerConfig(root) {
   const playbookPath = path.join(root, 'test-playbook.md');
   const domainInstructionsPath = path.join(root, 'pan.md');
@@ -280,6 +301,7 @@ async function runnerConfig(root) {
     playbookPath,
     domainInstructionsPath,
     panTaskCommand: path.resolve('bin/pan-task.js'),
+    copilotConfigPath: path.join(root, 'copilot-config.json'),
     launchCommand: ['copilot', '--model', 'gpt-5.6-sol'],
   };
 }
@@ -305,6 +327,7 @@ function backendFake(task) {
 test('live process inventory survives polls and blocks shared workspace capacity', async () => {
   const root = testRoot();
   const config = await runnerConfig(root);
+  await writeFile(config.copilotConfigPath, '// managed automatically\n{\n  "theme": "system",\n  "trustedFolders": ["/existing"]\n}\n');
   const task = {
     id: 'task-1', title: 'Task', url: 'https://todoist.example/task-1',
     revision: 'r1', status: 'ready-for-ai', nextAction: 'execute',
@@ -345,6 +368,20 @@ test('live process inventory survives polls and blocks shared workspace capacity
     assert.equal(JSON.parse(await readFile(
       path.join(root, 'runs', 'task-1', 'reports.json'),
     ))[0].content, 'Prior report');
+    const copilotConfig = parseConfigWithHeader(await readFile(config.copilotConfigPath, 'utf8'));
+    assert.equal(copilotConfig.theme, 'system');
+    assert.deepEqual(copilotConfig.trustedFolders, [
+      '/existing',
+      config.workingDirectory,
+      path.join(root, 'runs', 'task-1'),
+    ]);
+    const trust = JSON.parse(await readFile(
+      path.join(root, 'runs', 'task-1', 'trust.json'),
+    ));
+    assert.deepEqual(trust.added, [
+      config.workingDirectory,
+      path.join(root, 'runs', 'task-1'),
+    ]);
     const result = await pollBackendTasks({
       backend: { list: async () => [{ ...task, id: 'task-2' }] },
       capacity: 0,
