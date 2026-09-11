@@ -13,10 +13,11 @@ instructions](worker-base-instructions.md).
 
 ## Backend runner pilot
 
-`pan-backend-runner` is the thin-backend path. It lists through `pan-task`,
-selects only `ready-for-ai/execute` records with explicit authorization, empty
-dependencies, no recorded worker, and free capacity, then invokes the
-configured launcher. It never gates or sorts on `next-action-date`.
+`pan-backend-runner` is an implemented experimental thin-backend path, not a
+stub. It lists through `pan-task`, selects only `ready-for-ai/execute` records
+with explicit authorization, empty dependencies, no recorded worker, and free
+capacity, then invokes the configured launcher. It preserves backend order and
+never gates or sorts on `next-action-date`.
 
 The pilot config is deliberately disabled until reviewed:
 

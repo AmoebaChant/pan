@@ -1,7 +1,15 @@
 # Recurring tasks
 
-A recurring commitment is canonical in GitHub. Each occurrence is a Domain
-Issue and Project item. Closing an occurrence as completed requires one successor;
+Use the selected backend's native recurrence semantics when they exist.
+Todoist-backed Domains complete the native recurring task and let Todoist
+advance its due occurrence; do not synthesize linked GitHub Issues, move
+cadence when changing human attention, or duplicate occurrence history.
+
+## Declaring recurrence
+
+The rest of this document is the GitHub compatibility-backend contract. A
+recurring commitment is canonical in GitHub. Each occurrence is a Domain Issue
+and Project item. Closing an occurrence as completed requires one successor;
 Pan may create it as part of an interactive completion or reconcile it during
 the next triage after another client closes the Issue. Pan never keeps one
 GitHub-managed Issue open forever by overwriting its date: separate Issues
@@ -13,15 +21,7 @@ completed history or starts a successor loop. Occurrence availability is owned
 only by this lifecycle. The runner never dispatches a recurring Issue, even if
 its fields otherwise look AI-ready.
 
-## Declaring recurrence
-
 A recurring Issue has an exact `## Recurrence` heading in its body. The text
-
-Use the selected backend's native recurrence semantics when they exist.
-Todoist-backed Domains complete the native recurring task and let Todoist
-advance its due occurrence; do not synthesize linked GitHub Issues, move
-cadence when changing human attention, or duplicate occurrence history. The
-Issue-specific procedure below is the GitHub compatibility-backend contract.` heading in its body. The text
 under that heading is the durable schedule rule and must identify exactly one
 next calendar date from the nominal occurrence. Keep the rule concise and
 unambiguous, for example:

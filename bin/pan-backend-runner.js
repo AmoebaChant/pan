@@ -7,19 +7,13 @@ import { parseArgs } from 'node:util';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
 
 export function selectReadyForAi(tasks) {
-  return tasks
-    .filter((task) =>
-      task.status === 'ready-for-ai'
-      && task.nextAction === 'execute'
-      && task.executionAuthorized === true
-      && task.dependencies.length === 0
-      && task.worker == null,
-    )
-    .sort((a, b) => {
-      const rank = { urgent: 0, high: 1, normal: 2, low: 3 };
-      return (rank[a.priority] ?? 2) - (rank[b.priority] ?? 2)
-        || a.title.localeCompare(b.title);
-    });
+  return tasks.filter((task) =>
+    task.status === 'ready-for-ai'
+    && task.nextAction === 'execute'
+    && task.executionAuthorized === true
+    && task.dependencies.length === 0
+    && task.worker == null,
+  );
 }
 
 export async function pollBackendTasks({ backend, capacity, activeTaskIds = new Set(), launch }) {

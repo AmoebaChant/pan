@@ -68,10 +68,9 @@ function assertObject(value, name) {
 }
 
 export class TodoistTaskBackend {
-  constructor(config, { configPath, fetchImpl = globalThis.fetch, readFileImpl = readFile } = {}) {
+  constructor(config, { fetchImpl = globalThis.fetch, readFileImpl = readFile } = {}) {
     assertObject(config, 'backend config');
     this.config = config;
-    this.configPath = configPath;
     this.fetch = fetchImpl;
     this.readFile = readFileImpl;
     this.baseUrl = String(config.baseUrl || 'https://api.todoist.com/api/v1').replace(/\/$/, '');
@@ -182,6 +181,10 @@ export class TodoistTaskBackend {
   }
 
   async get(id) {
+    return this.canonical(await this.nativeTask(id));
+  }
+
+  async nativeTask(id) {
     const task = await this.request('GET', `/tasks/${encodeURIComponent(id)}`);
     if (!this.inScope(task)) {
       throw new TaskBackendError(`task ${id} is outside the configured scope`, {
@@ -189,7 +192,7 @@ export class TodoistTaskBackend {
         status: 403,
       });
     }
-    return this.canonical(task);
+    return task;
   }
 
   async create(input) {
@@ -228,7 +231,8 @@ export class TodoistTaskBackend {
 
   async update(id, input) {
     assertObject(input, 'update input');
-    const current = await this.get(id);
+    const native = await this.nativeTask(id);
+    const current = this.canonical(native);
     if (input.expectedRevision && input.expectedRevision !== current.revision) {
       throw new TaskBackendError(`task ${id} changed since it was read`, {
         code: 'revision-conflict',
@@ -236,7 +240,6 @@ export class TodoistTaskBackend {
         details: { expected: input.expectedRevision, actual: current.revision },
       });
     }
-    const native = await this.request('GET', `/tasks/${encodeURIComponent(id)}`);
     const parsed = metadataFrom(native.description || '');
     const metadata = {
       ...parsed.metadata,

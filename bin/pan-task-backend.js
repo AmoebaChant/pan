@@ -21,10 +21,7 @@ export async function loadTaskBackend(configPath, dependencies = {}) {
     });
   }
   const { TodoistTaskBackend } = await import('./pan-todoist-task-backend.js');
-  return new TodoistTaskBackend(config, {
-    configPath: absolute,
-    ...dependencies,
-  });
+  return new TodoistTaskBackend(config, dependencies);
 }
 
 export function writeJson(value, stream = process.stdout) {

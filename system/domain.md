@@ -16,8 +16,8 @@ operates on exactly one Domain at a time.
 
 - **The selected backend** holds tasks. The stable outcome remains one task
   while its exact next action moves between a person, AI, or an external wait.
-- **The Project** holds each task's lifecycle and fields. See
-  [project schema](project-schema.md).
+- **The Project**, when GitHub is the selected backend, holds each task's
+  lifecycle and fields. See [project schema](project-schema.md).
 - **Workstreams** are the durable narrative for each area of work. See
   [workstreams](workstreams.md).
 - **Playbooks** define kinds of work and the instructions for doing them. A
@@ -34,9 +34,9 @@ operates on exactly one Domain at a time.
 ## How Pan reaches the Domain
 
 Pan uses the GitHub API through `gh` for Domain knowledge. Task access goes
-through the configured thin backend tool. The Domain is **never** required as a local checkout:
-read and write workstreams and playbooks through the GitHub
-Contents API, and read and write tasks through Issues and the Project.
+through the configured thin backend tool. The Domain is **never** required as a
+local checkout: read and write workstreams and playbooks through the GitHub
+Contents API, and read and write tasks through the selected backend.
 
 The runner is the exception that may keep a local checkout, because a worker
 edits code on disk — but that is the *target* repository named by a playbook,

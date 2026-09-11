@@ -84,6 +84,33 @@ test('update reports stale revisions before writing', async () => {
   assert.equal(writes, 0);
 });
 
+test('update reads the task once before writing', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push([url, options.method]);
+    if (url.endsWith('/user')) return response({ id: 'self' });
+    if (options.method === 'GET') {
+      return response({
+        id: '1', content: 'Task', description: '', priority: 1,
+        project_id: 'p', responsible_uid: null, updated_at: 'r1',
+      });
+    }
+    return response({
+      id: '1', content: 'Changed', description: '', priority: 1,
+      project_id: 'p', responsible_uid: null, updated_at: 'r2',
+    });
+  };
+  const backend = await new TodoistTaskBackend(
+    { backend: 'todoist' },
+    { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
+  ).initialize();
+  assert.equal((await backend.update('1', {
+    expectedRevision: 'r1',
+    title: 'Changed',
+  })).title, 'Changed');
+  assert.deepEqual(calls.map(([, method]) => method), ['GET', 'GET', 'POST']);
+});
+
 test('complete checks revision and calls the native close endpoint', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
@@ -124,4 +151,12 @@ test('mechanical runner launches only authorized ready tasks without date gating
   });
   assert.deepEqual(result.launched, ['future']);
   assert.deepEqual(launched, ['future']);
+});
+
+test('mechanical runner preserves backend order instead of reprioritizing', () => {
+  const tasks = [
+    { id: 'first', title: 'First', status: 'ready-for-ai', nextAction: 'execute', executionAuthorized: true, dependencies: [], worker: null, priority: 'low' },
+    { id: 'second', title: 'Second', status: 'ready-for-ai', nextAction: 'execute', executionAuthorized: true, dependencies: [], worker: null, priority: 'urgent' },
+  ];
+  assert.deepEqual(selectReadyForAi(tasks).map((task) => task.id), ['first', 'second']);
 });
