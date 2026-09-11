@@ -358,6 +358,7 @@ test('live process inventory survives polls and blocks shared workspace capacity
     assert.match(launcher, /PAN_STATE_DIR/);
     assert.match(launcher, /--add-dir/);
     assert.match(launcher, new RegExp(config.workingDirectory.replaceAll('\\', '\\\\')));
+    assert.match(launcher, new RegExp(path.dirname(process.execPath).replaceAll('\\', '\\\\')));
     assert.equal(JSON.parse(await readFile(
       path.join(root, 'runs', 'task-1', 'task.json'),
     )).id, 'task-1');

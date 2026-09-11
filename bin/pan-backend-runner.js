@@ -485,6 +485,7 @@ export async function launchTask(task, config, backend, dependencies = {}) {
         stateDir,
         workingDirectory: path.resolve(config.workingDirectory),
         additionalDirectories: [
+          path.dirname(process.execPath),
           path.dirname(path.resolve(config.panTaskCommand)),
           path.dirname(path.resolve(config.backendConfig)),
         ],

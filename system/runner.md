@@ -54,9 +54,13 @@ resolved `playbookName` and private `playbookPath`, and private
 reports into the launch state and gives the worker exact read/report commands.
 The headed Copilot command receives `--add-dir` only for the resolved working
 directory, its owned launch-state directory, the configured `pan-task`
-directory, and the backend-config directory. This satisfies Copilot's
-path-access boundary without granting broad home-directory access; tool
-approvals remain separately controlled by the explicit `launchCommand`.
+directory, the backend-config directory, and the directory containing the
+runner's resolved Node executable. The Node directory is required because the
+worker's exact `pan-task` command invokes that executable; without path access,
+Copilot prompts even when the shell tool itself is explicitly allowed. This
+satisfies Copilot's path-access boundary without granting broad home-directory
+access; tool approvals remain separately controlled by the explicit
+`launchCommand`.
 Before launch, the runner also adds only the resolved working directory and
 owned launch-state directory to Copilot's `trustedFolders` in
 `copilotConfigPath` (default `~/.copilot/config.json`). It preserves leading
