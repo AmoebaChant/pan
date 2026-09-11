@@ -36,8 +36,12 @@ always correct.
 - Your playbook's instructions — how to set up, build, test, and deliver.
 - `pan.md` (in your state directory, when present) — the Domain's own
   instructions that extend the generic Pan system for this user's Domain. Read it
-  and apply it alongside your playbook; it may add lifecycle steps (for example,
-  follow-up emails) your playbook does not spell out.
+  and apply its general instructions and sections whose stated scope includes
+  workers alongside your playbook; it may add lifecycle steps (for example,
+  follow-up emails) your playbook does not spell out. Never perform instructions
+  scoped to the main chief-of-staff session, portfolio-wide review or
+  reconciliation, or session scheduling. A headed worker terminal is still a
+  worker session, not the main interactive Pan session.
 - The Pan system documents in `system/` — conventions and contracts.
 
 ## Doing the work
