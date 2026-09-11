@@ -11,6 +11,7 @@ pan-task --config /absolute/path/backend.json get <id>
 pan-task --config /absolute/path/backend.json create --input @request.json
 pan-task --config /absolute/path/backend.json update <id> --input @request.json
 pan-task --config /absolute/path/backend.json report <id> --input @request.json
+pan-task --config /absolute/path/backend.json reports <id>
 pan-task --config /absolute/path/backend.json complete <id> --input @request.json
 ```
 
@@ -39,12 +40,22 @@ Todoist is the first non-GitHub adapter:
 | --- | --- |
 | title, description | native content and human-readable description |
 | priority | native priorities 1–4 map to low, normal, high, urgent |
-| next-action-date | native due date; this schedules human attention and never gates AI |
+| next-action-date | native due date for non-recurring tasks; Pan metadata for recurring tasks |
 | deadline | native deadline when supported |
-| recurrence | native recurring due semantics, unchanged by Pan metadata |
+| recurrence | native recurring due semantics; never rewritten by an attention-date update |
 | person responsibility | native `responsible_uid`; only the authenticated user and configured unassigned tasks are in scope |
 | lifecycle, next action, authorization, dependencies, playbook, workstream, worker observation | one visible, versioned `pan-task:v1` JSON block at the end of the description |
 | durable worker report | native task comment |
+
+`reports <id>` fully paginates native comments after verifying that the task is
+inside configured scope. Reports therefore remain recoverable without using
+Todoist-specific commands.
+
+Automatic recurring-task dispatch is intentionally unsupported by the small
+pilot runner. Recurring tasks remain visible and editable through the common
+API, but the runner excludes them so a persistent readiness marker cannot
+launch each newly advanced occurrence. This is a temporary capability limit,
+not a task-policy rule or permission to create a GitHub fallback.
 
 The adapter never manages tasks assigned to another user. A Domain can further
 restrict project ids. Credentials are read from a local file and are never

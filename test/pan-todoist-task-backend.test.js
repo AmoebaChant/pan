@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import {
   descriptionWithMetadata,
   metadataFrom,
   TodoistTaskBackend,
 } from '../bin/pan-todoist-task-backend.js';
-import { pollBackendTasks, selectReadyForAi } from '../bin/pan-backend-runner.js';
+import {
+  inspectLocalRuns,
+  launchTask,
+  pollBackendTasks,
+  reconcileStaleRuns,
+  selectReadyForAi,
+} from '../bin/pan-backend-runner.js';
 
 function response(body, status = 200) {
   return new Response(body == null ? null : JSON.stringify(body), {
@@ -94,6 +103,68 @@ test('update reads the task once before writing', async () => {
         id: '1', content: 'Task', description: '', priority: 1,
         project_id: 'p', responsible_uid: null, updated_at: 'r1',
       });
+
+      test('recurring attention date is metadata and never replaces native cadence', async () => {
+        let updateBody;
+        const recurring = {
+          id: '1', content: 'Recurring', priority: 1, project_id: 'p',
+          responsible_uid: null, updated_at: 'r1',
+          due: { date: '2026-09-11', string: 'every friday', is_recurring: true },
+          description: descriptionWithMetadata('', { status: 'ready-for-human' }),
+        };
+        const fetchImpl = async (url, options) => {
+          if (url.endsWith('/user')) return response({ id: 'self' });
+          if (options.method === 'GET') return response(recurring);
+          updateBody = JSON.parse(options.body);
+          return response({
+            ...recurring,
+            updated_at: 'r2',
+            description: updateBody.description,
+          });
+        };
+        const backend = await new TodoistTaskBackend(
+          { backend: 'todoist' },
+          { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
+        ).initialize();
+        const updated = await backend.update('1', {
+          expectedRevision: 'r1',
+          nextActionDate: '2026-09-18',
+        });
+        assert.equal(updateBody.due_date, undefined);
+        assert.deepEqual(updated.native.due, recurring.due);
+        assert.equal(updated.nextActionDate, '2026-09-18');
+      });
+
+      test('reports are fully paginated after the scoped task read', async () => {
+        const calls = [];
+        const fetchImpl = async (url) => {
+          calls.push(url);
+          if (url.endsWith('/user')) return response({ id: 'self' });
+          if (url.endsWith('/tasks/1')) {
+            return response({
+              id: '1', content: 'Task', description: '', priority: 1,
+              project_id: 'p', responsible_uid: null, updated_at: 'r1',
+            });
+          }
+          if (url.includes('cursor=next')) {
+            return response({ results: [{
+              id: 'c2', task_id: '1', content: 'Result', posted_at: '2026-09-11T02:00:00Z',
+            }], next_cursor: null });
+          }
+          return response({ results: [{
+            id: 'c1', task_id: '1', content: 'Progress', posted_at: '2026-09-11T01:00:00Z',
+          }], next_cursor: 'next' });
+        };
+        const backend = await new TodoistTaskBackend(
+          { backend: 'todoist' },
+          { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
+        ).initialize();
+        assert.deepEqual((await backend.reports('1')).map((item) => item.content), [
+          'Progress',
+          'Result',
+        ]);
+        assert.equal(calls.length, 4);
+      });
     }
     return response({
       id: '1', content: 'Changed', description: '', priority: 1,
@@ -141,6 +212,7 @@ test('mechanical runner launches only authorized ready tasks without date gating
     { id: 'future', title: 'Future human date', status: 'ready-for-ai', nextAction: 'execute', executionAuthorized: true, dependencies: [], worker: null, priority: 'normal', nextActionDate: '2099-01-01' },
     { id: 'hold', title: 'Held', status: 'deliberate-hold', nextAction: 'hold', executionAuthorized: true, dependencies: [], worker: null, priority: 'urgent' },
     { id: 'unauthorized', title: 'Not authorized', status: 'ready-for-ai', nextAction: 'execute', executionAuthorized: false, dependencies: [], worker: null, priority: 'urgent' },
+    { id: 'recurring', title: 'Recurring', status: 'ready-for-ai', nextAction: 'execute', executionAuthorized: true, dependencies: [], worker: null, priority: 'urgent', recurring: true },
   ];
   assert.deepEqual(selectReadyForAi(tasks).map((task) => task.id), ['future']);
   const launched = [];
@@ -159,4 +231,163 @@ test('mechanical runner preserves backend order instead of reprioritizing', () =
     { id: 'second', title: 'Second', status: 'ready-for-ai', nextAction: 'execute', executionAuthorized: true, dependencies: [], worker: null, priority: 'urgent' },
   ];
   assert.deepEqual(selectReadyForAi(tasks).map((task) => task.id), ['first', 'second']);
+});
+
+test('dry-run reports selection without claiming a launch', async () => {
+  const task = { id: '1', title: 'Task', status: 'ready-for-ai', nextAction: 'execute', executionAuthorized: true, dependencies: [], worker: null };
+  const result = await pollBackendTasks({
+    backend: { list: async () => [task] },
+    capacity: 1,
+    dryRun: true,
+    launch: async () => { throw new Error('must not launch'); },
+  });
+  assert.deepEqual(result.selected, ['1']);
+  assert.deepEqual(result.launched, []);
+});
+
+function testRoot() {
+  return path.join(process.cwd(), `.pan-backend-test-${randomUUID()}`);
+}
+
+function runnerConfig(root) {
+  return {
+    machine: 'machine-a',
+    stateRoot: root,
+    workingDirectory: path.join(root, 'workspace'),
+    backendConfig: path.join(root, 'backend.json'),
+    launchCommand: ['copilot', '--model', 'gpt-5.6-sol'],
+  };
+}
+
+function backendFake(task) {
+  let current = structuredClone(task);
+  const updates = [];
+  const reports = [];
+  return {
+    updates,
+    reports,
+    async get() { return structuredClone(current); },
+    async update(_id, input) {
+      updates.push(structuredClone(input));
+      current = { ...current, worker: input.worker, revision: `r${updates.length + 1}` };
+      return structuredClone(current);
+    },
+    async report(_id, input) { reports.push(input.content); },
+  };
+}
+
+test('live process inventory survives polls and blocks shared workspace capacity', async () => {
+  const root = testRoot();
+  const config = runnerConfig(root);
+  const task = {
+    id: 'task-1', title: 'Task', url: 'https://todoist.example/task-1',
+    revision: 'r1', status: 'ready-for-ai', nextAction: 'execute',
+    executionAuthorized: true, dependencies: [], worker: null, recurring: false,
+  };
+  const backend = backendFake(task);
+  try {
+    assert.equal(await launchTask(task, config, backend, {
+      launchTerminal: async (stateDir) => {
+        await writeFile(path.join(stateDir, 'owner.json'), JSON.stringify({
+          pid: 123,
+          processStart: 'fake:start',
+        }));
+      },
+      inspect: async () => ({ state: 'live', identity: 'fake:start' }),
+    }), true);
+    const first = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'fake:start' }),
+    });
+    const second = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'fake:start' }),
+    });
+    assert.equal(first.live.length, 1);
+    assert.equal(second.live.length, 1);
+    const launcher = await readFile(path.join(root, 'runs', 'task-1', 'launch.mjs'), 'utf8');
+    assert.match(launcher, /stdio:'inherit'/);
+    assert.match(launcher, /PAN_STATE_DIR/);
+    assert.equal(JSON.parse(await readFile(
+      path.join(root, 'runs', 'task-1', 'task.json'),
+    )).id, 'task-1');
+    const result = await pollBackendTasks({
+      backend: { list: async () => [{ ...task, id: 'task-2' }] },
+      capacity: 0,
+      workspaceBusy: true,
+      launch: async () => { throw new Error('busy workspace must not launch'); },
+    });
+    assert.equal(result.workspaceBusy, true);
+    assert.deepEqual(result.launched, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('PID reuse mismatch is stale and reconciliation releases only its task lock', async () => {
+  const root = testRoot();
+  const dir = path.join(root, 'runs', 'task-1');
+  await mkdir(path.join(root, 'locks'), { recursive: true });
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'run.json'), JSON.stringify({
+    version: 1, taskId: 'task-1', sessionId: 'session-1',
+    machine: 'machine-a', workingDirectory: path.join(root, 'workspace'),
+  }));
+  await writeFile(path.join(dir, 'owner.json'), JSON.stringify({
+    pid: 123, processStart: 'old:start',
+  }));
+  await writeFile(path.join(root, 'locks', 'task-1.lock'), '');
+  const backend = backendFake({
+    id: 'task-1', revision: 'r1',
+    worker: { state: 'running', sessionId: 'session-1' },
+  });
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'new:start' }),
+    });
+    assert.equal(inventory.stale.length, 1);
+    assert.deepEqual(await reconcileStaleRuns(root, inventory.stale, backend), ['task-1']);
+    assert.equal(backend.updates[0].worker.state, 'stopped');
+    await assert.rejects(readFile(path.join(root, 'locks', 'task-1.lock')), { code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('task lock contention happens before backend observation', async () => {
+  const root = testRoot();
+  const config = runnerConfig(root);
+  await mkdir(path.join(root, 'locks'), { recursive: true });
+  await writeFile(path.join(root, 'locks', 'task-1.lock'), '');
+  const backend = backendFake({ id: 'task-1', revision: 'r1', worker: null });
+  try {
+    assert.equal(await launchTask({ id: 'task-1', revision: 'r1' }, config, backend), false);
+    assert.equal(backend.updates.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('terminal spawn error is awaited, reported, and recorded as stopped', async () => {
+  const root = testRoot();
+  const config = runnerConfig(root);
+  const task = {
+    id: 'task-1', title: 'Task', url: 'https://todoist.example/task-1',
+    revision: 'r1',
+  };
+  const backend = backendFake(task);
+  try {
+    await assert.rejects(
+      launchTask(task, config, backend, {
+        launchTerminal: async () => { throw new Error('spawn failed'); },
+      }),
+      /spawn failed/,
+    );
+    assert.equal(backend.updates[0].worker.state, 'starting');
+    assert.equal(backend.updates[1].worker.state, 'stopped');
+    assert.match(backend.reports[0], /spawn failed/);
+    const exit = JSON.parse(await readFile(path.join(root, 'runs', 'task-1', 'exit.json')));
+    assert.match(exit.error, /spawn failed/);
+    await assert.rejects(readFile(path.join(root, 'locks', 'task-1.lock')), { code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

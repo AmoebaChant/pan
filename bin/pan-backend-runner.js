@@ -1,10 +1,21 @@
 #!/usr/bin/env node
 
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { inspectProcess } from './pan-runner-runtime.js';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
+
+const RUN_VERSION = 1;
 
 export function selectReadyForAi(tasks) {
   return tasks.filter((task) =>
@@ -12,60 +23,333 @@ export function selectReadyForAi(tasks) {
     && task.nextAction === 'execute'
     && task.executionAuthorized === true
     && task.dependencies.length === 0
-    && task.worker == null,
+    && task.worker == null
+    && task.recurring !== true,
   );
 }
 
-export async function pollBackendTasks({ backend, capacity, activeTaskIds = new Set(), launch }) {
+export async function pollBackendTasks({
+  backend,
+  capacity,
+  activeTaskIds = new Set(),
+  workspaceBusy = false,
+  dryRun = false,
+  launch,
+}) {
   const tasks = await backend.list();
-  const candidates = selectReadyForAi(tasks).filter((task) => !activeTaskIds.has(task.id));
+  const selected = selectReadyForAi(tasks).filter((task) => !activeTaskIds.has(task.id));
   const launched = [];
-  for (const task of candidates.slice(0, Math.max(0, capacity))) {
-    if (await launch(task) !== false) launched.push(task.id);
+  if (!dryRun && !workspaceBusy) {
+    for (const task of selected.slice(0, Math.max(0, capacity))) {
+      if (await launch(task) !== false) launched.push(task.id);
+    }
   }
-  return { observed: tasks.length, candidates: candidates.length, launched };
+  return {
+    observed: tasks.length,
+    candidates: selected.length,
+    selected: selected.map((task) => task.id),
+    launched,
+    workspaceBusy,
+  };
 }
 
-async function defaultLaunch(task, config) {
-  const stateRoot = path.resolve(config.stateRoot);
-  await mkdir(stateRoot, { recursive: true, mode: 0o700 });
-  const lockPath = path.join(stateRoot, `${encodeURIComponent(task.id)}.launch`);
-  let lock;
+function runDirectory(stateRoot, taskId) {
+  return path.join(stateRoot, 'runs', encodeURIComponent(taskId));
+}
+
+function lockPath(stateRoot, taskId) {
+  return path.join(stateRoot, 'locks', `${encodeURIComponent(taskId)}.lock`);
+}
+
+async function readJson(filename) {
+  return JSON.parse(await readFile(filename, 'utf8'));
+}
+
+export async function inspectLocalRuns(
+  stateRoot,
+  { inspect = inspectProcess } = {},
+) {
+  const runsRoot = path.join(stateRoot, 'runs');
+  let entries;
   try {
-    lock = await open(lockPath, 'wx', 0o600);
+    entries = await readdir(runsRoot, { withFileTypes: true });
   } catch (error) {
-    if (error.code === 'EEXIST') return false;
+    if (error.code === 'ENOENT') return { live: [], stale: [], uncertain: [] };
     throw error;
   }
+  const result = { live: [], stale: [], uncertain: [] };
+  for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
+    const dir = path.join(runsRoot, entry.name);
+    let run;
+    let owner;
+    try {
+      run = await readJson(path.join(dir, 'run.json'));
+      owner = await readJson(path.join(dir, 'owner.json'));
+      if (
+        run.version !== RUN_VERSION
+        || typeof run.taskId !== 'string'
+        || typeof run.sessionId !== 'string'
+        || !Number.isInteger(owner.pid)
+        || typeof owner.processStart !== 'string'
+      ) {
+        throw new Error('invalid run or owner record');
+      }
+    } catch (error) {
+      result.uncertain.push({ dir, reason: error.message });
+      continue;
+    }
+    const observed = await inspect(owner.pid);
+    const record = { ...run, dir, owner, observed };
+    if (observed.state === 'live' && observed.identity === owner.processStart) {
+      result.live.push(record);
+    } else if (observed.state === 'dead' || observed.identity !== owner.processStart) {
+      result.stale.push(record);
+    } else {
+      result.uncertain.push(record);
+    }
+  }
+  return result;
+}
+
+export async function reconcileStaleRuns(stateRoot, stale, backend) {
+  const reconciled = [];
+  for (const run of stale) {
+    try {
+      const task = await backend.get(run.taskId);
+      if (task.worker?.sessionId === run.sessionId) {
+        await backend.update(run.taskId, {
+          expectedRevision: task.revision,
+          worker: {
+            ...task.worker,
+            state: 'stopped',
+            stoppedAt: new Date().toISOString(),
+          },
+        });
+        await backend.report(run.taskId, {
+          content: `Pan runner observed that local session ${run.sessionId} is no longer running.`,
+        });
+      }
+      await rm(lockPath(stateRoot, run.taskId), { force: true });
+      reconciled.push(run.taskId);
+    } catch {
+      // Leave the lock in place. A failed observation write must fail closed.
+    }
+  }
+  return reconciled;
+}
+
+async function acquireTaskLock(stateRoot, taskId) {
+  const locks = path.join(stateRoot, 'locks');
+  await mkdir(locks, { recursive: true, mode: 0o700 });
+  const filename = lockPath(stateRoot, taskId);
+  try {
+    const handle = await open(filename, 'wx', 0o600);
+    return { handle, filename };
+  } catch (error) {
+    if (error.code === 'EEXIST') return null;
+    throw error;
+  }
+}
+
+async function releaseTaskLock(lock) {
+  if (!lock) return;
+  await lock.handle.close().catch(() => {});
+  await rm(lock.filename, { force: true });
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function appleScriptEscape(value) {
+  return String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+function spawnAndWait(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, options);
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${command} exited ${code ?? signal ?? 'unknown'}`));
+    });
+  });
+}
+
+function launcherSource({ command, promptPath, stateDir, workingDirectory }) {
+  return `import { execFileSync, spawn } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+const stateDir=${JSON.stringify(stateDir)};
+const command=${JSON.stringify(command)};
+const prompt=readFileSync(${JSON.stringify(promptPath)},'utf8');
+function identity(){
+  if(process.platform==='darwin'){
+    return 'darwin:'+execFileSync('/bin/ps',['-p',String(process.pid),'-o','lstart=']).toString().trim();
+  }
+  if(process.platform==='linux'){
+    const stat=readFileSync('/proc/'+process.pid+'/stat','utf8');
+    const fields=stat.slice(stat.lastIndexOf(')')+1).trim().split(/\\s+/);
+    return 'linux:'+readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()+':'+fields[19];
+  }
+  throw new Error('unsupported launcher platform');
+}
+writeFileSync(path.join(stateDir,'owner.json'),JSON.stringify({pid:process.pid,processStart:identity(),recordedAt:new Date().toISOString()},null,2)+'\\n',{flag:'wx',mode:0o600});
+const args=command.slice(1).filter((value)=>value!=='--interactive'&&value!=='-i');
+const child=spawn(command[0],[...args,'--interactive',prompt],{
+  cwd:${JSON.stringify(workingDirectory)},
+  stdio:'inherit',
+  env:{...process.env,PAN_STATE_DIR:stateDir,PAN_WORKING_DIRECTORY:${JSON.stringify(workingDirectory)}},
+});
+child.once('error',(error)=>{
+  writeFileSync(path.join(stateDir,'exit.json'),JSON.stringify({exitedAt:new Date().toISOString(),error:error.message},null,2)+'\\n',{mode:0o600});
+  process.exit(1);
+});
+child.once('exit',(code,signal)=>{
+  writeFileSync(path.join(stateDir,'exit.json'),JSON.stringify({exitedAt:new Date().toISOString(),code,signal},null,2)+'\\n',{mode:0o600});
+  process.exit(code??1);
+});
+`;
+}
+
+async function launchTerminal(stateDir, workingDirectory, terminalKind) {
+  const launcher = path.join(stateDir, 'launch.mjs');
+  if (terminalKind === 'macos-terminal') {
+    const command = `cd ${shellQuote(workingDirectory)} && exec ${shellQuote(process.execPath)} ${shellQuote(launcher)}`;
+    await spawnAndWait('osascript', [
+      '-e', 'tell application "Terminal" to activate',
+      '-e', `tell application "Terminal" to do script "${appleScriptEscape(command)}"`,
+    ]);
+    return;
+  }
+  if (terminalKind === 'windows-terminal') {
+    await spawnAndWait('wt.exe', ['-w', '0', 'nt', '-d', workingDirectory, process.execPath, launcher]);
+    return;
+  }
+  throw new Error(`unsupported terminal kind: ${terminalKind}`);
+}
+
+async function waitForOwner(stateDir, inspect, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const owner = await readJson(path.join(stateDir, 'owner.json'));
+      const observed = await inspect(owner.pid);
+      if (observed.state === 'live' && observed.identity === owner.processStart) {
+        return owner;
+      }
+      throw new Error('launcher owner identity does not match the live process');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('launcher did not establish durable process ownership');
+}
+
+export async function launchTask(task, config, backend, dependencies = {}) {
+  const stateRoot = path.resolve(config.stateRoot);
+  await mkdir(path.join(stateRoot, 'runs'), { recursive: true, mode: 0o700 });
+  const lock = await acquireTaskLock(stateRoot, task.id);
+  if (!lock) return false;
+  const sessionId = randomUUID();
+  const stateDir = runDirectory(stateRoot, task.id);
   const command = config.launchCommand;
-  if (!Array.isArray(command) || !command.length || command.some((part) => typeof part !== 'string')) {
-    await lock.close();
-    await rm(lockPath, { force: true });
-    throw new Error('launchCommand must be a non-empty array of strings');
+  let starting;
+  let terminalStarted = false;
+  try {
+    if (!Array.isArray(command) || !command.length || command.some((part) => typeof part !== 'string')) {
+      throw new Error('launchCommand must be a non-empty array of strings');
+    }
+    const modelIndex = command.indexOf('--model');
+    if (modelIndex < 0 || command[modelIndex + 1] !== 'gpt-5.6-sol') {
+      throw new Error('launchCommand must select --model gpt-5.6-sol');
+    }
+    await rm(stateDir, { recursive: true, force: true });
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    const run = {
+      version: RUN_VERSION,
+      taskId: task.id,
+      sessionId,
+      machine: config.machine,
+      workingDirectory: path.resolve(config.workingDirectory),
+      createdAt: new Date().toISOString(),
+    };
+    await writeFile(path.join(stateDir, 'run.json'), `${JSON.stringify(run, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(path.join(stateDir, 'task.json'), `${JSON.stringify(task, null, 2)}\n`, { mode: 0o600 });
+    const prompt = [
+      `Execute Pan task ${task.id}: ${task.title}`,
+      `Read ${path.join(stateDir, 'task.json')} and follow the selected playbook.`,
+      `Read current task state with: pan-task --config ${JSON.stringify(config.backendConfig)} get ${JSON.stringify(task.id)}`,
+      'Use pan-task report/update/complete to record durable progress and outcomes.',
+      `Task URL: ${task.url}`,
+    ].join('\n');
+    const promptPath = path.join(stateDir, 'launch-prompt.txt');
+    await writeFile(promptPath, `${prompt}\n`, { mode: 0o600 });
+    await writeFile(
+      path.join(stateDir, 'launch.mjs'),
+      launcherSource({
+        command,
+        promptPath,
+        stateDir,
+        workingDirectory: path.resolve(config.workingDirectory),
+      }),
+      { mode: 0o600 },
+    );
+    starting = await backend.update(task.id, {
+      expectedRevision: task.revision,
+      worker: { state: 'starting', machine: config.machine, sessionId },
+    });
+    await (dependencies.launchTerminal || launchTerminal)(
+      stateDir,
+      path.resolve(config.workingDirectory),
+      config.terminal?.kind || (process.platform === 'darwin' ? 'macos-terminal' : 'windows-terminal'),
+    );
+    terminalStarted = true;
+    const owner = await waitForOwner(
+      stateDir,
+      dependencies.inspect || inspectProcess,
+      dependencies.ownerTimeoutMs,
+    );
+    await backend.update(task.id, {
+      expectedRevision: starting.revision,
+      worker: {
+        state: 'running',
+        machine: config.machine,
+        sessionId,
+        pid: owner.pid,
+        processStart: owner.processStart,
+      },
+    });
+    await lock.handle.close();
+    return true;
+  } catch (error) {
+    if (starting) {
+      await backend.update(task.id, {
+        expectedRevision: starting.revision,
+        worker: {
+          state: terminalStarted ? 'uncertain' : 'stopped',
+          machine: config.machine,
+          sessionId,
+          error: error.message,
+        },
+      }).catch(() => {});
+      await backend.report(task.id, {
+        content: `Pan runner launch failed on ${config.machine}: ${error.message}`,
+      }).catch(() => {});
+    }
+    if (!terminalStarted) {
+      await writeFile(
+        path.join(stateDir, 'exit.json'),
+        `${JSON.stringify({ exitedAt: new Date().toISOString(), error: error.message }, null, 2)}\n`,
+        { mode: 0o600 },
+      ).catch(() => {});
+      await releaseTaskLock(lock);
+    } else {
+      await lock.handle.close().catch(() => {});
+    }
+    throw error;
   }
-  const modelIndex = command.indexOf('--model');
-  if (modelIndex < 0 || command[modelIndex + 1] !== 'gpt-5.6-sol') {
-    await lock.close();
-    await rm(lockPath, { force: true });
-    throw new Error('launchCommand must select --model gpt-5.6-sol');
-  }
-  const prompt = [
-    `Execute Pan task ${task.id}: ${task.title}`,
-    `Read current task state with: pan-task --config ${JSON.stringify(config.backendConfig)} get ${JSON.stringify(task.id)}`,
-    'Use pan-task report/update/complete to record durable progress and outcomes.',
-    `Task URL: ${task.url}`,
-  ].join('\n');
-  const child = spawn(command[0], [...command.slice(1), prompt], {
-    cwd: config.workingDirectory,
-    stdio: 'ignore',
-  });
-  await writeFile(lockPath, `${child.pid}\n`, { mode: 0o600 });
-  child.once('exit', async () => {
-    await lock.close().catch(() => {});
-    await rm(lockPath, { force: true }).catch(() => {});
-  });
-  child.unref();
-  return true;
 }
 
 export async function runBackendRunner(argv, dependencies = {}) {
@@ -81,50 +365,51 @@ export async function runBackendRunner(argv, dependencies = {}) {
   });
   if (values.help) return { help: true };
   if (!values.config) throw new Error('--config is required');
-  const configPath = path.resolve(values.config);
-  const config = JSON.parse(await readFile(configPath, 'utf8'));
-  if (!config.backendConfig) throw new Error('backendConfig is required');
-  if (!String(config.machine || '').trim()) throw new Error('machine is required');
+  const config = JSON.parse(await readFile(path.resolve(values.config), 'utf8'));
+  for (const field of ['backendConfig', 'machine', 'stateRoot', 'workingDirectory']) {
+    if (!String(config[field] || '').trim()) throw new Error(`${field} is required`);
+  }
   if (config.enabled !== true && !values['dry-run']) {
     throw new Error('backend runner is disabled; set enabled=true only after review');
   }
   const backend = await loadTaskBackend(config.backendConfig, dependencies);
   await backend.initialize();
-  const launch = values['dry-run']
-    ? async () => true
-    : (dependencies.launch || (async (task) => {
-        const worker = {
-          state: 'starting',
-          machine: config.machine,
-          startedAt: new Date().toISOString(),
-        };
-        await backend.update(task.id, {
-          expectedRevision: task.revision,
-          worker,
-        });
-        try {
-          return await defaultLaunch(task, config);
-        } catch (error) {
-          await backend.report(task.id, {
-            content: `Pan runner launch failed on ${config.machine}: ${error.message}`,
-          }).catch(() => {});
-          throw error;
-        }
-      }));
-  const poll = () => pollBackendTasks({
-    backend,
-    capacity: config.maxConcurrent ?? 1,
-    activeTaskIds: dependencies.activeTaskIds ?? new Set(),
-    launch,
-  });
+  const poll = async () => {
+    const inventory = await inspectLocalRuns(path.resolve(config.stateRoot), {
+      inspect: dependencies.inspect || inspectProcess,
+    });
+    if (!values['dry-run']) {
+      await reconcileStaleRuns(path.resolve(config.stateRoot), inventory.stale, backend);
+    }
+    const activeTaskIds = new Set(inventory.live.map((run) => run.taskId));
+    const workspace = path.resolve(config.workingDirectory);
+    const workspaceBusy = inventory.live.some(
+      (run) => path.resolve(run.workingDirectory) === workspace,
+    ) || inventory.uncertain.some((run) =>
+      run.workingDirectory == null || path.resolve(run.workingDirectory) === workspace,
+    );
+    // This pilot has one configured working directory rather than a workspace
+    // pool, so at most one new task may enter it in a poll.
+    const capacity = Math.min(
+      1,
+      Math.max(0, (config.maxConcurrent ?? 1) - inventory.live.length),
+    );
+    return pollBackendTasks({
+      backend,
+      capacity,
+      activeTaskIds,
+      workspaceBusy,
+      dryRun: values['dry-run'],
+      launch: dependencies.launch || ((task) => launchTask(task, config, backend, dependencies)),
+    });
+  };
   if (values.once || values['dry-run']) return poll();
   const interval = Number(config.pollIntervalSeconds ?? 30);
   if (!Number.isFinite(interval) || interval <= 0) {
     throw new Error('pollIntervalSeconds must be greater than zero');
   }
   for (;;) {
-    const result = await poll();
-    writeJson({ ok: true, result }, process.stderr);
+    writeJson({ ok: true, result: await poll() }, process.stderr);
     await new Promise((resolve) => setTimeout(resolve, interval * 1000));
   }
 }

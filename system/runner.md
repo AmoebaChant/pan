@@ -43,6 +43,23 @@ implement distributed claims: multiple machines must not poll the same task
 scope. Worker progress/questions/results are recorded through backend
 `report`/`update` operations, not GitHub Issue mutation.
 
+Each poll inventories durable run and owner records, verifies both PID and
+process-start identity, and counts live sessions against capacity. An uncertain
+record fails closed. A dead matching session is recorded as stopped before its
+lock is released. A live worker reserves the configured working directory, so
+two tasks are not launched into one shared checkout.
+
+The runner acquires the task lock before writing `worker=starting`, writes
+private task/prompt/session files, and opens a headed terminal launcher. The
+launcher inherits terminal I/O, exports `PAN_STATE_DIR` and
+`PAN_WORKING_DIRECTORY`, and records its process identity and exit. Launch
+errors are awaited and reported. Dry-run reports `selected` separately and
+always reports an empty `launched` list.
+
+Native recurring tasks are excluded from automatic dispatch in this pilot.
+Their recurrence remains usable through Todoist, but automated occurrence
+execution needs a later explicit design.
+
 ## GitHub compatibility runner configuration
 
 The required local config names:

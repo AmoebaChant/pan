@@ -11,6 +11,7 @@ node bin/pan-task.js --config /absolute/path/backend.json get <id>
 node bin/pan-task.js --config /absolute/path/backend.json create --input @request.json
 node bin/pan-task.js --config /absolute/path/backend.json update <id> --input @request.json
 node bin/pan-task.js --config /absolute/path/backend.json report <id> --input @request.json
+node bin/pan-task.js --config /absolute/path/backend.json reports <id>
 node bin/pan-task.js --config /absolute/path/backend.json complete <id>
 ```
 
@@ -19,6 +20,11 @@ reads/writes to the authenticated user or unassigned tasks plus any configured
 project allowlist. `TODOIST_API_KEY` or `TODOIST_API_TOKEN` is parsed from a
 local credential file without sourcing it.
 
+For recurring tasks, human attention is stored in Pan metadata rather than
+overwriting the native recurring due rule. The experimental runner does not
+automatically dispatch recurring tasks. `reports` fully paginates native task
+comments so worker handoffs are readable through the common API.
+
 The mechanical backend runner is separate from Pan's decision-making:
 
 ```sh
@@ -26,7 +32,10 @@ node bin/pan-backend-runner.js --config /absolute/path/runner.json --dry-run
 ```
 
 It consumes only Pan-authorized `ready-for-ai/execute` records and is disabled
-unless its local config explicitly sets `enabled: true`.
+unless its local config explicitly sets `enabled: true`. It inventories durable
+PID plus process-start records across polls/restarts, respects total capacity,
+prevents two tasks from sharing one configured working directory, and launches
+Copilot in an attachable terminal with private task/session context.
 
 ## Everyday task UI
 

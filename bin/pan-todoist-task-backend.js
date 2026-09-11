@@ -147,7 +147,9 @@ export class TodoistTaskBackend {
       nextAction: metadata.nextAction || '',
       nextActionDetail: metadata.nextActionDetail || '',
       priority: NATIVE_TO_PRIORITY[task.priority] || 'normal',
-      nextActionDate: task.due?.date || '',
+      nextActionDate: task.due?.is_recurring
+        ? (metadata.nextActionDate || '')
+        : (task.due?.date || ''),
       deadline: task.deadline?.date || '',
       playbook: metadata.playbook || '',
       workstream: metadata.workstream || '',
@@ -208,6 +210,7 @@ export class TodoistTaskBackend {
       workstream: input.workstream || '',
       executionAuthorized: input.executionAuthorized === true,
       dependencies: input.dependencies ?? [],
+      ...(input.nextActionDate ? { nextActionDate: input.nextActionDate } : {}),
     };
     const body = {
       content: String(input.title).trim(),
@@ -252,6 +255,9 @@ export class TodoistTaskBackend {
         ? {}
         : { executionAuthorized: input.executionAuthorized === true }),
       ...(input.dependencies === undefined ? {} : { dependencies: input.dependencies }),
+      ...(native.due?.is_recurring && input.nextActionDate !== undefined
+        ? { nextActionDate: input.nextActionDate }
+        : {}),
     };
     const body = {
       ...(input.title === undefined ? {} : { content: String(input.title).trim() }),
@@ -262,7 +268,7 @@ export class TodoistTaskBackend {
       ...(input.priority === undefined
         ? {}
         : { priority: PRIORITY_TO_NATIVE[input.priority] }),
-      ...(input.nextActionDate === undefined
+      ...(input.nextActionDate === undefined || native.due?.is_recurring
         ? {}
         : input.nextActionDate
           ? { due_date: input.nextActionDate }
@@ -292,6 +298,26 @@ export class TodoistTaskBackend {
       content: String(input.content).trim(),
     });
     return { taskId: String(id), commentId: String(comment.id), recorded: true };
+  }
+
+  async reports(id) {
+    await this.nativeTask(id);
+    const reports = [];
+    let cursor = null;
+    do {
+      const query = new URLSearchParams({ task_id: String(id), limit: '100' });
+      if (cursor) query.set('cursor', cursor);
+      const page = await this.request('GET', `/comments?${query}`);
+      const results = Array.isArray(page) ? page : (page.results ?? []);
+      reports.push(...results.map((comment) => ({
+        id: String(comment.id),
+        taskId: String(id),
+        content: comment.content,
+        postedAt: comment.posted_at || comment.added_at || '',
+      })));
+      cursor = Array.isArray(page) ? null : (page.next_cursor ?? null);
+    } while (cursor);
+    return reports;
   }
 
   async complete(id, input = {}) {

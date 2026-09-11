@@ -12,6 +12,7 @@ Usage:
   pan-task --config <path> create --input <json-or-@file>
   pan-task --config <path> update <task-id> --input <json-or-@file>
   pan-task --config <path> report <task-id> --input <json-or-@file>
+  pan-task --config <path> reports <task-id>
   pan-task --config <path> complete <task-id> [--input <json-or-@file>]
   pan-task --config <path> delete <task-id>
 `;
@@ -43,6 +44,7 @@ export async function runTaskCli(argv, dependencies = {}) {
   if (command === 'create' && !id) return backend.create(await inputValue(values.input));
   if (command === 'update' && id) return backend.update(id, await inputValue(values.input));
   if (command === 'report' && id) return backend.report(id, await inputValue(values.input));
+  if (command === 'reports' && id) return backend.reports(id);
   if (command === 'complete' && id) return backend.complete(id, await inputValue(values.input));
   if (command === 'delete' && id) return backend.remove(id);
   throw new TaskBackendError('invalid command or arguments', { code: 'invalid-input' });
