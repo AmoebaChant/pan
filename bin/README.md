@@ -65,11 +65,16 @@ The importer fully pages active tasks/projects/sections/labels/comments,
 excludes tasks assigned to another authenticated user, preserves source ids and
 metadata, never deletes originals/history, and is idempotent by durable Issue
 markers. Each command indexes Domain Issues and Project items once, then uses
-targeted live reads for per-task reconciliation instead of repeated full scans.
-Independent failures produce a nonzero partial report and are repaired by
-rerunning. With `--report`, apply atomically checkpoints the private report
-after every task. Current Project state is never overwritten from a stale
-migration baseline. See
+targeted repository marker searches and live reads for per-task reconciliation
+instead of repeated full scans. Creation rechecks marker uniqueness immediately
+before and after the write; final verification checks it globally again. Exact
+source and transition receipts are verified, and imported human tasks clear
+resource semantics rather than inheriting historical provenance or held
+affinity. Independent failures produce a nonzero partial report and are repaired
+by rerunning. If a non-atomic create race produces a duplicate, the report names
+the newly created Issue and leaves it intact for explicit recovery. With
+`--report`, apply atomically checkpoints the private report after every task.
+Current Project state is never overwritten from a stale migration baseline. See
 [`system/todoist-migration.md`](../system/todoist-migration.md).
 
 ## Additive lifecycle migration

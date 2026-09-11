@@ -208,8 +208,158 @@ function parseItem(node) {
   };
 }
 
+const TODOIST_SOURCE_TASK_PREFIX = 'Pan: Todoist source task ';
+const TODOIST_SOURCE_COMMENT_PREFIX = 'Pan: Todoist source comment ';
+
+function markerLineOccurrences(body, marker, canonicalLine) {
+  const lines = String(body ?? '').replace(/\r\n/g, '\n').split('\n');
+  const occurrences = [];
+  for (const [lineIndex, line] of lines.entries()) {
+    let offset = 0;
+    while (offset <= line.length - marker.length) {
+      const column = line.indexOf(marker, offset);
+      if (column < 0) break;
+      const following = line[column + marker.length] ?? '';
+      if (!following || /\s/.test(following)) {
+        occurrences.push({
+          lineIndex,
+          column,
+          canonical: line === marker && canonicalLine(lines, lineIndex),
+        });
+      }
+      offset = column + marker.length;
+    }
+  }
+  return occurrences;
+}
+
+function prefixedMarkerOccurrences(body, prefix, canonicalLine) {
+  const lines = String(body ?? '').replace(/\r\n/g, '\n').split('\n');
+  const occurrences = [];
+  for (const [lineIndex, line] of lines.entries()) {
+    let offset = 0;
+    while (offset <= line.length - prefix.length) {
+      const column = line.indexOf(prefix, offset);
+      if (column < 0) break;
+      const sourceId = line.slice(column + prefix.length).trim();
+      occurrences.push({
+        sourceId,
+        lineIndex,
+        column,
+        canonical: (
+          sourceId
+          && line === `${prefix}${sourceId}`
+          && canonicalLine(lines, lineIndex)
+        ),
+      });
+      offset = column + prefix.length;
+    }
+  }
+  return occurrences;
+}
+
 function todoistSourceMarkers(issue) {
-  return [...String(issue?.body ?? '').matchAll(/^Pan: Todoist source task ([^\r\n]+)$/gm)];
+  return prefixedMarkerOccurrences(
+    issue?.body,
+    TODOIST_SOURCE_TASK_PREFIX,
+    (lines, lineIndex) => (
+      lineIndex === 0
+      || (
+        lineIndex === 1
+        && /^Pan: recurrence occurrence \d{4}-\d{2}-\d{2}$/.test(lines[0])
+      )
+    ),
+  );
+}
+
+function todoistSourceMarkerState(issue, sourceId) {
+  const marker = `${TODOIST_SOURCE_TASK_PREFIX}${sourceId}`;
+  const occurrences = markerLineOccurrences(
+    issue?.body,
+    marker,
+    (lines, lineIndex) => (
+      lineIndex === 0
+      || (
+        lineIndex === 1
+        && /^Pan: recurrence occurrence \d{4}-\d{2}-\d{2}$/.test(lines[0])
+      )
+    ),
+  );
+  const allMarkers = todoistSourceMarkers(issue);
+  return {
+    occurrences,
+    canonical: (
+      occurrences.length === 1
+      && occurrences[0].canonical
+      && allMarkers.length === 1
+    ),
+  };
+}
+
+function todoistCommentMarkers(body) {
+  return prefixedMarkerOccurrences(
+    body,
+    TODOIST_SOURCE_COMMENT_PREFIX,
+    (_lines, lineIndex) => lineIndex === 0,
+  );
+}
+
+function exactCommentMarkerState(comments, marker) {
+  const matches = [];
+  for (const comment of comments) {
+    const occurrences = markerLineOccurrences(
+      comment.body,
+      marker,
+      (_lines, lineIndex) => lineIndex === 0,
+    );
+    for (const occurrence of occurrences) {
+      matches.push({ comment, ...occurrence });
+    }
+  }
+  return {
+    matches,
+    canonical: matches.length === 1 && matches[0].canonical,
+  };
+}
+
+function todoistTransitionReceiptExpectation(body, {
+  revision,
+  detail,
+  fallbackFromStatus,
+  fallbackFromAction,
+}) {
+  const fromLines = String(body ?? '').replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((line) => line.startsWith('- From: '));
+  if (body && fromLines.length !== 1) return null;
+  const [fromLine] = fromLines;
+  let fromStatus = fallbackFromStatus;
+  let fromAction = fallbackFromAction;
+  if (fromLine) {
+    const value = fromLine.slice('- From: '.length);
+    if (value === '(unmigrated)/(unmigrated)') {
+      fromStatus = '';
+      fromAction = '';
+    } else {
+      const separator = value.indexOf('/');
+      const candidateStatus = separator < 0 ? '' : value.slice(0, separator);
+      const candidateAction = separator < 0 ? '' : value.slice(separator + 1);
+      if (!validLifecyclePair(candidateStatus, candidateAction)) return null;
+      fromStatus = candidateStatus;
+      fromAction = candidateAction;
+    }
+  } else if (body) {
+    return null;
+  }
+  return transitionComment({
+    revision,
+    fromStatus,
+    fromAction,
+    toStatus: 'ready-for-human',
+    toAction: 'act',
+    detail,
+    actor: 'Pan Todoist migration',
+  });
 }
 
 function issueWriteProjection(issue) {
@@ -794,18 +944,17 @@ export class GitHubTaskStore {
   #todoistSourceEntries(sourceId) {
     const entries = [];
     for (const issue of this.todoistRun.issuesByNumber.values()) {
-      const markers = todoistSourceMarkers(issue);
-      for (const match of markers) {
-        if (match[1] !== sourceId) continue;
-        entries.push({
-          sourceId,
-          issueUrl: issue.url,
-          number: issue.number,
-          state: issue.state,
-          inProject: (this.todoistRun.itemsByIssueUrl.get(issue.url) ?? []).length > 0,
-          duplicateMarker: markers.filter((candidate) => candidate[1] === sourceId).length > 1,
-        });
-      }
+      const markerState = todoistSourceMarkerState(issue, sourceId);
+      if (markerState.occurrences.length === 0) continue;
+      entries.push({
+        sourceId,
+        issueUrl: issue.url,
+        number: issue.number,
+        state: issue.state,
+        inProject: (this.todoistRun.itemsByIssueUrl.get(issue.url) ?? []).length > 0,
+        duplicateMarker: markerState.occurrences.length > 1,
+        invalidMarker: !markerState.canonical,
+      });
     }
     return entries;
   }
@@ -872,7 +1021,7 @@ export class GitHubTaskStore {
       if (!connection) throw new Error(`Todoist source search failed for ${sourceId}`);
       for (const issue of connection.nodes ?? []) {
         if (issue.repository?.nameWithOwner !== this.binding.domain.slug) continue;
-        if (todoistSourceMarkers(issue).some((match) => match[1] === sourceId)) {
+        if (todoistSourceMarkerState(issue, sourceId).occurrences.length > 0) {
           liveIssues.push(issue);
         }
       }
@@ -880,14 +1029,24 @@ export class GitHubTaskStore {
     } while (cursor);
 
     const cachedEntries = this.#todoistSourceEntries(sourceId);
-    const cachedNumbers = cachedEntries.map((entry) => entry.number).sort((a, b) => a - b);
     const liveNumbers = liveIssues.flatMap((issue) =>
-      todoistSourceMarkers(issue)
-        .filter((match) => match[1] === sourceId)
-        .map(() => issue.number)).sort((a, b) => a - b);
+      Array.from(
+        { length: todoistSourceMarkerState(issue, sourceId).occurrences.length },
+        () => issue.number,
+      )).sort((a, b) => a - b);
+    const cachedNumbersByOccurrence = cachedEntries.flatMap((entry) =>
+      Array.from(
+        {
+          length: todoistSourceMarkerState(
+            this.todoistRun.issuesByNumber.get(entry.number),
+            sourceId,
+          ).occurrences.length,
+        },
+        () => entry.number,
+      )).sort((a, b) => a - b);
     if (
-      cachedNumbers.length !== liveNumbers.length
-      || cachedNumbers.some((number, index) => number !== liveNumbers[index])
+      cachedNumbersByOccurrence.length !== liveNumbers.length
+      || cachedNumbersByOccurrence.some((number, index) => number !== liveNumbers[index])
     ) {
       throw new Error(
         `Todoist source marker ${sourceId} changed after the run snapshot; restart required`,
@@ -952,6 +1111,44 @@ export class GitHubTaskStore {
     this.#cacheTodoistIssue(confirmed.issue);
     for (const item of confirmed.projectItems) this.#cacheTodoistItem(item);
     return confirmed.issue;
+  }
+
+  async #ensureTodoistExactComment(issue, marker, expectedBody, label) {
+    await this.#assertTodoistIssueUnchanged(issue);
+    let comments = await this.#comments(this.binding.domain.slug, issue.number);
+    let state = exactCommentMarkerState(comments, marker);
+    if (state.matches.length > 1) {
+      throw new Error(`Todoist source ${label} has duplicate receipt markers`);
+    }
+    if (state.matches.length === 1 && !state.canonical) {
+      throw new Error(`Todoist source ${label} has a non-canonical receipt marker`);
+    }
+    let changed = false;
+    if (state.matches.length === 0) {
+      await this.gh([
+        'issue', 'comment', String(issue.number),
+        '--repo', this.binding.domain.slug,
+        '--body', expectedBody,
+      ]);
+      changed = true;
+    } else if (state.matches[0].comment.body !== expectedBody) {
+      await this.gh([
+        'api',
+        `repos/${this.binding.domain.slug}/issues/comments/${state.matches[0].comment.id}`,
+        '-X', 'PATCH',
+        '-f', `body=${expectedBody}`,
+      ]);
+      changed = true;
+    }
+    comments = await this.#comments(this.binding.domain.slug, issue.number);
+    state = exactCommentMarkerState(comments, marker);
+    if (
+      !state.canonical
+      || state.matches[0].comment.body !== expectedBody
+    ) {
+      throw new Error(`GitHub did not verify exact Todoist source ${label} receipt`);
+    }
+    return { comments, changed };
   }
 
   async #setTodoistFields(itemId, changes) {
@@ -1308,8 +1505,8 @@ export class GitHubTaskStore {
     const marker = `Pan: Todoist source task ${sourceId}`;
     await this.#ensureTodoistRun();
     const sourceEntries = await this.#assertTodoistSourceIndexUnchanged(sourceId);
-    if (sourceEntries.some((entry) => entry.duplicateMarker)) {
-      throw new Error(`Todoist source ${sourceId} has duplicate markers in one Issue`);
+    if (sourceEntries.some((entry) => entry.invalidMarker)) {
+      throw new Error(`Todoist source ${sourceId} has duplicate or non-canonical Issue markers`);
     }
     if (sourceEntries.length > 1) {
       throw new Error(`multiple Domain Issues have Todoist source marker ${sourceId}`);
@@ -1329,6 +1526,12 @@ export class GitHubTaskStore {
       : `${marker}\n\n${sourceBody}`;
     if (!issue) {
       await this.#assertTodoistIssueCount();
+      const immediateEntries = await this.#assertTodoistSourceIndexUnchanged(sourceId);
+      if (immediateEntries.length !== 0) {
+        throw new Error(
+          `Todoist source marker ${sourceId} appeared immediately before creation; restart required`,
+        );
+      }
       const block = renderCurrentActionBlock({
         status: 'ready-for-human',
         action: 'act',
@@ -1363,7 +1566,7 @@ export class GitHubTaskStore {
       if (
         !liveCreated
         || issueWriteProjection(liveCreated.issue) !== issueWriteProjection(issue)
-        || todoistSourceMarkers(liveCreated.issue).filter((match) => match[1] === sourceId).length !== 1
+        || !todoistSourceMarkerState(liveCreated.issue, sourceId).canonical
         || liveCreated.projectItems.length > 1
       ) {
         throw new Error(`GitHub did not verify newly created Todoist source ${sourceId}`);
@@ -1371,7 +1574,28 @@ export class GitHubTaskStore {
       issue = liveCreated.issue;
       this.#cacheTodoistIssue(issue);
       for (const item of liveCreated.projectItems) this.#cacheTodoistItem(item);
-      await this.#assertTodoistIssueCount();
+      try {
+        await this.#assertTodoistIssueCount();
+        const createdEntries = await this.#assertTodoistSourceIndexUnchanged(sourceId);
+        if (
+          createdEntries.length !== 1
+          || createdEntries[0].number !== issue.number
+          || createdEntries[0].invalidMarker
+        ) {
+          throw new Error(
+            `Todoist source ${sourceId} was not globally unique after creation`,
+          );
+        }
+      } catch (error) {
+        error.createdIssueUrl = issue.url;
+        error.createdIssueNumber = issue.number;
+        error.createdByRun = true;
+        error.recovery = (
+          'The newly created Issue was left intact. Resolve the duplicate source marker, ' +
+          'then rerun the import.'
+        );
+        throw error;
+      }
       created = true;
     } else {
       const live = await this.#assertTodoistIssueUnchanged(issue);
@@ -1423,28 +1647,26 @@ export class GitHubTaskStore {
     let existingComments = await this.#comments(this.binding.domain.slug, issue.number);
     const sourceCommentOccurrences = new Map();
     for (const comment of existingComments) {
-      for (const match of String(comment.body ?? '').matchAll(/^Pan: Todoist source comment ([^\r\n]+)$/gm)) {
-        const entries = sourceCommentOccurrences.get(match[1]) ?? [];
-        entries.push(comment);
-        sourceCommentOccurrences.set(match[1], entries);
+      for (const occurrence of todoistCommentMarkers(comment.body)) {
+        const entries = sourceCommentOccurrences.get(occurrence.sourceId) ?? [];
+        entries.push({ comment, occurrence });
+        sourceCommentOccurrences.set(occurrence.sourceId, entries);
       }
     }
     for (const [commentId, occurrences] of sourceCommentOccurrences) {
-      if (occurrences.length > 1) {
-        throw new Error(`Todoist source ${sourceId} has duplicate comment marker ${commentId}`);
+      if (
+        occurrences.length > 1
+        || occurrences.some(({ occurrence }) => !occurrence.canonical)
+      ) {
+        throw new Error(
+          `Todoist source ${sourceId} has duplicate comment marker ${commentId} ` +
+            'or a non-canonical occurrence',
+        );
       }
     }
 
     let currentBlock = parseCurrentActionBlock(issue.body ?? '');
     const currentRevision = parseRevision(projectItem.fields['task-revision'] ?? '');
-    const transitionOccurrences = existingComments.filter(
-      (comment) =>
-        String(comment.body ?? '').split(/\r?\n/, 1)[0]
-          === transitionMarker(currentBlock?.revision ?? currentRevision),
-    );
-    if (transitionOccurrences.length > 1) {
-      throw new Error(`Todoist source ${sourceId} has duplicate lifecycle transition comments`);
-    }
     const expectedFields = new Map([
       ['Status', 'ready-for-human'],
       ['next-action', 'act'],
@@ -1462,6 +1684,7 @@ export class GitHubTaskStore {
       ['machine', ''],
       ['session-id', ''],
       ['claim-generation', ''],
+      ['resource-semantics', ''],
     ]);
     const expectedCommentBodies = new Map((record.comments ?? []).map((comment) => [
       String(comment.id),
@@ -1476,7 +1699,7 @@ export class GitHubTaskStore {
     );
     const commentChanges = [...expectedCommentBodies].filter(([id, body]) => {
       const found = sourceCommentOccurrences.get(id);
-      return !found || found[0].body !== body;
+      return !found || found[0].comment.body !== body;
     });
     const issueProjectionChanged = (
       issue.title !== text(record.title, 'title', 256, { allowEmpty: false })
@@ -1496,7 +1719,10 @@ export class GitHubTaskStore {
       })
       && [...expectedCommentBodies].every(([id, body]) => {
         const current = sourceCommentOccurrences.get(id) ?? [];
-        return current.length === 0 || (current.length === 1 && current[0].body === body);
+        return (
+          current.length === 0
+          || (current.length === 1 && current[0].comment.body === body)
+        );
       })
     );
     const needsRevision = (
@@ -1520,11 +1746,7 @@ export class GitHubTaskStore {
           'independent non-revision projection drift',
       );
     }
-    const needsRepair = (
-      needsRevision
-      || transitionOccurrences.length !== 1
-      || revisionLastRecovery
-    );
+    let needsRepair = needsRevision || revisionLastRecovery;
     let finalRevision = currentRevision;
     if (needsRevision) {
       if (
@@ -1552,6 +1774,41 @@ export class GitHubTaskStore {
       throw new Error(`Todoist source ${sourceId} has mismatched Issue and Project revisions`);
     }
 
+    const lifecycleMarker = transitionMarker(finalRevision);
+    const transitionState = exactCommentMarkerState(existingComments, lifecycleMarker);
+    if (transitionState.matches.length > 1) {
+      throw new Error(`Todoist source ${sourceId} has duplicate lifecycle transition receipts`);
+    }
+    if (transitionState.matches.length === 1 && !transitionState.canonical) {
+      throw new Error(`Todoist source ${sourceId} has a non-canonical lifecycle transition receipt`);
+    }
+    const fallbackFromStatus = finalRevision === 1
+      ? ''
+      : projectItem.fields.Status || '';
+    const fallbackFromAction = finalRevision === 1
+      ? ''
+      : projectItem.fields['next-action'] || '';
+    const expectedTransitionBody = todoistTransitionReceiptExpectation(
+      transitionState.matches[0]?.comment.body ?? '',
+      {
+        revision: finalRevision,
+        detail: currentActionDetail,
+        fallbackFromStatus,
+        fallbackFromAction,
+      },
+    );
+    if (!expectedTransitionBody) {
+      throw new Error(
+        `Todoist source ${sourceId} has a lifecycle transition receipt with unsafe metadata`,
+      );
+    }
+    if (
+      transitionState.matches.length !== 1
+      || transitionState.matches[0].comment.body !== expectedTransitionBody
+    ) {
+      needsRepair = true;
+    }
+
     await this.#setTodoistFields(itemId, fieldChanges);
     const expectedBody = upsertCurrentActionBlock(importedBody, currentBlock.block);
     if (
@@ -1565,52 +1822,23 @@ export class GitHubTaskStore {
     }
     for (const comment of record.comments ?? []) {
       const commentMarker = `Pan: Todoist source comment ${comment.id}`;
-      const expectedBody = expectedCommentBodies.get(String(comment.id));
-      await this.#assertTodoistIssueUnchanged(issue);
-      existingComments = await this.#comments(this.binding.domain.slug, issue.number);
-      const currentMatches = existingComments.filter((entry) =>
-        String(entry.body ?? '').split(/\r?\n/).includes(commentMarker));
-      if (currentMatches.length > 1) {
-        throw new Error(`Todoist source ${sourceId} has duplicate comment marker ${comment.id}`);
-      }
-      const existing = currentMatches[0];
-      if (!existing) {
-        await this.gh([
-          'issue', 'comment', String(issue.number),
-          '--repo', this.binding.domain.slug,
-          '--body', expectedBody,
-        ]);
-      } else if (existing.body !== expectedBody) {
-        await this.gh([
-          'api',
-          `repos/${this.binding.domain.slug}/issues/comments/${existing.id}`,
-          '-X', 'PATCH',
-          '-f', `body=${expectedBody}`,
-        ]);
-      }
-      const confirmedComments = await this.#comments(this.binding.domain.slug, issue.number);
-      const confirmedMatches = confirmedComments.filter((entry) =>
-        String(entry.body ?? '').split(/\r?\n/).includes(commentMarker));
-      if (confirmedMatches.length !== 1 || confirmedMatches[0].body !== expectedBody) {
-        throw new Error(`GitHub did not verify Todoist comment ${comment.id}`);
-      }
+      const receipt = await this.#ensureTodoistExactComment(
+        issue,
+        commentMarker,
+        expectedCommentBodies.get(String(comment.id)),
+        `${sourceId} comment ${comment.id}`,
+      );
+      existingComments = receipt.comments;
+      if (receipt.changed) needsRepair = true;
     }
-    await this.#assertTodoistIssueUnchanged(issue);
-    await ensureIssueComment(
-      this.gh,
-      this.binding.domain.slug,
-      issue.number,
-      transitionMarker(finalRevision),
-      transitionComment({
-        revision: finalRevision,
-        fromStatus: projectItem.fields.Status || '',
-        fromAction: projectItem.fields['next-action'] || '',
-        toStatus: 'ready-for-human',
-        toAction: 'act',
-        detail: currentActionDetail,
-        actor: 'Pan Todoist migration',
-      }),
+    const transitionReceipt = await this.#ensureTodoistExactComment(
+      issue,
+      lifecycleMarker,
+      expectedTransitionBody,
+      `${sourceId} lifecycle transition ${finalRevision}`,
     );
+    existingComments = transitionReceipt.comments;
+    if (transitionReceipt.changed) needsRepair = true;
     if (currentRevision !== finalRevision) {
       await this.#setTodoistFields(itemId, [['task-revision', String(finalRevision)]]);
     }
@@ -1640,6 +1868,7 @@ export class GitHubTaskStore {
       || confirmed.fields.machine
       || confirmed.fields['session-id']
       || confirmed.fields['claim-generation']
+      || confirmed.fields['resource-semantics']
       || parseRevision(confirmed.fields['task-revision'] ?? '') !== finalRevision
       || !confirmedBlock
       || confirmedBlock.revision !== finalRevision
@@ -1652,20 +1881,45 @@ export class GitHubTaskStore {
     existingComments = await this.#comments(this.binding.domain.slug, issue.number);
     const confirmedMarkers = new Map();
     for (const comment of existingComments) {
-      for (const match of String(comment.body ?? '').matchAll(/^Pan: Todoist source comment ([^\r\n]+)$/gm)) {
-        const entries = confirmedMarkers.get(match[1]) ?? [];
-        entries.push(comment);
-        confirmedMarkers.set(match[1], entries);
+      for (const occurrence of todoistCommentMarkers(comment.body)) {
+        const entries = confirmedMarkers.get(occurrence.sourceId) ?? [];
+        entries.push({ comment, occurrence });
+        confirmedMarkers.set(occurrence.sourceId, entries);
+      }
+    }
+    for (const [commentId, occurrences] of confirmedMarkers) {
+      if (
+        occurrences.length > 1
+        || occurrences.some(({ occurrence }) => !occurrence.canonical)
+      ) {
+        throw new Error(
+          `GitHub did not verify canonical Todoist comment marker ${commentId}`,
+        );
       }
     }
     for (const comment of record.comments ?? []) {
       const confirmedComment = confirmedMarkers.get(String(comment.id)) ?? [];
       if (
         confirmedComment.length !== 1
-        || confirmedComment[0].body !== expectedCommentBodies.get(String(comment.id))
+        || confirmedComment[0].comment.body !== expectedCommentBodies.get(String(comment.id))
       ) {
-        throw new Error(`GitHub did not verify Todoist comment ${comment.id}`);
+        throw new Error(`GitHub did not verify exact Todoist comment ${comment.id}`);
       }
+    }
+    const confirmedTransition = exactCommentMarkerState(existingComments, lifecycleMarker);
+    if (
+      !confirmedTransition.canonical
+      || confirmedTransition.matches[0].comment.body !== expectedTransitionBody
+    ) {
+      throw new Error(`GitHub did not verify exact Todoist lifecycle transition ${finalRevision}`);
+    }
+    const finalSourceEntries = await this.#assertTodoistSourceIndexUnchanged(sourceId);
+    if (
+      finalSourceEntries.length !== 1
+      || finalSourceEntries[0].number !== issue.number
+      || finalSourceEntries[0].invalidMarker
+    ) {
+      throw new Error(`Todoist source ${sourceId} is not globally unique after reconciliation`);
     }
     return {
       sourceId,
@@ -1680,14 +1934,16 @@ export class GitHubTaskStore {
     const bySourceId = new Map();
     for (const issue of this.todoistRun.issuesByNumber.values()) {
       const markers = todoistSourceMarkers(issue);
-      for (const match of markers) {
+      for (const sourceId of new Set(markers.map((marker) => marker.sourceId).filter(Boolean))) {
+        const markerState = todoistSourceMarkerState(issue, sourceId);
         const entry = {
-          sourceId: match[1],
+          sourceId,
           issueUrl: issue.url,
           number: issue.number,
           state: issue.state,
           inProject: (this.todoistRun.itemsByIssueUrl.get(issue.url) ?? []).length > 0,
-          duplicateMarker: markers.filter((candidate) => candidate[1] === match[1]).length > 1,
+          duplicateMarker: markerState.occurrences.length > 1,
+          invalidMarker: !markerState.canonical,
         };
         const current = bySourceId.get(entry.sourceId) ?? [];
         current.push(entry);
@@ -1714,6 +1970,13 @@ export class GitHubTaskStore {
       };
     }
     const match = matches[0];
+    if (match.invalidMarker) {
+      return {
+        sourceId,
+        outcome: 'conflict',
+        error: 'source Issue has duplicate or non-canonical Todoist markers',
+      };
+    }
     if (match.state !== 'OPEN') {
       return { sourceId, outcome: 'conflict', error: 'source Issue is closed' };
     }
@@ -1768,6 +2031,7 @@ export class GitHubTaskStore {
       machine: '',
       'session-id': '',
       'claim-generation': '',
+      'resource-semantics': '',
     };
     const mismatchedFields = Object.entries(expectedFields)
       .filter(([name, value]) => (item.fields[name] ?? '') !== value)
@@ -1789,13 +2053,33 @@ export class GitHubTaskStore {
       };
     }
     const comments = await this.#comments(this.binding.domain.slug, match.number);
+    const allSourceMarkers = new Map();
+    for (const comment of comments) {
+      for (const occurrence of todoistCommentMarkers(comment.body)) {
+        const entries = allSourceMarkers.get(occurrence.sourceId) ?? [];
+        entries.push(occurrence);
+        allSourceMarkers.set(occurrence.sourceId, entries);
+      }
+    }
+    if (
+      [...allSourceMarkers.values()].some((occurrences) =>
+        occurrences.length > 1 || occurrences.some((occurrence) => !occurrence.canonical))
+    ) {
+      return {
+        sourceId,
+        outcome: 'conflict',
+        error: 'duplicate or non-canonical Todoist source comment markers exist',
+      };
+    }
     for (const comment of record.comments ?? []) {
       const markerLine = `Pan: Todoist source comment ${comment.id}`;
       const expectedBody = `${markerLine}\n\n` +
         `Imported ${comment.postedAt || 'without a source timestamp'}:\n\n${comment.content}`;
-      const matchesForComment = comments.filter((entry) =>
-        String(entry.body ?? '').split(/\r?\n/).includes(markerLine));
-      if (matchesForComment.length !== 1 || matchesForComment[0].body !== expectedBody) {
+      const receipt = exactCommentMarkerState(comments, markerLine);
+      if (
+        !receipt.canonical
+        || receipt.matches[0].comment.body !== expectedBody
+      ) {
         return {
           sourceId,
           outcome: 'failed',
@@ -1803,31 +2087,28 @@ export class GitHubTaskStore {
         };
       }
     }
-    const allSourceMarkers = new Map();
-    for (const comment of comments) {
-      for (const sourceMarker of String(comment.body ?? '').matchAll(/^Pan: Todoist source comment ([^\r\n]+)$/gm)) {
-        allSourceMarkers.set(
-          sourceMarker[1],
-          (allSourceMarkers.get(sourceMarker[1]) ?? 0) + 1,
-        );
-      }
-    }
-    if ([...allSourceMarkers.values()].some((count) => count > 1)) {
+    const lifecycleMarker = transitionMarker(block.revision);
+    const transitionReceipt = exactCommentMarkerState(comments, lifecycleMarker);
+    const expectedTransitionBody = transitionReceipt.matches.length === 1
+      ? todoistTransitionReceiptExpectation(
+        transitionReceipt.matches[0].comment.body,
+        {
+          revision: block.revision,
+          detail: expectedDetail,
+          fallbackFromStatus: '',
+          fallbackFromAction: '',
+        },
+      )
+      : null;
+    if (
+      !transitionReceipt.canonical
+      || !expectedTransitionBody
+      || transitionReceipt.matches[0].comment.body !== expectedTransitionBody
+    ) {
       return {
         sourceId,
         outcome: 'conflict',
-        error: 'duplicate Todoist source comment markers exist',
-      };
-    }
-    const transitionMatches = comments.filter(
-      (comment) =>
-        String(comment.body ?? '').split(/\r?\n/, 1)[0] === transitionMarker(block.revision),
-    );
-    if (transitionMatches.length !== 1) {
-      return {
-        sourceId,
-        outcome: 'conflict',
-        error: 'missing or duplicate lifecycle transition comment',
+        error: 'missing, duplicate, non-canonical, or mismatched lifecycle transition receipt',
       };
     }
     return { sourceId, outcome: 'verified', issueUrl: match.issueUrl, itemId: item.itemId };

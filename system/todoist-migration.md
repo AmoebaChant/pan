@@ -36,18 +36,34 @@ recurring Issue it follows the required first-line occurrence marker; otherwise
 it is the first line. Source comments use
 `Pan: Todoist source comment <id>`. Re-running discovers those markers through
 a fully paginated Issue read, repairs missing comments or Project membership,
-and never creates a duplicate. A command snapshots and indexes all source
-markers and Project items once. Per-task reconciliation then uses targeted live
-Issue and Project-item reads, updates the in-memory index only after verified
-writes, and never repeats repository-wide or Project-wide scans. A changed
-source-marker set, Issue count, exact Issue projection, Project membership, or
-Project-item projection fails closed instead of trusting stale cached success.
+and never silently accepts a duplicate. A command snapshots and indexes all
+source markers and Project items once. Per-task reconciliation then uses
+targeted repository-wide marker searches and live Issue and Project-item reads,
+updates the in-memory index only after verified writes, and never repeats a full
+repository-wide or Project-wide scan. Creation performs another targeted marker
+search immediately before the write and another after it. Final import and
+verification also require the marker to be globally unique. A changed
+source-marker set, Issue body with the same repository Issue count, exact Issue
+projection, Project membership, or Project-item projection fails closed instead
+of trusting stale cached success. Because GitHub does not provide an atomic
+"create unless body marker is unique" operation, a duplicate discovered after
+creation is left intact and the checkpoint report identifies the newly created
+Issue and the non-destructive recovery action.
+
+Issue source markers and imported comment markers must occur exactly once in
+their canonical positions. Imported source-comment and lifecycle-transition
+receipts must match their complete canonical bodies, not merely their marker
+lines. A unique canonical receipt with reconstructable historical metadata can
+be repaired idempotently; duplicate, non-canonical, or ambiguous receipt
+metadata is a conflict.
 
 Todoist due dates map to `next-action-date` only as imported human attention
 evidence. A Todoist deadline maps to Pan `deadline`. Recurrence text and the
 nominal occurrence are stored separately in the Issue body. Import does not
 invent completed history and does not create recurring successors. A
 successor becomes available only through Pan's explicit recurrence lifecycle.
+Imported human tasks always write and verify an empty `resource-semantics`
+value; they never inherit `historical-provenance` or `held-affinity`.
 
 ## Commands and safety
 

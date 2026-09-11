@@ -388,7 +388,7 @@ function fakeGitHubState({ projectReadNodes = null } = {}) {
                 nodes: issues
                   .filter((entry) =>
                     sourceId
-                    && entry.body.split(/\r?\n/).includes(`Pan: Todoist source task ${sourceId}`))
+                    && entry.body.includes(`Pan: Todoist source task ${sourceId}`))
                   .map((entry) => ({
                     ...entry,
                     repository: { nameWithOwner: 'example/domain' },
@@ -599,6 +599,7 @@ test('task-store projection preserves Issue state and state reason from Project 
 
 test('Todoist repair reconciles exact Issue, comments, fields, and writes revision last', async () => {
       const { store, state } = await fakeStore();
+      state.item.fields['resource-semantics'] = 'historical-provenance';
       const record = {
         sourceId: 'todo-1',
         title: 'Current title',
@@ -620,6 +621,7 @@ test('Todoist repair reconciles exact Issue, comments, fields, and writes revisi
       assert.equal(state.item.fields.priority, 'urgent');
       assert.equal(state.item.fields['next-action-date'], '2026-09-12');
       assert.equal(state.item.fields.deadline, '2026-09-15');
+      assert.equal(state.item.fields['resource-semantics'], '');
       assert.equal(state.item.fields['task-revision'], '2');
       assert.equal(state.comments[0].body, 'Pan: Todoist source comment c1\n\nImported 2026-09-08T00:00:00Z:\n\nCurrent comment.');
       assert.equal(state.writes.at(-1), 'project:task-revision');
@@ -750,6 +752,28 @@ test('Todoist apply repairs 215 interrupted items with bounded full-list reads a
         state.queries.filter((query) => query.includes('items(first:100')).length,
         2,
       );
+      assert.ok(
+        state.queries.filter((query) => query.includes('search(query:$searchQuery')).length
+          <= taskCount * 5,
+      );
+      for (const item of state.items) {
+        assert.equal(item.fields['resource-semantics'] || '', '');
+        const transition = (state.commentsByIssue.get(item.issue.number) ?? []).find(
+          (comment) => comment.body.startsWith('Pan: task transition 1'),
+        );
+        assert.equal(
+          transition?.body,
+          transitionComment({
+            revision: 1,
+            fromStatus: '',
+            fromAction: '',
+            toStatus: 'ready-for-human',
+            toAction: 'act',
+            detail: 'Perform or reconsider the imported active task.',
+            actor: 'Pan Todoist migration',
+          }),
+        );
+      }
 });
 
 test('Todoist create updates the run index and verifies without another full scan', async () => {
@@ -780,7 +804,7 @@ test('Todoist create updates the run index and verifies without another full sca
       const report = await applyTodoistImport(plan, store, snapshot);
       const verification = await verifyTodoistImport(snapshot, store);
 
-      assert.equal(report.partial, false);
+      assert.equal(report.partial, false, JSON.stringify(report));
       assert.equal(report.results[0].outcome, 'created');
       assert.equal(verification.complete, true);
       assert.equal(state.issues.length, 1);
@@ -846,13 +870,124 @@ test('Todoist create race fails closed when another source Issue appears', async
       };
       const { store } = await fakeStore(state);
       const plan = planTodoistImport(snapshot, await store.todoistSourceIndex());
+      const checkpoints = [];
+
+      const report = await applyTodoistImport(plan, store, snapshot, {
+        onProgress(checkpoint) {
+          checkpoints.push(checkpoint);
+        },
+      });
+
+      assert.equal(report.partial, true);
+      assert.match(report.results[0].error, /changed after the Todoist run snapshot/);
+      assert.equal(report.results[0].createdByRun, true);
+      assert.equal(report.results[0].createdIssueUrl, 'https://github.com/example/domain/issues/2');
+      assert.match(report.results[0].recovery, /left intact/);
+      assert.equal(checkpoints.at(-1).results[0].createdIssueUrl, report.results[0].createdIssueUrl);
+      assert.equal(state.issues.length, 2);
+      assert.equal(state.items.length, 0);
+});
+
+test('Todoist create rechecks marker uniqueness after a body-only race and writes nothing', async () => {
+      const snapshot = {
+        format: 'pan-todoist-active-snapshot',
+        version: 1,
+        capturedAt: '2026-09-09T00:00:00Z',
+        user: { id: 'me' },
+        projects: [],
+        sections: [],
+        labels: [],
+        excluded: [],
+        tasks: [{
+          id: 'precreate-race',
+          content: 'Pre-create race',
+          description: '',
+          priority: 2,
+          comments: [],
+        }],
+      };
+      const state = fakeGitHubState();
+      const liveGh = state.gh;
+      let sourceSearches = 0;
+      state.gh = async (args) => {
+        const query = args.find((arg) => String(arg).startsWith('query=')) ?? '';
+        if (query.includes('search(query:$searchQuery')) {
+          sourceSearches += 1;
+          if (sourceSearches === 2) {
+            state.issue.body += '\n\nPan: Todoist source task precreate-race';
+          }
+        }
+        return liveGh(args);
+      };
+      const { store } = await fakeStore(state);
+      const plan = planTodoistImport(snapshot, await store.todoistSourceIndex());
 
       const report = await applyTodoistImport(plan, store, snapshot);
 
       assert.equal(report.partial, true);
-      assert.match(report.results[0].error, /changed after the Todoist run snapshot/);
-      assert.equal(state.issues.length, 2);
-      assert.equal(state.items.length, 0);
+      assert.match(report.results[0].error, /changed after the run snapshot/);
+      assert.equal(state.writes.includes('issue:create'), false);
+      assert.equal(state.issues.length, 1);
+});
+
+test('Todoist verification globally detects a body-only duplicate marker race', async () => {
+      const snapshot = {
+        format: 'pan-todoist-active-snapshot',
+        version: 1,
+        capturedAt: '2026-09-09T00:00:00Z',
+        user: { id: 'me' },
+        projects: [],
+        sections: [],
+        labels: [],
+        excluded: [],
+        tasks: [{
+          id: 'verify-race',
+          content: 'Verify race',
+          description: '',
+          priority: 2,
+          comments: [],
+        }],
+      };
+      const state = fakeGitHubState();
+      const { store } = await fakeStore(state);
+      const plan = planTodoistImport(snapshot, await store.todoistSourceIndex());
+      assert.equal((await applyTodoistImport(plan, store, snapshot)).partial, false);
+      state.issue.body += '\n\nPan: Todoist source task verify-race';
+
+      const report = await verifyTodoistImport(snapshot, store);
+
+      assert.equal(report.complete, false);
+      assert.equal(report.results[0].outcome, 'conflict');
+      assert.match(report.results[0].error, /changed after the run snapshot/);
+});
+
+test('Todoist planning rejects a source marker outside its canonical body position', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = 'Imported note.\n\nPan: Todoist source task todo-1';
+      const { store } = await fakeStore(state);
+      const index = await store.todoistSourceIndex();
+      const snapshot = {
+        format: 'pan-todoist-active-snapshot',
+        version: 1,
+        capturedAt: '2026-09-09T00:00:00Z',
+        user: { id: 'me' },
+        projects: [],
+        sections: [],
+        labels: [],
+        excluded: [],
+        tasks: [{
+          id: 'todo-1',
+          content: 'Existing import',
+          description: '',
+          priority: 2,
+          comments: [],
+        }],
+      };
+
+      const plan = planTodoistImport(snapshot, index);
+
+      assert.equal(plan.actions[0].action, 'conflict');
+      assert.match(plan.actions[0].reason, /non-canonical/);
 });
 
 test('Todoist repair completes an exact interrupted revision-last commit', async () => {
@@ -939,6 +1074,120 @@ test('Todoist revision-last recovery recreates a missing transition receipt befo
         state.comments.filter((comment) => comment.body.startsWith('Pan: task transition 2')).length,
         1,
       );
+});
+
+test('Todoist import repairs an exact transition receipt payload and verifies it', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      const transition = state.comments.find(
+        (comment) => comment.body.startsWith('Pan: task transition 2'),
+      );
+      transition.body = transition.body.replace(
+        '- Actor: Pan Todoist migration',
+        '- Actor: Corrupted migration',
+      );
+      state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
+
+      const result = await resumedStore.importTodoistTask(record);
+
+      assert.equal(result.outcome, 'repaired');
+      assert.deepEqual(state.writes, ['comment:edit']);
+      assert.match(transition.body, /- Actor: Pan Todoist migration$/);
+      assert.equal((await resumedStore.verifyTodoistTask(record)).outcome, 'verified');
+});
+
+test('Todoist import conflicts on a transition receipt whose historical metadata is unsafe', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      const transition = state.comments.find(
+        (comment) => comment.body.startsWith('Pan: task transition 2'),
+      );
+      transition.body = transition.body.replace(
+        '- From: ready-for-human/act',
+        '- From: corrupted',
+      );
+      state.writes.length = 0;
+      const { store: resumedStore } = await fakeStore(state);
+
+      await assert.rejects(
+        resumedStore.importTodoistTask(record),
+        /unsafe metadata/,
+      );
+      assert.deepEqual(state.writes, []);
+      const verification = await resumedStore.verifyTodoistTask(record);
+      assert.equal(verification.outcome, 'conflict');
+      assert.match(verification.error, /mismatched lifecycle transition receipt/);
+});
+
+test('Todoist verification rejects a non-canonical source receipt', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      state.comments.find(
+        (comment) => comment.body.startsWith('Pan: Todoist source comment c1'),
+      ).body = 'Imported receipt:\nPan: Todoist source comment c1';
+      const { store: resumedStore } = await fakeStore(state);
+
+      const verification = await resumedStore.verifyTodoistTask(record);
+
+      assert.equal(verification.outcome, 'conflict');
+      assert.match(verification.error, /non-canonical Todoist source comment/);
+});
+
+test('Todoist verification rejects inherited resource semantics', async () => {
+      const { store, state } = await fakeStore();
+      const record = {
+        sourceId: 'todo-1',
+        title: 'Current title',
+        body: 'Source URL: https://todoist.com/showTask?id=todo-1\n\n## Imported active description\n\nCurrent content.',
+        comments: [{ id: 'c1', content: 'Current comment.', postedAt: '2026-09-08T00:00:00Z' }],
+        priority: 'urgent',
+        nextActionDate: '2026-09-12',
+        deadline: '2026-09-15',
+        workstream: '',
+        recurrence: null,
+      };
+      await store.importTodoistTask(record);
+      state.item.fields['resource-semantics'] = 'held-affinity';
+      const { store: resumedStore } = await fakeStore(state);
+
+      const verification = await resumedStore.verifyTodoistTask(record);
+
+      assert.equal(verification.outcome, 'conflict');
+      assert.match(verification.error, /lifecycle projection/);
 });
 
 function recurrenceRevisionRecoveryState() {

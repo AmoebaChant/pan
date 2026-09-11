@@ -292,7 +292,14 @@ export function planTodoistImport(snapshot, sourceIndex = new Map()) {
   }
   for (const record of records) {
     const matches = sourceIndex.get(record.sourceId) ?? [];
-    if (matches.length > 1) {
+    if (matches.some((match) => match.invalidMarker)) {
+      actions.push({
+        sourceId: record.sourceId,
+        action: 'conflict',
+        reason: 'the source marker is duplicated or non-canonical',
+        matches,
+      });
+    } else if (matches.length > 1) {
       actions.push({
         sourceId: record.sourceId,
         action: 'conflict',
@@ -393,12 +400,21 @@ export async function applyTodoistImport(plan, store, snapshot, { onProgress } =
       results.push({ ...result, plannedAction: action.action });
     } catch (error) {
       failed = true;
-      results.push({
+      const failure = {
         sourceId: action.sourceId,
         outcome: 'failed',
         plannedAction: action.action,
         error: error.message,
-      });
+      };
+      for (const field of [
+        'createdIssueUrl',
+        'createdIssueNumber',
+        'createdByRun',
+        'recovery',
+      ]) {
+        if (error[field] !== undefined) failure[field] = error[field];
+      }
+      results.push(failure);
     }
     await checkpoint();
   }
