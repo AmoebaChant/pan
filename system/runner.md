@@ -28,6 +28,11 @@ The pilot config is deliberately disabled until reviewed:
   "machine": "stable-machine-name",
   "stateRoot": "/durable/private/path",
   "workingDirectory": "/trusted/working/path",
+  "playbookName": "tool-development",
+  "playbookPath": "/private/domain/playbooks/machine/tool-development.md",
+  "domainInstructionsPath": "/private/domain/pan.md",
+  "panTaskCommand": "/absolute/trusted/pan/bin/pan-task.js",
+  "taskIds": ["optional-exact-task-id-allowlist"],
   "maxConcurrent": 1,
   "launchCommand": ["copilot", "--model", "gpt-5.6-sol", "--allow-all"]
 }
@@ -43,11 +48,25 @@ implement distributed claims: multiple machines must not poll the same task
 scope. Worker progress/questions/results are recorded through backend
 `report`/`update` operations, not GitHub Issue mutation.
 
+An enabled pilot also requires an absolute trusted `panTaskCommand`, one
+resolved `playbookName` and private `playbookPath`, and private
+`domainInstructionsPath`. The runner snapshots those files plus current native
+reports into the launch state and gives the worker exact read/report commands.
+`taskIds`, when non-empty, is an additional exact allowlist applied after
+backend scope; it is suitable for a one-task demonstration but does not replace
+backend project scoping.
+
 Each poll inventories durable run and owner records, verifies both PID and
 process-start identity, and counts live sessions against capacity. An uncertain
 record fails closed. A dead matching session is recorded as stopped before its
 lock is released. A live worker reserves the configured working directory, so
 two tasks are not launched into one shared checkout.
+
+One process-identity-checked lock under `stateRoot` excludes a second local
+backend runner across inventory and launch. A dead holder is recoverable. A
+valid pre-terminal `exit.json` also makes a launch without `owner.json`
+conclusively stale, so a failed terminal start is reconciled instead of wedging
+the workspace as permanently uncertain.
 
 The runner acquires the task lock before writing `worker=starting`, writes
 private task/prompt/session files, and opens a headed terminal launcher. The

@@ -245,16 +245,41 @@ test('dry-run reports selection without claiming a launch', async () => {
   assert.deepEqual(result.launched, []);
 });
 
+test('mechanical runner exact allowlist excludes every other ready task', async () => {
+  const tasks = ['demo', 'real'].map((id) => ({
+    id, title: id, status: 'ready-for-ai', nextAction: 'execute',
+    executionAuthorized: true, dependencies: [], worker: null,
+  }));
+  const launched = [];
+  const result = await pollBackendTasks({
+    backend: { list: async () => tasks },
+    capacity: 1,
+    allowedTaskIds: new Set(['demo']),
+    launch: async (task) => launched.push(task.id),
+  });
+  assert.deepEqual(result.selected, ['demo']);
+  assert.deepEqual(result.launched, ['demo']);
+});
+
 function testRoot() {
   return path.join(process.cwd(), `.pan-backend-test-${randomUUID()}`);
 }
 
-function runnerConfig(root) {
+async function runnerConfig(root) {
+  const playbookPath = path.join(root, 'test-playbook.md');
+  const domainInstructionsPath = path.join(root, 'pan.md');
+  await mkdir(path.join(root, 'workspace'), { recursive: true });
+  await writeFile(playbookPath, '---\nname: test-playbook\n---\n');
+  await writeFile(domainInstructionsPath, '# Domain\n');
   return {
     machine: 'machine-a',
     stateRoot: root,
     workingDirectory: path.join(root, 'workspace'),
     backendConfig: path.join(root, 'backend.json'),
+    playbookName: 'test-playbook',
+    playbookPath,
+    domainInstructionsPath,
+    panTaskCommand: path.resolve('bin/pan-task.js'),
     launchCommand: ['copilot', '--model', 'gpt-5.6-sol'],
   };
 }
@@ -262,27 +287,29 @@ function runnerConfig(root) {
 function backendFake(task) {
   let current = structuredClone(task);
   const updates = [];
-  const reports = [];
+  const reportEntries = [];
   return {
     updates,
-    reports,
+    reportEntries,
     async get() { return structuredClone(current); },
     async update(_id, input) {
       updates.push(structuredClone(input));
       current = { ...current, worker: input.worker, revision: `r${updates.length + 1}` };
       return structuredClone(current);
     },
-    async report(_id, input) { reports.push(input.content); },
+    async report(_id, input) { reportEntries.push(input.content); },
+    async reports() { return [{ id: 'report-1', content: 'Prior report' }]; },
   };
 }
 
 test('live process inventory survives polls and blocks shared workspace capacity', async () => {
   const root = testRoot();
-  const config = runnerConfig(root);
+  const config = await runnerConfig(root);
   const task = {
     id: 'task-1', title: 'Task', url: 'https://todoist.example/task-1',
     revision: 'r1', status: 'ready-for-ai', nextAction: 'execute',
     executionAuthorized: true, dependencies: [], worker: null, recurring: false,
+    playbook: 'test-playbook',
   };
   const backend = backendFake(task);
   try {
@@ -309,6 +336,13 @@ test('live process inventory survives polls and blocks shared workspace capacity
     assert.equal(JSON.parse(await readFile(
       path.join(root, 'runs', 'task-1', 'task.json'),
     )).id, 'task-1');
+    assert.match(
+      await readFile(path.join(root, 'runs', 'task-1', 'launch-prompt.txt'), 'utf8'),
+      /bin\/pan-task\.js.*reports/,
+    );
+    assert.equal(JSON.parse(await readFile(
+      path.join(root, 'runs', 'task-1', 'reports.json'),
+    ))[0].content, 'Prior report');
     const result = await pollBackendTasks({
       backend: { list: async () => [{ ...task, id: 'task-2' }] },
       capacity: 0,
@@ -354,7 +388,7 @@ test('PID reuse mismatch is stale and reconciliation releases only its task lock
 
 test('task lock contention happens before backend observation', async () => {
   const root = testRoot();
-  const config = runnerConfig(root);
+  const config = await runnerConfig(root);
   await mkdir(path.join(root, 'locks'), { recursive: true });
   await writeFile(path.join(root, 'locks', 'task-1.lock'), '');
   const backend = backendFake({ id: 'task-1', revision: 'r1', worker: null });
@@ -368,10 +402,10 @@ test('task lock contention happens before backend observation', async () => {
 
 test('terminal spawn error is awaited, reported, and recorded as stopped', async () => {
   const root = testRoot();
-  const config = runnerConfig(root);
+  const config = await runnerConfig(root);
   const task = {
     id: 'task-1', title: 'Task', url: 'https://todoist.example/task-1',
-    revision: 'r1',
+    revision: 'r1', playbook: 'test-playbook',
   };
   const backend = backendFake(task);
   try {
@@ -383,10 +417,13 @@ test('terminal spawn error is awaited, reported, and recorded as stopped', async
     );
     assert.equal(backend.updates[0].worker.state, 'starting');
     assert.equal(backend.updates[1].worker.state, 'stopped');
-    assert.match(backend.reports[0], /spawn failed/);
+    assert.match(backend.reportEntries[0], /spawn failed/);
     const exit = JSON.parse(await readFile(path.join(root, 'runs', 'task-1', 'exit.json')));
     assert.match(exit.error, /spawn failed/);
     await assert.rejects(readFile(path.join(root, 'locks', 'task-1.lock')), { code: 'ENOENT' });
+    const inventory = await inspectLocalRuns(root);
+    assert.equal(inventory.stale.length, 1);
+    assert.equal(inventory.uncertain.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
