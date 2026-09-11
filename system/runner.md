@@ -52,6 +52,11 @@ An enabled pilot also requires an absolute trusted `panTaskCommand`, one
 resolved `playbookName` and private `playbookPath`, and private
 `domainInstructionsPath`. The runner snapshots those files plus current native
 reports into the launch state and gives the worker exact read/report commands.
+The headed Copilot command receives `--add-dir` only for the resolved working
+directory, its owned launch-state directory, the configured `pan-task`
+directory, and the backend-config directory. This satisfies Copilot's
+folder-trust boundary without granting broad home-directory access; tool
+approvals remain separately controlled by the explicit `launchCommand`.
 `taskIds`, when non-empty, is an additional exact allowlist applied after
 backend scope and checked again by `launchTask` immediately before terminal
 spawn. It is suitable for a one-task demonstration but does not replace backend

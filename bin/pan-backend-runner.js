@@ -258,7 +258,13 @@ function spawnAndWait(command, args, options = {}) {
   });
 }
 
-function launcherSource({ command, promptPath, stateDir, workingDirectory }) {
+function launcherSource({
+  command,
+  promptPath,
+  stateDir,
+  workingDirectory,
+  additionalDirectories,
+}) {
   return `import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -278,6 +284,14 @@ function identity(){
 }
 writeFileSync(path.join(stateDir,'owner.json'),JSON.stringify({pid:process.pid,processStart:identity(),recordedAt:new Date().toISOString()},null,2)+'\\n',{flag:'wx',mode:0o600});
 const args=command.slice(1).filter((value)=>value!=='--interactive'&&value!=='-i');
+const allowedDirectories=[
+  ${JSON.stringify(workingDirectory)},
+  stateDir,
+  ...${JSON.stringify(additionalDirectories)},
+];
+for(const directory of allowedDirectories){
+  args.push('--add-dir',directory);
+}
 const child=spawn(command[0],[...args,'--interactive',prompt],{
   cwd:${JSON.stringify(workingDirectory)},
   stdio:'inherit',
@@ -384,12 +398,13 @@ export async function launchTask(task, config, backend, dependencies = {}) {
       { mode: 0o600 },
     );
     const taskCommand = `${process.execPath} ${config.panTaskCommand}`;
+    const reportInputPath = path.join(stateDir, 'report-request.json');
     const prompt = [
       `Execute Pan task ${task.id}: ${task.title}`,
       `Read ${path.join(stateDir, 'task.json')}, ${path.join(stateDir, 'playbook.md')}, ${path.join(stateDir, 'pan.md')}, and ${path.join(stateDir, 'reports.json')}.`,
       `Read current task state with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} get ${JSON.stringify(task.id)}`,
       `Read durable reports with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} reports ${JSON.stringify(task.id)}`,
-      `Record the final durable report with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} report ${JSON.stringify(task.id)} --input @<absolute-json-file>`,
+      `Write the report request JSON only to ${reportInputPath}, then record it with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} report ${JSON.stringify(task.id)} --input @${reportInputPath}`,
       'Do not complete the backend task; the coordinating Pan session completes it after verifying your report and files.',
       `Task URL: ${task.url}`,
     ].join('\n');
@@ -402,6 +417,10 @@ export async function launchTask(task, config, backend, dependencies = {}) {
         promptPath,
         stateDir,
         workingDirectory: path.resolve(config.workingDirectory),
+        additionalDirectories: [
+          path.dirname(path.resolve(config.panTaskCommand)),
+          path.dirname(path.resolve(config.backendConfig)),
+        ],
       }),
       { mode: 0o600 },
     );
