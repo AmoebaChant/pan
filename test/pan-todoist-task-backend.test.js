@@ -103,68 +103,6 @@ test('update reads the task once before writing', async () => {
         id: '1', content: 'Task', description: '', priority: 1,
         project_id: 'p', responsible_uid: null, updated_at: 'r1',
       });
-
-      test('recurring attention date is metadata and never replaces native cadence', async () => {
-        let updateBody;
-        const recurring = {
-          id: '1', content: 'Recurring', priority: 1, project_id: 'p',
-          responsible_uid: null, updated_at: 'r1',
-          due: { date: '2026-09-11', string: 'every friday', is_recurring: true },
-          description: descriptionWithMetadata('', { status: 'ready-for-human' }),
-        };
-        const fetchImpl = async (url, options) => {
-          if (url.endsWith('/user')) return response({ id: 'self' });
-          if (options.method === 'GET') return response(recurring);
-          updateBody = JSON.parse(options.body);
-          return response({
-            ...recurring,
-            updated_at: 'r2',
-            description: updateBody.description,
-          });
-        };
-        const backend = await new TodoistTaskBackend(
-          { backend: 'todoist' },
-          { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
-        ).initialize();
-        const updated = await backend.update('1', {
-          expectedRevision: 'r1',
-          nextActionDate: '2026-09-18',
-        });
-        assert.equal(updateBody.due_date, undefined);
-        assert.deepEqual(updated.native.due, recurring.due);
-        assert.equal(updated.nextActionDate, '2026-09-18');
-      });
-
-      test('reports are fully paginated after the scoped task read', async () => {
-        const calls = [];
-        const fetchImpl = async (url) => {
-          calls.push(url);
-          if (url.endsWith('/user')) return response({ id: 'self' });
-          if (url.endsWith('/tasks/1')) {
-            return response({
-              id: '1', content: 'Task', description: '', priority: 1,
-              project_id: 'p', responsible_uid: null, updated_at: 'r1',
-            });
-          }
-          if (url.includes('cursor=next')) {
-            return response({ results: [{
-              id: 'c2', task_id: '1', content: 'Result', posted_at: '2026-09-11T02:00:00Z',
-            }], next_cursor: null });
-          }
-          return response({ results: [{
-            id: 'c1', task_id: '1', content: 'Progress', posted_at: '2026-09-11T01:00:00Z',
-          }], next_cursor: 'next' });
-        };
-        const backend = await new TodoistTaskBackend(
-          { backend: 'todoist' },
-          { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
-        ).initialize();
-        assert.deepEqual((await backend.reports('1')).map((item) => item.content), [
-          'Progress',
-          'Result',
-        ]);
-        assert.equal(calls.length, 4);
-      });
     }
     return response({
       id: '1', content: 'Changed', description: '', priority: 1,
@@ -180,6 +118,68 @@ test('update reads the task once before writing', async () => {
     title: 'Changed',
   })).title, 'Changed');
   assert.deepEqual(calls.map(([, method]) => method), ['GET', 'GET', 'POST']);
+});
+
+test('recurring attention date is metadata and never replaces native cadence', async () => {
+  let updateBody;
+  const recurring = {
+    id: '1', content: 'Recurring', priority: 1, project_id: 'p',
+    responsible_uid: null, updated_at: 'r1',
+    due: { date: '2026-09-11', string: 'every friday', is_recurring: true },
+    description: descriptionWithMetadata('', { status: 'ready-for-human' }),
+  };
+  const fetchImpl = async (url, options) => {
+    if (url.endsWith('/user')) return response({ id: 'self' });
+    if (options.method === 'GET') return response(recurring);
+    updateBody = JSON.parse(options.body);
+    return response({
+      ...recurring,
+      updated_at: 'r2',
+      description: updateBody.description,
+    });
+  };
+  const backend = await new TodoistTaskBackend(
+    { backend: 'todoist' },
+    { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
+  ).initialize();
+  const updated = await backend.update('1', {
+    expectedRevision: 'r1',
+    nextActionDate: '2026-09-18',
+  });
+  assert.equal(updateBody.due_date, undefined);
+  assert.deepEqual(updated.native.due, recurring.due);
+  assert.equal(updated.nextActionDate, '2026-09-18');
+});
+
+test('reports are fully paginated after the scoped task read', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.endsWith('/user')) return response({ id: 'self' });
+    if (url.endsWith('/tasks/1')) {
+      return response({
+        id: '1', content: 'Task', description: '', priority: 1,
+        project_id: 'p', responsible_uid: null, updated_at: 'r1',
+      });
+    }
+    if (url.includes('cursor=next')) {
+      return response({ results: [{
+        id: 'c2', task_id: '1', content: 'Result', posted_at: '2026-09-11T02:00:00Z',
+      }], next_cursor: null });
+    }
+    return response({ results: [{
+      id: 'c1', task_id: '1', content: 'Progress', posted_at: '2026-09-11T01:00:00Z',
+    }], next_cursor: 'next' });
+  };
+  const backend = await new TodoistTaskBackend(
+    { backend: 'todoist' },
+    { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
+  ).initialize();
+  assert.deepEqual((await backend.reports('1')).map((item) => item.content), [
+    'Progress',
+    'Result',
+  ]);
+  assert.equal(calls.length, 4);
 });
 
 test('complete checks revision and calls the native close endpoint', async () => {
