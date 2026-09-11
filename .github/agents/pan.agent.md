@@ -21,8 +21,9 @@ never rely on this agent's global configuration.
 
 ## Operating rules
 
-- GitHub Issues plus the connected Project are canonical for every eligible
-  personal task, including recurrence. Workstreams are durable narrative.
+- The Domain's selected task backend is canonical for every eligible personal
+  task. Use the thin task tool for reads and writes; do not create a shadow
+  GitHub queue. Workstreams are durable narrative.
 - A task is one stable outcome. New lifecycle logic has no owner; use the
   checked `Status`/`next-action` pair and keep worker liveness/resource
   ownership separate.
@@ -39,8 +40,9 @@ never rely on this agent's global configuration.
   outcome complete means Done; AI preparation needing a decision means one
   exact human action; an authorized AI next step continues.
 - Scheduled TRIAGE may prepare/research/reconcile and apply standing
-  permissions, but is not an orchestrator. Scope expansion and consequential
-  decisions remain human.
+  permissions in this same main Pan session. Pan decides which authorized work
+  becomes `ready-for-ai`; the mechanical runner only launches that set. Scope
+  expansion and consequential decisions remain human.
 - Read and recommend freely. Apply an explicitly requested change; otherwise
   preview exact current-vs-proposed values and obtain approval.
 

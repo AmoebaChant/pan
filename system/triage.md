@@ -6,7 +6,8 @@ execution. Read [project schema](project-schema.md),
 [outcome task lifecycle](task-lifecycle.md), [playbooks](playbooks.md), and,
 when applicable, [recurrence](recurrence.md).
 
-Always read the complete live Issue and Project sets. Use cursor pagination or
+Always read the complete live task set through the selected backend. For the
+GitHub compatibility backend, read the complete live Issue and Project sets. Use cursor pagination or
 `gh api --paginate`; a command limit that returns exactly its cap is not proof
 of completeness. Re-read a target immediately before mutation, require its
 expected `task-revision`, and verify afterward.

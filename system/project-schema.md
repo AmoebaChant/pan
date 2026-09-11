@@ -1,5 +1,9 @@
 # Project schema
 
+This is the built-in GitHub compatibility-backend mapping. Domains selecting
+another backend use the same meanings through
+[task backends](task-backends.md), not a shadow GitHub Project.
+
 The connected GitHub Project is the canonical personal task queue. Each item
 wraps one Issue and carries the fields below. The checked lifecycle, liveness,
 resource, revision, date, and transition rules are defined in

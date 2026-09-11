@@ -16,6 +16,12 @@ its fields otherwise look AI-ready.
 ## Declaring recurrence
 
 A recurring Issue has an exact `## Recurrence` heading in its body. The text
+
+Use the selected backend's native recurrence semantics when they exist.
+Todoist-backed Domains complete the native recurring task and let Todoist
+advance its due occurrence; do not synthesize linked GitHub Issues, move
+cadence when changing human attention, or duplicate occurrence history. The
+Issue-specific procedure below is the GitHub compatibility-backend contract.` heading in its body. The text
 under that heading is the durable schedule rule and must identify exactly one
 next calendar date from the nominal occurrence. Keep the rule concise and
 unambiguous, for example:

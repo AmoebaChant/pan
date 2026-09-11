@@ -1,16 +1,48 @@
 # Runner
 
-The runner is mechanical. One instance per machine polls the configured Domain
-Project, claims explicitly runnable AI work, launches headed Copilot workers,
-coordinates leases/generations/workspaces, and relays worker signals. It does
-not triage, plan dates, expand scope, decide deliverable correctness, create
-recurring occurrences, or orchestrate other tasks.
+The runner is mechanical. One instance polls the selected backend, launches
+explicitly runnable AI work within local capacity, and maintains only the
+process/workspace guards needed to avoid duplicate local workers. It does not
+triage, choose priority, reinterpret holds, plan dates, expand scope, decide
+deliverable correctness, create recurring occurrences, or manage the backlog.
+Pan's main chief-of-staff session decides and writes `ready-for-ai`.
 
 Read [task lifecycle](task-lifecycle.md), [project
 schema](project-schema.md), [playbooks](playbooks.md), and [worker base
 instructions](worker-base-instructions.md).
 
-## Configuration
+## Backend runner pilot
+
+`pan-backend-runner` is the thin-backend path. It lists through `pan-task`,
+selects only `ready-for-ai/execute` records with explicit authorization, empty
+dependencies, no recorded worker, and free capacity, then invokes the
+configured launcher. It never gates or sorts on `next-action-date`.
+
+The pilot config is deliberately disabled until reviewed:
+
+```json
+{
+  "enabled": false,
+  "backendConfig": "/absolute/path/to/backend.json",
+  "machine": "stable-machine-name",
+  "stateRoot": "/durable/private/path",
+  "workingDirectory": "/trusted/working/path",
+  "maxConcurrent": 1,
+  "launchCommand": ["copilot", "--model", "gpt-5.6-sol", "--allow-all"]
+}
+```
+
+Use `--dry-run` to inspect a poll while disabled. Enabling is an explicit local
+operation after review. No cron or second intelligent dispatcher is installed:
+scheduled triage wakes the same main Pan session; this runner only consumes the
+set that session authorized.
+
+The implementation uses exclusive per-task local launch files. It does not
+implement distributed claims: multiple machines must not poll the same task
+scope. Worker progress/questions/results are recorded through backend
+`report`/`update` operations, not GitHub Issue mutation.
+
+## GitHub compatibility runner configuration
 
 The required local config names:
 

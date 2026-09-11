@@ -7,6 +7,8 @@
     "test": "node --test"
   },
   "bin": {
+    "pan-task": "./bin/pan-task.js",
+    "pan-backend-runner": "./bin/pan-backend-runner.js",
     "pan-briefing": "./bin/pan-briefing-mcp.js",
     "pan-lifecycle-migrate": "./bin/pan-lifecycle-migrate.js",
     "pan-runner": "./bin/pan-runner.js",

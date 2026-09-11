@@ -1,8 +1,8 @@
 # Outcome task lifecycle
 
 A Pan task is one stable outcome. It does not change identity when a person or
-an AI takes the next step, and the canonical lifecycle has no owner. GitHub
-Issues plus the connected Project are the authoritative personal task store.
+an AI takes the next step, and the canonical lifecycle has no owner. The
+Domain's selected backend is the authoritative personal task store.
 The runner's local state proves process and workspace ownership only; it is
 never a second task queue.
 
@@ -103,7 +103,8 @@ history, not an inbox. Comments and completed Issues are never deleted.
 
 ## Revision and ownership protocol
 
-`task-revision` is a non-negative decimal integer. Empty reads as `0` only for
+The common backend record exposes a revision. GitHub's `task-revision` is a
+non-negative decimal integer. Empty reads as `0` only for
 an unmigrated task. Every UI, triage, and runner transition follows this
 protocol:
 
@@ -119,7 +120,7 @@ protocol:
 6. Write `task-revision + 1` last.
 7. Re-read and confirm the revision, checked pair, and ownership tuple.
 
-GitHub Project writes are not atomic. A writer that observes a mismatch,
+Backend writes may not be atomic. A writer that observes a mismatch,
 partial write, or failed verification reports a conflict and stops. It never
 returns a success-shaped fallback. The next live read exposes the partial state
 for explicit retry or recovery.

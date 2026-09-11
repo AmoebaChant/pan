@@ -1,9 +1,9 @@
 # The Pan Domain
 
-A **Domain** is the user's private data for Pan: one private GitHub repository
-plus one GitHub Project connected to it. Pan operates on exactly one Domain at a
-time. The Pan tool repository holds no user data; everything user-specific lives
-in the Domain.
+A **Domain** is the user's private Pan knowledge/configuration repository plus
+one selected task backend. GitHub Issues and a connected Project are the
+default backend; a Domain may select Todoist for every managed task. Pan
+operates on exactly one Domain at a time.
 
 ## What the Domain repository contains
 
@@ -14,10 +14,8 @@ in the Domain.
   pan.md                         domain-specific Pan instructions (optional)
 ```
 
-- **Issues** in this repository are the tasks. Every eligible personal task
-  belongs to the connected Project. The stable outcome remains one task while
-  its exact next action moves between a person, AI, or an external wait.
-  Recurring occurrences are separate linked Issues.
+- **The selected backend** holds tasks. The stable outcome remains one task
+  while its exact next action moves between a person, AI, or an external wait.
 - **The Project** holds each task's lifecycle and fields. See
   [project schema](project-schema.md).
 - **Workstreams** are the durable narrative for each area of work. See
@@ -35,8 +33,8 @@ in the Domain.
 
 ## How Pan reaches the Domain
 
-Pan uses the GitHub API through `gh`, always against the configured Domain
-repository and Project. The Domain is **never** required as a local checkout:
+Pan uses the GitHub API through `gh` for Domain knowledge. Task access goes
+through the configured thin backend tool. The Domain is **never** required as a local checkout:
 read and write workstreams and playbooks through the GitHub
 Contents API, and read and write tasks through Issues and the Project.
 
@@ -69,7 +67,11 @@ temporary directory. They must not overlap. Moving or cleaning
 `workspaceRoot` must never remove the ownership record that prevents duplicate
 workers.
 
-The same file may list `taskBacklogRepos` for the everyday UI. That is an
+The same file may name an explicit task-backend config path. Credentials stay
+in a separate local credential file. The backend config selects scope,
+assignee rules, and mappings; see [task backends](task-backends.md).
+
+For GitHub-backed Domains, the file may list `taskBacklogRepos` for the everyday UI. That is an
 explicit repository allowlist in addition to the Domain repository, not a
 discovery mechanism or authority transfer. The UI service requires both this
 config path and the Pan checkout path on its command line and rejects all other
@@ -78,15 +80,15 @@ Issue repositories.
 ## Imports from other task systems
 
 External systems may be migration sources or read-only context, but they do not
-become task authority based on who acts next. The supported Todoist importer
+become task authority based on who acts next. The legacy Todoist importer
 preserves stable source ids, metadata, comments, scheduling, deadlines, and
 recurrence in Domain Issues, verifies Project membership, and never deletes the
 source. See [Todoist migration and recovery](todoist-migration.md).
 
-`pan.md` may name other read-only sources or import mappings, but cannot move
-canonical lifecycle out of GitHub or authorize a background sync loop. A future
-adapter requires its own public contract, idempotency markers, complete
-pagination, assignee exclusions, partial-import behavior, and verified writes.
+`pan.md` declares the one selected backend. It must not create a background
+sync or fallback queue. Todoist-backed Domains keep all managed tasks in
+Todoist, while the private repository remains authoritative for knowledge and
+playbooks.
 
 ## Boundaries
 

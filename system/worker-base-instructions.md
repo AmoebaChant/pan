@@ -6,6 +6,12 @@ playbook and the task. Read [overview](overview.md) for the system, your
 [playbook](playbooks.md) for how to do this kind of work, and the `task.json` in
 your state directory (see below) for the specific task.
 
+For a thin-backend launch, the launch prompt identifies the backend task and
+explicit backend config. Read current state and record progress, questions,
+handoffs, and completion with `pan-task`. Never call GitHub Issue mutation
+commands for a non-GitHub task id or URL. Pan owns shared business lifecycle
+decisions; workers record observations and results durably.
+
 You are Pan doing one task. Be concise and decision-focused. Stay within the
 Domain and the target repository your playbook names.
 

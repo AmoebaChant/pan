@@ -17,14 +17,15 @@ these documents clearer.
 - **The Pan tool repository** (`AmoebaChant/pan`, this repo) — public, reusable,
   user-agnostic. It holds the system contracts, agents, skills, and the runner.
   It contains no user data.
-- **The Pan Domain** — a private GitHub repository plus one GitHub Project that
-  the user creates or connects during onboarding. It holds the user's data:
-  task Issues, workstream narrative, playbook definitions, the per-machine
-  playbook lists, and any domain-specific agent instructions. See
-  [domain](domain.md).
-- **The runner** — one small Node script per machine. It polls the Domain
-  Project for explicitly authorized `ready-for-ai` work matching the playbooks
-  that machine runs, claims it, and launches a Pan worker session. See
+- **The Pan Domain** — a private GitHub repository for knowledge, playbooks,
+  configuration, and domain-specific instructions, plus one selected task
+  backend. GitHub Issues and a Project remain the default backend; a Domain may
+  instead select Todoist. See [domain](domain.md) and
+  [task backends](task-backends.md).
+- **The runner** — one mechanical process per machine. It polls the selected
+  backend for Pan-authorized `ready-for-ai` work within local capacity and
+  launches a Pan worker session. It does not prioritize or reinterpret holds.
+  See
   [runner](runner.md).
 - **Pan worker sessions** — headed `copilot` sessions the runner launches to
   perform a claimed task, following that task's playbook. See
@@ -40,10 +41,10 @@ these documents clearer.
   credentials; the loopback service enforces the configured Domain boundary.
   See [Daily Briefing review UI](briefing-ui.md).
 
-Pan works with exactly **one** Domain at a time. GitHub Issues plus the
-connected Project are canonical for all eligible personal tasks, including
-recurrence. A task is a stable outcome and has no owner in the canonical
-lifecycle; human and AI turns are expressed by its exact next-action state.
+Pan works with exactly **one** Domain at a time. The Domain selects exactly one
+canonical task backend. A task is a stable outcome and has no owner in the
+canonical lifecycle; person assignment remains native backend data, while
+human and AI turns are expressed by its exact next-action state.
 See [Outcome task lifecycle](task-lifecycle.md).
 
 ## The loop
@@ -58,7 +59,7 @@ See [Outcome task lifecycle](task-lifecycle.md).
 3. **Daily Briefing** reviews the live portfolio and workstream context,
    recommends a plan, and, after agreement, dates exactly the selected human
    tasks for today. See [Daily Briefing](daily-briefing.md).
-4. **Runners** poll the Project. When a task is `ready-for-ai/execute`,
+4. **Runners** poll the selected backend. When a task is `ready-for-ai/execute`,
    authorized, dependency-clear, non-recurring, and has a matching playbook and
    safe capacity/resources, a runner claims and launches it. Dates never gate
    or order AI work. See [runner](runner.md).
@@ -92,7 +93,7 @@ Load only what the current job needs; skip the rest until you need it.
 
 ## State rules
 
-GitHub Issues and the Project are the only durable task state. Local runner
+The selected backend is the only durable task state. Local runner
 state proves process/session/workspace ownership only. Workstream Markdown is
 the only durable narrative. Conversation history and browser memory are not
 records. Never build an undeclared second queue, cache the backlog, or treat a

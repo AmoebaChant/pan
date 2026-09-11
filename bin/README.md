@@ -3,6 +3,31 @@
 Node 22+, ESM, built-ins only. GitHub access uses `gh` with argv arrays rather
 than shell command strings.
 
+## Thin task backend
+
+```sh
+node bin/pan-task.js --config /absolute/path/backend.json list
+node bin/pan-task.js --config /absolute/path/backend.json get <id>
+node bin/pan-task.js --config /absolute/path/backend.json create --input @request.json
+node bin/pan-task.js --config /absolute/path/backend.json update <id> --input @request.json
+node bin/pan-task.js --config /absolute/path/backend.json report <id> --input @request.json
+node bin/pan-task.js --config /absolute/path/backend.json complete <id>
+```
+
+The first adapter uses Todoist API v1, fully paginates active tasks, and scopes
+reads/writes to the authenticated user or unassigned tasks plus any configured
+project allowlist. `TODOIST_API_KEY` or `TODOIST_API_TOKEN` is parsed from a
+local credential file without sourcing it.
+
+The mechanical backend runner is separate from Pan's decision-making:
+
+```sh
+node bin/pan-backend-runner.js --config /absolute/path/runner.json --dry-run
+```
+
+It consumes only Pan-authorized `ready-for-ai/execute` records and is disabled
+unless its local config explicitly sets `enabled: true`.
+
 ## Everyday task UI
 
 Public fixture mode:

@@ -9,8 +9,9 @@ and [workstreams](workstreams.md).
 ## Establish the live picture
 
 1. Read optional Domain `pan.md`.
-2. Fully paginate every configured Domain Issue and Project item, preserving
-   canonical Project order.
+2. Fully paginate every task in the selected backend and preserve its
+   canonical ordering. For the GitHub compatibility backend, this means every
+   configured Domain Issue and Project item.
 3. Read every workstream README and every declared external backlog Issue set.
 4. Reconcile the narrow objective facts permitted by triage, then re-read.
 5. Validate recurrence occurrence markers before proposing a date change.
