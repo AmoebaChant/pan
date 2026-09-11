@@ -299,8 +299,8 @@ async function launchTerminal(stateDir, workingDirectory, terminalKind) {
   if (terminalKind === 'macos-terminal') {
     const command = `cd ${shellQuote(workingDirectory)} && exec ${shellQuote(process.execPath)} ${shellQuote(launcher)}`;
     await spawnAndWait('osascript', [
-      '-e', 'tell application "Terminal" to activate',
       '-e', `tell application "Terminal" to do script "${appleScriptEscape(command)}"`,
+      '-e', 'tell application "Terminal" to activate',
     ]);
     return;
   }
