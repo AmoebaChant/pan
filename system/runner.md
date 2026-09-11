@@ -61,13 +61,14 @@ Copilot prompts even when the shell tool itself is explicitly allowed. This
 satisfies Copilot's path-access boundary without granting broad home-directory
 access; tool approvals remain separately controlled by the explicit
 `launchCommand`.
-Before launch, the runner also adds only the resolved working directory and
-owned launch-state directory to Copilot's `trustedFolders` in
-`copilotConfigPath` (default `~/.copilot/config.json`). It preserves leading
-`//` comments, unrelated settings, and existing trusted entries, then reads the
-file back and fails the launch if either exact entry cannot be verified. The
-per-run `trust.json` records which entries were newly added so they can be
-removed precisely after the session no longer needs them.
+Before launch, the runner copies `copilotConfigPath` (default
+`~/.copilot/config.json`) into a private per-run `COPILOT_HOME`. In that copy it
+disables cross-session memory and adds only the resolved working directory and
+owned launch-state directory to `trustedFolders`. It preserves leading `//`
+comments, authentication/account metadata, unrelated settings, and existing
+trusted entries; the user's source config is never modified. The runner reads
+the isolated config back and fails the launch if either exact trust entry cannot
+be verified. Per-run `trust.json` records the isolated home and additions.
 `taskIds`, when non-empty, is an additional exact allowlist applied after
 backend scope and checked again by `launchTask` immediately before terminal
 spawn. It is suitable for a one-task demonstration but does not replace backend

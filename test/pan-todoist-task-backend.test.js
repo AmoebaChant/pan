@@ -292,6 +292,7 @@ async function runnerConfig(root) {
   await mkdir(path.join(root, 'workspace'), { recursive: true });
   await writeFile(playbookPath, '---\nname: test-playbook\n---\n');
   await writeFile(domainInstructionsPath, '# Domain\n');
+  await writeFile(path.join(root, 'copilot-config.json'), '{}\n');
   return {
     machine: 'machine-a',
     stateRoot: root,
@@ -369,8 +370,17 @@ test('live process inventory survives polls and blocks shared workspace capacity
     assert.equal(JSON.parse(await readFile(
       path.join(root, 'runs', 'task-1', 'reports.json'),
     ))[0].content, 'Prior report');
-    const copilotConfig = parseConfigWithHeader(await readFile(config.copilotConfigPath, 'utf8'));
+    const sourceConfig = parseConfigWithHeader(await readFile(config.copilotConfigPath, 'utf8'));
+    assert.deepEqual(sourceConfig, {
+      theme: 'system',
+      trustedFolders: ['/existing'],
+    });
+    const copilotConfig = parseConfigWithHeader(await readFile(
+      path.join(root, 'runs', 'task-1', 'copilot-home', 'config.json'),
+      'utf8',
+    ));
     assert.equal(copilotConfig.theme, 'system');
+    assert.equal(copilotConfig.memory, false);
     assert.deepEqual(copilotConfig.trustedFolders, [
       '/existing',
       config.workingDirectory,
@@ -379,6 +389,7 @@ test('live process inventory survives polls and blocks shared workspace capacity
     const trust = JSON.parse(await readFile(
       path.join(root, 'runs', 'task-1', 'trust.json'),
     ));
+    assert.equal(trust.copilotHome, path.join(root, 'runs', 'task-1', 'copilot-home'));
     assert.deepEqual(trust.added, [
       config.workingDirectory,
       path.join(root, 'runs', 'task-1'),

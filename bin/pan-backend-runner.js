@@ -130,6 +130,22 @@ export async function trustCopilotFolders(
   };
 }
 
+async function prepareCopilotHome(sourceConfigPath, stateDir, folderPaths) {
+  const raw = await readFile(sourceConfigPath, 'utf8');
+  const { header, config } = parseCopilotConfig(raw);
+  config.memory = false;
+  const copilotHome = path.join(stateDir, 'copilot-home');
+  const targetConfigPath = path.join(copilotHome, 'config.json');
+  await mkdir(copilotHome, { recursive: true, mode: 0o700 });
+  await writeFile(
+    targetConfigPath,
+    `${header ? `${header}\n` : ''}${JSON.stringify(config, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  const trust = await trustCopilotFolders(targetConfigPath, folderPaths);
+  return { copilotHome, sourceConfigPath, ...trust };
+}
+
 export async function inspectLocalRuns(
   stateRoot,
   { inspect = inspectProcess } = {},
@@ -321,6 +337,7 @@ function launcherSource({
   stateDir,
   workingDirectory,
   additionalDirectories,
+  copilotHome,
 }) {
   return `import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -352,7 +369,7 @@ for(const directory of allowedDirectories){
 const child=spawn(command[0],[...args,'--interactive',prompt],{
   cwd:${JSON.stringify(workingDirectory)},
   stdio:'inherit',
-  env:{...process.env,PAN_STATE_DIR:stateDir,PAN_WORKING_DIRECTORY:${JSON.stringify(workingDirectory)}},
+  env:{...process.env,COPILOT_HOME:${JSON.stringify(copilotHome)},PAN_STATE_DIR:stateDir,PAN_WORKING_DIRECTORY:${JSON.stringify(workingDirectory)}},
 });
 child.once('error',(error)=>{
   writeFileSync(path.join(stateDir,'exit.json'),JSON.stringify({exitedAt:new Date().toISOString(),error:error.message},null,2)+'\\n',{mode:0o600});
@@ -454,10 +471,10 @@ export async function launchTask(task, config, backend, dependencies = {}) {
       `${JSON.stringify(reports, null, 2)}\n`,
       { mode: 0o600 },
     );
-    const trust = await trustCopilotFolders(
+    const trust = await prepareCopilotHome(
       path.resolve(config.copilotConfigPath || path.join(os.homedir(), '.copilot', 'config.json')),
+      stateDir,
       [path.resolve(config.workingDirectory), stateDir],
-      dependencies,
     );
     await writeFile(
       path.join(stateDir, 'trust.json'),
@@ -489,6 +506,7 @@ export async function launchTask(task, config, backend, dependencies = {}) {
           path.dirname(path.resolve(config.panTaskCommand)),
           path.dirname(path.resolve(config.backendConfig)),
         ],
+        copilotHome: trust.copilotHome,
       }),
       { mode: 0o600 },
     );
