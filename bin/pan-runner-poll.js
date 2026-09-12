@@ -48,18 +48,18 @@ export function pendingFinalizationKind({
   identity,
   sweptEligible = false,
 }) {
-  if (projectStatus === 'in-progress' && claimedBy === identity) return 'active';
-  if (
-    pendingStatus === projectStatus &&
-    (!claimedBy || claimedBy === identity)
-  ) {
-    return 'terminal';
-  }
   if (
     projectStatus === 'blocked' &&
     (!claimedBy || claimedBy === identity)
   ) {
     return 'escalated';
+  }
+  if (projectStatus !== 'paused' && claimedBy === identity) return 'active';
+  if (
+    pendingStatus === projectStatus &&
+    (!claimedBy || claimedBy === identity)
+  ) {
+    return 'terminal';
   }
   // A paused item's pending result is finalizable only when it is unambiguously
   // our finished worker: a passive sweep leaves our claim intact, whereas an
@@ -198,9 +198,9 @@ export function leaseIsFree(item, identity, { now = Date.now(), warn = () => {} 
  *
  *  A slot is occupied by (a) any in-memory active worker recorded in that slot
  *  — including a finalization-pending worker whose directory is not yet free —
- *  and (b) any live Project item that is `in-progress` with a composite
- *  affinity for this machine and a lease that is not expired. A malformed lease
- *  fails closed (occupies); an expired lease frees its slot. This is sufficient
+ *  and (b) any Project item with a composite affinity for this machine unless
+ *  its lease expired or its claim and lease were both cleared. A malformed
+ *  lease or partial release fails closed (occupies). This is sufficient
  *  for the one-runner-per-machine contract: it needs no process, PID, or
  *  filesystem rehydration. The physical same-directory active guard at claim
  *  time remains the final cross-playbook backstop. */
@@ -225,11 +225,11 @@ export function computeMachineSlotOccupancy({
     if (worker.slot) mark(worker.playbook, worker.slot);
   }
   for (const item of items) {
-    if (statusOf(item) !== 'in-progress') continue;
     const { base, slot } = splitAffinity(val(item, FIELD.machine, ''));
     if (slot == null || base !== machine) continue;
+    const claimedBy = val(item, FIELD.claimedBy, '');
     const state = leaseState(item, now);
-    if (state === 'expired') continue;
+    if (state === 'expired' || (state === 'missing' && !claimedBy)) continue;
     if (state === 'malformed') {
       warnMalformedLease(item, 'treating its workspace slot as occupied', warn);
     }
@@ -265,7 +265,7 @@ export function claimConfirmed(item, { identity, lease, machine, sessionId }) {
   );
 }
 
-/** Restore truthful visibility for abandoned running work. */
+/** Restore truthful visibility for unexpectedly stopped workers. */
 async function sweepExpiredItems(
   items,
   {
@@ -281,11 +281,16 @@ async function sweepExpiredItems(
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
-    if (statusOf(item) !== 'in-progress' || isSupervised(item)) continue;
+    if (
+      ownerOf(item) !== 'agent' ||
+      statusOf(item) === 'paused' ||
+      !val(item, FIELD.claimedBy, '') ||
+      isSupervised(item)
+    ) continue;
 
     const state = leaseState(item, now);
     if (state === 'malformed') {
-      warnMalformedLease(item, 'leaving item in-progress', warn);
+      warnMalformedLease(item, 'leaving item unchanged', warn);
       continue;
     }
     if (state !== 'expired') continue;
@@ -300,11 +305,16 @@ async function sweepExpiredItems(
     if (!fresh) continue;
 
     current[index] = fresh;
-    if (statusOf(fresh) !== 'in-progress' || isSupervised(fresh)) continue;
+    if (
+      ownerOf(fresh) !== 'agent' ||
+      statusOf(fresh) === 'paused' ||
+      !val(fresh, FIELD.claimedBy, '') ||
+      isSupervised(fresh)
+    ) continue;
 
     const freshState = leaseState(fresh, now);
     if (freshState === 'malformed') {
-      warnMalformedLease(fresh, 'leaving item in-progress', warn);
+      warnMalformedLease(fresh, 'leaving item unchanged', warn);
       continue;
     }
     if (freshState !== 'expired') continue;

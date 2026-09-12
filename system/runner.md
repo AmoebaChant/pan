@@ -147,21 +147,14 @@ already-provisioned root. Renew `lease-until` periodically while the worker
 runs. If a claim races with another runner (the re-read shows it already
 claimed), skip it.
 
-When a worker's PID dies, the owning runner should **proactively release the
-lease** immediately rather than waiting for it to expire: clear `lease-until` and
-`claimed-by` and set `Status=paused`, keeping `machine` and `session-id` so the
-task can resume on this machine. This collapses the one inconsistent state
-(`lease valid` + dead worker) into `paused` at once. A graceful shutdown/drain
-does the same for the runner's active tasks.
+When a worker's PID dies without an explicit release, the owning runner sets
+`Status=paused`, clears its lease and claim, and preserves `machine` and
+`session-id` so the task can resume on this machine. This applies regardless of
+the task's current lifecycle Status.
 
-A crash the owning runner cannot report itself (the whole runner died) leaves an
-`in-progress` item with an expiring lease; the [poll-time sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)
+A crash the owning runner cannot report itself leaves an item with an expiring
+lease; the [poll-time sweep](project-schema.md#the-paused-sweep-documented-non-owner-write)
 on any runner flips it to `paused` once the lease has expired.
-
-Every poll also clears stale `claimed-by` and `lease-until` values from terminal
-`in-review`, `done`, and `blocked` items after a confirming re-read. This
-finishes cleanup after a crash between non-atomic GitHub field writes without
-changing the terminal lifecycle state.
 
 An operational failure that is not a crash — launch failed, terminal could not
 open — restores the state from which launch was attempted: a new task returns
@@ -340,7 +333,7 @@ native ACL behavior; POSIX mode bits are not assumed there.
   file exists, the runner sets the Issue's `needs-human-since` (and posts a
   comment with the question); when the file is removed, the runner clears
   `needs-human-since`. The worker keeps its lease and slot the whole time.
-- `result.json` — written once when the worker finishes:
+- `result.json` — written once to report task lifecycle state:
   `{ "outcome": "done" | "needs-review", "summary": "…", "details": "…" }`.
   The runner records the summary/details on the Issue and moves the Project item
   to `done` (outcome `done`) or `in-review` (outcome `needs-review`). When it
@@ -353,17 +346,9 @@ native ACL behavior; POSIX mode bits are not assumed there.
   A task reported as `needs-review` stays `in-review` until
   [triage](triage.md) reconciles the merge from the PR link the worker recorded
   on the Issue.
-  Completion writes are idempotent and retried with backoff without consuming
-  worker capacity. Three failures before the terminal Status is committed move
-  the task to `blocked` and post a durable escalation comment. If the terminal
-  Status was committed but lease cleanup was interrupted, the runner keeps
-  retrying only that cleanup and every poll independently repairs stale
-  terminal lease fields. Neither path sets `needs-human-since`, because no live
-  worker remains waiting at a terminal.
-  After a runner restart, an owned attempt with a pending result and a matching
-  `done` or `in-review` Status (or this runner's `blocked` escalation)
-  is re-adopted long enough to confirm cleanup and write `worker.stop`; it is
-  not mistaken for an unrelated manual transition.
+  Result writes are idempotent and retried with backoff while the worker keeps
+  its lease and capacity slot. Neither result outcome stops the worker or
+  releases its lease.
   Supervision accepts result and attention signals only when the worker's launch
   id is still the manifest's current generation and every attempt remains
   verifiable. A manifest advance quarantines the superseded attempt and surfaces
@@ -371,28 +356,30 @@ native ACL behavior; POSIX mode bits are not assumed there.
   evidence and authorize no mutation. Finalization takes the same per-task
   launch lock used by creators and rechecks the manifest immediately before its
   first Issue/Project mutation, closing the signal-discovery-to-write race.
-**Runner-owned completion files:**
+**Completion coordination files:**
 
 - `result-consumed.json` — durable per-attempt receipt written atomically with
-  private permissions only after the terminal Project status and cleared
-  claim/lease are confirmed. It binds the launch, task/session identity, and
+  private permissions only after the Project task state is confirmed while the
+  worker claim remains held. It binds the launch, task/session identity, and
   SHA-256 of the exact `result.json` bytes. Only a valid matching receipt makes
   the preserved result non-blocking for a later `ready` follow-up and
   non-replayable during rehydration. If the runner crashes after remote
   finalization but before receipt creation, startup reruns the idempotent
   finalization and writes the receipt; no separate pending-receipt mechanism is
   used.
-- `worker.stop` — **presence means the task is finalized; the worker should
-  shut down and close its window.** Once the runner has recorded a worker's
-  `result.json` on the Issue and updated the Project (for either outcome), it
-  writes this file only in the owned attempt. The worker session then stops and closes its own terminal
+- `worker-release.json` — written by the worker when its process, terminal,
+  slot, and workspace may be released. It is independent of `result.json`; when
+  both are present, the runner persists the result first. Only this signal
+  authorizes successful lease and slot release.
+- `worker.stop` — **presence means an explicit worker release completed.**
+  After clearing `claimed-by` and `lease-until`, the runner writes this file in
+  the owned attempt. The worker session then stops and closes its own terminal
   window so finished worker windows do not pile up. On macOS the launcher runs
   in place of the login shell (via `exec`), so once it exits the terminal tab
   has no running process and Terminal.app closes it silently — without its "Do
   you want to terminate running processes in this window?" prompt. This fires
-  only on completion — a worker paused on `needs-human.json` keeps its window
-  open for the user to answer in. `worker.stop` is not the result-consumption
-  receipt because stop-only paths may write it without applying a result.
+  only on explicit release — a worker paused on `needs-human.json` keeps its
+  window open for the user to answer in.
 
 ## Human-attention relay
 
@@ -462,7 +449,8 @@ rechecks: one remaining confirmed live attempt is adopted, all-confirmed-dead
 attempts release the task to `paused`, and ambiguity continues to block launch.
 Because a live worker's fixed/slot checkout must never receive a second worker,
 restart reconciliation keeps that directory reserved: a still-ours live worker is
-re-adopted only after an immediate re-read confirms it is `in-progress`+ours or
+re-adopted only after an immediate re-read confirms its session and claim are
+still ours, or
 the exact passive-sweep state (`paused`, our claim, an expired lease), which is
 restored with a fresh claim/lease/`in-progress` and a confirming re-read; on any
 mismatch, concurrent transition, or foreign claim the worker is reserved without
@@ -473,9 +461,8 @@ Finalization itself re-reads the item immediately before any Issue or Project
 write and re-validates the exact session-id and machine/slot affinity (and, for a
 swept finalization, the still-paused, still-claimed, still-lapsed state), so a
 startup snapshot can never authorize a write onto drifted state. A worker it
-cannot verify as alive is not duplicated; its task simply shows up as `paused`
-(once its lease has expired or the runner releases it) and is resumed through the
-normal poll-time path above.
+cannot verify as alive is not duplicated; without an explicit release its task
+becomes `paused` and is resumed through the normal poll-time path above.
 
 ### Workspace hygiene
 

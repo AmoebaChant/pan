@@ -76,7 +76,7 @@ function pollOptions(items, overrides = {}) {
   };
 }
 
-test('pending finalization recognizes active and partial terminal commits', () => {
+test('pending result consumption follows worker ownership, not lifecycle status', () => {
   const identity = 'runner-a';
 
   assert.equal(
@@ -113,7 +113,7 @@ test('pending finalization recognizes active and partial terminal commits', () =
       claimedBy: identity,
       identity,
     }),
-    null,
+    'active',
   );
   assert.equal(
     pendingFinalizationKind({
@@ -373,6 +373,21 @@ test('valid local and foreign leases are left running', async () => {
   assert.deepEqual(result.candidates, []);
 });
 
+test('poll cleanup preserves a verified live review worker lease', async () => {
+  const review = projectItem({ id: 'live-review', number: 24 });
+  review.fields[FIELD.status] = 'in-review';
+  const { options, writes } = pollOptions([review], {
+    active: new Map([[review.itemId, { itemId: review.itemId }]]),
+  });
+
+  const result = await preparePoll([review], options);
+
+  assert.deepEqual(writes, []);
+  assert.deepEqual(result.swept, []);
+  assert.equal(review.fields[FIELD.claimedBy], 'runner-a');
+  assert.equal(review.fields[FIELD.leaseUntil], EXPIRED);
+});
+
 test('malformed lease timestamps are surfaced and not swept', async () => {
   const malformed = [
     'not-a-timestamp',
@@ -467,7 +482,7 @@ test('active and finalization-pending workers occupy their recorded slots', () =
   assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'pooled')].sort(), ['primary', 'secondary']);
 });
 
-test('Project in-progress composite affinities occupy by lease state', () => {
+test('Project composite affinities occupy by lease state, not lifecycle status', () => {
   const warnings = [];
   const items = [
     compositeItem({ id: 'valid', number: 1, slot: 'primary', leaseUntil: VALID }),
@@ -476,6 +491,7 @@ test('Project in-progress composite affinities occupy by lease state', () => {
     compositeItem({ id: 'other-machine', number: 4, machine: 'machine-b', slot: 'primary', leaseUntil: VALID }),
     compositeItem({ id: 'exact', number: 5, slot: null, leaseUntil: VALID }),
   ];
+  items[0].fields[FIELD.status] = 'in-review';
   const occupied = computeMachineSlotOccupancy({
     active: new Map(),
     items,

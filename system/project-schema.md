@@ -95,26 +95,28 @@ Steps:
   For an `agent`-owned task this requires a non-empty `playbook`. For a
   `human`-owned task it just means the user can pick it up.
 - `in-progress` — started and actively being worked. For an `agent`-owned task,
-  this means a runner holds a valid lease and its worker is being supervised.
+  this is the normal status while a runner supervises its worker.
   For a `human`-owned task, it means the user has started work; no runner lease
   is expected. A valid lease remains the single liveness signal for agent work:
   a live runner renews an active worker's lease every ~1/3 of `leaseMinutes`, so
   `lease valid` ⟺ the owning runner is alive and supervising. This includes a
   worker that is **alive but waiting on the user** (`needs-human-since` set):
   the worker still holds its lease and slot, so it is running.
-- `paused` — started but **not running right now**: the lease has expired, so no
-  runner is supervising it. The task is **machine-pinned** — it awaits resume on
+- `paused` — started but **not running right now**. The task is
+  **machine-pinned** — it awaits resume on
   its owning `machine` (recorded in `machine` and `session-id`), which alone can
   reuse the local workspace and copilot session. Distinct from `blocked`:
   `paused` means "was running, will resume on its machine," while `blocked`
   means "waiting on the outside world."
 - `in-review` — the worker finished but a human should look before it is done
-  (for example, a pull request awaiting merge).
+  (for example, a pull request awaiting merge). The worker may remain live and
+  leased until it explicitly releases its session.
 - `done` — complete and confirmed. Pull-request work reaches this only when an
   `in-review` PR is confirmed merged, or when a live worker finishes every
   playbook step including any post-merge gates. A merge alone never completes
-  active or paused work. Setting `Status=done` and closing the Issue go
-  together: whoever marks a task `done` also closes its Issue as completed
+  active or paused work. A runner may briefly retain the completed worker's
+  lease until it explicitly releases. Setting `Status=done` and closing the
+  Issue go together: whoever marks a task `done` also closes its Issue as completed
   (`gh issue close --reason completed`). The terminal-write protocol below
   clears and verifies `next-action-date` before closure and makes
   `Status=done` the final Project write of the transition. Recurring history
@@ -125,8 +127,8 @@ Steps:
   never dispatchable or completed work. Setting `Status=rejected` and closing
   the Issue as not planned (`gh issue close --reason "not planned"`) go
   together under the terminal-write protocol.
-- `blocked` — waiting on something outside the user's control, with no worker
-  holding it. This is the *only* meaning of `blocked`.
+- `blocked` — waiting on something outside the user's control. This is the
+  *only* meaning of `blocked`.
 
 `done` with a completed closure and `rejected` with a not-planned closure are
 the only settled Status/Issue-state pairs for closed work. A completed recurring
@@ -190,7 +192,7 @@ Issue closure, or writes another field.
 
 ```
 ready --claim (agent) / start (human)--> in-progress
-agent in-progress --lease expires (runner crash / force-close / graceful stop)--> paused
+live agent task in any lifecycle Status --worker exits without explicit release--> paused
 paused --owning machine resumes--> in-progress
 in-progress / paused --> in-review / done   (normal completion)
 paused --triage clears resume info--> ready  (manual cross-machine handoff)
@@ -223,25 +225,24 @@ ran it resumes it (from `paused`) until triage deliberately un-pins it back to
   resume the runner clears it and lets the worker re-raise it if the question
   still stands.
 - Nothing writes a field it does not own, with one **documented exception**: the
-  passive `in-progress` + expired-lease → `paused` sweep (below) is a
+  passive claimed + expired-lease → `paused` sweep (below) is a
   visibility-only `Status` write that a non-owner (any runner's poll, or triage)
   may perform. Answering a worker's question never touches `needs-human-since`,
   `claimed-by`, or `lease-until`.
 
 ### The `paused` sweep (documented non-owner write)
 
-For an `agent`-owned task, `in-progress` + an expired lease is the one
-inconsistent state — it claims to be running while no runner supervises it. It
-must be flipped to `paused` so the backlog reflects the truth even after a
-crash. A human-owned `in-progress` task has no lease by design and is never part
-of this sweep:
+For an `agent`-owned task, an expired claim means its worker is no longer
+supervised, regardless of lifecycle Status. It must be flipped to `paused` so
+the backlog reflects the truth even after a crash. Human-owned tasks are never
+part of this sweep:
 
 - **The owning runner** sets its active tasks to `paused` on graceful
   shutdown/drain, and should **proactively release the lease** the moment it
   detects the worker PID is dead rather than waiting for expiry, collapsing the
   inconsistent state into `paused` immediately.
 - **Any runner's poll** (and **triage**, if it notices) performs a passive
-  sweep for agent-owned items: `owner=agent` + `in-progress` + expired-lease →
+  sweep for agent-owned claimed items with an expired lease, setting them to
   `paused`. It re-reads the item before writing, changes only `Status`, and
   leaves active leases and malformed lease timestamps untouched. This is safe,
   non-destructive, and visibility-only, which is why a non-owner is permitted
@@ -263,10 +264,8 @@ of this sweep:
 - On **manual handoff** (triage), clearing `machine` and `session-id` (and any
   `needs-human-since`) and setting `Status=ready` drops the pin so another
   machine starts the task fresh.
-- On **terminal status cleanup**, any runner may clear stale `claimed-by` and
-  `lease-until` from `in-review`, `done`, or `blocked` after re-reading the
-  item. These statuses cannot have a live worker, so retaining a claim would be
-  false provenance rather than ownership.
+- On **explicit worker release**, the owning runner clears `claimed-by` and
+  `lease-until`. Lifecycle Status alone never releases a worker.
 
 ## Dispatch rule
 
@@ -289,9 +288,9 @@ answer stays alive, keeps its lease and its concurrency slot, and stops spending
 budget while it waits; `Status` stays `in-progress` because the worker is still
 running.
 
-Because the lease is the single liveness signal, the waiting-for-human matrix
-collapses to the lease: a valid lease means running (`in-progress`, whether or
-not `needs-human-since` is set), and an expired lease means not running.
+Because the lease is the single liveness signal, a valid lease means the worker
+is supervised regardless of lifecycle Status, and an expired lease means it is
+not.
 
 | lease | `needs-human-since` | `Status` | Meaning |
 | --- | --- | --- | --- |

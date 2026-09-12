@@ -99,6 +99,11 @@ example, a pull request awaiting merge); use `done` when nothing further is
 needed. The runner records this on the Issue and sets the Project status
 accordingly. Do not edit any Project field yourself.
 
+When your process, terminal, slot, and workspace may be released, write an
+empty `worker-release.json` file in your state directory. Write `result.json`
+first when both signals are needed; the runner persists task state before
+honoring the release. A result alone does not stop or release the worker.
+
 ### Pull-request deliverables (link without auto-closing)
 
 GitHub closing keywords bypass Pan's lifecycle and can hide work that remains

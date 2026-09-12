@@ -17,7 +17,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Runner, loadConfig, readIssue } from '../bin/pan-runner.js';
-import { FIELD } from '../bin/pan-runner-poll.js';
+import {
+  computeMachineSlotOccupancy,
+  FIELD,
+  occupiedSlotsForPlaybook,
+} from '../bin/pan-runner-poll.js';
 import { canonicalPathKey } from '../bin/pan-runner-slots.js';
 import {
   atomicWriteJson,
@@ -1203,7 +1207,7 @@ function pooledPlaybook(slots) {
 // Like makeRehydrateRunner but records every Project write and reflects it back
 // into the in-memory items, so a test can assert what rehydrate committed (e.g. a
 // restored claim) and a subsequent read observes it.
-function makeRehydrateRunnerRW(sb, items) {
+function makeRehydrateRunnerRW(sb, items, playbooks = new Map()) {
   const writes = [];
   const byId = new Map(items.map((i) => [i.itemId, i]));
   const deps = {
@@ -1224,7 +1228,7 @@ function makeRehydrateRunnerRW(sb, items) {
         : { state: 'dead', reason: 'test process absent' }
     ),
   };
-  const runner = new Runner(baseCfg(sb), { fields: new Map() }, new Map(), deps);
+  const runner = new Runner(baseCfg(sb), { fields: new Map() }, playbooks, deps);
   return { runner, writes };
 }
 // `owned` controls whether the runner-ownership marker is written into
@@ -2718,6 +2722,99 @@ test('rehydrate keeps a live worker whose item was passively swept to paused, re
   }
 });
 
+test('restart re-adopts a verified live non-in-progress worker', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { sessionId } = seedStateRoot(sb, {
+      number: 25, itemId: 'item-25', workingDir: repoDir, isolated: false, alive: true,
+    });
+    const review = projectItem({
+      itemId: 'item-25', number: 25, status: 'in-review', machine: MACHINE,
+      sessionId, claimedBy: IDENTITY, leaseUntil: VALID_LEASE,
+    });
+    const { runner, writes } = makeRehydrateRunnerRW(sb, [review]);
+
+    await runner.rehydrate();
+    const worker = runner.active.get('item-25');
+    assert.ok(worker);
+    assert.notEqual(worker.occupancyOnly, true);
+    assert.equal(await runner.renewOwnedLease(worker), true);
+    assert.equal(review.fields[FIELD.status], 'in-review');
+    assert.ok(writes.some((write) => write.field === FIELD.leaseUntil && write.value !== ''));
+    assert.equal(writes.some((write) => write.field === FIELD.status), false);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('unexpected exit without release becomes paused', async () => {
+  const sb = makeSandbox();
+  try {
+    const repoDir = path.join(sb.dir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const { sessionId } = seedStateRoot(sb, {
+      number: 26, itemId: 'item-26', workingDir: repoDir, isolated: false, alive: false,
+    });
+    const review = projectItem({
+      itemId: 'item-26', number: 26, status: 'in-review', machine: MACHINE,
+      sessionId, claimedBy: IDENTITY, leaseUntil: VALID_LEASE,
+    });
+    const { runner } = makeRehydrateRunnerRW(sb, [review]);
+
+    await runner.rehydrate();
+
+    assert.equal(review.fields[FIELD.status], 'paused');
+    assert.equal(review.fields[FIELD.claimedBy], '');
+    assert.equal(review.fields[FIELD.leaseUntil], '');
+    assert.equal(review.fields[FIELD.sessionId], sessionId);
+    assert.equal(review.fields[FIELD.machine], MACHINE);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('restart completes partial paused ownership cleanup', async () => {
+  const sb = makeSandbox();
+  try {
+    const slotDir = path.join(sb.dir, 'slot-primary');
+    mkdirSync(slotDir, { recursive: true });
+    const { sessionId } = seedStateRoot(sb, {
+      number: 27, itemId: 'item-27', workingDir: slotDir, isolated: false,
+      alive: false, slot: 'primary', playbook: 'pooled',
+    });
+    const paused = projectItem({
+      itemId: 'item-27', number: 27, status: 'paused',
+      machine: `${MACHINE}::primary`, sessionId,
+      claimedBy: IDENTITY, leaseUntil: VALID_LEASE,
+    });
+    paused.fields[FIELD.playbook] = 'pooled';
+    const { runner } = makeRehydrateRunnerRW(
+      sb,
+      [paused],
+      pooledPlaybook({ primary: slotDir }),
+    );
+
+    await runner.rehydrate();
+
+    assert.equal(paused.fields[FIELD.status], 'paused');
+    assert.equal(paused.fields[FIELD.claimedBy], '');
+    assert.equal(paused.fields[FIELD.leaseUntil], '');
+    assert.equal(paused.fields[FIELD.sessionId], sessionId);
+    assert.equal(paused.fields[FIELD.machine], `${MACHINE}::primary`);
+    const occupancy = computeMachineSlotOccupancy({
+      active: runner.active,
+      items: [paused],
+      machine: MACHINE,
+    });
+    assert.deepEqual([...occupiedSlotsForPlaybook(occupancy, 'pooled')], []);
+    assert.equal(existsSync(slotDir), true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
 test('rehydrate reserves (not adopts) a live worker on a paused UNCLAIMED item', async () => {
   const sb = makeSandbox();
   try {
@@ -3304,7 +3401,7 @@ test('launchWorker blocks an unconsumed prior attempt result', async () => {
   }
 });
 
-test('successful finalization writes a valid result consumption receipt', async () => {
+test('needs-review changes task to in-review without stopping or releasing the worker', async () => {
   const sb = makeSandbox();
   try {
     const sessionId = randomUUID();
@@ -3324,7 +3421,7 @@ test('successful finalization writes a valid result consumption receipt', async 
       claimedBy: IDENTITY,
       leaseUntil: VALID_LEASE,
     });
-    const { runner } = makeFinalizeRunner(sb, { fresh: live, reflect: true });
+    const { runner, calls } = makeFinalizeRunner(sb, { fresh: live, reflect: true });
 
     assert.equal(await runner.finalize(w, path.join(w.panDir, 'result.json')), true);
 
@@ -3352,6 +3449,15 @@ test('successful finalization writes a valid result consumption receipt', async 
       },
     );
     assert.match(receipt.consumedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(live.fields[FIELD.status], 'in-review');
+    assert.equal(live.fields[FIELD.claimedBy], IDENTITY);
+    assert.equal(live.fields[FIELD.leaseUntil], VALID_LEASE);
+    assert.equal(existsSync(path.join(w.panDir, 'worker.stop')), false);
+    assert.notEqual(w.finished, true);
+    assert.equal(calls.some((call) =>
+      call[0] === 'setText' &&
+      (call[1] === FIELD.claimedBy || call[1] === FIELD.leaseUntil) &&
+      call[2] === ''), false);
     if (process.platform !== 'win32') {
       assert.equal(statSync(receiptPath).mode & 0o777, 0o600);
     }
@@ -3360,7 +3466,41 @@ test('successful finalization writes a valid result consumption receipt', async 
   }
 });
 
-test('ready follow-up launches a new generation after its prior result is consumed', async () => {
+test('result is persisted before release when both signals exist', async () => {
+  const sb = makeSandbox();
+  try {
+    const sessionId = randomUUID();
+    const w = await finalizeWorker(sb, {
+      number: 75, itemId: 'item-75', sessionId,
+      result: { outcome: 'needs-review', summary: 'review ready' },
+    });
+    writeFileSync(path.join(w.panDir, 'worker-release.json'), '');
+    const live = projectItem({
+      itemId: 'item-75', number: 75, status: 'in-progress', machine: MACHINE,
+      sessionId, claimedBy: IDENTITY, leaseUntil: VALID_LEASE,
+    });
+    const { runner, calls } = makeFinalizeRunner(sb, { fresh: live, reflect: true });
+
+    runner.active.set(w.itemId, w);
+    await runner.superviseWorker(w);
+
+    const statusWrite = calls.findIndex((call) =>
+      call[0] === 'setSelect' && call[1] === FIELD.status && call[2] === 'in-review');
+    const leaseRelease = calls.findIndex((call) =>
+      call[0] === 'setText' && call[1] === FIELD.leaseUntil && call[2] === '');
+    assert.ok(statusWrite >= 0);
+    assert.ok(leaseRelease > statusWrite);
+    assert.equal(live.fields[FIELD.status], 'in-review');
+    assert.equal(live.fields[FIELD.claimedBy], '');
+    assert.equal(live.fields[FIELD.leaseUntil], '');
+    assert.equal(existsSync(path.join(w.panDir, 'worker.stop')), true);
+    assert.equal(w.finished, true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('claimed follow-up stops a released prior attempt without clearing the new claim', async () => {
   const sb = makeSandbox();
   try {
     const repoDir = path.join(sb.dir, 'repo');
@@ -3384,6 +3524,7 @@ test('ready follow-up launches a new generation after its prior result is consum
     });
     const { runner: finalizer } = makeFinalizeRunner(sb, { fresh: live, reflect: true });
     assert.equal(await finalizer.finalize(w, path.join(w.panDir, 'result.json')), true);
+    writeFileSync(path.join(w.panDir, 'worker-release.json'), '');
     writeFileSync(path.join(w.panDir, 'owner.json'), JSON.stringify({
       panRunnerOwner: true,
       version: 1,
@@ -3400,23 +3541,23 @@ test('ready follow-up launches a new generation after its prior result is consum
       machine: MACHINE,
       sessionId,
     });
+    let project = structuredClone(ready);
+    runner.deps.readItemById = async () => structuredClone(project);
+    runner.deps.setTextField = async (_cfg, _meta, _id, field, value) => {
+      project.fields[field] = value ?? '';
+    };
+    runner.deps.setSelectField = async (_cfg, _meta, _id, field, value) => {
+      project.fields[field] = value;
+    };
 
-    await runner.launchWorker(ready, 'fixed');
-
-    assert.equal(spawned.length, 0, 'the still-live finalized launcher is not replayed');
-    assert.equal(runner.active.get('item-70')?.occupancyOnly, true);
-    assert.equal(existsSync(path.join(w.panDir, 'worker.stop')), true);
-
-    runner.deps.inspectProcess = async () => ({
-      state: 'dead',
-      reason: 'finalized launcher exited',
-    });
-    await runner.superviseTick();
-    assert.equal(runner.active.has('item-70'), false);
-
-    await runner.launchWorker(ready, 'fixed');
+    assert.equal(await runner.claimAndLaunch(ready), true);
 
     assert.equal(spawned.length, 1);
+    assert.equal(existsSync(path.join(w.panDir, 'worker.stop')), true);
+    assert.equal(project.fields[FIELD.status], 'in-progress');
+    assert.equal(project.fields[FIELD.claimedBy], IDENTITY);
+    assert.notEqual(project.fields[FIELD.leaseUntil], '');
+    assert.equal(runner.active.get('item-70')?.finished, false);
     const manifest = JSON.parse(readFileSync(path.join(w.sessionPanDir, 'attempts.json'), 'utf8'));
     assert.equal(manifest.attempts.length, 2);
     assert.notEqual(manifest.currentLaunchId, w.launchId);
@@ -3530,9 +3671,10 @@ test('finalize writes nothing when the live session-id no longer matches', async
     const { runner, calls } = makeFinalizeRunner(sb, { fresh: raced });
     const finalized = await runner.finalize(w, path.join(w.panDir, 'result.json'));
 
-    assert.equal(finalized, true, 'finalize resolves by stopping the worker, not retrying');
+    assert.equal(finalized, true, 'finalize resolves without writing against the new session');
     assert.deepEqual(calls, [], 'no Project or Issue write when the live session changed');
-    assert.equal(w.finished, true);
+    assert.equal(w.occupancyOnly, true);
+    assert.equal(existsSync(path.join(w.panDir, 'worker.stop')), false);
   } finally {
     sb.cleanup();
   }
@@ -3592,10 +3734,10 @@ test('finalize commits the terminal status when the fresh read still matches', a
     const finalized = await runner.finalize(w, path.join(w.panDir, 'result.json'));
 
     assert.equal(finalized, true);
-    // It really wrote the terminal status and cleared the lease fields.
+    // It writes task state while retaining the live worker's lease.
     assert.ok(calls.some((c) => c[0] === 'setSelect' && c[1] === FIELD.status && c[2] === 'done'));
-    assert.ok(calls.some((c) => c[0] === 'setText' && c[1] === FIELD.claimedBy && c[2] === ''));
-    assert.equal(w.finished, true);
+    assert.equal(calls.some((c) => c[0] === 'setText' && c[1] === FIELD.claimedBy && c[2] === ''), false);
+    assert.notEqual(w.finished, true);
   } finally {
     sb.cleanup();
   }
