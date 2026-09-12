@@ -19,22 +19,22 @@ with explicit authorization, empty dependencies, no recorded worker, and free
 capacity, then invokes the configured launcher. It preserves backend order and
 never gates or sorts on `next-action-date`.
 
-The pilot config is deliberately disabled until reviewed:
+The pilot config is deliberately disabled until reviewed. Its normal mode
+loads and validates `playbooks/<machine>/*.md` plus `pan.md` through the GitHub
+Contents API on every poll:
 
 ```json
 {
   "enabled": false,
   "backendConfig": "/absolute/path/to/backend.json",
   "machine": "stable-machine-name",
+  "domainRepo": "owner/private-domain",
   "stateRoot": "/durable/private/path",
-  "workingDirectory": "/trusted/working/path",
-  "playbookName": "tool-development",
-  "playbookPath": "/private/domain/playbooks/machine/tool-development.md",
-  "domainInstructionsPath": "/private/domain/pan.md",
+  "workspaceRoot": "/private/isolated/workspaces",
   "panTaskCommand": "/absolute/trusted/pan/bin/pan-task.js",
   "taskIds": ["optional-exact-task-id-allowlist"],
   "maxConcurrent": 1,
-  "launchCommand": ["copilot", "--model", "gpt-5.6-sol", "--allow-all"]
+  "launchCommand": ["copilot", "--model", "gpt-5.6-sol", "--agent", "pan-worker"]
 }
 ```
 
@@ -48,10 +48,15 @@ implement distributed claims: multiple machines must not poll the same task
 scope. Worker progress/questions/results are recorded through backend
 `report`/`update` operations, not GitHub Issue mutation.
 
-An enabled pilot also requires an absolute trusted `panTaskCommand`, one
-resolved `playbookName` and private `playbookPath`, and private
-`domainInstructionsPath`. The runner snapshots those files plus current native
-reports into the launch state and gives the worker exact read/report commands.
+An enabled pilot also requires an absolute trusted `panTaskCommand`. The runner
+requires the selected task's exact playbook to exist and have nonzero capacity,
+resolves its fixed directory, first free `workspaceSlots` entry, or an isolated
+directory under `workspaceRoot`, and snapshots the live playbook, Domain
+instructions, their blob identities, and current native reports. A missing,
+disabled, malformed, full, or workspace-blocked playbook is reported in poll
+output and never falls back. Global and per-playbook capacities both apply.
+The older fixed `playbookPath` configuration remains a compatibility mode for
+bounded demonstrations.
 The headed Copilot command receives `--add-dir` only for the resolved working
 directory, its owned launch-state directory, the configured `pan-task`
 directory, the backend-config directory, and the directory containing the
@@ -60,7 +65,10 @@ worker's exact `pan-task` command invokes that executable; without path access,
 Copilot prompts even when the shell tool itself is explicitly allowed. This
 satisfies Copilot's path-access boundary without granting broad home-directory
 access; tool approvals remain separately controlled by the explicit
-`launchCommand`.
+`launchCommand`. Every launch selects the packaged `pan-worker` agent and
+`gpt-5.6-sol`; another explicit agent or model is rejected. Permission flags
+remain machine policy (for example the existing `standard` or `yolo` binding),
+not playbook prose interpreted as a permission language.
 Before launch, the runner copies `copilotConfigPath` (default
 `~/.copilot/config.json`) into a private per-run `COPILOT_HOME`. In that copy it
 disables cross-session memory and adds only the resolved working directory and

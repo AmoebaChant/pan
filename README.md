@@ -16,6 +16,17 @@ and idempotent migration/recovery tools.
 
 Start at [`system/overview.md`](system/overview.md).
 
+Pan ships two role bootstraps: `pan-chief` is the one persistent Domain
+chief-of-staff session, while `pan-worker` executes one runner-selected task.
+The older `pan` agent is a temporary compatibility alias for `pan-chief`.
+
+Start or resume the chief without embedding backend details in its prompt:
+
+```sh
+pan-chief start --config /absolute/path/to/machine-binding.json
+pan-chief resume --config /absolute/path/to/machine-binding.json
+```
+
 ## Onboard to Pan
 
 **"Onboard to Pan" or "set up Pan" means running the guided setup** — not
@@ -33,6 +44,10 @@ Each machine runs one runner that claims explicitly authorized
 ```sh
 node bin/pan-runner.js --config <path-to-local-config> [--once]
 ```
+
+The experimental Todoist-backed pilot uses
+`node bin/pan-backend-runner.js --config <path>`. Its normal configuration
+loads the machine's live Domain playbooks and always launches `pan-worker`.
 
 See [`system/runner.md`](system/runner.md) for the full contract.
 

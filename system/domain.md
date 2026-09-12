@@ -59,10 +59,17 @@ in GitHub, not in local config.
 
 By convention this config is a single JSON file under `~/.config/pan/`, named for
 the machine (e.g. `~/.config/pan/<machine>.json`), with at least `domainRepo`
-(`<owner>/<repo>`) and `project` (`<owner>/<number>`). Both the runner and
-interactive Pan sessions read it to learn their Domain, so an interactive session
-never needs the Domain injected into its opening prompt — it discovers the
-binding from this file at startup.
+(<owner>/<repo>`) and `project` (`<owner>/<number>`). An experimental thin
+backend binding may additionally name absolute `taskBackendConfig`,
+`panTaskCommand`, `panCheckout`, and `runnerConfig` paths plus a stable
+`chiefSessionName`. These are machine-local locations, never credentials.
+
+The chief discovers an explicit `PAN_CONFIG` first. Without it, it uses the
+single applicable JSON binding under `~/.config/pan/`; ambiguity fails closed.
+It verifies the Domain named in the domain-only opening prompt against
+`domainRepo`, then reads live `task-backend.json` and `pan.md`. Both the runner
+and interactive Pan sessions therefore learn operational details from the
+binding and Domain rather than embedding them in prompts.
 
 The runner may also configure `stateRoot` and `workspaceRoot`. `stateRoot`
 contains authoritative local session and launch-generation records and defaults

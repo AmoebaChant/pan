@@ -15,6 +15,10 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { inspectProcess } from './pan-runner-runtime.js';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
+import {
+  loadBackendPlaybooks,
+  resolvePlaybookWorkspace,
+} from './pan-backend-playbooks.js';
 
 const RUN_VERSION = 1;
 const RELEASE_SIGNAL = 'worker-release.json';
@@ -31,6 +35,80 @@ export function selectReadyForAi(tasks) {
     && task.worker == null
     && task.recurring !== true,
   );
+}
+
+export async function planBackendTasks({
+  tasks,
+  inventory,
+  config,
+  playbooks,
+}) {
+  const allowedTaskIds = new Set((config.taskIds ?? []).map(String));
+  const candidates = selectReadyForAi(tasks).filter((task) =>
+    !inventory.live.some((run) => run.taskId === task.id)
+    && (allowedTaskIds.size === 0 || allowedTaskIds.has(String(task.id))),
+  );
+  const globalRemaining = Math.max(
+    0,
+    Number(config.maxConcurrent ?? 1) - inventory.live.length,
+  );
+  const playbookCounts = new Map();
+  const busyPaths = new Set();
+  const occupiedSlots = new Map();
+  for (const run of [
+    ...inventory.live,
+    ...inventory.uncertain,
+    ...(inventory.unexpected ?? []),
+    ...inventory.stale.filter((entry) => !entry.releaseRequested),
+  ]) {
+    if (run.workingDirectory) busyPaths.add(path.resolve(run.workingDirectory));
+    if (run.playbookName) {
+      playbookCounts.set(run.playbookName, (playbookCounts.get(run.playbookName) || 0) + 1);
+      if (run.workspaceSlot) {
+        const slots = occupiedSlots.get(run.playbookName) || new Set();
+        slots.add(run.workspaceSlot);
+        occupiedSlots.set(run.playbookName, slots);
+      }
+    }
+  }
+  const plans = [];
+  const skipped = [];
+  for (const task of candidates) {
+    if (plans.length >= globalRemaining) {
+      skipped.push({ id: task.id, reason: 'global capacity is full' });
+      continue;
+    }
+    const playbook = playbooks.get(task.playbook);
+    if (!playbook) {
+      skipped.push({ id: task.id, reason: `playbook ${JSON.stringify(task.playbook)} is missing` });
+      continue;
+    }
+    const count = (playbookCounts.get(playbook.name) || 0)
+      + plans.filter((plan) => plan.playbook.name === playbook.name).length;
+    if (playbook.capacity === 0) {
+      skipped.push({ id: task.id, reason: `playbook ${playbook.name} is disabled` });
+      continue;
+    }
+    if (count >= playbook.capacity) {
+      skipped.push({ id: task.id, reason: `playbook ${playbook.name} capacity is full` });
+      continue;
+    }
+    const workspace = resolvePlaybookWorkspace(playbook, task.id, {
+      workspaceRoot: config.workspaceRoot,
+      occupiedSlots,
+    });
+    if (!workspace) {
+      skipped.push({ id: task.id, reason: `playbook ${playbook.name} has no available workspace` });
+      continue;
+    }
+    if (busyPaths.has(workspace.workingDirectory)
+      || plans.some((plan) => plan.workingDirectory === workspace.workingDirectory)) {
+      skipped.push({ id: task.id, reason: `workspace ${workspace.workingDirectory} is busy` });
+      continue;
+    }
+    plans.push({ task, playbook, ...workspace });
+  }
+  return { candidates, plans, skipped };
 }
 
 export async function pollBackendTasks({
@@ -563,7 +641,7 @@ export async function launchTask(task, config, backend, dependencies = {}) {
   if (!lock) return false;
   const sessionId = randomUUID();
   const stateDir = runDirectory(stateRoot, task.id);
-  const command = config.launchCommand;
+  let command = config.launchCommand;
   let starting;
   let terminalStarted = false;
   try {
@@ -574,19 +652,36 @@ export async function launchTask(task, config, backend, dependencies = {}) {
     if (modelIndex < 0 || command[modelIndex + 1] !== 'gpt-5.6-sol') {
       throw new Error('launchCommand must select --model gpt-5.6-sol');
     }
+    const agentIndex = command.indexOf('--agent');
+    if (agentIndex >= 0 && command[agentIndex + 1] !== 'pan-worker') {
+      throw new Error('launchCommand must select --agent pan-worker');
+    }
+    if (agentIndex < 0) command = [...command, '--agent', 'pan-worker'];
     if (task.playbook !== config.playbookName) {
       throw new Error(`task playbook must be ${config.playbookName}`);
     }
-    for (const field of ['panTaskCommand', 'playbookPath', 'domainInstructionsPath']) {
+    for (const field of ['panTaskCommand']) {
       if (!path.isAbsolute(config[field] || '')) {
         throw new Error(`${field} must be an absolute path`);
       }
     }
+    if (config.playbookText == null && !path.isAbsolute(config.playbookPath || '')) {
+      throw new Error('playbookPath must be absolute when playbookText is not provided');
+    }
+    if (
+      config.domainInstructionsText == null
+      && !path.isAbsolute(config.domainInstructionsPath || '')
+    ) {
+      throw new Error(
+        'domainInstructionsPath must be absolute when domainInstructionsText is not provided',
+      );
+    }
     await rm(stateDir, { recursive: true, force: true });
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await mkdir(path.resolve(config.workingDirectory), { recursive: true });
     const [playbook, domainInstructions, reports] = await Promise.all([
-      readFile(config.playbookPath, 'utf8'),
-      readFile(config.domainInstructionsPath, 'utf8'),
+      config.playbookText ?? readFile(config.playbookPath, 'utf8'),
+      config.domainInstructionsText ?? readFile(config.domainInstructionsPath, 'utf8'),
       backend.reports ? backend.reports(task.id) : [],
     ]);
     const run = {
@@ -594,6 +689,10 @@ export async function launchTask(task, config, backend, dependencies = {}) {
       taskId: task.id,
       sessionId,
       machine: config.machine,
+      playbookName: config.playbookName,
+      playbookSha: config.playbookSha ?? null,
+      domainSha: config.domainSha ?? null,
+      workspaceSlot: config.workspaceSlot ?? null,
       workingDirectory: path.resolve(config.workingDirectory),
       createdAt: new Date().toISOString(),
     };
@@ -642,6 +741,7 @@ export async function launchTask(task, config, backend, dependencies = {}) {
           path.dirname(process.execPath),
           path.dirname(path.resolve(config.panTaskCommand)),
           path.dirname(path.resolve(config.backendConfig)),
+          ...(config.additionalDirectories ?? []).map((directory) => path.resolve(directory)),
         ],
         copilotHome: trust.copilotHome,
       }),
@@ -727,14 +827,21 @@ export async function runBackendRunner(argv, dependencies = {}) {
   if (values.help) return { help: true };
   if (!values.config) throw new Error('--config is required');
   const config = JSON.parse(await readFile(path.resolve(values.config), 'utf8'));
-  for (const field of ['backendConfig', 'machine', 'stateRoot', 'workingDirectory']) {
+  for (const field of ['backendConfig', 'machine', 'stateRoot']) {
     if (!String(config[field] || '').trim()) throw new Error(`${field} is required`);
   }
   if (config.enabled !== true && !values['dry-run']) {
     throw new Error('backend runner is disabled; set enabled=true only after review');
   }
-  if (!values['dry-run']) {
-    for (const field of ['playbookName', 'panTaskCommand', 'playbookPath', 'domainInstructionsPath']) {
+  const dynamicPlaybooks = Boolean(config.domainRepo);
+  if (!values['dry-run'] && !String(config.panTaskCommand || '').trim()) {
+    throw new Error('panTaskCommand is required');
+  }
+  if (!dynamicPlaybooks && !String(config.workingDirectory || '').trim()) {
+    throw new Error('workingDirectory is required');
+  }
+  if (!dynamicPlaybooks && !values['dry-run']) {
+    for (const field of ['playbookName', 'playbookPath', 'domainInstructionsPath']) {
       if (!String(config[field] || '').trim()) throw new Error(`${field} is required`);
     }
   }
@@ -750,6 +857,50 @@ export async function runBackendRunner(argv, dependencies = {}) {
       });
       if (!values['dry-run']) {
         await reconcileStaleRuns(path.resolve(config.stateRoot), inventory.stale, backend);
+      }
+      if (dynamicPlaybooks) {
+        const loaded = await loadBackendPlaybooks(config, dependencies);
+        const tasks = await backend.list();
+        const planned = await planBackendTasks({
+          tasks,
+          inventory,
+          config,
+          playbooks: loaded.playbooks,
+        });
+        const launched = [];
+        if (!values['dry-run']) {
+          for (const plan of planned.plans) {
+            const perPlaybookCommand = config.playbookLaunchCommands?.[plan.playbook.name];
+            const launchConfig = {
+              ...config,
+              workingDirectory: plan.workingDirectory,
+              workspaceSlot: plan.workspaceSlot,
+              playbookName: plan.playbook.name,
+              playbookText: plan.playbook.text,
+              playbookSha: plan.playbook.sha,
+              domainInstructionsText: loaded.domainInstructions,
+              domainSha: loaded.domainSha,
+              launchCommand: perPlaybookCommand || config.launchCommand,
+            };
+            if (await (dependencies.launch || ((task) =>
+              launchTask(task, launchConfig, backend, dependencies)))(plan.task) !== false) {
+              launched.push(plan.task.id);
+            }
+          }
+        }
+        return {
+          observed: tasks.length,
+          candidates: planned.candidates.length,
+          selected: planned.plans.map((plan) => plan.task.id),
+          launched,
+          skipped: planned.skipped,
+          playbooks: [...loaded.playbooks.values()].map((playbook) => ({
+            name: playbook.name,
+            capacity: playbook.capacity,
+            sha: playbook.sha,
+          })),
+          domainSha: loaded.domainSha,
+        };
       }
       const activeTaskIds = new Set(inventory.live.map((run) => run.taskId));
       const workspace = path.resolve(config.workingDirectory);

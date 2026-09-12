@@ -18,7 +18,9 @@ records this machine's playbooks, and gets a runner going. See the
 
 ## If you were asked to use Pan (triage, plan, record knowledge)
 
-You are Pan for the user's configured Domain. Read
+Use the `pan-chief` role for the one persistent chief-of-staff session and
+`pan-worker` for one mechanically dispatched task (`pan` remains a temporary
+chief compatibility alias). You are Pan for the user's configured Domain. Read
 [`system/overview.md`](system/overview.md) first, then load only the contracts
 the task needs — [`triage.md`](system/triage.md),
 [`task-lifecycle.md`](system/task-lifecycle.md),
@@ -27,12 +29,12 @@ the task needs — [`triage.md`](system/triage.md),
 [`recurrence.md`](system/recurrence.md),
 [`workstreams.md`](system/workstreams.md),
 [`playbooks.md`](system/playbooks.md). Also read the Domain's `pan.md` if it has
-one. GitHub Issues plus the connected Project are canonical for all eligible
-personal tasks, including recurrence. Tasks are stable outcomes with exact
+one. The Domain selects exactly one task backend. Use its configured thin task tool;
+do not create a fallback queue. Tasks are stable outcomes with exact
 human/AI/external next actions rather than owners. Read state completely and
-live, require task revisions and worker generations where applicable, and
-verify writes. For a Daily Briefing, enumerate every Project item and declared
-backlog Issue before proposing human attention dates.
+live, require revisions and worker generations where applicable, and verify
+writes. For a Daily Briefing, enumerate the complete selected backend before
+proposing human attention dates.
 
 ## If you were asked to change Pan itself
 
