@@ -82,7 +82,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import {
   claimConfirmed,
-  cleanTerminalLeaseFields,
   computeMachineSlotOccupancy,
   FIELD,
   findProjectItemForTask,
@@ -1147,16 +1146,12 @@ export class Runner {
     return this.active.size;
   }
   capacityCount() {
-    let count = 0;
-    for (const worker of this.active.values()) {
-      if (!worker.finalizationPending) count += 1;
-    }
-    return count;
+    return this.active.size;
   }
   activeForPlaybook(name) {
     let n = 0;
     for (const w of this.active.values()) {
-      if (w.playbook === name && !w.finalizationPending) n += 1;
+      if (w.playbook === name) n += 1;
     }
     return n;
   }
@@ -1169,32 +1164,6 @@ export class Runner {
 
   async pollAndClaim() {
     const items = await this.deps.readAllItems(this.cfg, this.meta);
-    const cleaned = await cleanTerminalLeaseFields(items, {
-      readItem: (itemId) => this.deps.readItemById(itemId),
-      clearFields: async (itemId) => {
-        await this.deps.setTextField(
-          this.cfg,
-          this.meta,
-          itemId,
-          FIELD.leaseUntil,
-          '',
-        );
-        await this.deps.setTextField(
-          this.cfg,
-          this.meta,
-          itemId,
-          FIELD.claimedBy,
-          '',
-        );
-      },
-      warn: logErr,
-    });
-    for (const item of cleaned) {
-      log(
-        `${item.issue?.number ? `#${item.issue.number}` : item.itemId} ` +
-          'cleared stale terminal lease fields',
-      );
-    }
     const { candidates, swept } = await preparePoll(items, {
       cfg: this.cfg,
       playbooks: this.playbooks,
@@ -2045,37 +2014,53 @@ export class Runner {
         existsSync(path.join(live.signalDir, 'result.json'))
         && await resultIsConsumed(live)
       ) {
-        try {
-          await privateWriteFile(path.join(live.signalDir, 'worker.stop'), '');
-        } catch (e) {
-          logErr(`could not re-signal worker.stop for #${number}: ${e.message}`);
+        if (existsSync(path.join(live.signalDir, 'worker-release.json'))) {
+          try {
+            await privateWriteFile(path.join(live.signalDir, 'worker.stop'), '');
+          } catch (error) {
+            await this.handleOperationalFailure(
+              { itemId: item.itemId, issueNumber: number, url: item.issue?.url, repo: item.issue?.repo },
+              `could not stop released prior attempt: ${error.message}`,
+              { returnStatus: 'ready' },
+            );
+            return;
+          }
+          log(`stopped released prior launch ${live.launchId} for #${number}; continuing follow-up`);
+        } else {
+          const existing = this.workerForAttempt(
+            item,
+            playbookName,
+            sessionRoot,
+            live,
+            { hadNeedsHuman: !!val(item, FIELD.needsHumanSince, '') },
+          );
+          this.active.set(item.itemId, existing);
+          this.resumeWorkspaces.delete(item.itemId);
+          if (await this.reAdoptLiveWorker(existing)) {
+            log(`re-adopted consumed launch ${live.launchId} for #${number}; awaiting worker release`);
+          } else {
+            existing.occupancyOnly = true;
+            log(`reserved consumed launch ${live.launchId} for #${number} until its launcher exits`);
+          }
+          return;
         }
-        const reserved = this.workerForAttempt(
-          item,
-          playbookName,
-          sessionRoot,
-          live,
-          { hadNeedsHuman: !!val(item, FIELD.needsHumanSince, '') },
-        );
-        reserved.occupancyOnly = true;
-        this.active.set(item.itemId, reserved);
+      }
+      if (
+        !existsSync(path.join(live.signalDir, 'result.json'))
+        || !(await resultIsConsumed(live))
+      ) {
+        const adopted = this.workerForAttempt(item, playbookName, sessionRoot, live, {
+          hadNeedsHuman: !!val(item, FIELD.needsHumanSince, ''),
+        });
+        adopted.lastRenew = 0;
+        this.active.set(item.itemId, adopted);
         this.resumeWorkspaces.delete(item.itemId);
         log(
-          `reserved consumed launch ${live.launchId} for #${number} until its launcher exits`,
+          `adopted live launch ${live.launchId} for #${number} ` +
+            `(launcher pid ${live.owner.pid}); no new worker started`,
         );
         return;
       }
-      const adopted = this.workerForAttempt(item, playbookName, sessionRoot, live, {
-        hadNeedsHuman: !!val(item, FIELD.needsHumanSince, ''),
-      });
-      adopted.lastRenew = 0;
-      this.active.set(item.itemId, adopted);
-      this.resumeWorkspaces.delete(item.itemId);
-      log(
-        `adopted live launch ${live.launchId} for #${number} ` +
-          `(launcher pid ${live.owner.pid}); no new worker started`,
-      );
-      return;
     }
     if (!recoveredAttempt && unconsumedResultAttempts.length > 0) {
       this.registerAttemptConflict(
@@ -2250,7 +2235,7 @@ export class Runner {
         ? `Read ${path.join(panDir, 'pan.md')} for Domain-specific instructions and apply them.`
         : ``,
       `Your task is in ${path.join(panDir, 'task.json')} and your playbook "${playbookName}" is in ${path.join(panDir, 'playbook.md')}.`,
-      `Signal that you need the user by writing ${path.join(panDir, 'needs-human.json')} (delete it once resolved), and write ${path.join(panDir, 'result.json')} exactly once when finished.`,
+      `Signal that you need the user by writing ${path.join(panDir, 'needs-human.json')} (delete it once resolved). Write ${path.join(panDir, 'result.json')} exactly once to report task state, and write ${path.join(panDir, 'worker-release.json')} when this worker session and workspace may be released.`,
       `Do not edit any GitHub Project field yourself. Begin.`,
     ].filter(Boolean).join(' ');
   }
@@ -2327,7 +2312,8 @@ export class Runner {
    * brief flicker to copilot's title after each of its (infrequent) updates.
    *
    * Finally, the launcher watches for `worker.stop` in the state directory,
-   * which the runner writes once it has finalized the task. On that signal the
+   * which the runner writes once it has honored an explicit worker release. On
+   * that signal the
    * launcher stops copilot and closes its own terminal window so finished worker
    * windows do not accumulate: on macOS it asks Terminal.app to close the window
    * matching its tty; on Windows it simply exits 0 and Windows Terminal
@@ -2494,8 +2480,8 @@ function closeWindow() {
   } catch {}
 }
 
-// The runner writes worker.stop into the state directory after it finalizes the
-// task (records the result and updates the Project). That is our cue to shut
+// The runner writes worker.stop after it honors an explicit worker release.
+// That is our cue to shut
 // copilot down and close this window so finished worker windows don't pile up.
 // We exit 0 so Windows Terminal auto-closes the tab; the detached closer handles
 // macOS.
@@ -2707,7 +2693,12 @@ child.on('exit', (code, signal) => {
       return true;
     }
     const claimedBy = fresh ? val(fresh, FIELD.claimedBy, '') : '';
-    if (!fresh || claimedBy !== this.cfg.identity || statusOf(fresh) !== 'in-progress') {
+    if (
+      !fresh ||
+      claimedBy !== this.cfg.identity ||
+      val(fresh, FIELD.sessionId, '') !== w.sessionId ||
+      !affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine)
+    ) {
       await this.handleOperationalFailure(w, 'lease lost', { releaseFields: false });
       return false;
     }
@@ -2853,20 +2844,29 @@ child.on('exit', (code, signal) => {
     } else {
       if (existsSync(path.join(owned.signalDir, 'result.json'))) {
         this.applyAttemptToWorker(w, owned);
-        const finalized = await this.finalize(w, path.join(w.panDir, 'result.json'));
-        if (finalized) return;
+        if (!(await resultIsConsumed(owned))) {
+          const consumed = await this.finalize(w, path.join(w.panDir, 'result.json'));
+          if (w.occupancyOnly || (!consumed && w.finalizationPending)) return;
+        }
       } else if (
         w.launchPending
         && Date.now() - w.startedAt <= DEFAULTS.workerStartGraceSeconds * 1000
       ) {
         return;
-      } else {
-        await this.pauseWorker(w, 'all recorded launch attempts are confirmed dead');
+      }
+      if (
+        existsSync(path.join(owned.signalDir, 'worker-release.json')) &&
+        (!existsSync(path.join(owned.signalDir, 'result.json')) || await resultIsConsumed(owned))
+      ) {
+        await this.releaseWorker(w);
         return;
       }
+      await this.pauseWorker(w, 'all recorded launch attempts are confirmed dead');
+      return;
     }
 
     const resultPath = path.join(w.panDir, 'result.json');
+    const releasePath = path.join(w.panDir, 'worker-release.json');
     const needsHumanPath = path.join(w.panDir, 'needs-human.json');
 
     // A valid result enters finalization, which performs its own ownership
@@ -2874,17 +2874,29 @@ child.on('exit', (code, signal) => {
     // lease or consume capacity; it only retries its idempotent terminal writes.
     if (
       existsSync(resultPath) &&
+      !(await resultIsConsumed(owned)) &&
       Date.now() >= (w.nextFinalizeAttemptAt || 0)
     ) {
-      const finalized = await this.finalize(w, resultPath);
-      if (finalized) return;
+      await this.finalize(w, resultPath);
+      if (w.occupancyOnly) return;
     }
-    if (w.finalizationPending) return;
+    if (w.releasePending) {
+      await this.releaseWorker(w);
+      return;
+    }
 
     // At the renewal cadence re-read the item before Project-mutating
     // supervision. If another runner took the claim while we weren't looking,
     // stop without writing its fields.
     if (!(await this.renewOwnedLease(w))) return;
+    if (w.finalizationPending) return;
+
+    if (existsSync(releasePath)) {
+      if (!existsSync(resultPath) || await resultIsConsumed(owned)) {
+        await this.releaseWorker(w);
+        return;
+      }
+    }
 
     // Human-attention relay. On a partial/unreadable write (present file that
     // fails to parse, or no usable question), do NOT set needs-human-since,
@@ -3020,7 +3032,8 @@ child.on('exit', (code, signal) => {
       logErr(
         `finalization for #${w.issueNumber} stopped because its Project item disappeared`,
       );
-      await this.stopFinalizedWorker(w);
+      w.finalizationPending = false;
+      w.occupancyOnly = true;
       return true;
     }
 
@@ -3039,9 +3052,10 @@ child.on('exit', (code, signal) => {
       logErr(
         `finalization for #${w.issueNumber} stopped: live session/affinity no longer ` +
           `matches this worker (session=${JSON.stringify(freshSessionId)}, ` +
-          `machine=${JSON.stringify(freshMachine)}); stopping without writes`,
+          `machine=${JSON.stringify(freshMachine)}); reserving without writes`,
       );
-      await this.stopFinalizedWorker(w);
+      w.finalizationPending = false;
+      w.occupancyOnly = true;
       return true;
     }
 
@@ -3055,7 +3069,7 @@ child.on('exit', (code, signal) => {
 
     if (w.finalizationEscalated && currentStatus === 'blocked') {
       try {
-        await this.clearAndConfirmTerminalFields(w, 'blocked');
+        await this.confirmTaskState(w, 'blocked');
       } catch (e) {
         return this.handleFinalizationFailure(w, e, status);
       }
@@ -3068,8 +3082,7 @@ child.on('exit', (code, signal) => {
       } catch (e) {
         return this.handleFinalizationFailure(w, e, status);
       }
-      await this.stopFinalizedWorker(w);
-      return true;
+      return this.finishFinalization(w, 'blocked', resultPath, resultBytes);
     }
     // Finalize a passively-swept paused item only when it is still our finished
     // worker: a lapsed lease and our surviving claim on a still-paused item (an
@@ -3080,17 +3093,16 @@ child.on('exit', (code, signal) => {
       && claimedBy === this.cfg.identity
       && leaseExpiredOrMissing(fresh);
     if (
-      (claimedBy && claimedBy !== this.cfg.identity) ||
-      (currentStatus === 'in-progress' &&
-        claimedBy !== this.cfg.identity) ||
-      (currentStatus !== 'in-progress' && currentStatus !== status && !sweptPausedOurs)
+      claimedBy !== this.cfg.identity ||
+      (currentStatus === 'paused' && !sweptPausedOurs)
     ) {
       logErr(
         `finalization for #${w.issueNumber} lost ownership ` +
           `(status=${currentStatus}, claimed-by=${JSON.stringify(claimedBy)}); ` +
-          'stopping without writes',
+          'reserving without writes',
       );
-      await this.stopFinalizedWorker(w);
+      w.finalizationPending = false;
+      w.occupancyOnly = true;
       return true;
     }
 
@@ -3108,7 +3120,7 @@ child.on('exit', (code, signal) => {
         await this.deps.ensureIssueClosed(this.deps.gh, this.issueRepoOf(w), w.issueNumber);
       }
       await this.deps.setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, status);
-      await this.clearAndConfirmTerminalFields(w, status);
+      await this.confirmTaskState(w, status);
     } catch (e) {
       return this.handleFinalizationFailure(w, e, status);
     }
@@ -3118,7 +3130,7 @@ child.on('exit', (code, signal) => {
         await this.recordFinalizationEscalation(
           w,
           w.lastFinalizationError || 'terminal finalization failed',
-          `Pan recovered the task in ${status} and confirmed its lease cleanup.`,
+          `Pan recovered the task state in ${status}; the worker remains live until release.`,
         );
       } catch (e) {
         return this.handleFinalizationFailure(w, e, status);
@@ -3151,25 +3163,22 @@ child.on('exit', (code, signal) => {
     }
     w.finalizationFailures = 0;
     w.nextFinalizeAttemptAt = 0;
+    w.finalizationPending = false;
     this.failCounts.delete(w.itemId);
-    await this.stopFinalizedWorker(w);
-    log(`#${w.issueNumber} → ${status}`);
+    log(`#${w.issueNumber} task state → ${status}; awaiting worker release`);
     return true;
   }
 
-  async clearAndConfirmTerminalFields(w, expectedStatus) {
-    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
-    await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+  async confirmTaskState(w, expectedStatus) {
     const confirmed = await this.deps.readItemById(w.itemId);
     if (
       !confirmed ||
       statusOf(confirmed) !== expectedStatus ||
-      val(confirmed, FIELD.claimedBy, '') ||
-      val(confirmed, FIELD.leaseUntil, '')
+      val(confirmed, FIELD.claimedBy, '') !== this.cfg.identity ||
+      val(confirmed, FIELD.sessionId, '') !== w.sessionId ||
+      !affinityMatchesMachine(val(confirmed, FIELD.machine, ''), this.cfg.machine)
     ) {
-      throw new Error(
-        `GitHub did not confirm ${expectedStatus} with cleared lease fields.`,
-      );
+      throw new Error(`GitHub did not confirm ${expectedStatus} while retaining worker ownership.`);
     }
   }
 
@@ -3205,19 +3214,16 @@ child.on('exit', (code, signal) => {
     const claimedBy = fresh ? val(fresh, FIELD.claimedBy, '') : '';
     if (
       !fresh ||
-      (claimedBy && claimedBy !== this.cfg.identity) ||
-      (currentStatus === 'in-progress' &&
-        claimedBy !== this.cfg.identity) ||
-      (currentStatus !== 'in-progress' &&
-        currentStatus !== targetStatus &&
-        !(w.finalizationEscalated && currentStatus === 'blocked'))
+      claimedBy !== this.cfg.identity ||
+      currentStatus === 'paused'
     ) {
       logErr(
         `finalization escalation for #${w.issueNumber} lost ownership ` +
           `(status=${currentStatus || 'missing'}, ` +
-          `claimed-by=${JSON.stringify(claimedBy)}); stopping without writes`,
+          `claimed-by=${JSON.stringify(claimedBy)}); reserving without writes`,
       );
-      await this.stopFinalizedWorker(w);
+      w.finalizationPending = false;
+      w.occupancyOnly = true;
       return true;
     }
 
@@ -3227,8 +3233,7 @@ child.on('exit', (code, signal) => {
         await this.recordFinalizationEscalation(
           w,
           reason,
-          `The task reached ${currentStatus}, but Pan is still retrying cleanup ` +
-            'of its terminal lease fields.',
+          `The task reached ${currentStatus}, but Pan is still retrying its result receipt.`,
         );
       } catch (e) {
         logErr(
@@ -3248,14 +3253,14 @@ child.on('exit', (code, signal) => {
         FIELD.status,
         'blocked',
       );
-      await this.clearAndConfirmTerminalFields(w, 'blocked');
+      await this.confirmTaskState(w, 'blocked');
     } catch (e) {
       w.nextFinalizeAttemptAt = Date.now() + 60000;
       try {
         await this.recordFinalizationEscalation(
           w,
           reason,
-          'The task was moved toward blocked, and Pan is still retrying cleanup.',
+          'The task was moved toward blocked, and Pan is still retrying confirmation.',
         );
       } catch (commentError) {
         logErr(
@@ -3264,7 +3269,7 @@ child.on('exit', (code, signal) => {
         );
       }
       logErr(
-        `finalization escalation cleanup failed for #${w.issueNumber}; ` +
+        `finalization escalation confirmation failed for #${w.issueNumber}; ` +
           `retrying in 60s: ${e.message}`,
       );
       return false;
@@ -3284,9 +3289,8 @@ child.on('exit', (code, signal) => {
       );
       return false;
     }
-    await this.stopFinalizedWorker(w);
-    log(`#${w.issueNumber} blocked after repeated finalization failures`);
-    return true;
+    w.nextFinalizeAttemptAt = Date.now() + 60000;
+    return false;
   }
 
   async recordFinalizationEscalation(w, reason, resolution) {
@@ -3295,21 +3299,51 @@ child.on('exit', (code, signal) => {
       this.issueRepoOf(w),
       w.issueNumber,
       `<!-- pan-finalization-failed:${w.sessionId} -->`,
-      `⚠️ Pan could not finalize this completed worker after ` +
+      `⚠️ Pan could not persist this worker result after ` +
         `${FINALIZATION_FAILURE_LIMIT} attempts.\n\n` +
         `Last error: ${reason}\n\n${resolution}`,
     );
   }
 
-  async stopFinalizedWorker(w) {
-    w.finalizationPending = false;
-    w.finished = true;
-    this.active.delete(w.itemId);
-    try {
+  async releaseWorker(w) {
+    return this.withGenerationMutationLock(w, 'worker release', async () => {
+      const fresh = await this.deps.readItemById(w.itemId);
+      if (!fresh) return false;
+      const machine = val(fresh, FIELD.machine, '');
+      const resultPath = path.join(w.panDir, 'result.json');
+      const hasResult = existsSync(resultPath);
+      const consumed = hasResult && await resultIsConsumed({
+        launchId: w.launchId,
+        signalDir: w.panDir,
+        attemptDir: w.attemptDir,
+        attempt: { sessionId: w.sessionId, itemId: w.itemId, number: w.issueNumber },
+      });
+      if (
+        val(fresh, FIELD.sessionId, '') !== w.sessionId ||
+        !affinityMatchesMachine(machine, this.cfg.machine) ||
+        (w.slot != null && splitAffinity(machine).slot !== w.slot) ||
+        (val(fresh, FIELD.claimedBy, '') &&
+          val(fresh, FIELD.claimedBy, '') !== this.cfg.identity)
+      ) {
+        w.occupancyOnly = true;
+        return false;
+      }
+      if ((hasResult && !consumed) || (!hasResult && statusOf(fresh) === 'in-progress')) {
+        return false;
+      }
+      w.releasePending = true;
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
+      const confirmed = await this.deps.readItemById(w.itemId);
+      if (!confirmed || val(confirmed, FIELD.claimedBy, '') || val(confirmed, FIELD.leaseUntil, '')) {
+        return false;
+      }
       await privateWriteFile(path.join(w.panDir, 'worker.stop'), '');
-    } catch (e) {
-      logErr(`could not signal worker.stop for #${w.issueNumber}: ${e.message}`);
-    }
+      w.releasePending = false;
+      w.finished = true;
+      this.active.delete(w.itemId);
+      return true;
+    });
   }
 
   /** Release a started task whose worker stopped so its session and workspace
@@ -3319,7 +3353,7 @@ child.on('exit', (code, signal) => {
     const number = w.issueNumber;
     let fresh;
     try {
-      fresh = await readItemById(w.itemId);
+      fresh = await this.deps.readItemById(w.itemId);
     } catch (e) {
       logErr(`pause re-read failed for #${number}: ${e.message}`);
       return false;
@@ -3332,13 +3366,9 @@ child.on('exit', (code, signal) => {
 
     const claimedBy = val(fresh, FIELD.claimedBy, '');
     const status = statusOf(fresh);
-    if (claimedBy && claimedBy !== this.cfg.identity) {
+    if (claimedBy !== this.cfg.identity) {
       this.active.delete(w.itemId);
-      logErr(`#${number} now claimed by "${claimedBy}"; not pausing a foreign worker`);
-      return false;
-    }
-    if (status !== 'in-progress') {
-      this.active.delete(w.itemId);
+      if (claimedBy) logErr(`#${number} now claimed by "${claimedBy}"; not pausing a foreign worker`);
       if (status === 'paused' && affinityMatchesMachine(val(fresh, FIELD.machine, ''), this.cfg.machine) && w.isolated && existsSync(w.workingDir)) {
         this.resumeWorkspaces.set(w.itemId, w.workingDir);
       }
@@ -3346,9 +3376,11 @@ child.on('exit', (code, signal) => {
     }
 
     try {
-      await setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
-      await setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
-      await setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'paused');
+      if (status !== 'paused') {
+        await this.deps.setSelectField(this.cfg, this.meta, w.itemId, FIELD.status, 'paused');
+      }
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
+      await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
     } catch (e) {
       logErr(`pause writes failed for #${number}: ${e.message}`);
       return false;
@@ -3431,15 +3463,7 @@ child.on('exit', (code, signal) => {
     }
   }
 
-  /**
-   * Decide whether a live worker discovered at restart can be safely (re-)adopted
-   * for supervision. The startup snapshot is stale, so this re-reads the item
-   * immediately: it adopts an already-`in-progress`+ours item as-is, restores a
-   * claim only for the exact passive-sweep state (with a confirming re-read), and
-   * otherwise returns false so the caller reserves the directory occupancy-only
-   * rather than overwriting newer Project state. Fail-closed against any session,
-   * machine, or ownership drift.
-   */
+  /** Whether a live worker discovered at restart is still ours to supervise. */
   async reAdoptLiveWorker(w) {
     let fresh;
     try {
@@ -3461,9 +3485,8 @@ child.on('exit', (code, signal) => {
       return false;
     }
 
-    // Already in-progress and ours: adopt without touching the Project.
-    if (status === 'in-progress' && claimedBy === this.cfg.identity) {
-      w.lastRenew = 0; // force an immediate renewal on the next tick
+    if (status !== 'paused' && claimedBy === this.cfg.identity) {
+      w.lastRenew = 0;
       return true;
     }
 
@@ -3870,6 +3893,7 @@ child.on('exit', (code, signal) => {
         'worker.running',
         'needs-human.json',
         'result.json',
+        'worker-release.json',
         'worker.stop',
       ];
       if (!runtimeNames.some((name) => existsSync(path.join(legacyPanDir, name)))) continue;
@@ -3977,7 +4001,7 @@ child.on('exit', (code, signal) => {
             `(launcher pid ${pid}) without disturbing it`,
         );
       } else if (observed.state === 'dead') {
-        for (const name of ['needs-human.json', 'result.json']) {
+        for (const name of ['needs-human.json', 'result.json', 'worker-release.json']) {
           const source = path.join(legacyPanDir, name);
           if (existsSync(source)) {
             await privateWriteFile(path.join(created.attemptDir, name), await readFile(source));
@@ -4478,33 +4502,10 @@ child.on('exit', (code, signal) => {
         continue;
       }
 
-      // A valid receipt proves this exact attempt/result was already finalized.
-      // Preserve the durable history, but never replay it on restart. A launcher
-      // that survived the receipt write is asked to stop and remains reserved
-      // until its exact owner exits.
-      if (currentResultConsumed) {
-        if (alive) {
-          try {
-            await privateWriteFile(
-              path.join(currentAttempt.signalDir, 'worker.stop'),
-              '',
-            );
-          } catch (e) {
-            logErr(`could not re-signal worker.stop for #${number}: ${e.message}`);
-          }
-          reserveLiveOccupancy('consumed result awaiting launcher exit');
-          continue;
-        }
-        if (isolated && sessionBound) {
-          this.resumeWorkspaces.set(match.itemId, workingDir);
-        }
-        log(`#${number} preserved a consumed result without replaying it (rehydrate)`);
-        continue;
-      }
-
       // Process a pending result before any paused handling, so a passive sweep
       // to paused cannot strand — and a later resume cannot clear — the outcome.
-      if (existsSync(resultPath)) {
+      let resultConsumed = currentResultConsumed;
+      if (existsSync(resultPath) && !resultConsumed) {
         let pendingStatus = null;
         try {
           pendingStatus = terminalStatusForResult(
@@ -4552,7 +4553,7 @@ child.on('exit', (code, signal) => {
           w.finalizationEscalated = finalizationKind === 'escalated';
           w.finalizeFromPausedSweep = finalizationKind === 'swept';
           const finalized = await this.finalize(w, resultPath);
-          if (finalized) continue;
+          if (finalized) resultConsumed = true;
           if (w.finalizationPending) {
             this.active.set(match.itemId, w);
             log(`rehydrated pending finalization for #${number} from ${sessionRoot}`);
@@ -4560,6 +4561,16 @@ child.on('exit', (code, signal) => {
           }
           // finalize returned false (transient); fall through to liveness handling.
         }
+      }
+
+      if (
+        selectedAttempt &&
+        existsSync(path.join(selectedAttempt.signalDir, 'worker-release.json')) &&
+        (!existsSync(resultPath) || resultConsumed)
+      ) {
+        this.active.set(match.itemId, w);
+        if (await this.releaseWorker(w)) continue;
+        if (w.releasePending) continue;
       }
 
       // A live worker keeps its directory reserved so no duplicate launches. It
@@ -4586,6 +4597,34 @@ child.on('exit', (code, signal) => {
       // binds to the Project item is indexed for the next resume — a stale
       // session's root must never become the resume target for the current one.
       if (projectStatus === 'paused' && affinityMatchesMachine(projectMachine, this.cfg.machine)) {
+        if (sessionBound && claimedBy === this.cfg.identity) {
+          try {
+            await this.deps.setTextField(
+              this.cfg,
+              this.meta,
+              match.itemId,
+              FIELD.leaseUntil,
+              '',
+            );
+            await this.deps.setTextField(
+              this.cfg,
+              this.meta,
+              match.itemId,
+              FIELD.claimedBy,
+              '',
+            );
+            const confirmed = await this.deps.readItemById(match.itemId);
+            if (
+              !confirmed ||
+              val(confirmed, FIELD.leaseUntil, '') ||
+              val(confirmed, FIELD.claimedBy, '')
+            ) {
+              throw new Error('GitHub did not confirm paused ownership cleanup.');
+            }
+          } catch (error) {
+            logErr(`#${number} could not complete paused claim cleanup: ${error.message}`);
+          }
+        }
         if (isolated && sessionBound) {
           this.resumeWorkspaces.set(match.itemId, workingDir);
         }
@@ -4593,6 +4632,12 @@ child.on('exit', (code, signal) => {
           `found paused ${isolated ? 'workspace' : 'session state'} for #${number} at ` +
             `${isolated ? workingDir : sessionRoot}`,
         );
+        continue;
+      }
+
+      if (claimedBy === this.cfg.identity) {
+        this.active.set(match.itemId, w);
+        await this.pauseWorker(w, 'worker exited while runner was offline');
         continue;
       }
 
@@ -4610,24 +4655,13 @@ child.on('exit', (code, signal) => {
       }
 
       if (claimedBy !== this.cfg.identity) {
-        // No longer ours: finalized (finalize clears claimed-by) or released to
+        // No longer ours: explicitly released or transferred to
         // another runner. With no live worker here, the state root is an inert
         // leftover — prune the root only (never the repo), gated on ownership.
         await pruneIfOwned('no longer owned by this runner');
         continue;
       }
 
-      // Still ours but the worker stopped. Retain this state root and transition
-      // the item to paused so the same machine can relaunch the recorded session
-      // here.
-      if (projectStatus !== 'in-progress') {
-        // Not ours to pause and no live worker: inert leftover — prune the root
-        // only, gated on ownership.
-        await pruneIfOwned('stopped worker, not in-progress');
-        continue;
-      }
-      this.active.set(match.itemId, w);
-      await this.pauseWorker(w, 'worker exited while runner was offline');
     }
   }
 
