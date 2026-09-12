@@ -42,9 +42,13 @@ always correct.
   follow-up work. This is your source of truth for the task.
 - Your playbook's instructions — how to set up, build, test, and deliver.
 - `pan.md` (in your state directory, when present) — the Domain's own
-  instructions that extend the generic Pan system for this user's Domain. Read it
-  and apply it alongside your playbook; it may add lifecycle steps (for example,
-  follow-up emails) your playbook does not spell out.
+  instructions that extend the generic Pan system for this user's Domain. Read
+  and apply its general instructions and sections whose stated scope includes
+  workers alongside your playbook; it may add lifecycle steps (for example,
+  follow-up emails) your playbook does not spell out. Ignore instructions
+  scoped to the main chief-of-staff session, portfolio review or
+  reconciliation, task triage or backlog management, and session scheduling.
+  A headed worker terminal remains a worker session, not the main Pan session.
 - The Pan system documents in `system/` — conventions and contracts.
 
 ## Doing the work
@@ -94,6 +98,17 @@ but preserves the session/workspace affinity. The task remains
 validation requires the worker to remain.
 
 ## Finishing
+
+For a thin-backend launch, record the outcome as a durable `pan-task report`.
+Do not complete the backend task or edit its shared lifecycle. A report,
+question, or lifecycle change never releases your process. When your process,
+terminal, and workspace may be released, first record every needed report,
+then create an empty `worker-release.json` under the exact `PAN_STATE_DIR` and
+exit Copilot. Do not create that signal while interactive review, a user
+question, or other work in this session remains active.
+
+The following `result.json` protocol applies to the GitHub compatibility
+runner:
 
 Write `result.json` once only when the playbook's current authorized scope has
 reached one of these outcomes:

@@ -17,6 +17,10 @@ import { inspectProcess } from './pan-runner-runtime.js';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
 
 const RUN_VERSION = 1;
+const RELEASE_SIGNAL = 'worker-release.json';
+const RELEASE_RECEIPT = 'worker-release-consumed.json';
+const UNEXPECTED_EXIT_RECEIPT = 'unexpected-exit-observed.json';
+const LAUNCH_FAILURE_RECEIPT = 'launch-failure.json';
 
 export function selectReadyForAi(tasks) {
   return tasks.filter((task) =>
@@ -72,6 +76,54 @@ function runnerLockPath(stateRoot) {
 
 async function readJson(filename) {
   return JSON.parse(await readFile(filename, 'utf8'));
+}
+
+async function readOptionalJson(filename) {
+  try {
+    return await readJson(filename);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function inspectReleaseSignal(dir) {
+  try {
+    const contents = await readFile(path.join(dir, RELEASE_SIGNAL));
+    if (contents.length !== 0) {
+      throw new Error(`${RELEASE_SIGNAL} must be empty`);
+    }
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function validateReceipt(receipt, run, kind) {
+  if (
+    receipt?.version !== 1
+    || receipt.kind !== kind
+    || receipt.taskId !== run.taskId
+    || receipt.sessionId !== run.sessionId
+    || typeof receipt.recordedAt !== 'string'
+  ) {
+    throw new Error(`invalid ${kind} receipt`);
+  }
+}
+
+async function writeReceipt(filename, receipt) {
+  try {
+    await writeFile(filename, `${JSON.stringify(receipt, null, 2)}\n`, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const persisted = await readJson(filename);
+  validateReceipt(persisted, receipt, receipt.kind);
+  return persisted;
 }
 
 function parseCopilotConfig(raw) {
@@ -155,10 +207,16 @@ export async function inspectLocalRuns(
   try {
     entries = await readdir(runsRoot, { withFileTypes: true });
   } catch (error) {
-    if (error.code === 'ENOENT') return { live: [], stale: [], uncertain: [] };
+    if (error.code === 'ENOENT') {
+      return {
+        live: [], stale: [], uncertain: [], released: [], unexpected: [], failed: [],
+      };
+    }
     throw error;
   }
-  const result = { live: [], stale: [], uncertain: [] };
+  const result = {
+    live: [], stale: [], uncertain: [], released: [], unexpected: [], failed: [],
+  };
   for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
     const dir = path.join(runsRoot, entry.name);
     let run;
@@ -173,6 +231,38 @@ export async function inspectLocalRuns(
       }
     } catch (error) {
       result.uncertain.push({ dir, reason: error.message });
+      continue;
+    }
+    try {
+      const releaseReceipt = await readOptionalJson(path.join(dir, RELEASE_RECEIPT));
+      if (releaseReceipt) {
+        validateReceipt(releaseReceipt, run, 'released');
+        result.released.push({ ...run, dir, receipt: releaseReceipt });
+        continue;
+      }
+      const unexpectedReceipt = await readOptionalJson(
+        path.join(dir, UNEXPECTED_EXIT_RECEIPT),
+      );
+      if (unexpectedReceipt) {
+        validateReceipt(unexpectedReceipt, run, 'unexpected-stop');
+        result.unexpected.push({ ...run, dir, receipt: unexpectedReceipt });
+        continue;
+      }
+      const launchFailure = await readOptionalJson(path.join(dir, LAUNCH_FAILURE_RECEIPT));
+      if (launchFailure) {
+        validateReceipt(launchFailure, run, 'launch-failure');
+        result.failed.push({ ...run, dir, receipt: launchFailure });
+        continue;
+      }
+    } catch (error) {
+      result.uncertain.push({ ...run, dir, reason: error.message });
+      continue;
+    }
+    let releaseRequested;
+    try {
+      releaseRequested = await inspectReleaseSignal(dir);
+    } catch (error) {
+      result.uncertain.push({ ...run, dir, reason: error.message });
       continue;
     }
     let owner;
@@ -196,6 +286,7 @@ export async function inspectLocalRuns(
             dir,
             owner: null,
             exit,
+            releaseRequested,
             observed: { state: 'dead', identity: null },
           });
           continue;
@@ -208,7 +299,7 @@ export async function inspectLocalRuns(
       continue;
     }
     const observed = await inspect(owner.pid);
-    const record = { ...run, dir, owner, observed };
+    const record = { ...run, dir, owner, observed, releaseRequested };
     if (observed.state === 'live' && observed.identity === owner.processStart) {
       result.live.push(record);
     } else if (observed.state === 'dead' || observed.identity !== owner.processStart) {
@@ -224,24 +315,68 @@ export async function reconcileStaleRuns(stateRoot, stale, backend) {
   const reconciled = [];
   for (const run of stale) {
     try {
+      const releaseRequested = await inspectReleaseSignal(run.dir);
       const task = await backend.get(run.taskId);
-      if (task.worker?.sessionId === run.sessionId) {
-        await backend.update(run.taskId, {
-          expectedRevision: task.revision,
-          worker: {
-            ...task.worker,
-            state: 'stopped',
-            stoppedAt: new Date().toISOString(),
-          },
+      if (releaseRequested) {
+        const reports = backend.reports ? await backend.reports(run.taskId) : [];
+        let backendWorkerUpdated = false;
+        if (task.worker?.sessionId === run.sessionId && task.worker.state !== 'released') {
+          await backend.update(run.taskId, {
+            expectedRevision: task.revision,
+            worker: {
+              ...task.worker,
+              state: 'released',
+              releasedAt: new Date().toISOString(),
+            },
+          });
+          backendWorkerUpdated = true;
+        }
+        await writeReceipt(path.join(run.dir, RELEASE_RECEIPT), {
+          version: 1,
+          kind: 'released',
+          taskId: run.taskId,
+          sessionId: run.sessionId,
+          recordedAt: new Date().toISOString(),
+          backendWorkerUpdated,
+          reportsObserved: reports.length,
         });
-        await backend.report(run.taskId, {
-          content: `Pan runner observed that local session ${run.sessionId} is no longer running.`,
-        });
+        await rm(lockPath(stateRoot, run.taskId), { force: true });
+        reconciled.push(run.taskId);
+        continue;
       }
-      await rm(lockPath(stateRoot, run.taskId), { force: true });
+      const marker = `Pan worker observation: unexpected-stop session ${run.sessionId}`;
+      if (task.worker?.sessionId === run.sessionId) {
+        const reports = backend.reports ? await backend.reports(run.taskId) : [];
+        if (task.worker.state !== 'unexpected-stop') {
+          await backend.update(run.taskId, {
+            expectedRevision: task.revision,
+            worker: {
+              ...task.worker,
+              state: 'unexpected-stop',
+              stoppedAt: run.exit?.exitedAt || new Date().toISOString(),
+              error: run.exit?.error || `process exited ${run.exit?.code ?? 'without a code'}`,
+            },
+          });
+        }
+        if (!reports.some((report) => report.content?.includes(marker))) {
+          await backend.report(run.taskId, {
+            content: `${marker}\n\nThe worker exited without ${RELEASE_SIGNAL}. `
+              + 'Pan did not infer task completion or another lifecycle state, and the '
+              + 'local workspace remains reserved for inspection or explicit recovery.',
+          });
+        }
+      }
+      await writeReceipt(path.join(run.dir, UNEXPECTED_EXIT_RECEIPT), {
+        version: 1,
+        kind: 'unexpected-stop',
+        taskId: run.taskId,
+        sessionId: run.sessionId,
+        recordedAt: new Date().toISOString(),
+        backendWorkerMatched: task.worker?.sessionId === run.sessionId,
+      });
       reconciled.push(run.taskId);
     } catch {
-      // Leave the lock in place. A failed observation write must fail closed.
+      // Leave the lock and run evidence in place. Reconciliation must fail closed.
     }
   }
   return reconciled;
@@ -486,10 +621,12 @@ export async function launchTask(task, config, backend, dependencies = {}) {
     const prompt = [
       `Execute Pan task ${task.id}: ${task.title}`,
       `Read ${path.join(stateDir, 'task.json')}, ${path.join(stateDir, 'playbook.md')}, ${path.join(stateDir, 'pan.md')}, and ${path.join(stateDir, 'reports.json')}.`,
+      'This headed terminal is a worker session. Apply general and worker-scoped pan.md instructions, but ignore main chief-of-staff scheduling, portfolio review or reconciliation, task triage or backlog management, and session scheduling.',
       `Read current task state with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} get ${JSON.stringify(task.id)}`,
       `Read durable reports with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} reports ${JSON.stringify(task.id)}`,
       `Write the report request JSON only to ${reportInputPath}, then record it with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} report ${JSON.stringify(task.id)} --input @${reportInputPath}`,
       'Do not complete the backend task; the coordinating Pan session completes it after verifying your report and files.',
+      `A report or backend status change does not release this worker. When the process, terminal, and workspace may be released, first record any needed report, then create an empty ${path.join(stateDir, RELEASE_SIGNAL)} and exit Copilot.`,
       `Task URL: ${task.url}`,
     ].join('\n');
     const promptPath = path.join(stateDir, 'launch-prompt.txt');
@@ -561,6 +698,13 @@ export async function launchTask(task, config, backend, dependencies = {}) {
         `${JSON.stringify({ exitedAt: new Date().toISOString(), error: error.message }, null, 2)}\n`,
         { mode: 0o600 },
       ).catch(() => {});
+      await writeReceipt(path.join(stateDir, LAUNCH_FAILURE_RECEIPT), {
+        version: 1,
+        kind: 'launch-failure',
+        taskId: task.id,
+        sessionId,
+        recordedAt: new Date().toISOString(),
+      }).catch(() => {});
       await releaseTaskLock(lock);
     } else {
       await lock.handle.close().catch(() => {});
@@ -613,6 +757,11 @@ export async function runBackendRunner(argv, dependencies = {}) {
         (run) => path.resolve(run.workingDirectory) === workspace,
       ) || inventory.uncertain.some((run) =>
         run.workingDirectory == null || path.resolve(run.workingDirectory) === workspace,
+      ) || (inventory.unexpected ?? []).some((run) =>
+        run.workingDirectory == null || path.resolve(run.workingDirectory) === workspace,
+      ) || inventory.stale.some((run) =>
+        !run.releaseRequested
+        && (run.workingDirectory == null || path.resolve(run.workingDirectory) === workspace),
       );
       // This pilot has one configured working directory rather than a workspace
       // pool, so at most one new task may enter it in a poll.

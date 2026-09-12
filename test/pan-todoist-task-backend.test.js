@@ -371,7 +371,12 @@ function backendFake(task) {
       return structuredClone(current);
     },
     async report(_id, input) { reportEntries.push(input.content); },
-    async reports() { return [{ id: 'report-1', content: 'Prior report' }]; },
+    async reports() {
+      return [
+        { id: 'report-1', content: 'Prior report' },
+        ...reportEntries.map((content, index) => ({ id: `new-${index}`, content })),
+      ];
+    },
   };
 }
 
@@ -417,6 +422,14 @@ test('live process inventory survives polls and blocks shared workspace capacity
       await readFile(path.join(root, 'runs', 'task-1', 'launch-prompt.txt'), 'utf8'),
       /bin\/pan-task\.js.*reports/,
     );
+    assert.match(
+      await readFile(path.join(root, 'runs', 'task-1', 'launch-prompt.txt'), 'utf8'),
+      /empty .*worker-release\.json.*exit Copilot/,
+    );
+    assert.match(
+      await readFile(path.join(root, 'runs', 'task-1', 'launch-prompt.txt'), 'utf8'),
+      /headed terminal is a worker session.*ignore main chief-of-staff scheduling/,
+    );
     assert.equal(JSON.parse(await readFile(
       path.join(root, 'runs', 'task-1', 'reports.json'),
     ))[0].content, 'Prior report');
@@ -457,7 +470,7 @@ test('live process inventory survives polls and blocks shared workspace capacity
   }
 });
 
-test('PID reuse mismatch is stale and reconciliation releases only its task lock', async () => {
+test('unexpected exit preserves workspace affinity without inferring lifecycle state', async () => {
   const root = testRoot();
   const dir = path.join(root, 'runs', 'task-1');
   await mkdir(path.join(root, 'locks'), { recursive: true });
@@ -471,7 +484,7 @@ test('PID reuse mismatch is stale and reconciliation releases only its task lock
   }));
   await writeFile(path.join(root, 'locks', 'task-1.lock'), '');
   const backend = backendFake({
-    id: 'task-1', revision: 'r1',
+    id: 'task-1', revision: 'r1', status: 'ready-for-human',
     worker: { state: 'running', sessionId: 'session-1' },
   });
   try {
@@ -480,8 +493,96 @@ test('PID reuse mismatch is stale and reconciliation releases only its task lock
     });
     assert.equal(inventory.stale.length, 1);
     assert.deepEqual(await reconcileStaleRuns(root, inventory.stale, backend), ['task-1']);
-    assert.equal(backend.updates[0].worker.state, 'stopped');
+    assert.equal(backend.updates[0].worker.state, 'unexpected-stop');
+    assert.equal(backend.updates[0].status, undefined);
+    assert.match(backend.reportEntries[0], /without worker-release\.json/);
+    assert.equal(await readFile(path.join(root, 'locks', 'task-1.lock'), 'utf8'), '');
+    const restarted = await inspectLocalRuns(root);
+    assert.equal(restarted.unexpected.length, 1);
+    assert.equal(restarted.stale.length, 0);
+    assert.equal(restarted.unexpected[0].sessionId, 'session-1');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('explicit release is consumed only after exit and frees the task lock', async () => {
+  const root = testRoot();
+  const dir = path.join(root, 'runs', 'task-1');
+  await mkdir(path.join(root, 'locks'), { recursive: true });
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'run.json'), JSON.stringify({
+    version: 1, taskId: 'task-1', sessionId: 'session-1',
+    machine: 'machine-a', workingDirectory: path.join(root, 'workspace'),
+  }));
+  await writeFile(path.join(dir, 'owner.json'), JSON.stringify({
+    pid: 123, processStart: 'old:start',
+  }));
+  await writeFile(path.join(dir, 'exit.json'), JSON.stringify({
+    exitedAt: '2026-09-12T04:00:00.000Z', code: 0, signal: null,
+  }));
+  await writeFile(path.join(dir, 'worker-release.json'), '');
+  await writeFile(path.join(root, 'locks', 'task-1.lock'), '');
+  const backend = backendFake({
+    id: 'task-1', revision: 'r1', status: 'ready-for-human',
+    worker: { state: 'running', sessionId: 'session-1' },
+  });
+  await backend.report('task-1', { content: 'Durable result: ready for review.' });
+  try {
+    const live = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'old:start' }),
+    });
+    assert.equal(live.live.length, 1);
+    assert.equal(live.live[0].releaseRequested, true);
+    assert.equal(backend.updates.length, 0);
+
+    const stopped = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'dead', identity: null }),
+    });
+    assert.deepEqual(await reconcileStaleRuns(root, stopped.stale, backend), ['task-1']);
+    assert.equal(backend.updates[0].worker.state, 'released');
+    assert.equal(backend.updates[0].status, undefined);
     await assert.rejects(readFile(path.join(root, 'locks', 'task-1.lock')), { code: 'ENOENT' });
+    const receipt = JSON.parse(await readFile(
+      path.join(dir, 'worker-release-consumed.json'),
+    ));
+    assert.equal(receipt.kind, 'released');
+    assert.equal(receipt.reportsObserved, 2);
+
+    const restarted = await inspectLocalRuns(root);
+    assert.equal(restarted.released.length, 1);
+    assert.equal(restarted.stale.length, 0);
+    assert.deepEqual(await reconcileStaleRuns(root, restarted.stale, backend), []);
+    assert.equal(backend.updates.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('report and task status changes do not release a live worker', async () => {
+  const root = testRoot();
+  const dir = path.join(root, 'runs', 'task-1');
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'run.json'), JSON.stringify({
+    version: 1, taskId: 'task-1', sessionId: 'session-1',
+    machine: 'machine-a', workingDirectory: path.join(root, 'workspace'),
+  }));
+  await writeFile(path.join(dir, 'owner.json'), JSON.stringify({
+    pid: 123, processStart: 'same:start',
+  }));
+  const backend = backendFake({
+    id: 'task-1', revision: 'r1', status: 'done',
+    worker: { state: 'running', sessionId: 'session-1' },
+  });
+  await backend.report('task-1', { content: 'Durable result: review needed.' });
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'same:start' }),
+    });
+    assert.equal(inventory.live.length, 1);
+    assert.equal(inventory.live[0].releaseRequested, false);
+    assert.deepEqual(await reconcileStaleRuns(root, inventory.stale, backend), []);
+    assert.equal(backend.updates.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -545,7 +646,8 @@ test('terminal spawn error is awaited, reported, and recorded as stopped', async
     assert.match(exit.error, /spawn failed/);
     await assert.rejects(readFile(path.join(root, 'locks', 'task-1.lock')), { code: 'ENOENT' });
     const inventory = await inspectLocalRuns(root);
-    assert.equal(inventory.stale.length, 1);
+    assert.equal(inventory.failed.length, 1);
+    assert.equal(inventory.stale.length, 0);
     assert.equal(inventory.uncertain.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });

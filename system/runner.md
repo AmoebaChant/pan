@@ -76,9 +76,33 @@ project scoping.
 
 Each poll inventories durable run and owner records, verifies both PID and
 process-start identity, and counts live sessions against capacity. An uncertain
-record fails closed. A dead matching session is recorded as stopped before its
-lock is released. A live worker reserves the configured working directory, so
-two tasks are not launched into one shared checkout.
+record fails closed. A live worker reserves the configured working directory,
+so two tasks are not launched into one shared checkout.
+
+Task/report state and worker release are independent. A thin-backend worker
+writes an empty `worker-release.json` only under its exact `PAN_STATE_DIR` when
+its process, terminal, and workspace may be released, then exits Copilot. When
+a report and release are both needed, it records the native backend report
+first. A report, review request, human question, external wait, completion, or
+other backend status change does not release a worker. The pilot has no
+external stop watcher or `worker.stop` acknowledgment: a release becomes
+effective only after a poll observes both the explicit signal and the
+process's verified exit.
+
+The runner then reads current native reports before recording
+`worker.state=released`, writes a local `worker-release-consumed.json` receipt,
+and removes only that task's local lock. This frees capacity and the configured
+workspace without deciding or finalizing business lifecycle. A valid receipt
+makes restart reconciliation idempotent.
+
+An exit without the release signal is `unexpected-stop`, never successful
+release. The runner records that worker observation and a durable native report
+without changing lifecycle, writes `unexpected-exit-observed.json`, and keeps
+the task lock and workspace affinity for inspection or explicit recovery. It
+does not automatically duplicate or resume the task even if shared lifecycle
+later appears runnable. Malformed signals or receipts are uncertain and fail
+closed. Signal detection is repeated during reconciliation so a
+release-versus-exit observation race is retried rather than silently lost.
 
 One process-identity-checked lock under `stateRoot` excludes a second local
 backend runner across inventory and launch. A dead holder is recoverable. A

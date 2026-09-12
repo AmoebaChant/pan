@@ -27,9 +27,14 @@ operates on exactly one Domain at a time.
 - **`pan.md`** (optional) holds domain-specific instructions that extend the
   generic system — for example, "during triage, also add any new open Issues
   from `owner/other-repo` to the backlog." Pan reads it at the start of a
-  session and applies it alongside the generic system. It may include a
-  `## Daily Briefing` section naming extra read-only planning considerations or
-  sources and how to inspect them; see [Daily Briefing](daily-briefing.md).
+  session and applies the sections scoped to that session's role alongside the
+  generic system. Role-specific instructions must name their intended session.
+  Workers apply general instructions and worker-scoped sections, but ignore
+  sections for the main chief-of-staff session, portfolio-wide review or
+  reconciliation, task triage or backlog management, and session scheduling.
+  It may include a `## Daily Briefing` section naming extra read-only planning
+  considerations or sources and how to inspect them; see [Daily
+  Briefing](daily-briefing.md).
 
 ## How Pan reaches the Domain
 

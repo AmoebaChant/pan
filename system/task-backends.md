@@ -61,6 +61,12 @@ metadata change succeeds but the native occurrence-date update fails.
 inside configured scope. Reports therefore remain recoverable without using
 Todoist-specific commands.
 
+Worker observation is operational metadata, not business lifecycle. A report,
+question, status change, or task completion does not imply that a worker
+process or workspace may be released. The thin backend runner records
+`starting`, `running`, `released`, or `unexpected-stop` observations without
+changing lifecycle fields. Pan may update lifecycle independently.
+
 Automatic recurring-task dispatch is intentionally unsupported by the small
 pilot runner. Recurring tasks remain visible and editable through the common
 API, but the runner excludes them so a persistent readiness marker cannot
