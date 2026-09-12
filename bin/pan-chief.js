@@ -2,6 +2,7 @@
 
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -22,13 +23,18 @@ export function buildChiefCommand(action, config) {
   const sessionName = requireString(config, 'chiefSessionName');
   const configPath = path.resolve(requireString(config, 'configPath'));
   const command = String(config.copilotCommand || 'copilot');
+  const directories = new Set([
+    path.dirname(configPath),
+    path.join(os.homedir(), '.config', 'pan'),
+    ...(config.additionalDirectories ?? []).map((directory) => path.resolve(directory)),
+  ]);
   const args = [
     '-C', checkout,
     '--model', 'gpt-5.6-sol',
-    '--add-dir', path.dirname(configPath),
+    ...(config.chiefArgs ?? []),
   ];
-  for (const dir of config.additionalDirectories ?? []) {
-    args.push('--add-dir', path.resolve(dir));
+  for (const directory of directories) {
+    args.push('--add-dir', directory);
   }
   if (action === 'start') {
     args.push(
@@ -38,9 +44,23 @@ export function buildChiefCommand(action, config) {
       `You are the chief-of-staff Pan agent for Domain ${domainRepo}.`,
     );
   } else {
-    args.push(`--resume=${sessionName}`);
+    args.push(config.chiefSessionId
+      ? '--session-id'
+      : `--resume=${sessionName}`);
+    if (config.chiefSessionId) args.push(String(config.chiefSessionId));
   }
-  return { command, args, cwd: checkout, env: { ...process.env, PAN_CONFIG: configPath } };
+  return {
+    command,
+    args,
+    cwd: checkout,
+    env: {
+      ...process.env,
+      PAN_CONFIG: configPath,
+      ...(config.chiefCopilotHome
+        ? { COPILOT_HOME: path.resolve(config.chiefCopilotHome) }
+        : {}),
+    },
+  };
 }
 
 export async function runChief(argv, dependencies = {}) {

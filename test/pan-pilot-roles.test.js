@@ -18,9 +18,10 @@ test('chief command starts and resumes one named Sol session with domain-only pr
     chiefSessionName: 'pan-chief-owner-domain',
   };
   const start = buildChiefCommand('start', config);
-  assert.deepEqual(start.args.slice(0, 6), [
-    '-C', '/checkout/pan', '--model', 'gpt-5.6-sol', '--add-dir', '/private',
+  assert.deepEqual(start.args.slice(0, 4), [
+    '-C', '/checkout/pan', '--model', 'gpt-5.6-sol',
   ]);
+  assert.ok(start.args.includes('/private'));
   assert.ok(start.args.includes('pan-chief'));
   assert.equal(start.args.at(-1), 'You are the chief-of-staff Pan agent for Domain owner/domain.');
   assert.equal(start.env.PAN_CONFIG, '/private/pan.json');
@@ -28,6 +29,13 @@ test('chief command starts and resumes one named Sol session with domain-only pr
   const resume = buildChiefCommand('resume', config);
   assert.ok(resume.args.includes('--resume=pan-chief-owner-domain'));
   assert.ok(!resume.args.includes('--name'));
+
+  const exact = buildChiefCommand('resume', {
+    ...config,
+    chiefSessionId: '21c40bf8-ab24-4c62-9a76-26e999e6089b',
+  });
+  assert.ok(exact.args.includes('--session-id'));
+  assert.ok(exact.args.includes('21c40bf8-ab24-4c62-9a76-26e999e6089b'));
 });
 
 test('packaged chief, worker, and compatibility agent roles are distinct', async () => {
