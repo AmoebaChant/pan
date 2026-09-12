@@ -71,6 +71,12 @@ It verifies the Domain named in the domain-only opening prompt against
 and interactive Pan sessions therefore learn operational details from the
 binding and Domain rather than embedding them in prompts.
 
+Chief creation is explicit and one-time. A launcher must inventory the
+configured Copilot session store before `start`, refuse if the stable name or a
+configured session id already exists, and serialize concurrent starts locally.
+Normal use resumes the exact persisted session id; it must not rely on a
+same-name session chooser.
+
 The runner may also configure `stateRoot` and `workspaceRoot`. `stateRoot`
 contains authoritative local session and launch-generation records and defaults
 to the platform's durable per-user application/state location. `workspaceRoot`

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -12,6 +12,72 @@ function requireString(config, field) {
   const value = String(config[field] ?? '').trim();
   if (!value) throw new Error(`${field} is required`);
   return value;
+}
+
+function workspaceField(text, field) {
+  const match = new RegExp(`^${field}:\\s*(.+?)\\s*$`, 'm').exec(text);
+  return match?.[1] || null;
+}
+
+export async function findChiefSessions(config, dependencies = {}) {
+  const read = dependencies.readFile || readFile;
+  const list = dependencies.readdir || readdir;
+  const copilotHome = path.resolve(config.chiefCopilotHome || path.join(os.homedir(), '.copilot'));
+  const sessionsRoot = path.join(copilotHome, 'session-state');
+  let entries;
+  try {
+    entries = await list(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw new Error(`cannot inventory Copilot sessions at ${sessionsRoot}: ${error.message}`);
+  }
+  const matches = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const filename = path.join(sessionsRoot, entry.name, 'workspace.yaml');
+    let workspace;
+    try {
+      workspace = await read(filename, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw new Error(`cannot inspect Copilot session ${entry.name}: ${error.message}`);
+    }
+    const id = workspaceField(workspace, 'id');
+    const name = workspaceField(workspace, 'name');
+    if (name?.toLowerCase() === config.chiefSessionName.toLowerCase()) {
+      matches.push({ id, name, filename });
+    }
+  }
+  return matches;
+}
+
+export async function resolveChiefAction(action, config, dependencies = {}) {
+  if (action === 'start') {
+    if (String(config.chiefSessionId || '').trim()) {
+      throw new Error(
+        `chief session ${config.chiefSessionId} is already configured; use resume`,
+      );
+    }
+    const matches = await findChiefSessions(config, dependencies);
+    if (matches.length > 0) {
+      throw new Error(
+        `chief session name ${config.chiefSessionName} already exists`
+        + ` (${matches.map((match) => match.id || 'unknown-id').join(', ')});`
+        + ' record its exact id and use resume',
+      );
+    }
+    return { action, config };
+  }
+  if (action !== 'resume') throw new Error('action must be start or resume');
+  if (String(config.chiefSessionId || '').trim()) return { action, config };
+  const matches = await findChiefSessions(config, dependencies);
+  if (matches.length !== 1 || !matches[0].id) {
+    throw new Error(
+      `cannot resolve exactly one persisted chief session named ${config.chiefSessionName};`
+      + ` found ${matches.length}`,
+    );
+  }
+  return { action, config: { ...config, chiefSessionId: matches[0].id } };
 }
 
 export function buildChiefCommand(action, config) {
@@ -44,10 +110,8 @@ export function buildChiefCommand(action, config) {
       `You are the chief-of-staff Pan agent for Domain ${domainRepo}.`,
     );
   } else {
-    args.push(config.chiefSessionId
-      ? '--session-id'
-      : `--resume=${sessionName}`);
-    if (config.chiefSessionId) args.push(String(config.chiefSessionId));
+    const sessionId = requireString(config, 'chiefSessionId');
+    args.push('--session-id', sessionId);
   }
   return {
     command,
@@ -77,22 +141,54 @@ export async function runChief(argv, dependencies = {}) {
   if (values.help) return { help: true };
   if (!values.config) throw new Error('--config is required');
   const configPath = path.resolve(values.config);
-  const config = JSON.parse(await readFile(configPath, 'utf8'));
-  const built = buildChiefCommand(action, { ...config, configPath });
+  const config = JSON.parse(await (dependencies.readFile || readFile)(configPath, 'utf8'));
+  const resolved = await resolveChiefAction(
+    action,
+    { ...config, configPath },
+    dependencies,
+  );
+  const built = buildChiefCommand(resolved.action, resolved.config);
   if (values['print-command']) return built;
+  let startLock = null;
+  if (action === 'start') {
+    const copilotHome = path.resolve(
+      config.chiefCopilotHome || path.join(os.homedir(), '.copilot'),
+    );
+    const lockPath = path.join(copilotHome, 'pan-chief-start.lock');
+    try {
+      await (dependencies.mkdir || mkdir)(copilotHome, { recursive: true, mode: 0o700 });
+      startLock = await (dependencies.open || open)(lockPath, 'wx', 0o600);
+      await startLock.writeFile(`${process.pid}\n`);
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw new Error(`another pan-chief start is already in progress (${lockPath})`);
+      }
+      throw error;
+    }
+  }
   const launch = dependencies.spawn || spawn;
-  const child = launch(built.command, built.args, {
-    cwd: built.cwd,
-    env: built.env,
-    stdio: 'inherit',
-  });
-  return new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) resolve({ action, sessionName: config.chiefSessionName });
-      else reject(new Error(`Copilot exited ${code ?? signal ?? 'unknown'}`));
+  try {
+    const child = launch(built.command, built.args, {
+      cwd: built.cwd,
+      env: built.env,
+      stdio: 'inherit',
     });
-  });
+    return await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => {
+        if (code === 0) resolve({ action, sessionName: config.chiefSessionName });
+        else reject(new Error(`Copilot exited ${code ?? signal ?? 'unknown'}`));
+      });
+    });
+  } finally {
+    if (startLock) {
+      await startLock.close().catch(() => {});
+      const copilotHome = path.resolve(
+        config.chiefCopilotHome || path.join(os.homedir(), '.copilot'),
+      );
+      await rm(path.join(copilotHome, 'pan-chief-start.lock'), { force: true });
+    }
+  }
 }
 
 if (isCliEntry(import.meta.url)) {

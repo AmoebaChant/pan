@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-import { buildChiefCommand } from '../bin/pan-chief.js';
+import {
+  buildChiefCommand,
+  findChiefSessions,
+  resolveChiefAction,
+  runChief,
+} from '../bin/pan-chief.js';
 import {
   loadBackendPlaybooks,
   resolvePlaybookWorkspace,
@@ -26,16 +31,97 @@ test('chief command starts and resumes one named Sol session with domain-only pr
   assert.equal(start.args.at(-1), 'You are the chief-of-staff Pan agent for Domain owner/domain.');
   assert.equal(start.env.PAN_CONFIG, '/private/pan.json');
 
-  const resume = buildChiefCommand('resume', config);
-  assert.ok(resume.args.includes('--resume=pan-chief-owner-domain'));
-  assert.ok(!resume.args.includes('--name'));
-
   const exact = buildChiefCommand('resume', {
     ...config,
     chiefSessionId: '21c40bf8-ab24-4c62-9a76-26e999e6089b',
   });
   assert.ok(exact.args.includes('--session-id'));
   assert.ok(exact.args.includes('21c40bf8-ab24-4c62-9a76-26e999e6089b'));
+});
+
+test('chief start refuses a configured session id without spawning', async () => {
+  await assert.rejects(
+    resolveChiefAction('start', {
+      chiefSessionName: 'pan-chief-owner-domain',
+      chiefSessionId: 'canonical-id',
+    }),
+    /already configured; use resume/,
+  );
+});
+
+test('chief start refusal occurs before the launcher can spawn', async () => {
+  let spawned = false;
+  await assert.rejects(runChief(['start', '--config', '/binding.json'], {
+    readFile: async () => JSON.stringify({
+      domainRepo: 'owner/domain',
+      panCheckout: '/checkout/pan',
+      chiefSessionName: 'pan-chief-owner-domain',
+      chiefSessionId: 'canonical-id',
+    }),
+    spawn: () => {
+      spawned = true;
+      throw new Error('must not spawn');
+    },
+  }), /already configured; use resume/);
+  assert.equal(spawned, false);
+});
+
+test('chief start refuses an exact persisted name and first-ever start remains valid', async () => {
+  const config = {
+    chiefSessionName: 'pan-chief-owner-domain',
+    chiefCopilotHome: '/copilot-home',
+  };
+  const existing = {
+    readdir: async () => [{ name: 'existing-id', isDirectory: () => true }],
+    readFile: async () => [
+      'id: existing-id',
+      'name: pan-chief-owner-domain',
+    ].join('\n'),
+  };
+  assert.deepEqual(await findChiefSessions(config, existing), [{
+    id: 'existing-id',
+    name: 'pan-chief-owner-domain',
+    filename: path.join('/copilot-home', 'session-state', 'existing-id', 'workspace.yaml'),
+  }]);
+  await assert.rejects(resolveChiefAction('start', config, existing), /already exists/);
+
+  const first = await resolveChiefAction('start', config, {
+    readdir: async () => {
+      const error = new Error('missing');
+      error.code = 'ENOENT';
+      throw error;
+    },
+  });
+  assert.equal(first.action, 'start');
+});
+
+test('chief resume resolves one exact persisted id and rejects ambiguity', async () => {
+  const config = {
+    chiefSessionName: 'pan-chief-owner-domain',
+    chiefCopilotHome: '/copilot-home',
+  };
+  const one = await resolveChiefAction('resume', config, {
+    readdir: async () => [{ name: 'canonical-id', isDirectory: () => true }],
+    readFile: async () => 'id: canonical-id\nname: pan-chief-owner-domain\n',
+  });
+  assert.equal(one.config.chiefSessionId, 'canonical-id');
+  assert.throws(
+    () => buildChiefCommand('resume', {
+      ...config,
+      domainRepo: 'owner/domain',
+      panCheckout: '/checkout/pan',
+      configPath: '/binding.json',
+    }),
+    /chiefSessionId is required/,
+  );
+  await assert.rejects(resolveChiefAction('resume', config, {
+    readdir: async () => [
+      { name: 'one', isDirectory: () => true },
+      { name: 'two', isDirectory: () => true },
+    ],
+    readFile: async (filename) =>
+      `id: ${path.basename(path.dirname(filename))}\nname: pan-chief-owner-domain\n`,
+  }), /found 2/);
 });
 
 test('packaged chief, worker, and compatibility agent roles are distinct', async () => {

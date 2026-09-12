@@ -27,6 +27,11 @@ pan-chief start --config /absolute/path/to/machine-binding.json
 pan-chief resume --config /absolute/path/to/machine-binding.json
 ```
 
+`start` is provisioning-only. It refuses when the binding already records a
+chief session id or when the configured Copilot home already contains the
+stable session name. `resume` resolves and uses one exact session id; missing
+or ambiguous persisted state fails closed.
+
 ## Onboard to Pan
 
 **"Onboard to Pan" or "set up Pan" means running the guided setup** — not
