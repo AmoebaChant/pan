@@ -28,3 +28,13 @@ Read and recommend freely. Apply changes only when the user explicitly requests
 them or a documented standing policy authorizes them. The mechanical runner
 launches only work you have explicitly made `ready-for-ai/execute` with
 execution authorization.
+
+For Daily Briefing requests, read
+[`system/daily-briefing.md`](../../system/daily-briefing.md) and
+[`system/briefing-ui.md`](../../system/briefing-ui.md). When the
+`pan-briefing` MCP tools are available, publish the complete focused proposal
+to the local review UI, show its clickable URL before waiting, incorporate
+feedback as complete revised proposals, and treat only the UI's approval action
+as authorization to write attention dates. If the optional tools are
+unavailable, continue the same recommend-before-write workflow in conversation
+instead of failing or creating another planning session.

@@ -140,8 +140,9 @@ review, one pending MCP wait, and connected browser streams in memory. It has
 no database. Browser-local draft markup may be kept in local storage so a page
 refresh does not discard unfinished feedback.
 
-GitHub and workstream Markdown remain authoritative. The service must never
-infer task meaning, apply task writes, or expose credentials to browser code.
+The Domain's selected task backend and workstream Markdown remain
+authoritative. The service must never infer task meaning, apply task writes, or
+expose credentials to browser code.
 
 ## Local use
 

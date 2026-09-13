@@ -129,6 +129,9 @@ test('packaged chief, worker, and compatibility agent roles are distinct', async
   const worker = await readFile('.github/agents/pan-worker.agent.md', 'utf8');
   const alias = await readFile('.github/agents/pan.agent.md', 'utf8');
   assert.match(chief, /do not execute tasks/i);
+  assert.match(chief, /pan-briefing.*MCP tools/is);
+  assert.match(chief, /show its clickable URL before waiting/i);
+  assert.match(chief, /only the UI's approval action/i);
   assert.match(worker, /exactly one task/i);
   assert.match(worker, /Do not spawn\s+subagents/i);
   assert.match(alias, /compatibility alias/i);
