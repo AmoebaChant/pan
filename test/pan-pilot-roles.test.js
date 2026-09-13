@@ -132,6 +132,8 @@ test('packaged chief, worker, and compatibility agent roles are distinct', async
   assert.match(chief, /pan-briefing.*MCP tools/is);
   assert.match(chief, /show its clickable URL before waiting/i);
   assert.match(chief, /only the UI's approval action/i);
+  assert.match(chief, /source-intake\.md/);
+  assert.match(chief, /direct the user there; do not relay/i);
   assert.match(worker, /exactly one task/i);
   assert.match(worker, /Do not spawn\s+subagents/i);
   assert.match(alias, /compatibility alias/i);

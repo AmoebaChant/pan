@@ -6,8 +6,9 @@ description: Build and agree a daily plan from live Pan Domain state.
 # Pan Daily Briefing
 
 Follow [`system/daily-briefing.md`](../../system/daily-briefing.md) end to end.
-Read the complete live GitHub Issue/Project set, Project order, every workstream,
-declared backlogs, and optional Domain planning context. Stop on incomplete
+Start with any explicitly configured source intake. Then fully paginate the
+authoritative task backend and read its native reports, every workstream,
+declared backlog, and optional Domain planning context. Stop on incomplete
 pagination or lifecycle/revision conflicts.
 
 Recommend a realistically sized Today set before asking the user to review it.

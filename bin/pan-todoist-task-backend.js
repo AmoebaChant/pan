@@ -77,6 +77,7 @@ export class TodoistTaskBackend {
     this.baseUrl = String(config.baseUrl || 'https://api.todoist.com/api/v1').replace(/\/$/, '');
     this.user = null;
     this.token = null;
+    this.supportsIdempotentCreate = true;
   }
 
   async initialize() {
@@ -92,7 +93,7 @@ export class TodoistTaskBackend {
     return this;
   }
 
-  async request(method, pathname, body = undefined) {
+  async request(method, pathname, body = undefined, additionalHeaders = {}) {
     if (!this.token) {
       throw new TaskBackendError('backend must be initialized before use', {
         code: 'not-initialized',
@@ -103,6 +104,7 @@ export class TodoistTaskBackend {
       headers: {
         Authorization: `Bearer ${this.token}`,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...additionalHeaders,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -220,7 +222,20 @@ export class TodoistTaskBackend {
       ...(input.nextActionDate ? { due_date: input.nextActionDate } : {}),
       ...(input.deadline ? { deadline_date: input.deadline } : {}),
     };
-    const created = await this.request('POST', '/tasks', body);
+    const idempotencyKey = String(input.idempotencyKey || '').trim();
+    if (
+      idempotencyKey
+      && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        .test(idempotencyKey)
+    ) {
+      throw new TaskBackendError('idempotencyKey must be a UUID', { code: 'invalid-input' });
+    }
+    const created = await this.request(
+      'POST',
+      '/tasks',
+      body,
+      idempotencyKey ? { 'X-Request-Id': idempotencyKey } : {},
+    );
     if (!this.inScope(created)) {
       throw new TaskBackendError(
         `created task ${created.id} is outside the configured scope; inspect it manually`,

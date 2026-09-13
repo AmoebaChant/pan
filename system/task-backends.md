@@ -20,6 +20,12 @@ collections, preserves unmapped description text, and returns explicit errors.
 It does not decide whether a business transition is appropriate. Pan makes
 that decision from the live task and these Markdown contracts.
 
+For [source intake](source-intake.md), an adapter must advertise and honor
+idempotent create requests. `create` accepts an optional UUID
+`idempotencyKey`; the Todoist adapter sends it as `X-Request-Id`. Intake refuses
+apply through an adapter that cannot guarantee retrying the same key will not
+create a second task.
+
 ## Canonical concepts
 
 The common record exposes `id`, `url`, `title`, `description`, `status`,
@@ -84,3 +90,8 @@ pinned revision; polling must never download and execute changing code.
 GitHub Issues and Projects remain the built-in compatibility backend. The
 existing GitHub runner and Project contracts continue to apply to Domains that
 select it; they are not a shadow queue for a Todoist-backed Domain.
+
+Live Domain `task-backend.json` may enable GitHub Issue source intake and name
+its repository scope and receipt path. The machine-local backend config still
+holds operational scope such as Todoist `createProjectId` and the credential
+file. The two backend names must match.

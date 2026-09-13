@@ -35,6 +35,11 @@ operates on exactly one Domain at a time.
   It may include a `## Daily Briefing` section naming extra read-only planning
   considerations or sources and how to inspect them; see [Daily
   Briefing](daily-briefing.md).
+- **`task-backend.json`** declares the selected backend and may explicitly
+  enable chief-owned GitHub Issue source intake for a non-GitHub backend. Its
+  repository allowlists and receipt path are Domain policy; credentials and
+  machine-local adapter paths remain outside the Domain. See [source
+  intake](source-intake.md).
 
 ## How Pan reaches the Domain
 
@@ -91,7 +96,7 @@ assignee rules, and mappings; see [task backends](task-backends.md).
 
 For GitHub-backed Domains, the file may list `taskBacklogRepos` for the everyday UI. That is an
 explicit repository allowlist in addition to the Domain repository, not a
-discovery mechanism or authority transfer. The UI service requires both this
+source-intake declaration, discovery mechanism, or authority transfer. The UI service requires both this
 config path and the Pan checkout path on its command line and rejects all other
 Issue repositories.
 
@@ -107,6 +112,11 @@ source. See [Todoist migration and recovery](todoist-migration.md).
 sync or fallback queue. Todoist-backed Domains keep all managed tasks in
 Todoist, while the private repository remains authoritative for knowledge and
 playbooks.
+
+A Todoist-backed Domain may explicitly register selected GitHub Issues into
+Todoist under [source intake](source-intake.md). The durable Domain receipt is
+provenance only; Todoist remains the sole task authority and source Issues
+remain reference-only.
 
 ## Boundaries
 

@@ -14,7 +14,8 @@ export class TaskBackendError extends Error {
 
 export async function loadTaskBackend(configPath, dependencies = {}) {
   const absolute = path.resolve(configPath);
-  const config = JSON.parse(await readFile(absolute, 'utf8'));
+  const config = dependencies.backendConfig
+    ?? JSON.parse(await readFile(absolute, 'utf8'));
   if (config.backend !== 'todoist') {
     throw new TaskBackendError(`unsupported task backend: ${JSON.stringify(config.backend)}`, {
       code: 'unsupported-backend',

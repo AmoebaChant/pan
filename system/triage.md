@@ -12,11 +12,18 @@ GitHub compatibility backend, read the complete live Issue and Project sets. Use
 of completeness. Re-read a target immediately before mutation, require its
 expected backend revision, and verify afterward.
 
+Before establishing the queue, run the configured [source
+intake](source-intake.md) preview and deliberate apply. An incomplete source
+read stops intake before writes. Imported records are then part of the live
+authoritative queue as `untriaged`; registration does not accept, schedule, or
+authorize them.
+
 ## 1. Establish the authoritative queue
 
-For a Todoist-backed Domain, the fully paginated in-scope Todoist set is the
-queue. Do not re-register linked GitHub source records, dispatch from them, or
-build a fallback Project.
+For a Todoist-backed Domain, the fully paginated in-scope Todoist set after any
+explicitly configured source intake is the queue. Do not register undeclared
+linked GitHub records, dispatch from source Issues, or build a fallback
+Project.
 
 For the GitHub compatibility backend, join the complete configured Domain Issue
 set and declared external backlog Issue sets to the Project by Issue URL and
@@ -47,6 +54,13 @@ A runner crash changes `worker-state` to `paused` while preserving the outcome
 state, session, machine/slot, result, and current next action. Triage never
 converts a `ready-for-human` checkpoint or `deliberate-hold` into
 `ready-for-ai`.
+
+Read native worker reports during each pass. A reported question or real
+review gate becomes the corresponding `ready-for-human` checkpoint while
+preserving the worker session/resource attachment. Tell the user to answer or
+review in the worker's headed terminal; the chief does not relay an interactive
+worker conversation through itself. A verified whole-outcome completion is
+informational history after completion, not a Needs me item.
 
 For recorded pull requests, read live provider state. A merge completes a task
 only when the playbook says merge is the final gate and the task's current

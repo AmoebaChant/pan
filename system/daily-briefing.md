@@ -9,13 +9,16 @@ and [workstreams](workstreams.md).
 ## Establish the live picture
 
 1. Read optional Domain `pan.md`.
-2. Fully paginate every task in the selected backend and preserve its
+2. Run the configured [source intake](source-intake.md) preview and deliberate
+   apply. Stop before planning if source pagination, scope, receipts, or apply
+   results are incomplete; report any confirmed partial registration honestly.
+3. Fully paginate every task in the selected backend and preserve its
    canonical ordering. For the GitHub compatibility backend, this means every
    configured Domain Issue and Project item.
-3. Read every workstream README and every declared external backlog Issue set.
-4. Reconcile the narrow objective facts permitted by triage, then re-read.
-5. Validate recurrence occurrence markers before proposing a date change.
-6. Treat missing pages, inaccessible sources, lifecycle/action mismatches,
+4. Read every workstream README and every declared external backlog Issue set.
+5. Reconcile the narrow objective facts permitted by triage, then re-read.
+6. Validate recurrence occurrence markers before proposing a date change.
+7. Treat missing pages, inaccessible sources, lifecycle/action mismatches,
    stale revisions, and terminal/backend-state conflicts as incomplete. Stop
    before discretionary writes.
 
@@ -33,6 +36,12 @@ every nonterminal task, not only tasks already dated today:
 - external waits, deliberate holds, dependencies, and deadlines;
 - workstream priorities and durable `Pan planning guidance:`; and
 - optional read-only Daily Briefing context from `pan.md`.
+
+For an attached worker checkpoint, surface the task, exact requested action,
+machine/session context, and worker terminal location. Direct the user to that
+terminal rather than asking the worker's question again in the chief
+conversation. A `ready-for-human/review` completion gate is Needs me; a
+verified `done/none` outcome is recent informational activity, not attention.
 
 Recommend a realistically sized Today set. The focused proposal contains:
 

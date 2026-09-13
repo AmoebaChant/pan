@@ -1,6 +1,6 @@
 ---
 name: pan-portfolio
-description: Review and triage a Pan portfolio directly from live GitHub Issues and Project state.
+description: Review and triage a Pan portfolio from its live authoritative task backend and Domain state.
 ---
 
 # Pan portfolio review
@@ -8,12 +8,14 @@ description: Review and triage a Pan portfolio directly from live GitHub Issues 
 Follow [`system/triage.md`](../../system/triage.md),
 [`system/task-lifecycle.md`](../../system/task-lifecycle.md), and
 [`system/project-schema.md`](../../system/project-schema.md). Fully paginate
-Issues, Project items, workstreams, declared backlogs, and relevant comments.
+the authoritative task backend, workstreams, declared backlogs, and relevant
+native reports or comments. Start with any explicitly configured source intake.
 
-Register missing Issues automatically. Prepare exact human actions, bounded AI
-next steps, authorization, dependencies, priority, playbook, workstream,
-deadline, and the durable current-next-action detail. Do not use or write the
-retained legacy `owner`.
+Register source Issues only through the backend-specific rules in
+[`system/triage.md`](../../system/triage.md). Prepare exact human actions,
+bounded AI next steps, authorization, dependencies, priority, playbook,
+workstream, deadline, and the durable current-next-action detail. Do not use or
+write the retained legacy `owner`.
 
 Scheduled triage may research, prepare, reconcile objective facts, and apply
 explicit standing permissions. Scope expansion and consequential decisions

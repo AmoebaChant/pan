@@ -107,6 +107,19 @@ then create an empty `worker-release.json` under the exact `PAN_STATE_DIR` and
 exit Copilot. Do not create that signal while interactive review, a user
 question, or other work in this session remains active.
 
+For a thin-backend question or review gate, make the report's first line
+`Pan worker checkpoint: <clarify|discuss|approve|review>` and state the exact
+request and durable artifact/location below it. Remain in this headed worker
+terminal and do not write `worker-release.json` unless the playbook permits a
+durable safe release. The chief surfaces the checkpoint but directs the user
+back to this terminal; it does not relay the conversation centrally.
+
+When the whole outcome is genuinely complete, use first line
+`Pan worker outcome: done`, record the evidence, then signal release when safe.
+Do not request review merely because AI acted. If review is a real remaining
+gate, report `Pan worker checkpoint: review` instead and remain attached when
+the review must continue in this session.
+
 The following `result.json` protocol applies to the GitHub compatibility
 runner:
 

@@ -93,6 +93,24 @@ test('primary views are exclusive while All tasks remains complete', () => {
   }
 });
 
+test('worker review and help checkpoints need attention while completed work is informational', () => {
+  const today = '2026-09-12';
+  for (const nextAction of ['clarify', 'review']) {
+    assert.equal(derivePrimaryView({
+      status: 'ready-for-human',
+      nextAction,
+      nextActionDate: '',
+      worker: { state: 'waiting-human', sessionId: 'worker-session' },
+    }, today), 'needs-me');
+  }
+  assert.equal(derivePrimaryView({
+    status: 'done',
+    nextAction: 'none',
+    nextActionDate: '',
+    updatedAt: '2026-09-12T17:00:00Z',
+  }, today, '2026-09-11T00:00:00Z'), 'recent');
+});
+
 test('recovery mapping translates current live state instead of a stale baseline', () => {
   assert.deepEqual(
     legacyRecoveryTarget({

@@ -70,6 +70,41 @@ test('Todoist adapter paginates, scopes assignments, and maps canonical fields',
   assert.equal(tasks[0].executionAuthorized, true);
 });
 
+test('Todoist create sends source-intake idempotency keys without scheduling work', async () => {
+  let request;
+  const fetchImpl = async (url, options) => {
+    if (url.endsWith('/user')) return response({ id: 'self' });
+    request = { url, options };
+    const body = JSON.parse(options.body);
+    return response({
+      id: '1',
+      content: body.content,
+      description: body.description,
+      priority: body.priority,
+      project_id: 'p',
+      responsible_uid: null,
+      updated_at: 'r1',
+      due: null,
+    });
+  };
+  const backend = await new TodoistTaskBackend(
+    { backend: 'todoist', createProjectId: 'p' },
+    { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
+  ).initialize();
+  const created = await backend.create({
+    title: 'Imported',
+    status: 'untriaged',
+    executionAuthorized: false,
+    nextActionDate: '',
+    idempotencyKey: '11111111-1111-4111-8111-111111111111',
+  });
+  assert.equal(request.options.headers['X-Request-Id'], '11111111-1111-4111-8111-111111111111');
+  assert.equal(JSON.parse(request.options.body).due_date, undefined);
+  assert.equal(created.status, 'untriaged');
+  assert.equal(created.executionAuthorized, false);
+  assert.equal(created.nextActionDate, '');
+});
+
 test('update reports stale revisions before writing', async () => {
   let writes = 0;
   const fetchImpl = async (url, options) => {

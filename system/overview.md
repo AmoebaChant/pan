@@ -33,6 +33,10 @@ these documents clearer.
 - **Daily Briefing** — an interactive review that turns complete live Domain
   state into an agreed, realistically sized plan for the user's day. See
   [Daily Briefing](daily-briefing.md).
+- **Source intake** — chief-owned registration of explicitly scoped GitHub
+  Issues into a non-GitHub authoritative backend. It runs before briefing and
+  triage, preserves durable receipts, and never authorizes imported work. See
+  [source intake](source-intake.md).
 - **Daily Briefing review UI** — an optional local, responsive review surface
   for marking up a complete proposal before sending one batch of feedback back
   to the Pan session. See [Daily Briefing review UI](briefing-ui.md).
@@ -82,6 +86,7 @@ Load only what the current job needs; skip the rest until you need it.
 | Reading or writing Project fields | [project schema](project-schema.md) |
 | Changing task state or next action | [outcome task lifecycle](task-lifecycle.md) |
 | Triaging the backlog | [triage](triage.md) + [playbooks](playbooks.md) |
+| Importing declared GitHub Issues | [source intake](source-intake.md) |
 | Planning the user's day | [Daily Briefing](daily-briefing.md) |
 | Reviewing a briefing in the local web UI | [Daily Briefing review UI](briefing-ui.md) |
 | Creating or completing recurring tasks | [recurrence](recurrence.md) |

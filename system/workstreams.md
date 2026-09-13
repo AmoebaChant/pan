@@ -66,14 +66,15 @@ be recorded.
 
 ## Optional sections a README may declare
 
-- **`## Backlog repositories`** — one `owner/repository` per list entry. During
-  triage, Pan adds those repositories' Issues to the Domain Project as
-  `untriaged` for triage. It adds a Project item that references each Issue — the
-  Issue is never copied and stays in its own repository. More than one workstream
-  may declare the same repository. Pan records the declaring workstream in an
-  added item's `workstream` field when that is unambiguous; when several
-  workstreams declare the same repository, it leaves the association unset rather
-  than guessing. See [triage](triage.md).
+- **`## Backlog repositories`** — one exact `owner/repository` per list entry.
+  For the GitHub backend, triage adds those repositories' Issues to the Domain
+  Project as `untriaged`. For a non-GitHub backend, these declarations become
+  intake sources only when live `task-backend.json` explicitly enables
+  `sourceIntake.githubIssues.workstreamBacklogs`; ordinary README links never
+  count. More than one workstream may declare the same repository. Pan records
+  the declaring workstream when that is unambiguous and leaves it unset rather
+  than guessing when several declare it. See [source intake](source-intake.md)
+  and [triage](triage.md).
 - **`## Triage instructions`** — free-form prose that governs how Pan triages
   this workstream's backlog Issues. The single section applies to every backlog
   repository the workstream declares. It may direct Pan to recommend accept or

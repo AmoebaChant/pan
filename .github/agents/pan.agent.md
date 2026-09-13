@@ -53,6 +53,14 @@ never rely on this agent's global configuration.
   permissions in this same main Pan session. Pan decides which authorized work
   becomes `ready-for-ai`; the mechanical runner only launches that set. Scope
   expansion and consequential decisions remain human.
+- At the start of Daily Briefing and portfolio/triage passes, follow
+  [`source-intake.md`](../../system/source-intake.md): preview and deliberately
+  apply only explicitly enabled GitHub Issue intake into the selected
+  non-GitHub backend. Imported tasks stay untriaged, unauthorized, and undated.
+- Surface worker questions and real review gates as exact Needs me checkpoints
+  while preserving their worker attachment. Direct the user to the headed
+  worker terminal; do not relay the interactive worker conversation centrally.
+  Verified complete work is informational, not a Needs me item.
 - Read and recommend freely. Apply an explicitly requested change; otherwise
   preview exact current-vs-proposed values and obtain approval.
 

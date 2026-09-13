@@ -37,6 +37,29 @@ PID plus process-start records across polls/restarts, respects total capacity,
 prevents two tasks from sharing one configured working directory, and launches
 Copilot in an attachable terminal with private task/session context.
 
+## GitHub Issue source intake
+
+For a non-GitHub authoritative backend whose live Domain
+`task-backend.json` enables intake:
+
+```sh
+node bin/pan-source-intake.js preview \
+  --config /absolute/path/to/machine-binding.json
+node bin/pan-source-intake.js apply \
+  --config /absolute/path/to/machine-binding.json \
+  --confirm-intake
+```
+
+The chief runs preview/apply before Daily Briefing and portfolio/triage passes.
+The tool accepts only two identical, complete GraphQL cursor snapshots of each
+explicitly declared repository, including stable ordering, counts, and cursor
+metadata. It excludes closed Issues and Issues assigned exclusively to other
+people, and creates untriaged, unauthorized, undated authoritative tasks. A
+strictly validated Domain receipt ledger plus Todoist `X-Request-Id` makes
+reruns durable even after a target task leaves the open-task list. Preview is
+read-only; partial apply exits nonzero and reports confirmed task ids and
+recoverable reservations.
+
 ## Everyday task UI
 
 Public fixture mode:
