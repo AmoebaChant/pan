@@ -28,6 +28,12 @@ create a second task.
 
 ## Canonical concepts
 
+The Todoist adapter also supports `pan-task move <id> --input ...` with
+`projectId` and `expectedRevision`. It validates destination scope, moves the
+native task, and re-reads the result without rewriting lifecycle metadata or
+dates. Source intake uses this operation to apply declared project mappings
+to previously imported tasks.
+
 The common record exposes `id`, `url`, `title`, `description`, `status`,
 `nextAction`, `nextActionDetail`, `priority`, `nextActionDate`, `deadline`,
 `playbook`, `workstream`, `executionAuthorized`, `dependencies`, worker

@@ -245,6 +245,38 @@ export class TodoistTaskBackend {
     return this.canonical(created);
   }
 
+  async validateProject(projectId) {
+    if (typeof projectId !== 'string' || !projectId.trim()) {
+      throw new TaskBackendError('projectId is required', { code: 'invalid-input' });
+    }
+    const allowed = this.config.scope?.projectIds ?? [];
+    if (allowed.length && !allowed.map(String).includes(projectId)) {
+      throw new TaskBackendError('destination project is outside configured scope', { code: 'out-of-scope' });
+    }
+    const project = await this.request('GET', `/projects/${encodeURIComponent(projectId)}`);
+    if (String(project.id) !== projectId || project.is_archived || project.is_deleted) {
+      throw new TaskBackendError('destination project is unavailable', { code: 'invalid-input' });
+    }
+    return project;
+  }
+
+  async move(id, input) {
+    assertObject(input, 'move input');
+    await this.validateProject(input.projectId);
+    const current = await this.get(id);
+    if (!input.expectedRevision || current.revision !== input.expectedRevision) {
+      throw new TaskBackendError('task changed before project move', { code: 'revision-conflict' });
+    }
+    await this.request('POST', `/tasks/${encodeURIComponent(id)}/move`, { project_id: input.projectId });
+    const moved = await this.get(id);
+    if (moved.projectId !== input.projectId) {
+      throw new TaskBackendError('project move did not verify', {
+        code: 'partial-write', details: { taskId: String(id) },
+      });
+    }
+    return moved;
+  }
+
   async update(id, input) {
     assertObject(input, 'update input');
     const native = await this.nativeTask(id);

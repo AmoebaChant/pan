@@ -62,7 +62,7 @@ async function defaultGhJson(args, options = {}) {
   return JSON.parse(await runGh(args, options));
 }
 
-class GitHubIntakeClient {
+export class GitHubIntakeClient {
   constructor(domainRepo, ghJson = defaultGhJson) {
     this.domainRepo = domainRepo;
     this.ghJson = ghJson;
@@ -112,6 +112,69 @@ class GitHubIntakeClient {
 
   async getIssue(repository, number) {
     return this.ghJson(['api', `repos/${repository}/issues/${number}`]);
+  }
+
+  async retireIssue(source, task) {
+    const endpoint = `repos/${source.repository}/issues/${source.number}`;
+    const self = (await this.currentUser()).toLowerCase();
+    const assertEligible = (issue) => {
+      if (issue.node_id !== source.nodeId || issue.html_url !== source.url
+          || issue.state !== 'open' || issue.pull_request
+          || !Array.isArray(issue.assignees)
+          || (issue.assignees.length && !issue.assignees.some((a) => a.login.toLowerCase() === self))) {
+        throw new Error('source Issue changed identity or eligibility before retirement');
+      }
+    };
+    const live = await this.getIssue(source.repository, source.number);
+    assertEligible(live);
+    if (live.updated_at !== source.updatedAt) {
+      throw new Error('source Issue changed after preview; rerun retirement');
+    }
+    const label = 'migrated-to-todoist';
+    try {
+      await this.ghJson(['api', `repos/${source.repository}/labels/${label}`]);
+    } catch (error) {
+      if (!/HTTP 404/.test(error.message)) throw error;
+      await this.ghJson(['api', '--method', 'POST', `repos/${source.repository}/labels`,
+        '--input', '-'], { input: JSON.stringify({
+        name: label, color: '5319e7', description: 'Work tracking moved to Todoist; not a fixed or rejected outcome.',
+      }) });
+    }
+    await this.ghJson(['api', '--method', 'POST', `${endpoint}/labels`, '--input', '-'], {
+      input: JSON.stringify({ labels: [label] }),
+    });
+    const body = `<!-- pan-migration:todoist:${task.id} -->\n`
+      + `Work tracking has moved to Todoist: https://app.todoist.com/app/task/${encodeURIComponent(task.id)}\n\n`
+      + `Task: ${task.title}\n\n`
+      + 'This Issue is closed as migrated, not fixed, shipped, or rejected. '
+      + 'Follow the Todoist task for status and next actions. This Issue remains reference history.';
+    const pages = await this.ghJson(['api', '--paginate', '--slurp', `${endpoint}/comments?per_page=100`]);
+    if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+      throw new Error('invalid migration comment pagination');
+    }
+    if (!pages.flat().some((comment) => comment.user?.login?.toLowerCase() === self
+        && comment.body === body)) {
+      const created = await this.ghJson(['api', '--method', 'POST', `${endpoint}/comments`, '--input', '-'], {
+        input: JSON.stringify({ body }),
+      });
+      if (created.body !== body || created.user?.login?.toLowerCase() !== self) {
+        throw new Error('migration destination comment did not verify');
+      }
+    }
+    const beforeClose = await this.getIssue(source.repository, source.number);
+    assertEligible(beforeClose);
+    if (!beforeClose.labels.some((value) => value.name === label)) {
+      throw new Error('migration label is missing; refusing to close source');
+    }
+    await this.ghJson(['api', '--method', 'PATCH', endpoint, '--input', '-'], {
+      input: JSON.stringify({ state: 'closed', state_reason: 'not_planned' }),
+    });
+    const closed = await this.getIssue(source.repository, source.number);
+    if (closed.node_id !== source.nodeId || closed.state !== 'closed'
+        || closed.state_reason !== 'not_planned'
+        || !closed.labels.some((value) => value.name === label)) {
+      throw new Error('source retirement did not verify');
+    }
   }
 
   async readFile(filename, { optional = false } = {}) {
@@ -248,6 +311,8 @@ export async function runSourceIntake(options, dependencies = {}) {
   const receiptSnapshot = await receiptStore.read();
   const discovery = await discoverGitHubIssues(github, intake.sources);
   const plan = planSourceIntake(discovery, receiptSnapshot.ledger, intake.backend);
+  plan.projectMappings = intake.projectMappings;
+  plan.closeMigratedIssues = intake.closeMigratedIssues;
   if (options.command === 'preview') {
     return {
       exitCode: plan.actions.some((action) => action.action === 'conflict') ? 2 : 0,

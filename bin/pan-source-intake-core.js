@@ -183,6 +183,22 @@ export function resolveGitHubIntakeConfig(domainBackendConfig, workstreams = [])
   if (repositories.size === 0) {
     throw new Error('GitHub Issue source intake has no explicitly declared repositories');
   }
+  const projectMappings = configured.projectMappings ?? {};
+  if (!projectMappings || typeof projectMappings !== 'object' || Array.isArray(projectMappings)) {
+    throw new Error('source intake projectMappings must be an object');
+  }
+  for (const [repository, projectId] of Object.entries(projectMappings)) {
+    if (!repositories.has(repository) || typeof projectId !== 'string' || !projectId.trim()) {
+      throw new Error('projectMappings must map declared repositories to nonempty project IDs');
+    }
+  }
+  if (configured.closeMigratedIssues !== undefined
+      && typeof configured.closeMigratedIssues !== 'boolean') {
+    throw new Error('closeMigratedIssues must be a boolean');
+  }
+  if (backend !== 'todoist' && (Object.keys(projectMappings).length || configured.closeMigratedIssues)) {
+    throw new Error('project routing and source retirement currently require the Todoist backend');
+  }
   const receiptPath = String(
     configured.receiptPath ?? '.pan/source-intake-receipts.json',
   ).trim();
@@ -196,6 +212,8 @@ export function resolveGitHubIntakeConfig(domainBackendConfig, workstreams = [])
   return {
     backend,
     receiptPath,
+    projectMappings,
+    closeMigratedIssues: configured.closeMigratedIssues === true,
     sources: [...repositories].sort().map((repository) => {
       const declaredBy = [...(associations.get(repository) ?? [])].sort();
       return {
@@ -399,7 +417,7 @@ function sourceDescription(source) {
   ].join('\n');
 }
 
-function createInput(source, requestId) {
+function createInput(source, requestId, projectId) {
   return {
     title: source.title,
     description: sourceDescription(source),
@@ -414,6 +432,7 @@ function createInput(source, requestId) {
     executionAuthorized: false,
     dependencies: [],
     idempotencyKey: requestId,
+    ...(projectId ? { projectId } : {}),
   };
 }
 
@@ -432,6 +451,7 @@ function assertSafeCreatedTask(task, input) {
     || task.workstream !== input.workstream
     || !Array.isArray(task.dependencies)
     || task.dependencies.length > 0
+    || (input.projectId && task.projectId !== input.projectId)
   ) {
     throw new Error(
       `created task ${task?.id ?? '(unknown)'} does not match the required safe intake record`,
@@ -530,6 +550,31 @@ function sameSourceRevision(planned, live) {
   );
 }
 
+async function finishImport(plan, source, receipt, { backend, github, receiptStore }) {
+  const projectId = plan.projectMappings?.[source.repository];
+  if (!projectId && !plan.closeMigratedIssues) return {};
+  await confirmExistingReceipt(receiptStore, { source, receipt }, plan.backend);
+  let task = await backend.get(receipt.target.taskId);
+  if (String(task.id) !== String(receipt.target.taskId)
+      || !task.description.includes(source.url)) {
+    throw new Error('target task does not preserve the expected source provenance');
+  }
+  if (projectId && task.projectId !== projectId) {
+    await backend.move(task.id, { expectedRevision: task.revision, projectId });
+    task = await backend.get(task.id);
+    if (task.projectId !== projectId || !task.description.includes(source.url)) {
+      throw new Error('target project move did not verify');
+    }
+  }
+  if (plan.closeMigratedIssues) {
+    await github.retireIssue(source, task);
+  }
+  return {
+    ...(projectId ? { projectId } : {}),
+    ...(plan.closeMigratedIssues ? { sourceRetired: true } : {}),
+  };
+}
+
 export async function applySourceIntake(plan, {
   backend,
   github,
@@ -539,16 +584,23 @@ export async function applySourceIntake(plan, {
   if (backend.supportsIdempotentCreate !== true) {
     throw new Error('the configured backend does not support idempotent source-intake creation');
   }
+  for (const projectId of new Set(Object.values(plan.projectMappings ?? {}))) {
+    await backend.validateProject(projectId);
+  }
   const results = [];
   let partial = false;
   for (const action of plan.actions) {
     if (action.action === 'already-imported') {
       try {
         const receipt = await confirmExistingReceipt(receiptStore, action, plan.backend);
+        const finalized = await finishImport(plan, action.source, receipt, {
+          backend, github, receiptStore,
+        });
         results.push({
           action: action.action,
           sourceUrl: action.source.url,
           taskId: receipt.target.taskId,
+          ...finalized,
         });
       } catch (error) {
         partial = true;
@@ -590,23 +642,27 @@ export async function applySourceIntake(plan, {
         now,
       );
       if (receipt.state === 'created') {
+        const finalized = await finishImport(plan, live, receipt, { backend, github, receiptStore });
         results.push({
           action: 'already-imported',
           sourceUrl: live.url,
           taskId: receipt.target.taskId,
+          ...finalized,
         });
         continue;
       }
       requestId = receipt.requestId;
-      const input = createInput(live, requestId);
+      const input = createInput(live, requestId, plan.projectMappings?.[live.repository]);
       task = await backend.create(input);
       assertSafeCreatedTask(task, input);
-      await finalize(receiptStore, live, plan.backend, requestId, task.id, now);
+      const finalReceipt = await finalize(receiptStore, live, plan.backend, requestId, task.id, now);
+      const finalized = await finishImport(plan, live, finalReceipt, { backend, github, receiptStore });
       results.push({
         action: action.action === 'recover-reservation' ? 'recovered' : 'created',
         sourceUrl: live.url,
         taskId: task.id,
         requestId,
+        ...finalized,
       });
     } catch (error) {
       partial = true;

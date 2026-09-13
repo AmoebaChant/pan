@@ -31,6 +31,39 @@ test('metadata round trips without replacing the human description', () => {
     status: 'ready-for-ai',
     executionAuthorized: true,
   });
+
+  test('Todoist move preserves metadata and requires revision and destination scope', async () => {
+    let native = {
+      id: 'task', content: 'Title', description: descriptionWithMetadata('Source', { status: 'ready-for-human' }),
+      project_id: 'inbox', responsible_uid: null, updated_at: 'r1', priority: 1,
+      due: { date: '2026-09-15' },
+    };
+    let moves = 0;
+    const backend = await new TodoistTaskBackend({
+      backend: 'todoist', scope: { projectIds: ['inbox', 'project'] },
+    }, {
+      readFileImpl: async () => 'TODOIST_API_KEY=secret',
+      fetchImpl: async (url, options) => {
+        if (url.endsWith('/user')) return response({ id: 'self' });
+        if (url.endsWith('/projects/project')) return response({ id: 'project', is_archived: false });
+        if (url.endsWith('/tasks/task/move')) {
+          assert.deepEqual(JSON.parse(options.body), { project_id: 'project' });
+          native = { ...native, project_id: 'project', updated_at: 'r2' };
+          moves++;
+          return response(null, 204);
+        }
+        assert.ok(url.endsWith('/tasks/task'));
+        return response(native);
+      },
+    }).initialize();
+    await assert.rejects(backend.move('task', { projectId: 'other', expectedRevision: 'r1' }), /scope/);
+    await assert.rejects(backend.move('task', { projectId: 'project', expectedRevision: 'stale' }), /changed/);
+    const moved = await backend.move('task', { projectId: 'project', expectedRevision: 'r1' });
+    assert.equal(moves, 1);
+    assert.equal(moved.projectId, 'project');
+    assert.equal(moved.status, 'ready-for-human');
+    assert.equal(moved.nextActionDate, '2026-09-15');
+  });
   assert.deepEqual(metadataFrom(value), {
     description: 'Visible details',
     metadata: { status: 'ready-for-ai', executionAuthorized: true },

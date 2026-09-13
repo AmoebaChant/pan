@@ -25,6 +25,10 @@ A Domain whose authoritative backend is not GitHub may opt in through its live
       "repositories": [
         "owner/explicit-repository"
       ],
+      "projectMappings": {
+        "owner/explicit-repository": "todoist-project-id"
+      },
+      "closeMigratedIssues": true,
       "receiptPath": ".pan/source-intake-receipts.json"
     }
   }
@@ -38,6 +42,24 @@ A Domain whose authoritative backend is not GitHub may opt in through its live
   `owner/repository` values.
 - `receiptPath` is an optional safe Domain-relative path and defaults to
   `.pan/source-intake-receipts.json`.
+- `projectMappings` optionally maps declared repositories to Todoist project
+  IDs. Validate every destination before applying anything. Create new tasks
+  there and move previously imported tasks there without changing lifecycle,
+  dates, or authorization. Unmapped repositories keep the backend default.
+- `closeMigratedIssues` defaults to false. For Todoist, true authorizes source
+  retirement after verifying the target task and durable receipt. Label the
+  Issue `migrated-to-todoist`, add a destination comment, then close it with
+  reason `not_planned`. This means migrated, not fixed, shipped, or rejected.
+  Domain triage, reporter emails, and completion reconciliation must exclude
+  migrated Issues from interpreting closure as an outcome.
+
+Retirement applies to previously imported open Issues as well as new imports.
+Re-read the target and source before closure; missing targets, changed source
+revisions/assignments, or conflicting receipts block it. On partial failure
+keep the created receipt, report the failure, and retry the remaining routing
+or retirement on the next pass without creating another task. Existing target
+tasks need not be untriaged: preserve any human edits since import. Closed
+source Issues remain reference history and are not reopened by intake.
 
 At least one repository must result from those declarations. Ordinary Markdown
 links, repositories mentioned in prose, local UI `taskBacklogRepos`, linked

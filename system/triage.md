@@ -25,6 +25,11 @@ explicitly configured source intake is the queue. Do not register undeclared
 linked GitHub records, dispatch from source Issues, or build a fallback
 Project.
 
+An Issue labeled `migrated-to-todoist` was retired as a tracking source, not
+completed, shipped, or rejected. Use its authoritative Todoist task and
+migration receipt. Exclude migration closure from rejection/resolution email
+triggers and completion inference.
+
 For the GitHub compatibility backend, join the complete configured Domain Issue
 set and declared external backlog Issue sets to the Project by Issue URL and
 register missing Issues without editing or reopening them.

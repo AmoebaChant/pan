@@ -60,6 +60,12 @@ reruns durable even after a target task leaves the open-task list. Preview is
 read-only; partial apply exits nonzero and reports confirmed task ids and
 recoverable reservations.
 
+Domains can set `sourceIntake.githubIssues.projectMappings` to route declared
+repositories to Todoist project IDs, and `closeMigratedIssues: true` to retire
+verified source Issues with a migration label, destination comment, and
+`not_planned` closure. Existing imports are routed/retired without duplication.
+Migration closure does not mean fixed, shipped, or rejected.
+
 ## Everyday task UI
 
 Public fixture mode:

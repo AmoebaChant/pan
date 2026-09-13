@@ -8,7 +8,7 @@ import {
   resolveGitHubIntakeConfig,
   validateReceiptLedger,
 } from '../bin/pan-source-intake-core.js';
-import { parseSourceIntakeCli, runSourceIntake } from '../bin/pan-source-intake.js';
+import { GitHubIntakeClient, parseSourceIntakeCli, runSourceIntake } from '../bin/pan-source-intake.js';
 
 function issue(number, overrides = {}) {
   return {
@@ -44,6 +44,7 @@ function sourceFromIssue(native, workstream = '') {
 function createdTask(input, id) {
   return {
     id,
+    projectId: input.projectId,
     title: input.title,
     description: input.description,
     status: input.status,
@@ -57,6 +58,149 @@ function createdTask(input, id) {
     dependencies: input.dependencies,
   };
 }
+
+test('routing config rejects undeclared repositories and nonboolean retirement', () => {
+  const config = {
+    backend: 'todoist',
+    sourceIntake: { githubIssues: {
+      enabled: true, repositories: ['example/source'],
+      projectMappings: { 'other/source': 'project' },
+    } },
+  };
+  assert.throws(() => resolveGitHubIntakeConfig(config), /declared repositories/);
+  config.sourceIntake.githubIssues.projectMappings = { 'example/source': 'project' };
+  config.sourceIntake.githubIssues.closeMigratedIssues = 'yes';
+  assert.throws(() => resolveGitHubIntakeConfig(config), /boolean/);
+  config.sourceIntake.githubIssues.closeMigratedIssues = true;
+  const resolved = resolveGitHubIntakeConfig(config);
+  assert.equal(resolved.projectMappings['example/source'], 'project');
+  assert.equal(resolved.closeMigratedIssues, true);
+});
+
+test('mapped imports verify the task and receipt before retiring the source', async () => {
+  const native = issue(1);
+  const source = sourceFromIssue(native);
+  const store = receiptStore();
+  const plan = planSourceIntake({ eligible: [source], excluded: [] }, store.snapshot(), 'todoist');
+  plan.projectMappings = { 'example/source': 'project' };
+  plan.closeMigratedIssues = true;
+  let task;
+  const events = [];
+  const backend = {
+    supportsIdempotentCreate: true,
+    async validateProject(id) { assert.equal(id, 'project'); events.push('destination'); },
+    async create(input) {
+      assert.equal(input.projectId, 'project');
+      task = createdTask(input, 'task');
+      events.push('create');
+      return task;
+    },
+    async get() { events.push('get'); return task; },
+  };
+  const github = {
+    ...githubFor([native]),
+    async retireIssue() {
+      assert.equal(store.snapshot().receipts[0].state, 'created');
+      events.push('retire');
+    },
+  };
+  const result = await applySourceIntake(plan, { backend, github, receiptStore: store });
+  assert.equal(result.partial, false);
+  assert.equal(result.results[0].sourceRetired, true);
+  assert.deepEqual(events, ['destination', 'create', 'get', 'retire']);
+});
+
+test('existing imports move without resetting human edits and retry failed closure without duplicates', async () => {
+  const source = sourceFromIssue(issue(1));
+  const store = receiptStore({ ...emptyReceiptLedger(), receipts: [completedReceipt(source)] });
+  const plan = planSourceIntake({ eligible: [source], excluded: [] }, store.snapshot(), 'todoist');
+  plan.projectMappings = { 'example/source': 'project' };
+  plan.closeMigratedIssues = true;
+  let task = {
+    id: 'task-1', title: 'Edited by user', description: source.url,
+    projectId: 'inbox', revision: 'r1', status: 'ready-for-human',
+    nextActionDate: '2026-09-15',
+  };
+  let moves = 0;
+  let closes = 0;
+  const backend = {
+    supportsIdempotentCreate: true,
+    async validateProject() {},
+    async get() { return { ...task }; },
+    async create() { assert.fail('must not duplicate'); },
+    async move(id, input) {
+      assert.equal(input.expectedRevision, 'r1');
+      task = { ...task, projectId: input.projectId, revision: 'r2' };
+      moves++;
+    },
+  };
+  const github = { async retireIssue() { if (++closes === 1) throw new Error('GitHub unavailable'); } };
+  const failed = await applySourceIntake(plan, { backend, github, receiptStore: store });
+  assert.equal(failed.partial, true);
+  const recovered = await applySourceIntake(plan, { backend, github, receiptStore: store });
+  assert.equal(recovered.partial, false);
+  assert.equal(moves, 1);
+  assert.equal(task.status, 'ready-for-human');
+  assert.equal(task.nextActionDate, '2026-09-15');
+});
+
+test('missing target or invalid destination never retires the source', async () => {
+  const source = sourceFromIssue(issue(1));
+  const store = receiptStore({ ...emptyReceiptLedger(), receipts: [completedReceipt(source)] });
+  const plan = planSourceIntake({ eligible: [source], excluded: [] }, store.snapshot(), 'todoist');
+  plan.closeMigratedIssues = true;
+  const backend = {
+    supportsIdempotentCreate: true,
+    async get() { throw new Error('missing target'); },
+    async validateProject() { throw new Error('missing project'); },
+  };
+  const github = { async retireIssue() { assert.fail('must not close'); } };
+  assert.equal((await applySourceIntake(plan, { backend, github, receiptStore: store })).partial, true);
+  plan.projectMappings = { 'example/source': 'missing' };
+  await assert.rejects(applySourceIntake(plan, { backend, github, receiptStore: store }), /missing project/);
+});
+
+test('GitHub retirement labels, comments and closes as migrated; retries reuse the comment', async () => {
+  const source = sourceFromIssue(issue(1));
+  let native = { ...issue(1), labels: [] };
+  const comments = [];
+  const writes = [];
+  const client = new GitHubIntakeClient('example/domain', async (args, options) => {
+    const endpoint = args.find((value) => value.startsWith('repos/'));
+    const methodIndex = args.indexOf('--method');
+    const method = methodIndex < 0 ? 'GET' : args[methodIndex + 1];
+    const body = options?.input ? JSON.parse(options.input) : null;
+    if (args.includes('user')) return { login: 'me' };
+    if (method === 'GET') {
+      if (endpoint.endsWith('/labels/migrated-to-todoist')) return {};
+      if (endpoint.includes('/comments?')) return [comments];
+      return structuredClone(native);
+    }
+    writes.push(method);
+    if (endpoint.endsWith('/labels')) {
+      native.labels = body.labels.map((name) => ({ name }));
+    } else if (endpoint.endsWith('/comments')) {
+      comments.push({ user: { login: 'me' }, body: body.body });
+      return comments.at(-1);
+    } else {
+      assert.equal(body.state_reason, 'not_planned');
+      assert.equal(comments.length, 1);
+      native = { ...native, ...body };
+    }
+    return {};
+  });
+  await client.retireIssue(source, { id: 'task-1', title: 'Title' });
+  assert.deepEqual(writes, ['POST', 'POST', 'PATCH']);
+  assert.match(comments[0].body, /not fixed, shipped, or rejected/);
+  native.state = 'open';
+  await client.retireIssue(source, { id: 'task-1', title: 'Title' });
+  assert.equal(comments.length, 1);
+  const count = writes.length;
+  native.state = 'open';
+  native.updated_at = 'changed';
+  await assert.rejects(client.retireIssue(source, { id: 'task-1', title: 'Title' }), /changed after preview/);
+  assert.equal(writes.length, count);
+});
 
 function completedReceipt(source, overrides = {}) {
   return {
