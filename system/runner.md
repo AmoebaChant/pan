@@ -89,19 +89,35 @@ so two tasks are not launched into one shared checkout.
 
 Task/report state and worker release are independent. A thin-backend worker
 writes an empty `worker-release.json` only under its exact `PAN_STATE_DIR` when
-its process, terminal, and workspace may be released, then exits Copilot. When
-a report and release are both needed, it records the native backend report
-first. A report, review request, human question, external wait, completion, or
-other backend status change does not release a worker. The pilot has no
-external stop watcher or `worker.stop` acknowledgment: a release becomes
-effective only after a poll observes both the explicit signal and the
-process's verified exit.
+its process, terminal, and workspace may be released, then requests exit.
+Because an interactive Copilot may return to an idle prompt instead of
+self-terminating, the runner is responsible for enforcing that permission.
+When a report and release are both needed, the worker records the native
+backend report first. A report, review request, human question, external wait,
+completion, or other backend status change does not release a worker. The pilot
+has no
+external stop watcher or `worker.stop` acknowledgment. During normal polling,
+an exact empty release signal is permission for the runner to stop a worker
+that remains idle at its interactive prompt. The runner rechecks the task,
+session, owner PID, and process-start identity; records the exact owned process
+tree; signals only those PIDs; waits for verified exit; and only then performs
+release reconciliation. It may escalate from `SIGTERM` to `SIGKILL` only for
+the same still-matching PIDs. A worker that exits itself after signalling uses
+the same reconciliation path without another termination.
 
 The runner then reads current native reports before recording
 `worker.state=released`, writes a local `worker-release-consumed.json` receipt,
 and removes only that task's local lock. This frees capacity and the configured
 workspace without deciding or finalizing business lifecycle. A valid receipt
 makes restart reconciliation idempotent.
+
+Termination intent is journaled before signalling. A termination error,
+uncertain/replaced PID, backend worker mismatch, surviving process, or
+reconciliation failure is reported by the poll and preserves the task lock,
+worker affinity, signal, and local evidence for retry or inspection. Restart
+may finish release only after every journaled exact process identity is proven
+gone. Reports, lifecycle status, and `done` never substitute for the explicit
+release signal.
 
 An exit without the release signal is `unexpected-stop`, never successful
 release. The runner records that worker observation and a durable native report

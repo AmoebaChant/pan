@@ -23,6 +23,7 @@ import {
 const RUN_VERSION = 1;
 const RELEASE_SIGNAL = 'worker-release.json';
 const RELEASE_RECEIPT = 'worker-release-consumed.json';
+const RELEASE_TERMINATION = 'worker-release-termination.json';
 const UNEXPECTED_EXIT_RECEIPT = 'unexpected-exit-observed.json';
 const LAUNCH_FAILURE_RECEIPT = 'launch-failure.json';
 
@@ -48,19 +49,20 @@ export async function planBackendTasks({
     !inventory.live.some((run) => run.taskId === task.id)
     && (allowedTaskIds.size === 0 || allowedTaskIds.has(String(task.id))),
   );
+  const occupiedRuns = [
+    ...inventory.live,
+    ...inventory.uncertain,
+    ...(inventory.unexpected ?? []),
+    ...inventory.stale,
+  ];
   const globalRemaining = Math.max(
     0,
-    Number(config.maxConcurrent ?? 1) - inventory.live.length,
+    Number(config.maxConcurrent ?? 1) - occupiedRuns.length,
   );
   const playbookCounts = new Map();
   const busyPaths = new Set();
   const occupiedSlots = new Map();
-  for (const run of [
-    ...inventory.live,
-    ...inventory.uncertain,
-    ...(inventory.unexpected ?? []),
-    ...inventory.stale.filter((entry) => !entry.releaseRequested),
-  ]) {
+  for (const run of occupiedRuns) {
     if (run.workingDirectory) busyPaths.add(path.resolve(run.workingDirectory));
     if (run.playbookName) {
       playbookCounts.set(run.playbookName, (playbookCounts.get(run.playbookName) || 0) + 1);
@@ -202,6 +204,91 @@ async function writeReceipt(filename, receipt) {
   const persisted = await readJson(filename);
   validateReceipt(persisted, receipt, receipt.kind);
   return persisted;
+}
+
+function validateTerminationJournal(journal, run) {
+  if (
+    journal?.version !== 1
+    || journal.kind !== 'release-termination'
+    || journal.taskId !== run.taskId
+    || journal.sessionId !== run.sessionId
+    || journal.owner?.pid !== run.owner?.pid
+    || journal.owner?.processStart !== run.owner?.processStart
+    || !Array.isArray(journal.descendants)
+    || journal.descendants.some((entry) =>
+      !Number.isInteger(entry?.pid)
+      || entry.pid <= 0
+      || typeof entry.processStart !== 'string'
+      || !entry.processStart)
+  ) {
+    throw new Error('invalid release-termination journal');
+  }
+}
+
+async function writeTerminationJournal(run, captured) {
+  const filename = path.join(run.dir, RELEASE_TERMINATION);
+  let journal = {
+    version: 1,
+    kind: 'release-termination',
+    taskId: run.taskId,
+    sessionId: run.sessionId,
+    owner: captured.owner,
+    descendants: captured.descendants,
+    recordedAt: new Date().toISOString(),
+  };
+  try {
+    await writeFile(filename, `${JSON.stringify(journal, null, 2)}\n`, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const persisted = await readJson(filename);
+  validateTerminationJournal(persisted, run);
+  const descendants = new Map(
+    [...persisted.descendants, ...captured.descendants]
+      .map((entry) => [`${entry.pid}:${entry.processStart}`, entry]),
+  );
+  if (descendants.size !== persisted.descendants.length) {
+    journal = {
+      ...persisted,
+      descendants: [...descendants.values()],
+      updatedAt: new Date().toISOString(),
+    };
+    await writeFile(filename, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+  } else {
+    journal = persisted;
+  }
+  validateTerminationJournal(journal, run);
+  return journal;
+}
+
+async function requireTerminationComplete(run, inspect) {
+  const journal = await readOptionalJson(path.join(run.dir, RELEASE_TERMINATION));
+  const owner = await inspect(run.owner.pid);
+  if (owner.state === 'unknown') {
+    throw new Error(`release termination PID ${run.owner.pid} identity is uncertain`);
+  }
+  if (owner.state === 'live' && owner.identity === run.owner.processStart) {
+    throw new Error(`release termination PID ${run.owner.pid} is still live`);
+  }
+  if (!journal) {
+    if (owner.state === 'live') {
+      throw new Error('worker owner PID was replaced without verified termination evidence');
+    }
+    return;
+  }
+  validateTerminationJournal(journal, run);
+  for (const processRecord of journal.descendants) {
+    const observed = await inspect(processRecord.pid);
+    if (observed.state === 'unknown') {
+      throw new Error(`release termination PID ${processRecord.pid} identity is uncertain`);
+    }
+    if (observed.state === 'live' && observed.identity === processRecord.processStart) {
+      throw new Error(`release termination PID ${processRecord.pid} is still live`);
+    }
+  }
 }
 
 function parseCopilotConfig(raw) {
@@ -389,39 +476,128 @@ export async function inspectLocalRuns(
   return result;
 }
 
-export async function reconcileStaleRuns(stateRoot, stale, backend) {
+function workerMatchesRun(task, run) {
+  return (
+    task?.id === run.taskId
+    && task.worker?.sessionId === run.sessionId
+    && Number(task.worker?.pid) === run.owner?.pid
+    && task.worker?.processStart === run.owner?.processStart
+  );
+}
+
+async function reconcileReleasedRun(stateRoot, run, backend, inspect) {
+  if (!await inspectReleaseSignal(run.dir)) {
+    throw new Error('release signal disappeared before reconciliation');
+  }
+  if (!run.owner) {
+    throw new Error('release reconciliation requires the durable owner identity');
+  }
+  await requireTerminationComplete(run, inspect);
+  const task = await backend.get(run.taskId);
+  if (!workerMatchesRun(task, run)) {
+    throw new Error('backend worker identity does not match the release request');
+  }
+  const reports = backend.reports ? await backend.reports(run.taskId) : [];
+  let backendWorkerUpdated = false;
+  if (task.worker.state !== 'released') {
+    await backend.update(run.taskId, {
+      expectedRevision: task.revision,
+      worker: {
+        ...task.worker,
+        state: 'released',
+        releasedAt: new Date().toISOString(),
+      },
+    });
+    backendWorkerUpdated = true;
+  }
+  await writeReceipt(path.join(run.dir, RELEASE_RECEIPT), {
+    version: 1,
+    kind: 'released',
+    taskId: run.taskId,
+    sessionId: run.sessionId,
+    recordedAt: new Date().toISOString(),
+    backendWorkerUpdated,
+    reportsObserved: reports.length,
+  });
+  await rm(lockPath(stateRoot, run.taskId), { force: true });
+}
+
+export async function reconcileLiveReleaseRequests(
+  stateRoot,
+  live,
+  backend,
+  dependencies = {},
+) {
+  const inspect = dependencies.inspect || inspectProcess;
+  const terminate = dependencies.terminateProcessTree || terminateOwnedProcessTree;
+  const result = { terminated: [], reconciled: [], failures: [] };
+  for (const run of live) {
+    if (!run.releaseRequested) continue;
+    try {
+      if (!await inspectReleaseSignal(run.dir)) {
+        throw new Error('release signal disappeared before termination');
+      }
+      if (!run.owner) throw new Error('live release request has no durable owner identity');
+      const task = await backend.get(run.taskId);
+      if (!workerMatchesRun(task, run)) {
+        throw new Error('backend worker identity does not match the live release request');
+      }
+      const observed = await inspect(run.owner.pid);
+      if (
+        observed.state === 'live'
+        && observed.identity !== run.owner.processStart
+      ) {
+        throw new Error('worker owner identity changed before release termination');
+      }
+      if (observed.state === 'unknown') {
+        throw new Error('worker owner identity is uncertain before release termination');
+      }
+      if (observed.state === 'live') {
+        await terminate(run.owner, {
+          ...dependencies,
+          inspect,
+          onCaptured: async (captured) => writeTerminationJournal(run, captured),
+        });
+        result.terminated.push(run.taskId);
+      }
+      const after = await inspect(run.owner.pid);
+      if (after.state === 'unknown') {
+        throw new Error('worker owner identity is uncertain after release termination');
+      }
+      if (after.state === 'live' && after.identity === run.owner.processStart) {
+        throw new Error('worker owner remained live after release termination');
+      }
+      await reconcileReleasedRun(stateRoot, run, backend, inspect);
+      result.reconciled.push(run.taskId);
+    } catch (error) {
+      result.failures.push({
+        taskId: run.taskId,
+        sessionId: run.sessionId,
+        error: error.message,
+      });
+    }
+  }
+  return result;
+}
+
+export async function reconcileStaleRuns(
+  stateRoot,
+  stale,
+  backend,
+  dependencies = {},
+) {
+  const inspect = dependencies.inspect || inspectProcess;
+  const failures = dependencies.failures || [];
   const reconciled = [];
   for (const run of stale) {
     try {
       const releaseRequested = await inspectReleaseSignal(run.dir);
-      const task = await backend.get(run.taskId);
       if (releaseRequested) {
-        const reports = backend.reports ? await backend.reports(run.taskId) : [];
-        let backendWorkerUpdated = false;
-        if (task.worker?.sessionId === run.sessionId && task.worker.state !== 'released') {
-          await backend.update(run.taskId, {
-            expectedRevision: task.revision,
-            worker: {
-              ...task.worker,
-              state: 'released',
-              releasedAt: new Date().toISOString(),
-            },
-          });
-          backendWorkerUpdated = true;
-        }
-        await writeReceipt(path.join(run.dir, RELEASE_RECEIPT), {
-          version: 1,
-          kind: 'released',
-          taskId: run.taskId,
-          sessionId: run.sessionId,
-          recordedAt: new Date().toISOString(),
-          backendWorkerUpdated,
-          reportsObserved: reports.length,
-        });
-        await rm(lockPath(stateRoot, run.taskId), { force: true });
+        await reconcileReleasedRun(stateRoot, run, backend, inspect);
         reconciled.push(run.taskId);
         continue;
       }
+      const task = await backend.get(run.taskId);
       const marker = `Pan worker observation: unexpected-stop session ${run.sessionId}`;
       if (task.worker?.sessionId === run.sessionId) {
         const reports = backend.reports ? await backend.reports(run.taskId) : [];
@@ -453,7 +629,12 @@ export async function reconcileStaleRuns(stateRoot, stale, backend) {
         backendWorkerMatched: task.worker?.sessionId === run.sessionId,
       });
       reconciled.push(run.taskId);
-    } catch {
+    } catch (error) {
+      failures.push({
+        taskId: run.taskId,
+        sessionId: run.sessionId,
+        error: error.message,
+      });
       // Leave the lock and run evidence in place. Reconciliation must fail closed.
     }
   }
@@ -542,6 +723,203 @@ function spawnAndWait(command, args, options = {}) {
       else reject(new Error(`${command} exited ${code ?? signal ?? 'unknown'}`));
     });
   });
+}
+
+function runCapture(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on('data', (chunk) => stdout.push(chunk));
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdout).toString('utf8'));
+      } else {
+        reject(new Error(
+          `${command} exited ${code}: ${Buffer.concat(stderr).toString('utf8').trim()}`,
+        ));
+      }
+    });
+  });
+}
+
+async function processTable(platform = process.platform) {
+  if (platform === 'win32') {
+    const output = await runCapture('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId'
+        + ' | ConvertTo-Json -Compress',
+    ]);
+    const parsed = JSON.parse(output || '[]');
+    return (Array.isArray(parsed) ? parsed : [parsed]).map((entry) => ({
+      pid: Number(entry.ProcessId),
+      ppid: Number(entry.ParentProcessId),
+    }));
+  }
+  const output = await runCapture('/bin/ps', ['-axo', 'pid=,ppid=']);
+  return output.split(/\r?\n/).map((line) => {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    return { pid, ppid };
+  }).filter((entry) => Number.isInteger(entry.pid) && Number.isInteger(entry.ppid));
+}
+
+function descendantsFromTable(entries, rootPid) {
+  const children = new Map();
+  for (const entry of entries) {
+    const values = children.get(entry.ppid) ?? [];
+    values.push(entry.pid);
+    children.set(entry.ppid, values);
+  }
+  const descendants = [];
+  const visit = (pid, depth) => {
+    for (const child of children.get(pid) ?? []) {
+      descendants.push({ pid: child, depth });
+      visit(child, depth + 1);
+    }
+  };
+  visit(rootPid, 1);
+  return descendants.sort((left, right) => right.depth - left.depth).map((entry) => entry.pid);
+}
+
+function signalPid(pid, signal) {
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if (error.code !== 'ESRCH') throw error;
+  }
+}
+
+async function waitForOwnedExit(owner, {
+  inspect = inspectProcess,
+  trackedDescendants = [],
+  timeoutMs = 5000,
+  sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const observed = await inspect(owner.pid);
+    const ownerGone = (
+      observed.state === 'dead'
+      || (observed.state === 'live' && observed.identity !== owner.processStart)
+    );
+    if (ownerGone) {
+      let descendantsGone = true;
+      for (const descendant of trackedDescendants) {
+        const child = await inspect(descendant.pid);
+        if (child.state === 'unknown') {
+          throw new Error(`worker descendant PID ${descendant.pid} identity is uncertain`);
+        }
+        if (child.state === 'live' && child.identity === descendant.processStart) {
+          descendantsGone = false;
+          break;
+        }
+      }
+      if (descendantsGone) return;
+    }
+    await sleep(50);
+  }
+  throw new Error(`worker process tree rooted at PID ${owner.pid} did not exit`);
+}
+
+export async function terminateOwnedProcessTree(owner, dependencies = {}) {
+  const inspect = dependencies.inspect || inspectProcess;
+  const listProcesses = dependencies.listProcesses || processTable;
+  const kill = dependencies.kill || signalPid;
+  const observed = await inspect(owner.pid);
+  if (observed.state === 'dead') return { alreadyExited: true };
+  if (observed.state !== 'live' || observed.identity !== owner.processStart) {
+    throw new Error('worker owner identity changed before termination');
+  }
+  const initialTable = await listProcesses();
+  const descendants = descendantsFromTable(initialTable, owner.pid);
+  const trackedDescendants = [];
+  for (const pid of descendants) {
+    const child = await inspect(pid);
+    if (child.state !== 'live' || !child.identity) {
+      throw new Error(`worker descendant PID ${pid} identity could not be verified`);
+    }
+    trackedDescendants.push({ pid, processStart: child.identity });
+  }
+  if (dependencies.onCaptured) {
+    await dependencies.onCaptured({
+      owner: { pid: owner.pid, processStart: owner.processStart },
+      descendants: trackedDescendants,
+    });
+  }
+  for (const descendant of trackedDescendants) {
+    const current = await inspect(descendant.pid);
+    if (current.state === 'unknown') {
+      throw new Error(`worker descendant PID ${descendant.pid} identity is uncertain`);
+    }
+    if (
+      current.state === 'live'
+      && current.identity === descendant.processStart
+    ) {
+      kill(descendant.pid, 'SIGTERM');
+    }
+  }
+  const beforeOwnerSignal = await inspect(owner.pid);
+  if (
+    beforeOwnerSignal.state === 'live'
+    && beforeOwnerSignal.identity === owner.processStart
+  ) {
+    kill(owner.pid, 'SIGTERM');
+  } else if (beforeOwnerSignal.state !== 'dead') {
+    throw new Error('worker owner identity changed before its termination signal');
+  }
+  try {
+    await waitForOwnedExit(owner, {
+      inspect,
+      trackedDescendants,
+      timeoutMs: dependencies.terminateTimeoutMs ?? 5000,
+      sleep: dependencies.sleep,
+    });
+  } catch (error) {
+    let escalated = false;
+    for (const descendant of trackedDescendants) {
+      const child = await inspect(descendant.pid);
+      if (child.state === 'unknown') {
+        throw new Error(`worker descendant PID ${descendant.pid} identity is uncertain`);
+      }
+      if (child.state === 'live' && child.identity === descendant.processStart) {
+        kill(descendant.pid, 'SIGKILL');
+        escalated = true;
+      }
+    }
+    const beforeEscalation = await inspect(owner.pid);
+    if (
+      beforeEscalation.state === 'live'
+      && beforeEscalation.identity === owner.processStart
+    ) {
+      kill(owner.pid, 'SIGKILL');
+      escalated = true;
+    } else if (
+      beforeEscalation.state === 'unknown'
+      || (
+        beforeEscalation.state === 'live'
+        && beforeEscalation.identity !== owner.processStart
+      )
+    ) {
+      throw error;
+    }
+    if (!escalated) throw error;
+    await waitForOwnedExit(owner, {
+      inspect,
+      trackedDescendants,
+      timeoutMs: dependencies.killTimeoutMs ?? 5000,
+      sleep: dependencies.sleep,
+    });
+    return { alreadyExited: false, escalated: true };
+  }
+  return { alreadyExited: false, escalated: false };
 }
 
 function launcherSource({
@@ -852,11 +1230,42 @@ export async function runBackendRunner(argv, dependencies = {}) {
     const backend = await loadTaskBackend(config.backendConfig, dependencies);
     await backend.initialize();
     const poll = async () => {
-      const inventory = await inspectLocalRuns(path.resolve(config.stateRoot), {
+      let inventory = await inspectLocalRuns(path.resolve(config.stateRoot), {
         inspect: dependencies.inspect || inspectProcess,
       });
+      const runReconciliation = { terminated: [], reconciled: [], failures: [] };
       if (!values['dry-run']) {
-        await reconcileStaleRuns(path.resolve(config.stateRoot), inventory.stale, backend);
+        const liveRelease = await reconcileLiveReleaseRequests(
+          path.resolve(config.stateRoot),
+          inventory.live,
+          backend,
+          dependencies,
+        );
+        runReconciliation.terminated.push(...liveRelease.terminated);
+        runReconciliation.reconciled.push(...liveRelease.reconciled);
+        runReconciliation.failures.push(...liveRelease.failures);
+        const staleFailures = [];
+        runReconciliation.reconciled.push(...await reconcileStaleRuns(
+          path.resolve(config.stateRoot),
+          inventory.stale,
+          backend,
+          {
+            inspect: dependencies.inspect || inspectProcess,
+            failures: staleFailures,
+          },
+        ));
+        runReconciliation.failures.push(...staleFailures);
+        for (const run of inventory.released) {
+          await rm(lockPath(path.resolve(config.stateRoot), run.taskId), { force: true })
+            .catch((error) => runReconciliation.failures.push({
+              taskId: run.taskId,
+              sessionId: run.sessionId,
+              error: `could not remove released task lock: ${error.message}`,
+            }));
+        }
+        inventory = await inspectLocalRuns(path.resolve(config.stateRoot), {
+          inspect: dependencies.inspect || inspectProcess,
+        });
       }
       if (dynamicPlaybooks) {
         const loaded = await loadBackendPlaybooks(config, dependencies);
@@ -900,6 +1309,7 @@ export async function runBackendRunner(argv, dependencies = {}) {
             sha: playbook.sha,
           })),
           domainSha: loaded.domainSha,
+          runReconciliation,
         };
       }
       const activeTaskIds = new Set(inventory.live.map((run) => run.taskId));
@@ -911,8 +1321,7 @@ export async function runBackendRunner(argv, dependencies = {}) {
       ) || (inventory.unexpected ?? []).some((run) =>
         run.workingDirectory == null || path.resolve(run.workingDirectory) === workspace,
       ) || inventory.stale.some((run) =>
-        !run.releaseRequested
-        && (run.workingDirectory == null || path.resolve(run.workingDirectory) === workspace),
+        run.workingDirectory == null || path.resolve(run.workingDirectory) === workspace,
       );
       // This pilot has one configured working directory rather than a workspace
       // pool, so at most one new task may enter it in a poll.
@@ -920,15 +1329,18 @@ export async function runBackendRunner(argv, dependencies = {}) {
         1,
         Math.max(0, (config.maxConcurrent ?? 1) - inventory.live.length),
       );
-      return pollBackendTasks({
-        backend,
-        capacity,
-        activeTaskIds,
-        workspaceBusy,
-        dryRun: values['dry-run'],
-        allowedTaskIds: new Set((config.taskIds ?? []).map(String)),
-        launch: dependencies.launch || ((task) => launchTask(task, config, backend, dependencies)),
-      });
+      return {
+        ...await pollBackendTasks({
+          backend,
+          capacity,
+          activeTaskIds,
+          workspaceBusy,
+          dryRun: values['dry-run'],
+          allowedTaskIds: new Set((config.taskIds ?? []).map(String)),
+          launch: dependencies.launch || ((task) => launchTask(task, config, backend, dependencies)),
+        }),
+        runReconciliation,
+      };
     };
     if (values.once || values['dry-run']) return poll();
     const interval = Number(config.pollIntervalSeconds ?? 30);

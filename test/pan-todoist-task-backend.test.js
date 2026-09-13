@@ -12,8 +12,10 @@ import {
   inspectLocalRuns,
   launchTask,
   pollBackendTasks,
+  reconcileLiveReleaseRequests,
   reconcileStaleRuns,
   selectReadyForAi,
+  terminateOwnedProcessTree,
   trustCopilotFolders,
 } from '../bin/pan-backend-runner.js';
 
@@ -415,6 +417,39 @@ function backendFake(task) {
   };
 }
 
+async function managedRunFixture(root, { release = true } = {}) {
+  const dir = path.join(root, 'runs', 'task-1');
+  await mkdir(path.join(root, 'locks'), { recursive: true });
+  await mkdir(dir, { recursive: true });
+  const run = {
+    version: 1,
+    taskId: 'task-1',
+    sessionId: 'session-1',
+    machine: 'machine-a',
+    workingDirectory: path.join(root, 'workspace'),
+  };
+  const owner = { pid: 123, processStart: 'same:start' };
+  await writeFile(path.join(dir, 'run.json'), JSON.stringify(run));
+  await writeFile(path.join(dir, 'owner.json'), JSON.stringify(owner));
+  if (release) await writeFile(path.join(dir, 'worker-release.json'), '');
+  await writeFile(path.join(root, 'locks', 'task-1.lock'), '');
+  return { ...run, dir, owner };
+}
+
+function managedBackend() {
+  return backendFake({
+    id: 'task-1',
+    revision: 'r1',
+    status: 'ready-for-human',
+    worker: {
+      state: 'running',
+      sessionId: 'session-1',
+      pid: 123,
+      processStart: 'same:start',
+    },
+  });
+}
+
 test('live process inventory survives polls and blocks shared workspace capacity', async () => {
   const root = testRoot();
   const config = await runnerConfig(root);
@@ -521,7 +556,12 @@ test('unexpected exit preserves workspace affinity without inferring lifecycle s
   await writeFile(path.join(root, 'locks', 'task-1.lock'), '');
   const backend = backendFake({
     id: 'task-1', revision: 'r1', status: 'ready-for-human',
-    worker: { state: 'running', sessionId: 'session-1' },
+    worker: {
+      state: 'running',
+      sessionId: 'session-1',
+      pid: 123,
+      processStart: 'old:start',
+    },
   });
   try {
     const inventory = await inspectLocalRuns(root, {
@@ -561,7 +601,12 @@ test('explicit release is consumed only after exit and frees the task lock', asy
   await writeFile(path.join(root, 'locks', 'task-1.lock'), '');
   const backend = backendFake({
     id: 'task-1', revision: 'r1', status: 'ready-for-human',
-    worker: { state: 'running', sessionId: 'session-1' },
+    worker: {
+      state: 'running',
+      sessionId: 'session-1',
+      pid: 123,
+      processStart: 'old:start',
+    },
   });
   await backend.report('task-1', { content: 'Durable result: ready for review.' });
   try {
@@ -590,6 +635,296 @@ test('explicit release is consumed only after exit and frees the task lock', asy
     assert.equal(restarted.stale.length, 0);
     assert.deepEqual(await reconcileStaleRuns(root, restarted.stale, backend), []);
     assert.equal(backend.updates.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('live release signal terminates the exact worker and completes release reconciliation', async () => {
+  const root = testRoot();
+  await managedRunFixture(root);
+  const backend = managedBackend();
+  let alive = true;
+  let terminated = 0;
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => alive
+        ? { state: 'live', identity: 'same:start' }
+        : { state: 'dead', identity: null },
+    });
+    const result = await reconcileLiveReleaseRequests(
+      root,
+      inventory.live,
+      backend,
+      {
+        inspect: async () => alive
+          ? { state: 'live', identity: 'same:start' }
+          : { state: 'dead', identity: null },
+        terminateProcessTree: async (owner, options) => {
+          terminated += 1;
+          assert.deepEqual(owner, { pid: 123, processStart: 'same:start' });
+          await options.onCaptured({ owner, descendants: [] });
+          alive = false;
+        },
+      },
+    );
+    assert.deepEqual(result, {
+      terminated: ['task-1'],
+      reconciled: ['task-1'],
+      failures: [],
+    });
+    assert.equal(terminated, 1);
+    assert.equal(backend.updates[0].worker.state, 'released');
+    assert.equal((await backend.reports('task-1')).length, 1);
+    assert.equal(JSON.parse(await readFile(
+      path.join(root, 'runs', 'task-1', 'worker-release-consumed.json'),
+    )).kind, 'released');
+    await assert.rejects(readFile(path.join(root, 'locks', 'task-1.lock')), { code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('owned process-tree termination signals only verified descendant and owner PIDs', async () => {
+  const identities = new Map([
+    [123, 'owner:start'],
+    [124, 'child:start'],
+    [125, 'grandchild:start'],
+    [999, 'unrelated:start'],
+  ]);
+  const signals = [];
+  const table = [
+    { pid: 123, ppid: 1 },
+    { pid: 124, ppid: 123 },
+    { pid: 125, ppid: 124 },
+    { pid: 999, ppid: 1 },
+  ];
+  const inspect = async (pid) => identities.has(pid)
+    ? { state: 'live', identity: identities.get(pid) }
+    : { state: 'dead', identity: null };
+  const captured = [];
+  const result = await terminateOwnedProcessTree(
+    { pid: 123, processStart: 'owner:start' },
+    {
+      inspect,
+      listProcesses: async () => table,
+      kill: (pid, signal) => {
+        signals.push([pid, signal]);
+        identities.delete(pid);
+      },
+      onCaptured: async (value) => captured.push(value),
+      sleep: async () => {},
+      terminateTimeoutMs: 10,
+    },
+  );
+  assert.deepEqual(result, { alreadyExited: false, escalated: false });
+  assert.deepEqual(signals, [
+    [125, 'SIGTERM'],
+    [124, 'SIGTERM'],
+    [123, 'SIGTERM'],
+  ]);
+  assert.equal(signals.some(([pid]) => pid === 999), false);
+  assert.deepEqual(captured[0], {
+    owner: { pid: 123, processStart: 'owner:start' },
+    descendants: [
+      { pid: 125, processStart: 'grandchild:start' },
+      { pid: 124, processStart: 'child:start' },
+    ],
+  });
+});
+
+test('owned process-tree termination does not signal a reused descendant PID', async () => {
+  const inspections = new Map();
+  const signals = [];
+  const inspect = async (pid) => {
+    const count = inspections.get(pid) ?? 0;
+    inspections.set(pid, count + 1);
+    if (pid === 123) {
+      return count < 2
+        ? { state: 'live', identity: 'owner:start' }
+        : { state: 'dead', identity: null };
+    }
+    if (pid === 124) {
+      return count === 0
+        ? { state: 'live', identity: 'child:start' }
+        : { state: 'live', identity: 'replacement:start' };
+    }
+    return { state: 'dead', identity: null };
+  };
+  const result = await terminateOwnedProcessTree(
+    { pid: 123, processStart: 'owner:start' },
+    {
+      inspect,
+      listProcesses: async () => [
+        { pid: 123, ppid: 1 },
+        { pid: 124, ppid: 123 },
+      ],
+      kill: (pid, signal) => signals.push([pid, signal]),
+      sleep: async () => {},
+      terminateTimeoutMs: 10,
+    },
+  );
+
+  assert.deepEqual(result, { alreadyExited: false, escalated: false });
+  assert.deepEqual(signals, [[123, 'SIGTERM']]);
+});
+
+test('live worker without an exact release signal remains running', async () => {
+  const root = testRoot();
+  await managedRunFixture(root, { release: false });
+  const backend = managedBackend();
+  let terminated = 0;
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'same:start' }),
+    });
+    const result = await reconcileLiveReleaseRequests(root, inventory.live, backend, {
+      inspect: async () => ({ state: 'live', identity: 'same:start' }),
+      terminateProcessTree: async () => { terminated += 1; },
+    });
+    assert.deepEqual(result, { terminated: [], reconciled: [], failures: [] });
+    assert.equal(terminated, 0);
+    assert.equal(backend.updates.length, 0);
+    assert.equal(await readFile(path.join(root, 'locks', 'task-1.lock'), 'utf8'), '');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('live release with a changed process identity fails closed without termination', async () => {
+  const root = testRoot();
+  await managedRunFixture(root);
+  const backend = managedBackend();
+  let terminated = 0;
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'same:start' }),
+    });
+    const result = await reconcileLiveReleaseRequests(root, inventory.live, backend, {
+      inspect: async () => ({ state: 'live', identity: 'replacement:start' }),
+      terminateProcessTree: async () => { terminated += 1; },
+    });
+    assert.equal(result.failures.length, 1);
+    assert.match(result.failures[0].error, /identity changed/);
+    assert.equal(terminated, 0);
+    assert.equal(backend.updates.length, 0);
+    assert.equal(await readFile(path.join(root, 'locks', 'task-1.lock'), 'utf8'), '');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('stale release with a replaced PID preserves state without reconciliation', async () => {
+  const root = testRoot();
+  await managedRunFixture(root);
+  const backend = managedBackend();
+  const failures = [];
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'replacement:start' }),
+    });
+    assert.equal(inventory.stale.length, 1);
+    assert.deepEqual(await reconcileStaleRuns(root, inventory.stale, backend, {
+      inspect: async () => ({ state: 'live', identity: 'replacement:start' }),
+      failures,
+    }), []);
+    assert.equal(failures.length, 1);
+    assert.match(failures[0].error, /replaced without verified termination evidence/);
+    assert.equal(backend.updates.length, 0);
+    assert.equal(await readFile(path.join(root, 'locks', 'task-1.lock'), 'utf8'), '');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('restart waits for every journaled descendant before completing release', async () => {
+  const root = testRoot();
+  const run = await managedRunFixture(root);
+  const backend = managedBackend();
+  await writeFile(path.join(run.dir, 'worker-release-termination.json'), JSON.stringify({
+    version: 1,
+    kind: 'release-termination',
+    taskId: run.taskId,
+    sessionId: run.sessionId,
+    owner: run.owner,
+    descendants: [{ pid: 124, processStart: 'child:start' }],
+    recordedAt: '2026-09-13T04:00:00.000Z',
+  }));
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'dead', identity: null }),
+    });
+    const failures = [];
+    assert.deepEqual(await reconcileStaleRuns(root, inventory.stale, backend, {
+      inspect: async (pid) => pid === 124
+        ? { state: 'live', identity: 'child:start' }
+        : { state: 'dead', identity: null },
+      failures,
+    }), []);
+    assert.equal(failures.length, 1);
+    assert.match(failures[0].error, /PID 124 is still live/);
+    assert.equal(backend.updates.length, 0);
+
+    assert.deepEqual(await reconcileStaleRuns(root, inventory.stale, backend, {
+      inspect: async () => ({ state: 'dead', identity: null }),
+    }), ['task-1']);
+    assert.equal(backend.updates[0].worker.state, 'released');
+    await assert.rejects(readFile(path.join(root, 'locks', 'task-1.lock')), { code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('worker that exits after signalling release reconciles without another termination', async () => {
+  const root = testRoot();
+  await managedRunFixture(root);
+  const backend = managedBackend();
+  let terminated = 0;
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'same:start' }),
+    });
+    const result = await reconcileLiveReleaseRequests(root, inventory.live, backend, {
+      inspect: async () => ({ state: 'dead', identity: null }),
+      terminateProcessTree: async () => { terminated += 1; },
+    });
+    assert.deepEqual(result, {
+      terminated: [],
+      reconciled: ['task-1'],
+      failures: [],
+    });
+    assert.equal(terminated, 0);
+    assert.equal(backend.updates[0].worker.state, 'released');
+    await assert.rejects(readFile(path.join(root, 'locks', 'task-1.lock')), { code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('release termination failure preserves affinity and reports the failure', async () => {
+  const root = testRoot();
+  await managedRunFixture(root);
+  const backend = managedBackend();
+  try {
+    const inventory = await inspectLocalRuns(root, {
+      inspect: async () => ({ state: 'live', identity: 'same:start' }),
+    });
+    const result = await reconcileLiveReleaseRequests(root, inventory.live, backend, {
+      inspect: async () => ({ state: 'live', identity: 'same:start' }),
+      terminateProcessTree: async () => {
+        throw new Error('termination denied');
+      },
+    });
+    assert.deepEqual(result.terminated, []);
+    assert.deepEqual(result.reconciled, []);
+    assert.equal(result.failures.length, 1);
+    assert.match(result.failures[0].error, /termination denied/);
+    assert.equal(backend.updates.length, 0);
+    await assert.rejects(
+      readFile(path.join(root, 'runs', 'task-1', 'worker-release-consumed.json')),
+      { code: 'ENOENT' },
+    );
+    assert.equal(await readFile(path.join(root, 'locks', 'task-1.lock'), 'utf8'), '');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
