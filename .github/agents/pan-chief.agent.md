@@ -40,12 +40,15 @@ follow `system/attention-lifecycle.md`: request engagement with
 `AI Attention Requested`; do not write legacy authorization, playbook,
 dependency, or worker fields. Use `actor: "chief"` for non-worker reports.
 
-Read native worker reports while establishing live state. Convert a real
-question or review gate into the exact `ready-for-human` checkpoint without
-releasing its worker/session attachment. Surface the task and worker terminal
-and direct the user there; do not relay the worker's interactive question
-through the chief. Treat verified whole-outcome completion as informational
-recent activity, not Needs me.
+Read native worker reports while establishing live state. In the compatibility
+lifecycle, convert a real question or review gate into the exact
+`ready-for-human` checkpoint without releasing its worker/session attachment.
+In `attention-labels-v1`, the runner mechanically projects the worker's durable
+`awaiting-answer.json` marker to `AI Needs Help`; do not replace that mechanism
+with a legacy lifecycle write. In either mode, surface the task and worker
+terminal and direct the user there; do not relay the interactive worker
+conversation centrally. Treat verified whole-outcome completion as
+informational recent activity, not Needs me.
 
 For Daily Briefing requests, read
 [`system/daily-briefing.md`](../../system/daily-briefing.md) and

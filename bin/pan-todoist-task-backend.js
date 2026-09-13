@@ -865,16 +865,18 @@ export class TodoistTaskBackend {
     const sameLabels = labelsAfter.length === (native.labels ?? []).length
       && labelsAfter.every((label) => (native.labels ?? []).includes(label));
     const metadataUnchanged = JSON.stringify(keptMetadata) === JSON.stringify(metadata);
-    const checkpointReport = association
-      && attentionState === 'needsHelp'
-      && metadata.status === 'ready-for-human'
+    const nextActionDetail = String(metadata.nextActionDetail || '').trim();
+    const checkpointReport = nextActionDetail
       ? [
           `Pan migration checkpoint: ${native.id}`,
           '',
-          `Action: ${metadata.nextAction}`,
-          `Detail: ${String(metadata.nextActionDetail || '').trim() || 'No legacy detail was recorded.'}`,
+          `Legacy state: ${metadata.status || 'untriaged'}`,
+          `Legacy action: ${metadata.nextAction || '(none)'}`,
+          `Detail: ${nextActionDetail}`,
           '',
-          'Continue this task in its associated worker session.',
+          association
+            ? 'Continue this task in its associated worker session when applicable.'
+            : 'This note preserves the pre-migration next-step instruction.',
         ].join('\n')
       : null;
     return {

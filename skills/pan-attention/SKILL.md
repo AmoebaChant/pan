@@ -10,7 +10,10 @@ If the selected backend enables `attention-labels-v1`, read
 Surface `AI Needs Help`, and treat `AI Session Open` as an available
 conversation rather than exclusive ownership. Create only after selecting an
 explicit named project; never default to Inbox. The compatibility rules below
-apply only when that mode is not enabled.
+apply only when that mode is not enabled. In attention mode, the runner alone
+projects a worker's durable `awaiting-answer.json` marker to `AI Needs Help`;
+surface that label and direct the user to the worker terminal without writing a
+legacy `ready-for-human` checkpoint.
 
 Read the complete live Project and use
 [`system/task-lifecycle.md`](../../system/task-lifecycle.md). Do not use the

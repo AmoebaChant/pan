@@ -35,13 +35,17 @@ never rely on this agent's global configuration.
   `system/attention-lifecycle.md` and native status labels instead of the
   compatibility lifecycle fields described below. Use `actor: "chief"` for
   non-worker native reports.
-- A task is one stable outcome. New lifecycle logic has no owner; use the
-  checked `Status`/`next-action` pair and keep worker liveness/resource
-  ownership separate.
+- A task is one stable outcome. In the compatibility lifecycle, use the checked
+  `Status`/`next-action` pair and keep worker liveness/resource ownership
+  separate. In `attention-labels-v1`, use native status labels and the
+  session/machine association instead.
 - Read completely and live, re-read before writes, require task revision and
   worker generation where applicable, increment revision last, and verify.
-- A live waiting worker may coexist with `ready-for-human`. A safe checkpoint
-  may release execution capacity but not silently release its workspace.
+- In the compatibility lifecycle, a live waiting worker may coexist with
+  `ready-for-human`. In `attention-labels-v1`, the runner projects the durable
+  `awaiting-answer.json` marker to `AI Needs Help` after the applicable grace
+  period; the chief surfaces that state and does not rewrite it as
+  `ready-for-human`.
 - Never resume a human checkpoint or deliberate hold automatically. Never
   discard an unprocessed result or clear newer attention from a stale session.
 - `next-action-date` schedules human attention. It does not gate/sort AI,
@@ -64,10 +68,12 @@ never rely on this agent's global configuration.
   non-GitHub backend. Compatibility imports stay untriaged, unauthorized, and
   undated; attention-lifecycle imports stay unlabeled and unassociated in
   their policy-selected named project.
-- Surface worker questions and real review gates as exact Needs me checkpoints
-  while preserving their worker attachment. Direct the user to the headed
-  worker terminal; do not relay the interactive worker conversation centrally.
-  Verified complete work is informational, not a Needs me item.
+- Surface worker questions and real review gates while preserving their worker
+  attachment. Compatibility mode uses its exact human checkpoint;
+  `attention-labels-v1` uses the mechanically maintained `AI Needs Help` label.
+  Direct the user to the headed worker terminal; do not relay the interactive
+  worker conversation centrally. Verified complete work is informational, not
+  a Needs me item.
 - Read and recommend freely. Apply an explicitly requested change; otherwise
   preview exact current-vs-proposed values and obtain approval.
 

@@ -193,11 +193,13 @@ recurrence, unrelated labels, session association, and comments. They remove
 all other task-side Pan metadata, including legacy lifecycle, authorization,
 playbook, workstream, dependency, and worker fields. A live or uncertain legacy
 worker observation is a conflict that must be released or reconciled before
-cutover. An associated released human clarification/discussion/approval/review
-checkpoint becomes Needs Help and its action/detail is copied to an idempotent
-native comment; an ordinary human task remains unlabeled. Partial or differing
-association tuples, active terminal metadata, and Rejected on an open task are
-conflicts. Legacy ready-for-ai never becomes an attention request by default. To
+cutover. Every nonempty legacy `nextActionDetail` is copied to an idempotent
+native comment before metadata is stripped, including unassociated human,
+hold, and untriaged instructions. An associated released human
+clarification/discussion/approval/review checkpoint becomes Needs Help; an
+ordinary human task remains unlabeled. Partial or differing association tuples,
+active terminal metadata, and Rejected on an open task are conflicts. Legacy
+ready-for-ai never becomes an attention request by default. To
 opt selected tasks into immediate dispatch, add one
 `--request-attention <task-id>` per reviewed task to both preview and apply.
 Conflicting labels, partial associations, unmatched requested ids, missing

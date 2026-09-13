@@ -427,6 +427,69 @@ test('migration writes a durable native checkpoint report for retained AI help',
   assert.deepEqual(operations, ['comment', 'task']);
 });
 
+test('migration preserves unassociated clarify, approve, and hold details before stripping metadata', async () => {
+  const backend = new TodoistTaskBackend({ backend: 'todoist' });
+  for (const [status, nextAction, detail, expectedState] of [
+    ['ready-for-human', 'clarify', 'Clarify the intended customer segment.', 'none'],
+    ['ready-for-human', 'approve', 'Approve or revise the proposed removal list.', 'none'],
+    ['deliberate-hold', 'hold', 'Wait until legal guidance is available.', 'onHold'],
+  ]) {
+    const plan = backend.planAttentionMigration({
+      nativeTask: native({
+        description: descriptionWithMetadata('Details', {
+          status,
+          nextAction,
+          nextActionDetail: detail,
+        }),
+      }),
+    });
+    assert.equal(plan.attentionState, expectedState);
+    assert.equal(plan.association, null);
+    assert.match(plan.checkpointReport, new RegExp(detail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.deepEqual(plan.metadataAfter, {});
+  }
+
+  let task = native({
+    description: descriptionWithMetadata('Details', {
+      status: 'ready-for-human',
+      nextAction: 'approve',
+      nextActionDetail: 'Approve the migration result.',
+    }),
+  });
+  const comments = [];
+  let failUpdate = true;
+  const retryBackend = await new TodoistTaskBackend({ backend: 'todoist' }, {
+    readFileImpl: async () => 'TODOIST_API_KEY=secret',
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/user')) return response({ id: 'self' });
+      if (url.includes('/comments?')) {
+        return response({ results: comments, next_cursor: null });
+      }
+      if (url.endsWith('/comments') && options.method === 'POST') {
+        const body = JSON.parse(options.body);
+        comments.push({ id: 'comment-1', content: body.content, posted_at: 'now' });
+        return response(comments[0]);
+      }
+      if (url.endsWith('/tasks/task-1') && options.method === 'GET') return response(task);
+      if (url.endsWith('/tasks/task-1') && options.method === 'POST') {
+        if (failUpdate) {
+          failUpdate = false;
+          return response({ error: 'temporary' }, 500);
+        }
+        task = { ...task, ...JSON.parse(options.body), updated_at: 'r2' };
+        return response(task);
+      }
+      throw new Error(`unexpected request: ${options.method} ${url}`);
+    },
+  }).initialize();
+  const retryPlan = retryBackend.planAttentionMigration({ nativeTask: task });
+  await assert.rejects(retryBackend.migrateAttentionTask(retryPlan), /HTTP 500/);
+  assert.equal(comments.length, 1);
+  await retryBackend.migrateAttentionTask(retryPlan);
+  assert.equal(comments.length, 1);
+  assert.equal(task.description, 'Details');
+});
+
 test('migration reports requested task ids outside the complete scoped read', async () => {
   const labelNames = Object.values(DEFAULT_ATTENTION_LABELS);
   const result = await runAttentionMigration({

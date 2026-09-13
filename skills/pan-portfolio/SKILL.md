@@ -5,8 +5,9 @@ description: Review and triage a Pan portfolio from its live authoritative task 
 
 # Pan portfolio review
 
-Follow [`system/triage.md`](../../system/triage.md),
-[`system/task-lifecycle.md`](../../system/task-lifecycle.md), and
+Follow [`system/triage.md`](../../system/triage.md) and the lifecycle contract
+selected by the backend. Compatibility mode uses
+[`system/task-lifecycle.md`](../../system/task-lifecycle.md) and
 [`system/project-schema.md`](../../system/project-schema.md). Fully paginate
 the authoritative task backend, workstreams, declared backlogs, and relevant
 native reports or comments. Start with any explicitly configured source intake.
@@ -15,13 +16,16 @@ When the selected backend enables `attention-labels-v1`, read
 [`system/attention-lifecycle.md`](../../system/attention-lifecycle.md) and do
 not prepare or write compatibility authorization, dependency, playbook, or
 worker fields. Place tasks in a suitable named project before requesting AI
-attention.
+attention. Treat `AI Needs Help` as the runner's mechanical projection of the
+worker's durable `awaiting-answer.json` marker; surface it without translating
+it into a legacy next-action checkpoint.
 
 Register source Issues only through the backend-specific rules in
 [`system/triage.md`](../../system/triage.md). Prepare exact human actions,
 bounded AI next steps, authorization, dependencies, priority, playbook,
 workstream, deadline, and the durable current-next-action detail. Do not use or
-write the retained legacy `owner`.
+write the retained legacy `owner`. This preparation sentence applies only to
+the compatibility lifecycle.
 
 Scheduled triage may research, prepare, reconcile objective facts, and apply
 explicit standing permissions. Scope expansion and consequential decisions
