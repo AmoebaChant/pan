@@ -34,7 +34,7 @@ native task, and re-reads the result without rewriting lifecycle metadata or
 dates. Source intake uses this operation to apply declared project mappings
 to previously imported tasks.
 
-The common record exposes `id`, `url`, `title`, `description`, `status`,
+The compatibility common record exposes `id`, `url`, `title`, `description`, `status`,
 `nextAction`, `nextActionDetail`, `priority`, `nextActionDate`, `deadline`,
 `playbook`, `workstream`, `executionAuthorized`, `dependencies`, worker
 observation, responsible person, recurrence, and a backend revision.
@@ -48,7 +48,7 @@ another live read.
 
 Todoist is the first non-GitHub adapter:
 
-| Canonical concept | Todoist representation |
+| Compatibility lifecycle concept | Todoist representation |
 | --- | --- |
 | title, description | native content and human-readable description |
 | priority | native priorities 1–4 map to low, normal, high, urgent |
@@ -96,6 +96,14 @@ pinned revision; polling must never download and execute changing code.
 GitHub Issues and Projects remain the built-in compatibility backend. The
 existing GitHub runner and Project contracts continue to apply to Domains that
 select it; they are not a shadow queue for a Todoist-backed Domain.
+
+Todoist may explicitly opt into
+[`attention-labels-v1`](attention-lifecycle.md). In that mode native labels and
+completion replace the lifecycle JSON mapping. Normal reads ignore legacy
+lifecycle metadata; only the explicit preview/apply migration interprets and
+removes it. The task association is limited to `sessionId` plus `machineId`.
+Session reports require matching `expectedSessionId` and `expectedMachineId`.
+Non-worker notes require an explicit `actor` of `chief` or `migration`.
 
 Live Domain `task-backend.json` may enable GitHub Issue source intake and name
 its repository scope and receipt path. The machine-local backend config still

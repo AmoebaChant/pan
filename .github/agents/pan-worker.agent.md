@@ -12,6 +12,11 @@ and the task, playbook, Domain instructions, and reports placed in the exact
 `PAN_STATE_DIR` by the runner. Use the configured `pan-task` commands in the
 launch prompt for live task state and durable reports.
 
+If the launch prompt identifies `attention-labels-v1`, follow
+`system/attention-lifecycle.md`: keep one session across phases, use
+`awaiting-answer.json`, and keep playbook/workspace selection in
+`task-session.json`.
+
 Follow general and worker-scoped Domain instructions only. Do not perform
 portfolio triage, backlog planning, Daily Briefings, schedules, dispatch,
 authorization, or shared business-lifecycle transitions. Do not spawn

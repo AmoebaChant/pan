@@ -6,8 +6,10 @@ import {
   mkdir,
   open,
   readFile,
+  realpath,
   readdir,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -26,6 +28,12 @@ const RELEASE_RECEIPT = 'worker-release-consumed.json';
 const RELEASE_TERMINATION = 'worker-release-termination.json';
 const UNEXPECTED_EXIT_RECEIPT = 'unexpected-exit-observed.json';
 const LAUNCH_FAILURE_RECEIPT = 'launch-failure.json';
+const AWAITING_ANSWER = 'awaiting-answer.json';
+const AWAITING_RECEIPT = 'awaiting-answer-projected.json';
+const RUNNING_REQUEST_RECEIPT = 'attention-request-running.json';
+const TASK_SESSION = 'task-session.json';
+const CHILD_HANDSHAKE = 'child.json';
+const ATTENTION_MODE = 'attention-labels-v1';
 
 export function selectReadyForAi(tasks) {
   return tasks.filter((task) =>
@@ -36,6 +44,23 @@ export function selectReadyForAi(tasks) {
     && task.worker == null
     && task.recurring !== true,
   );
+}
+
+export function selectAttentionRequested(tasks, machine) {
+  return tasks.filter((task) =>
+    task.lifecycleMode === ATTENTION_MODE
+    && task.attentionState === 'requested'
+    && !task.recurring
+    && (!task.machineId || task.machineId === machine),
+  );
+}
+
+export function attentionRecoverySkips(inventory) {
+  return (inventory.uncertain ?? []).map((run) => ({
+    id: run.taskId || null,
+    sessionId: run.sessionId || null,
+    reason: `recovery required: ${run.reason || 'uncertain local launch state'}`,
+  }));
 }
 
 export async function planBackendTasks({
@@ -206,6 +231,37 @@ async function writeReceipt(filename, receipt) {
   return persisted;
 }
 
+function validateAttentionReceipt(receipt, run) {
+  if (
+    receipt?.version !== 1
+    || receipt.taskId !== run.taskId
+    || receipt.sessionId !== run.sessionId
+    || typeof receipt.checkpointId !== 'string'
+    || !receipt.checkpointId
+    || typeof receipt.projectedAt !== 'string'
+    || !Number.isFinite(Date.parse(receipt.projectedAt))
+  ) {
+    throw new Error('invalid awaiting-answer projection receipt');
+  }
+}
+
+async function writeAttentionReceipt(filename, receipt, run) {
+  const existing = await readOptionalJson(filename);
+  if (existing) {
+    validateAttentionReceipt(existing, run);
+    if (existing.checkpointId === receipt.checkpointId) return existing;
+    await writeFile(filename, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+  } else {
+    await writeFile(filename, `${JSON.stringify(receipt, null, 2)}\n`, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+  }
+  const persisted = await readJson(filename);
+  validateAttentionReceipt(persisted, run);
+  return persisted;
+}
+
 function validateTerminationJournal(journal, run) {
   if (
     journal?.version !== 1
@@ -372,15 +428,12 @@ export async function inspectLocalRuns(
   try {
     entries = await readdir(runsRoot, { withFileTypes: true });
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      return {
-        live: [], stale: [], uncertain: [], released: [], unexpected: [], failed: [],
-      };
-    }
-    throw error;
+    if (error.code === 'ENOENT') entries = [];
+    else throw error;
   }
   const result = {
     live: [], stale: [], uncertain: [], released: [], unexpected: [], failed: [],
+    recoverable: [], orphanLocks: [],
   };
   for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
     const dir = path.join(runsRoot, entry.name);
@@ -456,6 +509,30 @@ export async function inspectLocalRuns(
           });
           continue;
         } catch (exitError) {
+          if (run.lifecycleMode === ATTENTION_MODE && run.runnerOwner) {
+            const runnerObserved = await inspect(run.runnerOwner.pid);
+            const runnerDead = runnerObserved.state === 'dead'
+              || (
+                runnerObserved.state === 'live'
+                && runnerObserved.identity !== run.runnerOwner.processStart
+              );
+            if (runnerDead && ['prepared', 'associated'].includes(run.phase)) {
+              result.recoverable.push({
+                ...run,
+                dir,
+                owner: null,
+                observed: runnerObserved,
+                reason: `runner died during ${run.phase} launch phase before terminal request`,
+              });
+              continue;
+            }
+            result.uncertain.push({
+              ...run,
+              dir,
+              reason: `launch phase ${run.phase || 'unknown'} has no owner/exit; runner identity is ${runnerObserved.state}`,
+            });
+            continue;
+          }
           result.uncertain.push({ ...run, dir, reason: exitError.message });
           continue;
         }
@@ -466,6 +543,31 @@ export async function inspectLocalRuns(
     const observed = await inspect(owner.pid);
     const record = { ...run, dir, owner, observed, releaseRequested };
     if (observed.state === 'live' && observed.identity === owner.processStart) {
+      if (run.lifecycleMode === ATTENTION_MODE) {
+        try {
+          const child = await readJson(path.join(dir, CHILD_HANDSHAKE));
+          if (
+            !Number.isInteger(child.pid)
+            || !child.processStart
+            || child.sessionId !== run.sessionId
+          ) {
+            throw new Error('invalid worker child handshake');
+          }
+          const childObserved = await inspect(child.pid);
+          if (childObserved.state !== 'live' || childObserved.identity !== child.processStart) {
+            throw new Error('worker child handshake is not live');
+          }
+          result.live.push({ ...record, child, childObserved });
+        } catch (error) {
+          result.uncertain.push({
+            ...record,
+            reason: error.code === 'ENOENT'
+              ? 'launcher is live but worker child handshake is missing'
+              : error.message,
+          });
+        }
+        continue;
+      }
       result.live.push(record);
     } else if (observed.state === 'dead' || observed.identity !== owner.processStart) {
       result.stale.push(record);
@@ -473,16 +575,152 @@ export async function inspectLocalRuns(
       result.uncertain.push(record);
     }
   }
+  const runTaskIds = new Set([
+    ...result.live,
+    ...result.stale,
+    ...result.uncertain,
+    ...result.released,
+    ...result.unexpected,
+    ...result.failed,
+    ...result.recoverable,
+  ].map((run) => run.taskId).filter(Boolean));
+  let lockEntries = [];
+  try {
+    lockEntries = await readdir(path.join(stateRoot, 'locks'), { withFileTypes: true });
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  for (const entry of lockEntries.filter((candidate) =>
+    candidate.isFile() && candidate.name.endsWith('.lock'))) {
+    const taskId = decodeURIComponent(entry.name.slice(0, -'.lock'.length));
+    if (runTaskIds.has(taskId)) continue;
+    const filename = path.join(stateRoot, 'locks', entry.name);
+    try {
+      const owner = await readJson(filename);
+      if (
+        owner.version !== 1
+        || !Number.isInteger(owner.pid)
+        || !owner.processStart
+      ) {
+        throw new Error('invalid orphan task-lock owner');
+      }
+      const observed = await inspect(owner.pid);
+      const originalDead = observed.state === 'dead'
+        || (observed.state === 'live' && observed.identity !== owner.processStart);
+      const record = { taskId, filename, owner, observed };
+      if (originalDead) result.orphanLocks.push(record);
+      else result.uncertain.push({
+        ...record,
+        reason: `orphan task lock owner is ${observed.state}`,
+      });
+    } catch (error) {
+      result.uncertain.push({ taskId, filename, reason: error.message });
+    }
+  }
+  return result;
+}
+
+export async function reconcileRecoverableLaunches(stateRoot, inventory, backend) {
+  const result = { reconciled: [], failures: [] };
+  for (const lock of inventory.orphanLocks ?? []) {
+    try {
+      await rm(lock.filename, { force: true });
+      result.reconciled.push(lock.taskId);
+    } catch (error) {
+      result.failures.push({ taskId: lock.taskId, error: error.message });
+    }
+  }
+  for (const run of inventory.recoverable ?? []) {
+    try {
+      const task = await backend.get(run.taskId);
+      if (task.lifecycleMode !== ATTENTION_MODE) {
+        throw new Error('recoverable prelaunch cleanup is attention-mode only');
+      }
+      if (
+        task.sessionId
+        && (task.sessionId !== run.sessionId || task.machineId !== run.machine)
+      ) {
+        throw new Error('task association changed after interrupted launch');
+      }
+      if (!['requested', 'needsHelp', 'externalWaiting', 'onHold'].includes(task.attentionState)) {
+        throw new Error(`task status ${task.attentionState} is not safe for prelaunch recovery`);
+      }
+      if (task.sessionId) {
+        await backend.report(run.taskId, workerReport(
+          task,
+          run,
+          `Pan runner recovered interrupted launch ${run.sessionId} on ${run.machine}.\n\n`
+          + `${run.reason}. No terminal request or worker handshake was recorded. `
+          + `Runner owner was PID ${run.runnerOwner.pid} at ${run.runnerOwner.processStart}. `
+          + 'The attention request and established session association were preserved.',
+        ));
+      }
+      await writeReceipt(path.join(run.dir, LAUNCH_FAILURE_RECEIPT), {
+        version: 1,
+        kind: 'launch-failure',
+        taskId: run.taskId,
+        sessionId: run.sessionId,
+        recordedAt: new Date().toISOString(),
+        resuming: run.resuming,
+        phase: run.phase,
+        definitelyNotStarted: true,
+      });
+      await rm(lockPath(stateRoot, run.taskId), { force: true });
+      result.reconciled.push(run.taskId);
+    } catch (error) {
+      result.failures.push({ taskId: run.taskId, sessionId: run.sessionId, error: error.message });
+    }
+  }
   return result;
 }
 
 function workerMatchesRun(task, run) {
+  if (task?.lifecycleMode === ATTENTION_MODE) {
+    return task.id === run.taskId
+      && task.sessionId === run.sessionId
+      && task.machineId === run.machine;
+  }
+
   return (
     task?.id === run.taskId
     && task.worker?.sessionId === run.sessionId
     && Number(task.worker?.pid) === run.owner?.pid
     && task.worker?.processStart === run.owner?.processStart
   );
+}
+
+function workerReport(task, run, content) {
+  return task.lifecycleMode === ATTENTION_MODE ? {
+    content,
+    expectedSessionId: run.sessionId,
+    expectedMachineId: run.machine,
+  } : { content };
+}
+
+async function updateReleasedTask(task, run, backend) {
+  if (task.lifecycleMode === ATTENTION_MODE) {
+    const attentionState = task.attentionState === 'open' ? 'none' : undefined;
+    if (attentionState !== undefined) {
+      await backend.update(run.taskId, {
+        expectedRevision: task.revision,
+        attentionState,
+      });
+      return true;
+    }
+    return false;
+  }
+  if (task.worker.state !== 'released') {
+    await backend.update(run.taskId, {
+      expectedRevision: task.revision,
+      worker: {
+        ...task.worker,
+        state: 'released',
+        releasedAt: new Date().toISOString(),
+      },
+    });
+    return true;
+  }
+  return false;
 }
 
 async function reconcileReleasedRun(stateRoot, run, backend, inspect) {
@@ -498,18 +736,7 @@ async function reconcileReleasedRun(stateRoot, run, backend, inspect) {
     throw new Error('backend worker identity does not match the release request');
   }
   const reports = backend.reports ? await backend.reports(run.taskId) : [];
-  let backendWorkerUpdated = false;
-  if (task.worker.state !== 'released') {
-    await backend.update(run.taskId, {
-      expectedRevision: task.revision,
-      worker: {
-        ...task.worker,
-        state: 'released',
-        releasedAt: new Date().toISOString(),
-      },
-    });
-    backendWorkerUpdated = true;
-  }
+  const backendWorkerUpdated = await updateReleasedTask(task, run, backend);
   await writeReceipt(path.join(run.dir, RELEASE_RECEIPT), {
     version: 1,
     kind: 'released',
@@ -599,9 +826,16 @@ export async function reconcileStaleRuns(
       }
       const task = await backend.get(run.taskId);
       const marker = `Pan worker observation: unexpected-stop session ${run.sessionId}`;
-      if (task.worker?.sessionId === run.sessionId) {
+      if (workerMatchesRun(task, run)) {
         const reports = backend.reports ? await backend.reports(run.taskId) : [];
-        if (task.worker.state !== 'unexpected-stop') {
+        if (task.lifecycleMode === ATTENTION_MODE) {
+          if (!['needsHelp', 'externalWaiting', 'onHold'].includes(task.attentionState)) {
+            await backend.update(run.taskId, {
+              expectedRevision: task.revision,
+              attentionState: 'needsHelp',
+            });
+          }
+        } else if (task.worker.state !== 'unexpected-stop') {
           await backend.update(run.taskId, {
             expectedRevision: task.revision,
             worker: {
@@ -613,11 +847,13 @@ export async function reconcileStaleRuns(
           });
         }
         if (!reports.some((report) => report.content?.includes(marker))) {
-          await backend.report(run.taskId, {
-            content: `${marker}\n\nThe worker exited without ${RELEASE_SIGNAL}. `
+          await backend.report(run.taskId, workerReport(
+            task,
+            run,
+            `${marker}\n\nThe worker exited without ${RELEASE_SIGNAL}. `
               + 'Pan did not infer task completion or another lifecycle state, and the '
               + 'local workspace remains reserved for inspection or explicit recovery.',
-          });
+          ));
         }
       }
       await writeReceipt(path.join(run.dir, UNEXPECTED_EXIT_RECEIPT), {
@@ -626,7 +862,7 @@ export async function reconcileStaleRuns(
         taskId: run.taskId,
         sessionId: run.sessionId,
         recordedAt: new Date().toISOString(),
-        backendWorkerMatched: task.worker?.sessionId === run.sessionId,
+        backendWorkerMatched: workerMatchesRun(task, run),
       });
       reconciled.push(run.taskId);
     } catch (error) {
@@ -639,6 +875,139 @@ export async function reconcileStaleRuns(
     }
   }
   return reconciled;
+}
+
+function validateAwaitingAnswer(marker, run) {
+  if (!marker || marker.version !== 1) throw new Error('awaiting-answer marker version must be 1');
+  for (const field of ['sessionId', 'checkpointId', 'action', 'question', 'timestamp']) {
+    if (!String(marker[field] || '').trim()) throw new Error(`awaiting-answer ${field} is required`);
+  }
+  if (!['clarify', 'discuss', 'approve', 'review'].includes(marker.action)) {
+    throw new Error('awaiting-answer action is invalid');
+  }
+  if (marker.sessionId !== run.sessionId) {
+    throw new Error('awaiting-answer sessionId does not match this run');
+  }
+  const timestamp = Date.parse(marker.timestamp);
+  if (!Number.isFinite(timestamp)) throw new Error('awaiting-answer timestamp is invalid');
+  return { ...marker, timestampMs: timestamp };
+}
+
+async function sameAwaitingCheckpoint(run, expected) {
+  const current = await readOptionalJson(path.join(run.dir, AWAITING_ANSWER));
+  if (!current) return false;
+  const checked = validateAwaitingAnswer(current, run);
+  return checked.checkpointId === expected.checkpointId
+    && checked.timestamp === expected.timestamp
+    && checked.action === expected.action;
+}
+
+export async function reconcileAttentionMarkers(
+  live,
+  backend,
+  { now = Date.now(), graceSeconds = 120 } = {},
+) {
+  const result = { projected: [], cleared: [], skipped: [], failures: [] };
+  for (const run of live) {
+    try {
+      const marker = await readOptionalJson(path.join(run.dir, AWAITING_ANSWER));
+      const receiptPath = path.join(run.dir, AWAITING_RECEIPT);
+      const receipt = await readOptionalJson(receiptPath);
+      if (receipt) validateAttentionReceipt(receipt, run);
+      const task = await backend.get(run.taskId);
+      if (task.lifecycleMode !== ATTENTION_MODE || !workerMatchesRun(task, run)) {
+        result.skipped.push({ taskId: run.taskId, reason: 'session association changed' });
+        continue;
+      }
+      if (task.attentionState === 'requested') {
+        const requestReceipt = path.join(run.dir, RUNNING_REQUEST_RECEIPT);
+        if (!await readOptionalJson(requestReceipt)) {
+          await backend.report(task.id, workerReport(
+            task,
+            run,
+            `Pan attention routing: session ${run.sessionId} is already running.\n\n`
+              + 'Pan did not launch a duplicate or inject into the live CLI process. '
+              + 'Continue in the task worker terminal.',
+          ));
+          await writeReceipt(requestReceipt, {
+            version: 1,
+            kind: 'attention-request-running',
+            taskId: run.taskId,
+            sessionId: run.sessionId,
+            recordedAt: new Date(now).toISOString(),
+          });
+        }
+      } else {
+        await rm(path.join(run.dir, RUNNING_REQUEST_RECEIPT), { force: true });
+      }
+      if (marker) {
+        const checked = validateAwaitingAnswer(marker, run);
+        const immediate = ['approve', 'review'].includes(checked.action)
+          || marker.immediate === true;
+        if (!immediate && now - checked.timestampMs < graceSeconds * 1000) {
+          if (
+            receipt
+            && receipt.checkpointId !== checked.checkpointId
+            && task.attentionState === 'needsHelp'
+          ) {
+            if (!await sameAwaitingCheckpoint(run, checked)) {
+              result.skipped.push({ taskId: run.taskId, reason: 'question changed during reconciliation' });
+              continue;
+            }
+            await backend.update(task.id, {
+              expectedRevision: task.revision,
+              attentionState: 'open',
+            });
+            await rm(receiptPath, { force: true });
+          }
+          result.skipped.push({ taskId: run.taskId, reason: 'question grace period remains' });
+          continue;
+        }
+        if (task.attentionState === 'open') {
+          if (!await sameAwaitingCheckpoint(run, checked)) {
+            result.skipped.push({ taskId: run.taskId, reason: 'question changed during reconciliation' });
+            continue;
+          }
+          await backend.update(task.id, {
+            expectedRevision: task.revision,
+            attentionState: 'needsHelp',
+          });
+          result.projected.push(task.id);
+        } else if (task.attentionState !== 'needsHelp') {
+          result.skipped.push({ taskId: run.taskId, reason: 'human status override preserved' });
+          continue;
+        }
+        await writeAttentionReceipt(receiptPath, {
+          version: 1,
+          taskId: run.taskId,
+          sessionId: run.sessionId,
+          checkpointId: checked.checkpointId,
+          projectedAt: new Date(now).toISOString(),
+        }, run);
+      } else if (receipt) {
+        if (await readOptionalJson(path.join(run.dir, AWAITING_ANSWER))) {
+          result.skipped.push({ taskId: run.taskId, reason: 'question changed during reconciliation' });
+          continue;
+        }
+        if (
+          receipt.sessionId === run.sessionId
+          && task.attentionState === 'needsHelp'
+        ) {
+          await backend.update(task.id, {
+            expectedRevision: task.revision,
+            attentionState: 'open',
+          });
+          result.cleared.push(task.id);
+        } else {
+          result.skipped.push({ taskId: run.taskId, reason: 'newer human status preserved' });
+        }
+        await rm(receiptPath, { force: true });
+      }
+    } catch (error) {
+      result.failures.push({ taskId: run.taskId, error: error.message });
+    }
+  }
+  return result;
 }
 
 async function acquireTaskLock(stateRoot, taskId) {
@@ -658,6 +1027,22 @@ async function releaseTaskLock(lock) {
   if (!lock) return;
   await lock.handle.close().catch(() => {});
   await rm(lock.filename, { force: true });
+}
+
+async function recordTaskLockOwner(lock, inspect) {
+  const observed = await inspect(process.pid);
+  if (observed.state !== 'live' || !observed.identity) {
+    throw new Error('cannot establish task-lock runner identity');
+  }
+  const owner = {
+    version: 1,
+    pid: process.pid,
+    processStart: observed.identity,
+    recordedAt: new Date().toISOString(),
+  };
+  await lock.handle.writeFile(`${JSON.stringify(owner, null, 2)}\n`);
+  await lock.handle.sync();
+  return owner;
 }
 
 async function acquireRunnerLock(stateRoot, inspect = inspectProcess) {
@@ -929,6 +1314,7 @@ function launcherSource({
   workingDirectory,
   additionalDirectories,
   copilotHome,
+  sessionId,
 }) {
   return `import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -936,12 +1322,12 @@ import path from 'node:path';
 const stateDir=${JSON.stringify(stateDir)};
 const command=${JSON.stringify(command)};
 const prompt=readFileSync(${JSON.stringify(promptPath)},'utf8');
-function identity(){
+function identity(pid=process.pid){
   if(process.platform==='darwin'){
-    return 'darwin:'+execFileSync('/bin/ps',['-p',String(process.pid),'-o','lstart=']).toString().trim();
+    return 'darwin:'+execFileSync('/bin/ps',['-p',String(pid),'-o','lstart=']).toString().trim();
   }
   if(process.platform==='linux'){
-    const stat=readFileSync('/proc/'+process.pid+'/stat','utf8');
+    const stat=readFileSync('/proc/'+pid+'/stat','utf8');
     const fields=stat.slice(stat.lastIndexOf(')')+1).trim().split(/\\s+/);
     return 'linux:'+readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()+':'+fields[19];
   }
@@ -949,6 +1335,8 @@ function identity(){
 }
 writeFileSync(path.join(stateDir,'owner.json'),JSON.stringify({pid:process.pid,processStart:identity(),recordedAt:new Date().toISOString()},null,2)+'\\n',{flag:'wx',mode:0o600});
 const args=command.slice(1).filter((value)=>value!=='--interactive'&&value!=='-i');
+const managedSessionId=${JSON.stringify(sessionId)};
+if(managedSessionId&&!args.includes('--session-id')) args.push('--session-id',managedSessionId);
 const allowedDirectories=[
   ${JSON.stringify(workingDirectory)},
   stateDir,
@@ -961,6 +1349,15 @@ const child=spawn(command[0],[...args,'--interactive',prompt],{
   cwd:${JSON.stringify(workingDirectory)},
   stdio:'inherit',
   env:{...process.env,COPILOT_HOME:${JSON.stringify(copilotHome)},PAN_STATE_DIR:stateDir,PAN_WORKING_DIRECTORY:${JSON.stringify(workingDirectory)}},
+});
+child.once('spawn',()=>{
+  try{
+    writeFileSync(path.join(stateDir,${JSON.stringify(CHILD_HANDSHAKE)}),JSON.stringify({pid:child.pid,processStart:identity(child.pid),sessionId:managedSessionId,recordedAt:new Date().toISOString()},null,2)+'\\n',{flag:'wx',mode:0o600});
+  }catch(error){
+    writeFileSync(path.join(stateDir,'exit.json'),JSON.stringify({exitedAt:new Date().toISOString(),error:'child handshake failed: '+error.message},null,2)+'\\n',{mode:0o600});
+    child.kill('SIGTERM');
+    process.exit(1);
+  }
 });
 child.once('error',(error)=>{
   writeFileSync(path.join(stateDir,'exit.json'),JSON.stringify({exitedAt:new Date().toISOString(),error:error.message},null,2)+'\\n',{mode:0o600});
@@ -999,6 +1396,7 @@ async function waitForOwner(stateDir, inspect, timeoutMs = 5000) {
       if (observed.state === 'live' && observed.identity === owner.processStart) {
         return owner;
       }
+
       throw new Error('launcher owner identity does not match the live process');
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
@@ -1008,8 +1406,168 @@ async function waitForOwner(stateDir, inspect, timeoutMs = 5000) {
   throw new Error('launcher did not establish durable process ownership');
 }
 
+async function waitForChildHandshake(
+  stateDir,
+  sessionId,
+  inspect,
+  { timeoutMs = 5000, settleMs = 100, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const exit = await readOptionalJson(path.join(stateDir, 'exit.json'));
+    if (exit) throw new Error(`worker exited before launch acknowledgement: ${exit.error || exit.code}`);
+    try {
+      const child = await readJson(path.join(stateDir, CHILD_HANDSHAKE));
+      if (
+        !Number.isInteger(child.pid)
+        || child.pid <= 0
+        || typeof child.processStart !== 'string'
+        || !child.processStart
+        || child.sessionId !== sessionId
+      ) {
+        throw new Error('invalid worker child handshake');
+      }
+      const first = await inspect(child.pid);
+      if (first.state !== 'live' || first.identity !== child.processStart) {
+        throw new Error('worker child is not live with the recorded identity');
+      }
+      await sleep(settleMs);
+      const afterExit = await readOptionalJson(path.join(stateDir, 'exit.json'));
+      if (afterExit) {
+        throw new Error(`worker exited before launch acknowledgement: ${afterExit.error || afterExit.code}`);
+      }
+      const second = await inspect(child.pid);
+      if (second.state !== 'live' || second.identity !== child.processStart) {
+        throw new Error('worker child did not remain live through launch acknowledgement');
+      }
+      return child;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    await sleep(50);
+  }
+  throw new Error('worker child did not establish a durable launch handshake');
+}
+
+function pathInside(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function canonicalizeProspectivePath(candidate) {
+  let existing = path.resolve(candidate);
+  const suffix = [];
+  for (;;) {
+    try {
+      const canonical = await realpath(existing);
+      return path.join(canonical, ...suffix.reverse());
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw error;
+      suffix.push(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+export async function resolveAttentionWorkspace(stateRoot, taskId, config) {
+  const stateDir = runDirectory(stateRoot, taskId);
+  const session = await readOptionalJson(path.join(stateDir, TASK_SESSION));
+  const fallback = path.join(stateRoot, 'task-homes', encodeURIComponent(taskId));
+  const workingDirectory = path.resolve(session?.workingDirectory || fallback);
+  const canonicalStateRoot = await realpath(stateRoot);
+  const configuredRoots = await Promise.all(
+    (config.attentionLifecycle?.allowedWorkspaceRoots ?? [])
+      .map((root) => canonicalizeProspectivePath(path.resolve(root))),
+  );
+  const allowedRoots = [path.join(canonicalStateRoot, 'task-homes'), ...configuredRoots];
+  const canonicalWorkingDirectory = await canonicalizeProspectivePath(workingDirectory);
+  if (!allowedRoots.some((root) => pathInside(canonicalWorkingDirectory, root))) {
+    throw new Error(`task-session workingDirectory is outside allowedWorkspaceRoots: ${workingDirectory}`);
+  }
+  return {
+    workingDirectory: canonicalWorkingDirectory,
+    playbookName: String(session?.playbookName || ''),
+    resumptionNote: String(session?.resumptionNote || ''),
+  };
+}
+
+async function requirePersistedSession(copilotHome, sessionId) {
+  const sessionDir = path.join(copilotHome, 'session-state', sessionId);
+  let directory;
+  let events;
+  try {
+    [directory, events] = await Promise.all([
+      stat(sessionDir),
+      stat(path.join(sessionDir, 'events.jsonl')),
+    ]);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(
+        `associated Copilot session ${sessionId} is missing from ${path.join(copilotHome, 'session-state')}`,
+      );
+    }
+    throw error;
+  }
+  if (!directory.isDirectory() || !events.isFile() || events.size === 0) {
+    throw new Error(`associated Copilot session ${sessionId} has no persisted conversation`);
+  }
+  return sessionDir;
+}
+
+async function mayInitializeAssociatedSession(stateDir, task) {
+  const run = await readOptionalJson(path.join(stateDir, 'run.json'));
+  const receipt = await readOptionalJson(path.join(stateDir, LAUNCH_FAILURE_RECEIPT));
+  if (!run || !receipt) return false;
+  try {
+    validateReceipt(receipt, run, 'launch-failure');
+  } catch {
+    return false;
+  }
+  const [owner, child] = await Promise.all([
+    readOptionalJson(path.join(stateDir, 'owner.json')),
+    readOptionalJson(path.join(stateDir, CHILD_HANDSHAKE)),
+  ]);
+  return run.lifecycleMode === ATTENTION_MODE
+    && run.resuming === false
+    && receipt.resuming === false
+    && receipt.definitelyNotStarted === true
+    && receipt.phase === run.phase
+    && ['prepared', 'associated'].includes(run.phase)
+    && !owner
+    && !child
+    && run.taskId === task.id
+    && run.sessionId === task.sessionId
+    && run.machine === task.machineId;
+}
+
+async function resetRunFiles(stateDir) {
+  for (const name of [
+    'owner.json',
+    CHILD_HANDSHAKE,
+    'exit.json',
+    RELEASE_SIGNAL,
+    RELEASE_RECEIPT,
+    RELEASE_TERMINATION,
+    UNEXPECTED_EXIT_RECEIPT,
+    LAUNCH_FAILURE_RECEIPT,
+    RUNNING_REQUEST_RECEIPT,
+    'launch.mjs',
+    'launch-prompt.txt',
+    'task.json',
+    'reports.json',
+    'playbook.md',
+    'pan.md',
+    'trust.json',
+  ]) {
+    await rm(path.join(stateDir, name), { force: true });
+  }
+}
+
 export async function launchTask(task, config, backend, dependencies = {}) {
   const stateRoot = path.resolve(config.stateRoot);
+  const attentionMode = config.lifecycleMode === ATTENTION_MODE;
   const allowedTaskIds = new Set((config.taskIds ?? []).map(String));
   if (allowedTaskIds.size > 0 && !allowedTaskIds.has(String(task.id))) {
     throw new Error(`task ${task.id} is outside the runner taskIds allowlist`);
@@ -1017,12 +1575,40 @@ export async function launchTask(task, config, backend, dependencies = {}) {
   await mkdir(path.join(stateRoot, 'runs'), { recursive: true, mode: 0o700 });
   const lock = await acquireTaskLock(stateRoot, task.id);
   if (!lock) return false;
-  const sessionId = randomUUID();
+  let sessionId = '';
   const stateDir = runDirectory(stateRoot, task.id);
+  let attentionWorkspace = null;
+  let attentionPlaybook = null;
+  let workingDirectory = '';
+  let runnerOwner = null;
+  let run = null;
   let command = config.launchCommand;
   let starting;
   let terminalStarted = false;
+  let terminalInvoked = false;
   try {
+    if (attentionMode) {
+      runnerOwner = await recordTaskLockOwner(lock, dependencies.inspect || inspectProcess);
+    }
+    if (attentionMode && task.machineId && task.machineId !== config.machine) {
+      await releaseTaskLock(lock);
+      return false;
+    }
+    if (attentionMode && Boolean(task.sessionId) !== Boolean(task.machineId)) {
+      throw new Error(`task ${task.id} has a partial session association`);
+    }
+    sessionId = attentionMode && task.sessionId ? task.sessionId : randomUUID();
+    attentionWorkspace = attentionMode
+      ? await resolveAttentionWorkspace(stateRoot, task.id, config)
+      : null;
+    attentionPlaybook = attentionWorkspace?.playbookName
+      ? config.attentionPlaybooks?.get(attentionWorkspace.playbookName)
+      : null;
+    if (attentionWorkspace?.playbookName && !attentionPlaybook) {
+      throw new Error(`selected session playbook ${attentionWorkspace.playbookName} is unavailable`);
+    }
+    workingDirectory = attentionWorkspace?.workingDirectory
+      ?? path.resolve(config.workingDirectory);
     if (!Array.isArray(command) || !command.length || command.some((part) => typeof part !== 'string')) {
       throw new Error('launchCommand must be a non-empty array of strings');
     }
@@ -1035,7 +1621,13 @@ export async function launchTask(task, config, backend, dependencies = {}) {
       throw new Error('launchCommand must select --agent pan-worker');
     }
     if (agentIndex < 0) command = [...command, '--agent', 'pan-worker'];
-    if (task.playbook !== config.playbookName) {
+    if (
+      attentionMode
+      && command.some((part) => ['--session-id', '--resume', '-r', '--continue'].includes(part))
+    ) {
+      throw new Error('launchCommand must not override runner-managed session identity');
+    }
+    if (!attentionMode && task.playbook !== config.playbookName) {
       throw new Error(`task playbook must be ${config.playbookName}`);
     }
     for (const field of ['panTaskCommand']) {
@@ -1043,7 +1635,7 @@ export async function launchTask(task, config, backend, dependencies = {}) {
         throw new Error(`${field} must be an absolute path`);
       }
     }
-    if (config.playbookText == null && !path.isAbsolute(config.playbookPath || '')) {
+    if (!attentionMode && config.playbookText == null && !path.isAbsolute(config.playbookPath || '')) {
       throw new Error('playbookPath must be absolute when playbookText is not provided');
     }
     if (
@@ -1054,24 +1646,49 @@ export async function launchTask(task, config, backend, dependencies = {}) {
         'domainInstructionsPath must be absolute when domainInstructionsText is not provided',
       );
     }
-    await rm(stateDir, { recursive: true, force: true });
+    if (
+      attentionMode
+      && task.sessionId
+      && !await mayInitializeAssociatedSession(stateDir, task)
+    ) {
+      await requirePersistedSession(path.join(stateDir, 'copilot-home'), sessionId);
+    }
+    if (attentionMode) await resetRunFiles(stateDir);
+    else await rm(stateDir, { recursive: true, force: true });
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
-    await mkdir(path.resolve(config.workingDirectory), { recursive: true });
+    await mkdir(workingDirectory, { recursive: true });
+    if (attentionMode) {
+      const recheckedWorkspace = await resolveAttentionWorkspace(stateRoot, task.id, config);
+      if (recheckedWorkspace.workingDirectory !== workingDirectory) {
+        throw new Error('task-session workingDirectory changed during launch');
+      }
+      attentionWorkspace = recheckedWorkspace;
+    }
     const [playbook, domainInstructions, reports] = await Promise.all([
-      config.playbookText ?? readFile(config.playbookPath, 'utf8'),
+      attentionMode
+        ? Promise.resolve(
+            attentionPlaybook
+              ? attentionPlaybook.text
+              : 'No playbook is selected. Begin as a conversation and select one only if needed.\n',
+          )
+        : (config.playbookText ?? readFile(config.playbookPath, 'utf8')),
       config.domainInstructionsText ?? readFile(config.domainInstructionsPath, 'utf8'),
       backend.reports ? backend.reports(task.id) : [],
     ]);
-    const run = {
+    run = {
       version: RUN_VERSION,
       taskId: task.id,
       sessionId,
       machine: config.machine,
-      playbookName: config.playbookName,
+      playbookName: attentionMode ? attentionWorkspace.playbookName : config.playbookName,
       playbookSha: config.playbookSha ?? null,
       domainSha: config.domainSha ?? null,
       workspaceSlot: config.workspaceSlot ?? null,
-      workingDirectory: path.resolve(config.workingDirectory),
+      workingDirectory,
+      lifecycleMode: attentionMode ? ATTENTION_MODE : 'legacy-metadata-v1',
+      runnerOwner,
+      resuming: attentionMode ? Boolean(task.sessionId) : false,
+      phase: 'prepared',
       createdAt: new Date().toISOString(),
     };
     await writeFile(path.join(stateDir, 'run.json'), `${JSON.stringify(run, null, 2)}\n`, { mode: 0o600 });
@@ -1086,7 +1703,7 @@ export async function launchTask(task, config, backend, dependencies = {}) {
     const trust = await prepareCopilotHome(
       path.resolve(config.copilotConfigPath || path.join(os.homedir(), '.copilot', 'config.json')),
       stateDir,
-      [path.resolve(config.workingDirectory), stateDir],
+      [workingDirectory, stateDir],
     );
     await writeFile(
       path.join(stateDir, 'trust.json'),
@@ -1099,9 +1716,21 @@ export async function launchTask(task, config, backend, dependencies = {}) {
       `Execute Pan task ${task.id}: ${task.title}`,
       `Read ${path.join(stateDir, 'task.json')}, ${path.join(stateDir, 'playbook.md')}, ${path.join(stateDir, 'pan.md')}, and ${path.join(stateDir, 'reports.json')}.`,
       'This headed terminal is a worker session. Apply general and worker-scoped pan.md instructions, but ignore main chief-of-staff scheduling, portfolio review or reconciliation, task triage or backlog management, and session scheduling.',
+      ...(attentionMode ? [
+        `This is persistent Pan session ${sessionId}. Continue this same conversation for every phase and playbook.`,
+        `Record a selected playbook, workingDirectory, and resumptionNote in ${path.join(stateDir, TASK_SESSION)}; request release before the runner restarts this same session in that allowed workspace.`,
+        `Before blocking for the user, write ${path.join(stateDir, AWAITING_ANSWER)} with version 1, sessionId, a unique checkpointId, timestamp, action, question, detail, and immediate=true for explicit approval/review gates. Delete it only after the answer is received.`,
+        'Routine clarify/discuss questions remain AI Session Open during the configured grace period; approval/review gates become AI Needs Help immediately.',
+        'Do not create recurring schedules. The runner mechanically projects durable attention state.',
+        attentionWorkspace.resumptionNote
+          ? `Prior resumption note: ${attentionWorkspace.resumptionNote}`
+          : 'There is no prior resumption note.',
+      ] : []),
       `Read current task state with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} get ${JSON.stringify(task.id)}`,
       `Read durable reports with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} reports ${JSON.stringify(task.id)}`,
-      `Write the report request JSON only to ${reportInputPath}, then record it with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} report ${JSON.stringify(task.id)} --input @${reportInputPath}`,
+      attentionMode
+        ? `Write report JSON only to ${reportInputPath} with content, expectedSessionId=${JSON.stringify(sessionId)}, and expectedMachineId=${JSON.stringify(config.machine)}, then record it with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} report ${JSON.stringify(task.id)} --input @${reportInputPath}`
+        : `Write the report request JSON only to ${reportInputPath}, then record it with: ${taskCommand} --config ${JSON.stringify(config.backendConfig)} report ${JSON.stringify(task.id)} --input @${reportInputPath}`,
       'Do not complete the backend task; the coordinating Pan session completes it after verifying your report and files.',
       `A report or backend status change does not release this worker. When the process, terminal, and workspace may be released, first record any needed report, then create an empty ${path.join(stateDir, RELEASE_SIGNAL)} and exit Copilot.`,
       `Task URL: ${task.url}`,
@@ -1114,7 +1743,7 @@ export async function launchTask(task, config, backend, dependencies = {}) {
         command,
         promptPath,
         stateDir,
-        workingDirectory: path.resolve(config.workingDirectory),
+        workingDirectory,
         additionalDirectories: [
           path.dirname(process.execPath),
           path.dirname(path.resolve(config.panTaskCommand)),
@@ -1122,19 +1751,32 @@ export async function launchTask(task, config, backend, dependencies = {}) {
           ...(config.additionalDirectories ?? []).map((directory) => path.resolve(directory)),
         ],
         copilotHome: trust.copilotHome,
+        sessionId: attentionMode ? sessionId : null,
       }),
       { mode: 0o600 },
     );
-    starting = await backend.update(task.id, {
+    starting = await backend.update(task.id, attentionMode ? {
+      expectedRevision: task.revision,
+      association: { machineId: config.machine, sessionId },
+    } : {
       expectedRevision: task.revision,
       worker: { state: 'starting', machine: config.machine, sessionId },
     });
+    if (attentionMode) {
+      run.phase = 'associated';
+      await writeFile(path.join(stateDir, 'run.json'), `${JSON.stringify(run, null, 2)}\n`, { mode: 0o600 });
+    }
     if (allowedTaskIds.size > 0 && !allowedTaskIds.has(String(task.id))) {
       throw new Error(`task ${task.id} is outside the runner taskIds allowlist`);
     }
+    if (attentionMode) {
+      run.phase = 'terminal-requested';
+      await writeFile(path.join(stateDir, 'run.json'), `${JSON.stringify(run, null, 2)}\n`, { mode: 0o600 });
+    }
+    terminalInvoked = true;
     await (dependencies.launchTerminal || launchTerminal)(
       stateDir,
-      path.resolve(config.workingDirectory),
+      workingDirectory,
       config.terminal?.kind || (process.platform === 'darwin' ? 'macos-terminal' : 'windows-terminal'),
     );
     terminalStarted = true;
@@ -1143,7 +1785,22 @@ export async function launchTask(task, config, backend, dependencies = {}) {
       dependencies.inspect || inspectProcess,
       dependencies.ownerTimeoutMs,
     );
-    await backend.update(task.id, {
+    if (attentionMode) {
+      await waitForChildHandshake(
+        stateDir,
+        sessionId,
+        dependencies.inspect || inspectProcess,
+        {
+          timeoutMs: dependencies.ownerTimeoutMs,
+          settleMs: dependencies.childSettleMs,
+          sleep: dependencies.sleep,
+        },
+      );
+    }
+    await backend.update(task.id, attentionMode ? {
+      expectedRevision: starting.revision,
+      attentionState: 'open',
+    } : {
       expectedRevision: starting.revision,
       worker: {
         state: 'running',
@@ -1157,7 +1814,10 @@ export async function launchTask(task, config, backend, dependencies = {}) {
     return true;
   } catch (error) {
     if (starting) {
-      await backend.update(task.id, {
+      await backend.update(task.id, attentionMode ? {
+        expectedRevision: starting.revision,
+        attentionState: 'requested',
+      } : {
         expectedRevision: starting.revision,
         worker: {
           state: terminalStarted ? 'uncertain' : 'stopped',
@@ -1166,11 +1826,19 @@ export async function launchTask(task, config, backend, dependencies = {}) {
           error: error.message,
         },
       }).catch(() => {});
-      await backend.report(task.id, {
-        content: `Pan runner launch failed on ${config.machine}: ${error.message}`,
-      }).catch(() => {});
+      await backend.report(
+        task.id,
+        workerReport(starting, { sessionId, machine: config.machine },
+          `Pan runner launch failed on ${config.machine}: ${error.message}`),
+      ).catch(() => {});
+    } else if (attentionMode) {
+      await backend.report(
+        task.id,
+        workerReport(task, { sessionId, machine: config.machine },
+          `Pan runner resume failed on ${config.machine}: ${error.message}`),
+      ).catch(() => {});
     }
-    if (!terminalStarted) {
+    if (!terminalStarted && (!attentionMode || !terminalInvoked)) {
       await writeFile(
         path.join(stateDir, 'exit.json'),
         `${JSON.stringify({ exitedAt: new Date().toISOString(), error: error.message }, null, 2)}\n`,
@@ -1182,6 +1850,10 @@ export async function launchTask(task, config, backend, dependencies = {}) {
         taskId: task.id,
         sessionId,
         recordedAt: new Date().toISOString(),
+        resuming: run?.resuming ?? Boolean(task.sessionId),
+        phase: run?.phase ?? 'before-run',
+        definitelyNotStarted: !await readOptionalJson(path.join(stateDir, 'owner.json'))
+          && !await readOptionalJson(path.join(stateDir, CHILD_HANDSHAKE)),
       }).catch(() => {});
       await releaseTaskLock(lock);
     } else {
@@ -1205,20 +1877,26 @@ export async function runBackendRunner(argv, dependencies = {}) {
   if (values.help) return { help: true };
   if (!values.config) throw new Error('--config is required');
   const config = JSON.parse(await readFile(path.resolve(values.config), 'utf8'));
+  const attentionMode = config.lifecycleMode === ATTENTION_MODE;
   for (const field of ['backendConfig', 'machine', 'stateRoot']) {
     if (!String(config[field] || '').trim()) throw new Error(`${field} is required`);
   }
   if (config.enabled !== true && !values['dry-run']) {
     throw new Error('backend runner is disabled; set enabled=true only after review');
   }
+  if (attentionMode && config.singleRunnerDomain !== true) {
+    throw new Error(
+      'attention lifecycle requires singleRunnerDomain=true; Todoist cannot atomically claim blank associations',
+    );
+  }
   const dynamicPlaybooks = Boolean(config.domainRepo);
   if (!values['dry-run'] && !String(config.panTaskCommand || '').trim()) {
     throw new Error('panTaskCommand is required');
   }
-  if (!dynamicPlaybooks && !String(config.workingDirectory || '').trim()) {
+  if (!attentionMode && !dynamicPlaybooks && !String(config.workingDirectory || '').trim()) {
     throw new Error('workingDirectory is required');
   }
-  if (!dynamicPlaybooks && !values['dry-run']) {
+  if (!attentionMode && !dynamicPlaybooks && !values['dry-run']) {
     for (const field of ['playbookName', 'playbookPath', 'domainInstructionsPath']) {
       if (!String(config[field] || '').trim()) throw new Error(`${field} is required`);
     }
@@ -1229,12 +1907,26 @@ export async function runBackendRunner(argv, dependencies = {}) {
   try {
     const backend = await loadTaskBackend(config.backendConfig, dependencies);
     await backend.initialize();
+    const backendAttentionMode = backend.lifecycleMode === ATTENTION_MODE;
+    if (attentionMode !== backendAttentionMode) {
+      throw new Error(
+        `runner and backend lifecycleMode must both ${attentionMode ? 'set' : 'omit'} ${ATTENTION_MODE}`,
+      );
+    }
+    if (attentionMode) await backend.validateAttentionLabels();
     const poll = async () => {
       let inventory = await inspectLocalRuns(path.resolve(config.stateRoot), {
         inspect: dependencies.inspect || inspectProcess,
       });
       const runReconciliation = { terminated: [], reconciled: [], failures: [] };
       if (!values['dry-run']) {
+        const interrupted = await reconcileRecoverableLaunches(
+          path.resolve(config.stateRoot),
+          inventory,
+          backend,
+        );
+        runReconciliation.reconciled.push(...interrupted.reconciled);
+        runReconciliation.failures.push(...interrupted.failures);
         const liveRelease = await reconcileLiveReleaseRequests(
           path.resolve(config.stateRoot),
           inventory.live,
@@ -1266,6 +1958,69 @@ export async function runBackendRunner(argv, dependencies = {}) {
         inventory = await inspectLocalRuns(path.resolve(config.stateRoot), {
           inspect: dependencies.inspect || inspectProcess,
         });
+        if (attentionMode) {
+          runReconciliation.attention = await reconcileAttentionMarkers(
+            inventory.live,
+            backend,
+            {
+              graceSeconds: Number(config.attentionLifecycle?.questionGraceSeconds ?? 120),
+            },
+          );
+        }
+      }
+      if (attentionMode) {
+        let attentionConfig = config;
+        if (dynamicPlaybooks) {
+          const loaded = await loadBackendPlaybooks(config, dependencies);
+          attentionConfig = {
+            ...config,
+            domainInstructionsText: loaded.domainInstructions,
+            domainSha: loaded.domainSha,
+            attentionPlaybooks: loaded.playbooks,
+          };
+        }
+        const tasks = await backend.list();
+        const activeTaskIds = new Set([
+          ...inventory.live,
+          ...inventory.uncertain,
+          ...(inventory.unexpected ?? []),
+          ...inventory.stale,
+          ...(inventory.recoverable ?? []),
+          ...(inventory.orphanLocks ?? []),
+        ].map((run) => run.taskId));
+        const allowedTaskIds = new Set((config.taskIds ?? []).map(String));
+        const selected = selectAttentionRequested(tasks, config.machine).filter((task) =>
+          !activeTaskIds.has(task.id)
+          && (allowedTaskIds.size === 0 || allowedTaskIds.has(String(task.id))));
+        const capacity = Math.max(
+          0,
+          Number(config.maxConcurrent ?? 1) - activeTaskIds.size,
+        );
+        const launched = [];
+        const skipped = [
+          ...attentionRecoverySkips(inventory),
+          ...tasks
+          .filter((task) => task.attentionState === 'requested' && task.machineId
+            && task.machineId !== config.machine)
+          .map((task) => ({ id: task.id, reason: `associated with machine ${task.machineId}` })),
+        ];
+        runReconciliation.uncertain = attentionRecoverySkips(inventory);
+        if (!values['dry-run']) {
+          for (const task of selected.slice(0, capacity)) {
+            if (await (dependencies.launch || ((candidate) =>
+              launchTask(candidate, attentionConfig, backend, dependencies)))(task) !== false) {
+              launched.push(task.id);
+            }
+          }
+        }
+        return {
+          observed: tasks.length,
+          candidates: selected.length,
+          selected: selected.slice(0, capacity).map((task) => task.id),
+          launched,
+          skipped,
+          runReconciliation,
+        };
       }
       if (dynamicPlaybooks) {
         const loaded = await loadBackendPlaybooks(config, dependencies);

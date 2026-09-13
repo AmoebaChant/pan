@@ -5,6 +5,13 @@ description: Surface Pan tasks waiting on the user and create Issue-backed tasks
 
 # Pan attention
 
+If the selected backend enables `attention-labels-v1`, read
+[`system/attention-lifecycle.md`](../../system/attention-lifecycle.md).
+Surface `AI Needs Help`, and treat `AI Session Open` as an available
+conversation rather than exclusive ownership. Create only after selecting an
+explicit named project; never default to Inbox. The compatibility rules below
+apply only when that mode is not enabled.
+
 Read the complete live Project and use
 [`system/task-lifecycle.md`](../../system/task-lifecycle.md). Do not use the
 legacy `owner` field.

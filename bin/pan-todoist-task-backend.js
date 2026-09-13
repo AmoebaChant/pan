@@ -7,7 +7,15 @@ import { TaskBackendError } from './pan-task-backend.js';
 const METADATA_RE = /(?:\n\n)?<!-- pan-task:v1\n([\s\S]*?)\n-->\s*$/;
 const PRIORITY_TO_NATIVE = { low: 1, normal: 2, high: 3, urgent: 4 };
 const NATIVE_TO_PRIORITY = { 1: 'low', 2: 'normal', 3: 'high', 4: 'urgent' };
-
+export const ATTENTION_LIFECYCLE_MODE = 'attention-labels-v1';
+export const DEFAULT_ATTENTION_LABELS = Object.freeze({
+  requested: 'AI Attention Requested',
+  open: 'AI Session Open',
+  needsHelp: 'AI Needs Help',
+  externalWaiting: 'External Waiting',
+  onHold: 'On Hold',
+  rejected: 'Rejected',
+});
 function expandHome(value) {
   if (value === '~') return os.homedir();
   return value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value;
@@ -58,8 +66,84 @@ function metadataFrom(description = '') {
 
 function descriptionWithMetadata(description, metadata) {
   const body = String(description ?? '').replace(METADATA_RE, '').trimEnd();
+  if (Object.keys(metadata).length === 0) return body;
   const block = `<!-- pan-task:v1\n${JSON.stringify(metadata)}\n-->`;
   return body ? `${body}\n\n${block}` : block;
+}
+
+function attentionLabels(config) {
+  const configured = config.attentionLabels ?? {};
+  const labels = { ...DEFAULT_ATTENTION_LABELS, ...configured };
+  const values = Object.values(labels);
+  if (values.some((value) => typeof value !== 'string' || !value.trim())) {
+    throw new TaskBackendError('attentionLabels values must be non-empty strings', {
+      code: 'invalid-config',
+    });
+  }
+  if (new Set(values).size !== values.length) {
+    throw new TaskBackendError('attentionLabels values must be unique', {
+      code: 'invalid-config',
+    });
+  }
+  return labels;
+}
+
+function attentionStateFromTask(task, config) {
+  const labels = attentionLabels(config);
+  const matches = Object.entries(labels)
+    .filter(([, label]) => (task.labels ?? []).includes(label));
+  if (matches.length > 1) {
+    throw new TaskBackendError(
+      `task ${task.id} has conflicting Pan status labels: ${matches.map(([, label]) => label).join(', ')}`,
+      { code: 'conflicting-status-labels', details: { taskId: String(task.id) } },
+    );
+  }
+  const completed = task.checked === true
+    || task.completed === true
+    || task.is_completed === true;
+  if (completed) {
+    if (matches.length === 0) return 'done';
+    if (matches[0][0] === 'rejected') return 'rejected';
+    throw new TaskBackendError(
+      `completed task ${task.id} has nonterminal Pan status label ${matches[0][1]}`,
+      { code: 'invalid-terminal-label', details: { taskId: String(task.id) } },
+    );
+  }
+  if (matches.length === 1) {
+    if (matches[0][0] === 'rejected') {
+      throw new TaskBackendError(
+        `active task ${task.id} cannot carry the Rejected status label`,
+        { code: 'invalid-terminal-label', details: { taskId: String(task.id) } },
+      );
+    }
+    return matches[0][0];
+  }
+  const inboxProjectId = String(config.inboxProjectId ?? '');
+  return inboxProjectId && String(task.project_id) === inboxProjectId ? 'inbox' : 'human';
+}
+
+function labelsForAttentionState(nativeLabels, state, config) {
+  const labels = attentionLabels(config);
+  const recognized = new Set(Object.values(labels));
+  const unrelated = (nativeLabels ?? []).filter((label) => !recognized.has(label));
+  if (state === 'none' || state === 'human' || state === 'inbox') return unrelated;
+  if (!labels[state]) {
+    throw new TaskBackendError(`unsupported attention state: ${state}`, {
+      code: 'invalid-input',
+    });
+  }
+  return [...unrelated, labels[state]];
+}
+
+function associationFromMetadata(metadata) {
+  const sessionId = String(metadata.sessionId ?? '').trim();
+  const machineId = String(metadata.machineId ?? '').trim();
+  if ((sessionId && !machineId) || (!sessionId && machineId)) {
+    throw new TaskBackendError('task has a partial Pan session association', {
+      code: 'invalid-association',
+    });
+  }
+  return sessionId ? { sessionId, machineId } : null;
 }
 
 function assertObject(value, name) {
@@ -75,6 +159,8 @@ export class TodoistTaskBackend {
     this.fetch = fetchImpl;
     this.readFile = readFileImpl;
     this.baseUrl = String(config.baseUrl || 'https://api.todoist.com/api/v1').replace(/\/$/, '');
+    this.lifecycleMode = config.lifecycleMode || 'legacy-metadata-v1';
+    this.labels = attentionLabels(config);
     this.user = null;
     this.token = null;
     this.supportsIdempotentCreate = true;
@@ -140,6 +226,35 @@ export class TodoistTaskBackend {
   canonical(task) {
     const parsed = metadataFrom(task.description || '');
     const metadata = parsed.metadata;
+    if (this.lifecycleMode === ATTENTION_LIFECYCLE_MODE) {
+      const attentionState = attentionStateFromTask(task, this.config);
+      const association = associationFromMetadata(metadata);
+      return {
+        id: String(task.id),
+        backend: 'todoist',
+        lifecycleMode: ATTENTION_LIFECYCLE_MODE,
+        url: `https://todoist.com/showTask?id=${encodeURIComponent(task.id)}`,
+        title: task.content,
+        description: parsed.description,
+        status: attentionState,
+        attentionState,
+        priority: NATIVE_TO_PRIORITY[task.priority] || 'normal',
+        nextActionDate: task.due?.date || '',
+        deadline: task.deadline?.date || '',
+        sessionId: association?.sessionId || '',
+        machineId: association?.machineId || '',
+        association,
+        responsibleUid: task.responsible_uid == null ? null : String(task.responsible_uid),
+        projectId: String(task.project_id),
+        recurring: !!task.due?.is_recurring,
+        revision: task.updated_at || task.added_at || '',
+        native: {
+          due: task.due || null,
+          deadline: task.deadline || null,
+          labels: task.labels || [],
+        },
+      };
+    }
     return {
       id: String(task.id),
       backend: 'todoist',
@@ -195,7 +310,29 @@ export class TodoistTaskBackend {
         status: 403,
       });
     }
+
     return task;
+  }
+
+  async validateAttentionLabels() {
+    const available = new Set();
+    let cursor = null;
+    do {
+      const query = new URLSearchParams({ limit: '200' });
+      if (cursor) query.set('cursor', cursor);
+      const page = await this.request('GET', `/labels?${query}`);
+      const results = Array.isArray(page) ? page : (page.results ?? []);
+      for (const label of results) available.add(String(label.name));
+      cursor = Array.isArray(page) ? null : (page.next_cursor ?? null);
+    } while (cursor);
+    const missing = Object.values(this.labels).filter((label) => !available.has(label));
+    if (missing.length) {
+      throw new TaskBackendError(
+        `Todoist is missing required exact labels: ${missing.join(', ')}`,
+        { code: 'missing-status-labels', details: { missing } },
+      );
+    }
+    return { labels: { ...this.labels } };
   }
 
   async create(input) {
@@ -203,21 +340,38 @@ export class TodoistTaskBackend {
     if (!String(input.title || '').trim()) {
       throw new TaskBackendError('title is required', { code: 'invalid-input' });
     }
-    const metadata = {
-      status: input.status || 'untriaged',
-      nextAction: input.nextAction || '',
-      nextActionDetail: input.nextActionDetail || '',
-      playbook: input.playbook || '',
-      workstream: input.workstream || '',
-      executionAuthorized: input.executionAuthorized === true,
-      dependencies: input.dependencies ?? [],
-    };
+    const attentionMode = this.lifecycleMode === ATTENTION_LIFECYCLE_MODE;
+    const metadata = attentionMode ? {} : {
+        status: input.status || 'untriaged',
+        nextAction: input.nextAction || '',
+        nextActionDetail: input.nextActionDetail || '',
+        playbook: input.playbook || '',
+        workstream: input.workstream || '',
+        executionAuthorized: input.executionAuthorized === true,
+        dependencies: input.dependencies ?? [],
+      };
+    const projectId = input.projectId || this.config.createProjectId;
+    if (attentionMode && !projectId) {
+      throw new TaskBackendError(
+        'attention lifecycle task creation requires an explicitly configured project',
+        { code: 'project-required' },
+      );
+    }
+    if (
+      attentionMode
+      && String(projectId) === String(this.config.inboxProjectId || '')
+    ) {
+      throw new TaskBackendError(
+        'attention lifecycle task creation requires a named project outside Inbox',
+        { code: 'project-required' },
+      );
+    }
     const body = {
       content: String(input.title).trim(),
       description: descriptionWithMetadata(input.description || '', metadata),
       priority: PRIORITY_TO_NATIVE[input.priority || 'normal'] ?? 2,
-      ...(input.projectId || this.config.createProjectId
-        ? { project_id: String(input.projectId || this.config.createProjectId) }
+      ...(projectId
+        ? { project_id: String(projectId) }
         : {}),
       ...(input.nextActionDate ? { due_date: input.nextActionDate } : {}),
       ...(input.deadline ? { deadline_date: input.deadline } : {}),
@@ -295,6 +449,101 @@ export class TodoistTaskBackend {
       );
     }
     const parsed = metadataFrom(native.description || '');
+    if (this.lifecycleMode === ATTENTION_LIFECYCLE_MODE) {
+      const legacyFields = [
+        'status', 'nextAction', 'nextActionDetail', 'playbook', 'workstream',
+        'executionAuthorized', 'dependencies', 'worker',
+      ].filter((key) => input[key] !== undefined);
+      if (legacyFields.length) {
+        throw new TaskBackendError(
+          `attention lifecycle does not accept legacy fields: ${legacyFields.join(', ')}`,
+          { code: 'legacy-field-disabled' },
+        );
+      }
+      if (input.attentionState === 'rejected') {
+        throw new TaskBackendError(
+          'Rejected may be written only by complete with outcome=rejected',
+          { code: 'invalid-terminal-transition' },
+        );
+      }
+      const association = input.association === undefined
+        ? associationFromMetadata(parsed.metadata)
+        : input.association;
+      if (association != null) {
+        assertObject(association, 'association');
+        if (!String(association.sessionId || '').trim() || !String(association.machineId || '').trim()) {
+          throw new TaskBackendError('association requires sessionId and machineId', {
+            code: 'invalid-association',
+          });
+        }
+      }
+      const metadata = association
+        ? { sessionId: association.sessionId, machineId: association.machineId }
+        : {};
+      const body = {
+        ...(input.title === undefined ? {} : { content: String(input.title).trim() }),
+        description: descriptionWithMetadata(
+          input.description === undefined ? parsed.description : input.description,
+          metadata,
+        ),
+        ...(input.attentionState === undefined ? {} : {
+          labels: labelsForAttentionState(native.labels, input.attentionState, this.config),
+        }),
+        ...(input.priority === undefined ? {} : { priority: PRIORITY_TO_NATIVE[input.priority] }),
+        ...(input.nextActionDate === undefined || native.due?.is_recurring
+          ? {}
+          : input.nextActionDate ? { due_date: input.nextActionDate } : { due_string: 'no date' }),
+        ...(input.deadline === undefined
+          ? {}
+          : input.deadline ? { deadline_date: input.deadline } : { deadline_date: null }),
+      };
+      if (body.priority === undefined && input.priority !== undefined) {
+        throw new TaskBackendError(`unsupported priority: ${input.priority}`, {
+          code: 'invalid-input',
+        });
+      }
+      let updated = await this.request('POST', `/tasks/${encodeURIComponent(id)}`, body);
+      if (native.due?.is_recurring && input.nextActionDate !== undefined) {
+        const uuid = randomUUID();
+        const form = new URLSearchParams({
+          sync_token: '*',
+          resource_types: '[]',
+          commands: JSON.stringify([{
+            type: 'item_update',
+            uuid,
+            args: {
+              id: String(id),
+              due: { ...native.due, date: input.nextActionDate },
+            },
+          }]),
+        });
+        const response = await this.fetch(`${this.baseUrl}/sync`, {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer '.concat(this.token),
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: form,
+        });
+        const result = await response.json().catch(() => null);
+        if (!response.ok || result?.sync_status?.[uuid] !== 'ok') {
+          throw new TaskBackendError(
+            `Todoist recurring date update failed${response.ok ? '' : ` with HTTP ${response.status}`}`,
+            {
+              code: 'partial-write',
+              status: response.ok ? null : response.status,
+              details: {
+                completedOperation: 'task metadata update',
+                failedOperation: 'recurring native due-date update',
+                response: result,
+              },
+            },
+          );
+        }
+        updated = await this.nativeTask(id);
+      }
+      return this.canonical(updated);
+    }
     const metadata = {
       ...parsed.metadata,
       ...Object.fromEntries(
@@ -383,7 +632,42 @@ export class TodoistTaskBackend {
     if (!String(input.content || '').trim()) {
       throw new TaskBackendError('report content is required', { code: 'invalid-input' });
     }
-    await this.get(id);
+    const task = await this.get(id);
+    if (this.lifecycleMode === ATTENTION_LIFECYCLE_MODE) {
+      const hasSessionExpectation = input.expectedSessionId !== undefined
+        || input.expectedMachineId !== undefined;
+      if (hasSessionExpectation) {
+        if (
+          !String(input.expectedSessionId || '').trim()
+          || !String(input.expectedMachineId || '').trim()
+        ) {
+          throw new TaskBackendError(
+            'session-bound report requires expectedSessionId and expectedMachineId',
+            { code: 'invalid-input' },
+          );
+        }
+        if (
+          task.sessionId !== input.expectedSessionId
+          || task.machineId !== input.expectedMachineId
+        ) {
+          throw new TaskBackendError('task session association changed before report', {
+            code: 'session-conflict',
+            status: 409,
+            details: {
+              expectedSessionId: input.expectedSessionId,
+              expectedMachineId: input.expectedMachineId,
+              actualSessionId: task.sessionId,
+              actualMachineId: task.machineId,
+            },
+          });
+        }
+      } else if (!['chief', 'migration'].includes(input.actor)) {
+        throw new TaskBackendError(
+          'attention report requires a session expectation or actor=chief|migration',
+          { code: 'report-scope-required' },
+        );
+      }
+    }
     const comment = await this.request('POST', '/comments', {
       task_id: String(id),
       content: String(input.content).trim(),
@@ -413,7 +697,40 @@ export class TodoistTaskBackend {
 
   async complete(id, input = {}) {
     assertObject(input, 'complete input');
-    const current = await this.get(id);
+    const outcome = input.outcome || 'done';
+    if (
+      this.lifecycleMode === ATTENTION_LIFECYCLE_MODE
+      && !['done', 'rejected'].includes(outcome)
+    ) {
+      throw new TaskBackendError('completion outcome must be done or rejected', {
+        code: 'invalid-input',
+      });
+    }
+    let current;
+    let rejectedAlready = false;
+    if (this.lifecycleMode === ATTENTION_LIFECYCLE_MODE) {
+      const native = await this.nativeTask(id);
+      const recognizedLabels = Object.values(this.labels)
+        .filter((label) => (native.labels ?? []).includes(label));
+      if (recognizedLabels.length > 1) {
+        throw new TaskBackendError(
+          `task ${native.id} has conflicting Pan status labels: ${recognizedLabels.join(', ')}`,
+          { code: 'conflicting-status-labels', details: { taskId: String(native.id) } },
+        );
+      }
+      rejectedAlready = (native.labels ?? []).includes(this.labels.rejected);
+      if (rejectedAlready && outcome !== 'rejected') {
+        throw new TaskBackendError('active Rejected task can only resume rejected completion', {
+          code: 'invalid-terminal-transition',
+        });
+      }
+      current = rejectedAlready ? {
+        revision: native.updated_at || native.added_at || '',
+        native: { labels: native.labels ?? [] },
+      } : this.canonical(native);
+    } else {
+      current = await this.get(id);
+    }
     if (input.expectedRevision && input.expectedRevision !== current.revision) {
       throw new TaskBackendError(`task ${id} changed since it was read`, {
         code: 'revision-conflict',
@@ -421,7 +738,30 @@ export class TodoistTaskBackend {
         details: { expected: input.expectedRevision, actual: current.revision },
       });
     }
-    await this.request('POST', `/tasks/${encodeURIComponent(id)}/close`);
+    let completionRevision = current.revision;
+    if (this.lifecycleMode === ATTENTION_LIFECYCLE_MODE) {
+      if (!rejectedAlready) {
+        const updated = await this.request('POST', `/tasks/${encodeURIComponent(id)}`, {
+          labels: labelsForAttentionState(
+            current.native.labels,
+            outcome === 'rejected' ? 'rejected' : 'none',
+            this.config,
+          ),
+        });
+        completionRevision = updated.updated_at || updated.added_at || completionRevision;
+      }
+    }
+    try {
+      await this.request('POST', `/tasks/${encodeURIComponent(id)}/close`);
+    } catch (error) {
+      if (this.lifecycleMode === ATTENTION_LIFECYCLE_MODE) {
+        throw new TaskBackendError(`task labels updated but completion failed: ${error.message}`, {
+          code: 'partial-write',
+          details: { taskId: String(id), retryExpectedRevision: completionRevision },
+        });
+      }
+      throw error;
+    }
     return { taskId: String(id), completed: true };
   }
 
@@ -430,6 +770,168 @@ export class TodoistTaskBackend {
     await this.request('DELETE', `/tasks/${encodeURIComponent(id)}`);
     return { taskId: String(id), deleted: true };
   }
+
+  planAttentionMigration(task, { requestAttention = false } = {}) {
+    const native = task.nativeTask ?? task;
+    const parsed = metadataFrom(native.description || '');
+    const metadata = parsed.metadata;
+    const worker = metadata.worker && typeof metadata.worker === 'object' ? metadata.worker : null;
+    const workerTuple = {
+      sessionId: String(worker?.sessionId || '').trim(),
+      machineId: String(worker?.machine || '').trim(),
+    };
+    const topTuple = {
+      sessionId: String(metadata.sessionId || '').trim(),
+      machineId: String(metadata.machineId || '').trim(),
+    };
+    const partial = (tuple) => Boolean(tuple.sessionId) !== Boolean(tuple.machineId);
+    if (partial(workerTuple) || partial(topTuple)) {
+      return {
+        id: String(native.id),
+        action: 'conflict',
+        reason: 'partial legacy or attention session association',
+      };
+    }
+    const workerComplete = Boolean(workerTuple.sessionId);
+    const topComplete = Boolean(topTuple.sessionId);
+    if (
+      workerComplete
+      && topComplete
+      && (
+        workerTuple.sessionId !== topTuple.sessionId
+        || workerTuple.machineId !== topTuple.machineId
+      )
+    ) {
+      return {
+        id: String(native.id),
+        action: 'conflict',
+        reason: 'legacy worker and attention session associations differ',
+      };
+    }
+    const association = workerComplete ? workerTuple : topComplete ? topTuple : null;
+    const sessionId = association?.sessionId || '';
+    const machineId = association?.machineId || '';
+    const recognizedEntries = Object.entries(this.labels).filter(([, label]) =>
+      (native.labels ?? []).includes(label));
+    if (recognizedEntries.length > 1) {
+      return { id: String(native.id), action: 'conflict', reason: 'conflicting status labels' };
+    }
+    if (metadata.status === 'done' || metadata.status === 'rejected') {
+      return {
+        id: String(native.id),
+        action: 'conflict',
+        reason: `active Todoist task has terminal legacy status ${metadata.status}`,
+      };
+    }
+    if (recognizedEntries[0]?.[0] === 'rejected') {
+      return {
+        id: String(native.id),
+        action: 'conflict',
+        reason: 'active Todoist task has Rejected status label',
+      };
+    }
+    const workerState = String(worker?.state || '').trim();
+    if (workerState && !['idle', 'released', 'stopped', 'unexpected-stop'].includes(workerState)) {
+      return {
+        id: String(native.id),
+        action: 'conflict',
+        reason: `legacy worker state ${workerState} requires release or reconciliation`,
+      };
+    }
+    let attentionState = recognizedEntries[0]?.[0] || 'none';
+    if (recognizedEntries.length === 0) {
+      if (workerState === 'unexpected-stop') {
+        attentionState = 'needsHelp';
+      } else if (
+        association
+        && metadata.status === 'ready-for-human'
+        && ['clarify', 'discuss', 'approve', 'review'].includes(metadata.nextAction)
+      ) {
+        attentionState = 'needsHelp';
+      } else if (metadata.status === 'external-waiting') {
+        attentionState = 'externalWaiting';
+      } else if (metadata.status === 'deliberate-hold') {
+        attentionState = 'onHold';
+      } else if (requestAttention) {
+        attentionState = 'requested';
+      }
+    }
+    const keptMetadata = {};
+    if (sessionId) {
+      keptMetadata.sessionId = sessionId;
+      keptMetadata.machineId = machineId;
+    }
+    const labelsAfter = labelsForAttentionState(native.labels, attentionState, this.config);
+    const sameLabels = labelsAfter.length === (native.labels ?? []).length
+      && labelsAfter.every((label) => (native.labels ?? []).includes(label));
+    const metadataUnchanged = JSON.stringify(keptMetadata) === JSON.stringify(metadata);
+    const checkpointReport = association
+      && attentionState === 'needsHelp'
+      && metadata.status === 'ready-for-human'
+      ? [
+          `Pan migration checkpoint: ${native.id}`,
+          '',
+          `Action: ${metadata.nextAction}`,
+          `Detail: ${String(metadata.nextActionDetail || '').trim() || 'No legacy detail was recorded.'}`,
+          '',
+          'Continue this task in its associated worker session.',
+        ].join('\n')
+      : null;
+    return {
+      id: String(native.id),
+      action: metadataUnchanged && sameLabels
+        ? 'already-migrated'
+        : 'migrate',
+      expectedRevision: native.updated_at || native.added_at || '',
+      attentionState,
+      association: sessionId ? { sessionId, machineId } : null,
+      labelsBefore: native.labels ?? [],
+      labelsAfter,
+      metadataBefore: metadata,
+      metadataAfter: keptMetadata,
+      checkpointReport,
+      warning: metadata.status === 'ready-for-ai' && !requestAttention
+        ? 'legacy readiness was not converted into an attention request'
+        : null,
+    };
+  }
+
+  async migrateAttentionTask(plan) {
+    if (plan.action !== 'migrate') {
+      throw new TaskBackendError('only migrate actions can be applied', { code: 'invalid-input' });
+    }
+    const native = await this.nativeTask(plan.id);
+    const revision = native.updated_at || native.added_at || '';
+    if (revision !== plan.expectedRevision) {
+      throw new TaskBackendError(`task ${plan.id} changed since preview`, {
+        code: 'revision-conflict',
+      });
+    }
+    if (plan.checkpointReport) {
+      const reports = await this.reports(plan.id);
+      if (!reports.some((report) => report.content === plan.checkpointReport)) {
+        await this.report(plan.id, { actor: 'migration', content: plan.checkpointReport });
+      }
+    }
+    const parsed = metadataFrom(native.description || '');
+    const updated = await this.request('POST', `/tasks/${encodeURIComponent(plan.id)}`, {
+      description: descriptionWithMetadata(parsed.description, plan.metadataAfter),
+      labels: plan.labelsAfter,
+    });
+    const priorMode = this.lifecycleMode;
+    this.lifecycleMode = ATTENTION_LIFECYCLE_MODE;
+    try {
+      return this.canonical(updated);
+    } finally {
+      this.lifecycleMode = priorMode;
+    }
+  }
 }
 
-export { descriptionWithMetadata, metadataFrom, parseCredentialFile };
+export {
+  attentionStateFromTask,
+  descriptionWithMetadata,
+  labelsForAttentionState,
+  metadataFrom,
+  parseCredentialFile,
+};

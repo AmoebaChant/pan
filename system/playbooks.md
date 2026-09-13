@@ -5,6 +5,12 @@ this design playbooks are identified by **name only** — they are not tied to a
 repository. Triage picks a playbook by name for each agent task; a runner runs a
 task only if the machine it is on has a playbook file with that name.
 
+That task-side selection is compatibility behavior. Under
+`attention-labels-v1`, a session may remain conversational with no playbook.
+When needed, the worker records the selected existing playbook and workspace
+in session-side `task-session.json`; changing playbooks never creates a new
+session.
+
 ## Where playbooks live
 
 Playbook definitions live in the **Domain** repository at
@@ -111,6 +117,10 @@ defined but temporarily disabled on a machine.
 
 ## How triage uses playbooks
 
+In the compatibility lifecycle, the task-side playbook name is selected as
+follows. In `attention-labels-v1`, use the session-side selection described
+above instead.
+
 During [triage](triage.md), for each task whose next step may be AI, Pan reads the available
 `playbooks/*/*.md` across every machine, picks the one whose `description` and
 instructions fit the task, and writes its **name** into the Project `playbook`
@@ -121,7 +131,7 @@ dependency instead, or propose creating a new playbook.
 
 ## How the runner uses playbooks
 
-A [runner](runner.md) claims a task only when it is
+In the compatibility lifecycle, a [runner](runner.md) claims a task only when it is
 `ready-for-ai/execute`, authorized, dependency-clear, non-recurring, and its
 `playbook` names a playbook present in this machine's
 `playbooks/<machine>/` folder with spare capacity and safe resources. It then

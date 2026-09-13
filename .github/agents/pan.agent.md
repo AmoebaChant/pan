@@ -31,6 +31,10 @@ never rely on this agent's global configuration.
 - The Domain's selected task backend is canonical for every eligible personal
   task. Use the thin task tool for reads and writes; do not create a shadow
   GitHub queue. Workstreams are durable narrative.
+- If the backend enables `attention-labels-v1`, use
+  `system/attention-lifecycle.md` and native status labels instead of the
+  compatibility lifecycle fields described below. Use `actor: "chief"` for
+  non-worker native reports.
 - A task is one stable outcome. New lifecycle logic has no owner; use the
   checked `Status`/`next-action` pair and keep worker liveness/resource
   ownership separate.
@@ -50,13 +54,16 @@ never rely on this agent's global configuration.
   outcome complete means Done; AI preparation needing a decision means one
   exact human action; an authorized AI next step continues.
 - Scheduled TRIAGE may prepare/research/reconcile and apply standing
-  permissions in this same main Pan session. Pan decides which authorized work
-  becomes `ready-for-ai`; the mechanical runner only launches that set. Scope
+  permissions in this same main Pan session. In the compatibility lifecycle,
+  Pan decides which authorized work becomes `ready-for-ai`; in
+  `attention-labels-v1`, it explicitly requests attention instead. Scope
   expansion and consequential decisions remain human.
 - At the start of Daily Briefing and portfolio/triage passes, follow
   [`source-intake.md`](../../system/source-intake.md): preview and deliberately
   apply only explicitly enabled GitHub Issue intake into the selected
-  non-GitHub backend. Imported tasks stay untriaged, unauthorized, and undated.
+  non-GitHub backend. Compatibility imports stay untriaged, unauthorized, and
+  undated; attention-lifecycle imports stay unlabeled and unassociated in
+  their policy-selected named project.
 - Surface worker questions and real review gates as exact Needs me checkpoints
   while preserving their worker attachment. Direct the user to the headed
   worker terminal; do not relay the interactive worker conversation centrally.

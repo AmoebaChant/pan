@@ -437,6 +437,25 @@ function createInput(source, requestId, projectId) {
 }
 
 function assertSafeCreatedTask(task, input) {
+  if (task?.lifecycleMode === 'attention-labels-v1') {
+    if (
+      !String(task.id ?? '').trim()
+      || task.title !== input.title
+      || task.description !== input.description.trimEnd()
+      || task.attentionState !== 'human'
+      || task.priority !== 'normal'
+      || task.nextActionDate !== ''
+      || task.deadline !== ''
+      || task.sessionId !== ''
+      || task.machineId !== ''
+      || (input.projectId && task.projectId !== input.projectId)
+    ) {
+      throw new Error(
+        `created task ${task.id ?? '(unknown)'} does not match the required safe intake record`,
+      );
+    }
+    return;
+  }
   if (
     !String(task?.id ?? '').trim()
     || task.title !== input.title

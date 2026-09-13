@@ -99,7 +99,8 @@ pages it happened to read. A mutation after the accepted snapshot is handled
 by the per-Issue apply recheck or the next regular intake pass.
 
 Each new authoritative task preserves the source URL, repository, Issue number,
-and stable GitHub node id in its visible description. It is created with:
+and stable GitHub node id in its visible description. In the compatibility
+lifecycle it is created with:
 
 - `status=untriaged`;
 - empty `nextAction` and next-action detail;
@@ -111,6 +112,11 @@ and stable GitHub node id in its visible description. It is created with:
 Therefore an import is never runnable. Normal Domain triage decides whether the
 outcome is accepted, rejected, clarified, held, assigned a playbook, or
 authorized for AI.
+
+Under `attention-labels-v1`, source intake must resolve a named non-Inbox
+project through declared routing or the approved backend creation policy. The
+new task has no attention label or session association, so it is an ordinary
+human task and cannot dispatch automatically.
 
 ## Durable receipts
 

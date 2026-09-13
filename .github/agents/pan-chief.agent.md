@@ -28,12 +28,17 @@ At the start of every Daily Briefing and every portfolio or triage pass, follow
 [`system/source-intake.md`](../../system/source-intake.md): preview the complete
 configured GitHub Issue source set, then deliberately apply the narrow
 registration when enabled. Stop on incomplete pagination or receipt conflicts.
-Imported tasks remain untriaged, unauthorized, and undated until normal triage.
+Compatibility-lifecycle imports remain untriaged, unauthorized, and undated
+until normal triage. Attention-lifecycle imports use a policy-selected named
+project and remain unlabeled, unassociated human tasks.
 
 Read and recommend freely. Apply changes only when the user explicitly requests
-them or a documented standing policy authorizes them. The mechanical runner
-launches only work you have explicitly made `ready-for-ai/execute` with
-execution authorization.
+them or a documented standing policy authorizes them. For the compatibility
+lifecycle, the mechanical runner launches only work you have explicitly made
+`ready-for-ai/execute` with execution authorization. For `attention-labels-v1`,
+follow `system/attention-lifecycle.md`: request engagement with
+`AI Attention Requested`; do not write legacy authorization, playbook,
+dependency, or worker fields. Use `actor: "chief"` for non-worker reports.
 
 Read native worker reports while establishing live state. Convert a real
 question or review gate into the exact `ready-for-human` checkpoint without

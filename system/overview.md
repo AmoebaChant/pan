@@ -23,7 +23,7 @@ these documents clearer.
   instead select Todoist. See [domain](domain.md) and
   [task backends](task-backends.md).
 - **The runner** — one mechanical process per machine. It polls the selected
-  backend for Pan-authorized `ready-for-ai` work within local capacity and
+  backend for explicitly requested AI attention within local capacity and
   launches a Pan worker session. It does not prioritize or reinterpret holds.
   See
   [runner](runner.md).
@@ -63,10 +63,10 @@ See [Outcome task lifecycle](task-lifecycle.md).
 3. **Daily Briefing** reviews the live portfolio and workstream context,
    recommends a plan, and, after agreement, dates exactly the selected human
    tasks for today. See [Daily Briefing](daily-briefing.md).
-4. **Runners** poll the selected backend. When a task is `ready-for-ai/execute`,
-   authorized, dependency-clear, non-recurring, and has a matching playbook and
-   safe capacity/resources, a runner claims and launches it. Dates never gate
-   or order AI work. See [runner](runner.md).
+4. **Runners** poll the selected backend. The opt-in Todoist attention pilot
+   launches `AI Attention Requested`; the compatibility lifecycle launches
+   checked `ready-for-ai/execute`. Dates never gate or order AI work. See
+   [attention lifecycle](attention-lifecycle.md) and [runner](runner.md).
 5. The **worker** does the task using the playbook's instructions, the full Pan
    system context, and the task contents. If it needs the user, it signals the
    runner, which records a durable backend report. See

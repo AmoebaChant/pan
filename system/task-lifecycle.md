@@ -1,5 +1,10 @@
 # Outcome task lifecycle
 
+This document defines the retained GitHub and Todoist compatibility lifecycle.
+Todoist Domains may instead explicitly enable the native-label
+[attention lifecycle](attention-lifecycle.md). Do not combine the two models
+or treat compatibility readiness fields as attention labels.
+
 A Pan task is one stable outcome. It does not change identity when a person or
 an AI takes the next step, and the canonical lifecycle has no owner. The
 Domain's selected backend is the authoritative personal task store.

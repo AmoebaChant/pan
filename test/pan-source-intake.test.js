@@ -680,6 +680,50 @@ test('apply is checked, idempotent, and never auto-authorizes or dates imported 
   assert.equal(createdInputs.length, 1);
 });
 
+test('attention lifecycle intake stays unlabeled and unassociated in its routed project', async () => {
+  const native = issue(1);
+  const discovery = await discoverGitHubIssues({
+    ...githubDiscovery([native]),
+  }, [{ repository: 'example/source', workstream: 'alpha' }]);
+  const store = receiptStore();
+  const plan = planSourceIntake(discovery, store.snapshot(), 'todoist');
+  plan.projectMappings = { 'example/source': 'project' };
+  let task;
+  const backend = {
+    supportsIdempotentCreate: true,
+    async validateProject() {},
+    async create(input) {
+      task = {
+        id: 'task-1',
+        lifecycleMode: 'attention-labels-v1',
+        title: input.title,
+        description: input.description,
+        attentionState: 'human',
+        priority: 'normal',
+        nextActionDate: '',
+        deadline: '',
+        sessionId: '',
+        machineId: '',
+        projectId: input.projectId,
+        revision: 'r1',
+      };
+      return structuredClone(task);
+    },
+    async get() {
+      return structuredClone(task);
+    },
+  };
+  const result = await applySourceIntake(plan, {
+    backend,
+    github: githubFor([native]),
+    receiptStore: store,
+  });
+  assert.equal(result.partial, false);
+  assert.equal(task.projectId, 'project');
+  assert.equal(task.attentionState, 'human');
+  assert.equal(task.sessionId, '');
+});
+
 test('apply leaves a reservation when the backend does not confirm safe defaults', async () => {
   const native = issue(1);
   const discovery = await discoverGitHubIssues({

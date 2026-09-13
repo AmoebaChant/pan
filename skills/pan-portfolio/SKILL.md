@@ -11,6 +11,12 @@ Follow [`system/triage.md`](../../system/triage.md),
 the authoritative task backend, workstreams, declared backlogs, and relevant
 native reports or comments. Start with any explicitly configured source intake.
 
+When the selected backend enables `attention-labels-v1`, read
+[`system/attention-lifecycle.md`](../../system/attention-lifecycle.md) and do
+not prepare or write compatibility authorization, dependency, playbook, or
+worker fields. Place tasks in a suitable named project before requesting AI
+attention.
+
 Register source Issues only through the backend-specific rules in
 [`system/triage.md`](../../system/triage.md). Prepare exact human actions,
 bounded AI next steps, authorization, dependencies, priority, playbook,

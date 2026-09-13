@@ -6,6 +6,13 @@ execution. Read [project schema](project-schema.md),
 [outcome task lifecycle](task-lifecycle.md), [playbooks](playbooks.md), and,
 when applicable, [recurrence](recurrence.md).
 
+For a Domain using `attention-labels-v1`, read
+[attention lifecycle](attention-lifecycle.md) instead of preparing legacy
+status, authorization, dependency, or task-side playbook fields. Triage first
+places Inbox tasks into an unambiguous named project. It requests AI attention
+only when engagement is intended; conversation does not require an execution
+authorization or playbook.
+
 Always read the complete live task set through the selected backend. For the
 GitHub compatibility backend, read the complete live Issue and Project sets. Use cursor pagination or
 `gh api --paginate`; a command limit that returns exactly its cap is not proof

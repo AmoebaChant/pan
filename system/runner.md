@@ -1,11 +1,17 @@
 # Runner
 
+For a Todoist backend configured with `lifecycleMode=attention-labels-v1`, the
+[attention lifecycle](attention-lifecycle.md) overrides compatibility
+selection, association, workspace, and question projection below. Exact
+process-tree release rules remain unchanged.
+
 The runner is mechanical. One instance polls the selected backend, launches
 explicitly runnable AI work within local capacity, and maintains only the
 process/workspace guards needed to avoid duplicate local workers. It does not
 triage, choose priority, reinterpret holds, plan dates, expand scope, decide
 deliverable correctness, create recurring occurrences, or manage the backlog.
-Pan's main chief-of-staff session decides and writes `ready-for-ai`.
+Pan's main chief-of-staff session decides and writes either the compatibility
+`ready-for-ai` state or the opt-in native attention request.
 
 Read [task lifecycle](task-lifecycle.md), [project
 schema](project-schema.md), [playbooks](playbooks.md), and [worker base
@@ -14,7 +20,8 @@ instructions](worker-base-instructions.md).
 ## Backend runner pilot
 
 `pan-backend-runner` is an implemented experimental thin-backend path, not a
-stub. It lists through `pan-task`, selects only `ready-for-ai/execute` records
+stub. In compatibility mode it lists through `pan-task`, selects only
+`ready-for-ai/execute` records
 with explicit authorization, empty dependencies, no recorded worker, and free
 capacity, then invokes the configured launcher. It preserves backend order and
 never gates or sorts on `next-action-date`.

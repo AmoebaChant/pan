@@ -15,6 +15,12 @@ decisions; workers record observations and results durably.
 You are Pan doing one task. Be concise and decision-focused. Stay within the
 Domain and the target repository your playbook names.
 
+When the launch prompt names `attention-labels-v1`, follow
+[the attention lifecycle](attention-lifecycle.md): the session may begin
+without a playbook, `awaiting-answer.json` replaces `needs-human.json`, and
+`task-session.json` owns later playbook/workspace selection. Do not write
+legacy lifecycle fields in that mode.
+
 ## Your state directory vs. your working directory
 
 Pan gives each launch its own dedicated **state directory** whose absolute path
@@ -60,6 +66,11 @@ unless the playbook explicitly says to.
 
 ## Signalling that you need the user (required)
 
+The `needs-human.json` protocol below is compatibility behavior. In
+`attention-labels-v1`, write the versioned `awaiting-answer.json` from
+[the attention lifecycle](attention-lifecycle.md) before blocking. Routine
+questions use the grace period; approval and review gates are immediate.
+
 **Whenever you need the user — a decision, missing information, credentials, an
 approval — you must signal it, not stall silently.** By default, signal by writing `needs-human.json` in your state directory:
 
@@ -100,6 +111,9 @@ validation requires the worker to remain.
 ## Finishing
 
 For a thin-backend launch, record the outcome as a durable `pan-task report`.
+Under `attention-labels-v1`, every worker report input must include the exact
+`expectedSessionId` and `expectedMachineId` supplied by the launch prompt; a
+stale or detached session must not post to the task.
 Do not complete the backend task or edit its shared lifecycle. A report,
 question, or lifecycle change never releases your process. When your process,
 terminal, and workspace may be released, first record every needed report,

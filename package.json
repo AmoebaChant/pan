@@ -11,6 +11,7 @@
     "pan-task": "./bin/pan-task.js",
     "pan-backend-runner": "./bin/pan-backend-runner.js",
     "pan-briefing": "./bin/pan-briefing-mcp.js",
+    "pan-attention-migrate": "./bin/pan-attention-migrate.js",
     "pan-lifecycle-migrate": "./bin/pan-lifecycle-migrate.js",
     "pan-runner": "./bin/pan-runner.js",
     "pan-source-intake": "./bin/pan-source-intake.js",
