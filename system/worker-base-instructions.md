@@ -160,6 +160,11 @@ reached one of these outcomes:
 The runner records the result under the matching claim generation. Do not edit
 Project fields yourself.
 
+When your process, terminal, slot, and workspace may be released, write an
+empty `worker-release.json` file in your state directory. Write `result.json`
+first when both signals are needed; the runner persists task state before
+honoring the release. A result alone does not stop or release the worker.
+
 ### Pull-request deliverables (link without auto-closing)
 
 GitHub closing keywords bypass Pan's lifecycle and can hide work that remains
