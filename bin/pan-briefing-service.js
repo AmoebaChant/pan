@@ -10,6 +10,11 @@ const WEB_ASSETS = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
 ]);
+const GROUPS = ['today', 'agent-starts', 'needs-attention', 'not-today'];
+const HUMAN_DATE_ACTIONS = ['keep', 'set', 'clear'];
+const AGENT_ACTIONS = ['none', 'request-new', 'request-resume'];
+const AGENT_AUTHORIZATIONS = ['none', 'standing', 'approval-required', 'already-requested'];
+const CHECKPOINT_PRIORITIES = ['none', 'today', 'later'];
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -29,6 +34,12 @@ function requiredRevision(value) {
   return value;
 }
 
+function optionalEnum(value, values, name) {
+  if (value !== undefined && !values.includes(value)) {
+    throw new Error(`${name} must be one of: ${values.join(', ')}`);
+  }
+}
+
 function validateProposal(proposal) {
   if (!isObject(proposal)) throw new Error('proposal must be an object');
   requiredString(proposal.briefingId, 'briefingId');
@@ -41,11 +52,74 @@ function validateProposal(proposal) {
     if (taskIds.has(taskId)) throw new Error(`duplicate task id: ${taskId}`);
     taskIds.add(taskId);
     requiredString(task.title, `tasks[${index}].title`);
-    if (!['today', 'not-today'].includes(task.group)) {
-      throw new Error(`tasks[${index}].group must be "today" or "not-today"`);
+    if (!GROUPS.includes(task.group)) {
+      throw new Error(`tasks[${index}].group must be one of: ${GROUPS.join(', ')}`);
     }
     requiredString(task.recommendation, `tasks[${index}].recommendation`);
     requiredString(task.reason, `tasks[${index}].reason`);
+    optionalEnum(
+      task.humanDateAction,
+      HUMAN_DATE_ACTIONS,
+      `tasks[${index}].humanDateAction`,
+    );
+    optionalEnum(task.agentAction, AGENT_ACTIONS, `tasks[${index}].agentAction`);
+    optionalEnum(
+      task.agentAuthorization,
+      AGENT_AUTHORIZATIONS,
+      `tasks[${index}].agentAuthorization`,
+    );
+    optionalEnum(
+      task.checkpointPriority,
+      CHECKPOINT_PRIORITIES,
+      `tasks[${index}].checkpointPriority`,
+    );
+    if (task.humanDateAction === 'set') {
+      requiredString(task.proposedDate, `tasks[${index}].proposedDate`);
+    } else if (
+      task.humanDateAction !== undefined
+      && task.proposedDate !== undefined
+      && task.proposedDate !== null
+    ) {
+      throw new Error(
+        `tasks[${index}].proposedDate must be null unless humanDateAction is "set"`,
+      );
+    }
+    if (task.group === 'agent-starts' && !['request-new', 'request-resume'].includes(task.agentAction)) {
+      throw new Error(`tasks[${index}].agentAction must request new or resume engagement`);
+    }
+    if (task.group === 'agent-starts' && task.agentAuthorization === undefined) {
+      throw new Error(`tasks[${index}].agentAuthorization is required for agent starts`);
+    }
+    if (
+      task.group === 'agent-starts'
+      && !['standing', 'approval-required', 'already-requested'].includes(
+        task.agentAuthorization,
+      )
+    ) {
+      throw new Error(
+        `tasks[${index}].agentAuthorization must describe standing, approval-required, or already-requested authority`,
+      );
+    }
+    if (task.group === 'agent-starts') {
+      requiredString(task.url, `tasks[${index}].url`);
+      requiredString(task.expectedOutcome, `tasks[${index}].expectedOutcome`);
+      requiredString(task.laterHumanCheckpoint, `tasks[${index}].laterHumanCheckpoint`);
+      if (
+        (typeof task.playbook !== 'string' || task.playbook.trim() === '')
+        && (typeof task.workMode !== 'string' || task.workMode.trim() === '')
+      ) {
+        throw new Error(`tasks[${index}] must name a playbook or workMode`);
+      }
+    }
+    if (task.group === 'needs-attention') {
+      requiredString(task.requestedHumanAction, `tasks[${index}].requestedHumanAction`);
+      requiredString(task.terminalContext, `tasks[${index}].terminalContext`);
+      if (!['today', 'later'].includes(task.checkpointPriority)) {
+        throw new Error(
+          `tasks[${index}].checkpointPriority must be "today" or "later"`,
+        );
+      }
+    }
   }
   return structuredClone(proposal);
 }
@@ -61,12 +135,21 @@ function validateReview(review, proposal) {
     throw new Error('review does not match the current briefing revision');
   }
   if (!Array.isArray(review.tasks)) throw new Error('tasks must be an array');
+  if (
+    review.generalFeedback !== undefined
+    && typeof review.generalFeedback !== 'string'
+  ) {
+    throw new Error('generalFeedback must be a string');
+  }
   if (!isObject(review.proposal)) throw new Error('proposal snapshot must be an object');
   if (
     review.proposal.briefingId !== proposal.briefingId
     || review.proposal.revision !== proposal.revision
   ) {
     throw new Error('proposal snapshot does not match the current briefing revision');
+  }
+  if (JSON.stringify(review.proposal) !== JSON.stringify(proposal)) {
+    throw new Error('proposal snapshot does not match the published proposal');
   }
   const expectedTaskIds = new Set(proposal.tasks.map((task) => task.id));
   const reviewedTaskIds = new Set();
@@ -76,11 +159,95 @@ function validateReview(review, proposal) {
     if (!expectedTaskIds.has(taskId)) throw new Error(`unknown reviewed task id: ${taskId}`);
     if (reviewedTaskIds.has(taskId)) throw new Error(`duplicate reviewed task id: ${taskId}`);
     reviewedTaskIds.add(taskId);
+    if (!['accept', 'disagree', 'postpone'].includes(task.decision)) {
+      throw new Error(
+        `tasks[${index}].decision must be "accept", "disagree", or legacy "postpone"`,
+      );
+    }
+    if (
+      task.requestedDate !== undefined
+      && task.requestedDate !== null
+      && typeof task.requestedDate !== 'string'
+    ) {
+      throw new Error(`tasks[${index}].requestedDate must be a string or null`);
+    }
+    if (
+      task.feedback !== undefined
+      && task.feedback !== null
+      && typeof task.feedback !== 'string'
+    ) {
+      throw new Error(`tasks[${index}].feedback must be a string or null`);
+    }
   }
   if (reviewedTaskIds.size !== expectedTaskIds.size) {
     throw new Error('review must account for every task in the proposal');
   }
-  return structuredClone(review);
+  if (
+    review.action === 'approve'
+    && (
+      review.tasks.some((task) => task.decision !== 'accept')
+      || (typeof review.generalFeedback === 'string' && review.generalFeedback.trim())
+    )
+  ) {
+    throw new Error('feedback must be incorporated into a revised proposal before approval');
+  }
+  return {
+    briefingId: review.briefingId,
+    revision: review.revision,
+    action: review.action,
+    proposal: structuredClone(proposal),
+    generalFeedback: review.generalFeedback ?? '',
+    tasks: review.tasks.map((task) => ({
+      id: task.id,
+      decision: task.decision,
+      requestedDate: task.requestedDate ?? null,
+      feedback: task.feedback ?? null,
+    })),
+  };
+}
+
+function validateCompletion(result) {
+  if (!isObject(result)) throw new Error('result must be an object');
+  if (!['confirmed', 'partial', 'failed'].includes(result.status)) {
+    throw new Error('result.status must be "confirmed", "partial", or "failed"');
+  }
+  if (
+    (typeof result.summary !== 'string' || result.summary.trim() === '')
+    && (typeof result.message !== 'string' || result.message.trim() === '')
+  ) {
+    throw new Error('result.summary or result.message must be a non-empty string');
+  }
+  if (
+    result.partialFailures !== undefined
+    && !Array.isArray(result.partialFailures)
+  ) {
+    throw new Error('result.partialFailures must be an array');
+  }
+  if (
+    Array.isArray(result.partialFailures)
+    && result.partialFailures.some(
+      (failure) => typeof failure !== 'string' || failure.trim() === '',
+    )
+  ) {
+    throw new Error('result.partialFailures must contain only non-empty strings');
+  }
+  if (
+    result.status !== 'confirmed'
+    && (
+      !Array.isArray(result.partialFailures)
+      || result.partialFailures.length === 0
+    )
+  ) {
+    throw new Error('partial or failed completion must describe partialFailures');
+  }
+  if (
+    result.status === 'confirmed'
+    && Array.isArray(result.partialFailures)
+    && result.partialFailures.length > 0
+  ) {
+    throw new Error('confirmed completion cannot include partialFailures');
+  }
+  return structuredClone(result);
 }
 
 function jsonResponse(response, status, body) {
@@ -123,6 +290,7 @@ export class BriefingBroker {
   #phase = 'empty';
   #queuedReview = null;
   #waiter = null;
+  #approvedProposal = null;
 
   get snapshot() {
     return {
@@ -151,6 +319,7 @@ export class BriefingBroker {
     this.#completion = null;
     this.#phase = 'awaiting-review';
     this.#queuedReview = null;
+    this.#approvedProposal = null;
     this.#emit();
     return this.snapshot;
   }
@@ -182,6 +351,12 @@ export class BriefingBroker {
     if (this.#phase === 'review-submitted') {
       throw new Error('a review has already been submitted for this revision');
     }
+    this.#approvedProposal = submitted.action === 'approve'
+      ? {
+          briefingId: this.#proposal.briefingId,
+          revision: this.#proposal.revision,
+        }
+      : null;
     this.#phase = 'review-submitted';
     if (this.#waiter) {
       const { resolve } = this.#waiter;
@@ -195,11 +370,17 @@ export class BriefingBroker {
   }
 
   complete(result) {
-    if (!isObject(result)) throw new Error('result must be an object');
     if (this.#waiter) {
       throw new Error('cannot complete a briefing while a review wait is active');
     }
-    this.#completion = structuredClone(result);
+    if (
+      !this.#proposal
+      || this.#approvedProposal?.briefingId !== this.#proposal.briefingId
+      || this.#approvedProposal?.revision !== this.#proposal.revision
+    ) {
+      throw new Error('the current briefing revision must be explicitly approved before completion');
+    }
+    this.#completion = validateCompletion(result);
     this.#phase = 'complete';
     this.#emit();
     return this.snapshot;

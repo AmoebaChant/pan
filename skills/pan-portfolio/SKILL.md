@@ -6,7 +6,17 @@ description: Review and triage a Pan portfolio from its live authoritative task 
 # Pan portfolio review
 
 Follow [`system/triage.md`](../../system/triage.md) and the lifecycle contract
-selected by the backend. Compatibility mode uses
+selected by the backend. Every portfolio/triage pass, not only a requested
+momentum scan, performs the
+[agent-opportunity pass](../../system/agent-momentum.md#agent-opportunity-pass).
+Read live machine playbook definitions before classifying every eligible task,
+including new imports, and consider useful investigation/conversation too.
+Record per-task agent dispositions and concrete omission reasons; date,
+priority, label, session, legacy status, and import state never filter
+discovery. Surface all useful candidates despite full runner capacity, request
+eligible standing-authorized engagement, and propose other engagements for
+approval. Surface missing prerequisites without presenting dependent
+implementation as ready. Compatibility mode uses
 [`system/task-lifecycle.md`](../../system/task-lifecycle.md) and
 [`system/project-schema.md`](../../system/project-schema.md). Fully paginate
 the authoritative task backend, workstreams, declared backlogs, and relevant

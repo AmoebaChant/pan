@@ -5,6 +5,11 @@ task-side outcome JSON with native completion plus one visible status label.
 It is disabled unless both the backend and runner configs name that exact
 mode. The legacy lifecycle remains the compatibility default.
 
+The chief's [agent momentum](agent-momentum.md) assessment may select work for
+engagement, but this contract remains the only mechanical mapping for the
+pilot. Native labels describe current lifecycle state; they are not a
+portfolio-assessment taxonomy.
+
 ## Authoritative task state
 
 These exact Todoist label names are the default mapping:
@@ -25,8 +30,12 @@ override the names in `attentionLabels`, but all writers for that Domain must
 use the same mapping.
 
 An open Inbox task with no recognized label needs triage and project
-placement. An open task in a named project with no recognized label is an
-ordinary human-managed task. A completed task with no recognized label is
+placement. An open task in a named project with no recognized label has no
+current AI attention request or labeled exception. It appears as ordinary
+human work by default, but this is not a finding that only a human can advance
+it. The chief must include it in the live playbook-first
+[agent-opportunity pass](agent-momentum.md#agent-opportunity-pass), including
+immediately after import. A completed task with no recognized label is
 Done; a completed task with `Rejected` is declined. Exactly zero or one
 recognized label is valid. Multiple recognized labels are a reconciliation
 error and no writer chooses a winner. `Rejected` on an active task is also an
@@ -105,6 +114,27 @@ cannot escape it.
 The same session id and Copilot home are retained. Existing repository
 instructions load from the actual resumed working directory. Pan does not
 grant blanket path or tool permissions merely because a playbook was selected.
+
+When preparation is complete and the same already-authorized task should
+continue in the selected workspace, the worker writes
+`workspace-continuation.json` with version 1, the exact current session,
+machine, run creation timestamp, and exact `task-session.json` playbook and
+working directory, then writes the exact empty release signal and exits.
+`resumptionNote` alone never requests continuation. The continuation signal
+does not terminate or launch anything.
+
+Only after exact process-tree release is verified does the runner re-read the
+native task and change `AI Session Open` to `AI Attention Requested`. The
+normal capacity and backend-order poll then decides whether the same session
+launches in that poll or a later one. The target must still be within the
+configured canonical workspace roots and its selected playbook must still be
+available. A pending `awaiting-answer.json` instead projects Needs Help and
+blocks continuation. Recurrence, terminal state, On Hold, External Waiting,
+Needs Help, ordinary-human state, changed association, and other human
+overrides are preserved. A malformed or stale continuation fails release
+reconciliation and retains its lock/evidence. The request is one-shot: the next
+launch consumes the session-side signal; later ordinary releases do not
+restart automatically.
 
 ## Mechanical attention supervision
 

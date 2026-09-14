@@ -8,6 +8,11 @@ contracts, so when you change behavior, change the relevant `system/` document
 in the same commit. Run `npm test` for the focused runner behaviors covered
 under `test/`.
 
+The explicit, credit-consuming chief instruction harness is defined in
+[`system/chief-evaluation.md`](system/chief-evaluation.md). It is never part of
+`npm test`; deterministic harness behavior remains covered by normal Node
+tests.
+
 Keep the design MD-first: do not push behavior that belongs in a contract into
 code. The runner should only find work, coordinate leases, launch worker
 sessions, and relay the file-based signals defined in

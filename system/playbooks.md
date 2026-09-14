@@ -117,6 +117,22 @@ defined but temporarily disabled on a machine.
 
 ## How triage uses playbooks
 
+All Daily Briefings, triage/portfolio passes, and momentum scans first read the
+live machine playbook inventory and definitions, then assess every eligible
+task for a useful match under the
+[agent-opportunity pass](agent-momentum.md#agent-opportunity-pass). Do not wait
+for a task to be labeled or classified as AI work before inspecting playbooks.
+Use their actual scope, required inputs, constraints, and authority, not just
+their names. Matching a playbook does not supply missing facts or consent.
+Full capacity may queue otherwise eligible work; a disabled playbook is a
+different constraint that must be surfaced.
+
+This capability assessment does not add a task-side playbook field to the
+attention lifecycle. It informs the proposed work mode and expected outcome;
+the same persistent worker session selects and records its playbook when
+needed. Conversation or useful bounded investigation remains an option where
+the selected lifecycle permits it, even without an implementation playbook.
+
 In the compatibility lifecycle, the task-side playbook name is selected as
 follows. In `attention-labels-v1`, use the session-side selection described
 above instead.

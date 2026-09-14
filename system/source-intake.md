@@ -115,8 +115,13 @@ authorized for AI.
 
 Under `attention-labels-v1`, source intake must resolve a named non-Inbox
 project through declared routing or the approved backend creation policy. The
-new task has no attention label or session association, so it is an ordinary
-human task and cannot dispatch automatically.
+new task has no attention label or session association and cannot dispatch
+merely because it was imported. This does not classify its next step as human
+work. In the same briefing or triage pass, the chief includes it in the
+[agent-opportunity pass](agent-momentum.md#agent-opportunity-pass), matches it
+against live playbooks or useful bounded conversation/investigation, and
+requests engagement under standing authority or proposes it for approval.
+Import state is not an exclusion from that assessment.
 
 ## Durable receipts
 

@@ -1,8 +1,9 @@
 # Triage
 
 Triage turns live Domain tasks into clear next actions. It prepares work and
-applies narrow standing permissions; it is not a coordinator and does not own
-execution. Read [project schema](project-schema.md),
+applies narrow standing permissions; the persistent chief coordinates
+portfolio selection through [agent momentum](agent-momentum.md), while the
+runner remains mechanical. Read [project schema](project-schema.md),
 [outcome task lifecycle](task-lifecycle.md), [playbooks](playbooks.md), and,
 when applicable, [recurrence](recurrence.md).
 
@@ -22,8 +23,10 @@ expected backend revision, and verify afterward.
 Before establishing the queue, run the configured [source
 intake](source-intake.md) preview and deliberate apply. An incomplete source
 read stops intake before writes. Imported records are then part of the live
-authoritative queue as `untriaged`; registration does not accept, schedule, or
-authorize them.
+authoritative queue: compatibility imports are untriaged, while attention-mode
+imports are unlabeled and unassociated. Registration does not accept, schedule,
+or authorize them, but every new import participates in the same pass's agent
+assessment.
 
 ## 1. Establish the authoritative queue
 
@@ -41,8 +44,32 @@ For the GitHub compatibility backend, join the complete configured Domain Issue
 set and declared external backlog Issue sets to the Project by Issue URL and
 register missing Issues without editing or reopening them.
 
-New tasks start non-runnable until their exact next action is prepared. Prefer
-`ready-for-human/clarify` when information is missing.
+New tasks start non-runnable until their bounded next step and authority are
+established. This is not a reason to exclude them from agent discovery.
+
+## Agent-opportunity assessment
+
+Every triage/portfolio pass, interactive or scheduled, performs the shared
+[agent-opportunity pass](agent-momentum.md#agent-opportunity-pass). Read live
+machine playbooks before classifying tasks, then assess every eligible task
+against their contents and useful investigation/conversation modes. Do not
+limit assessment to already prepared, dated, high-priority, labeled, or
+session-associated tasks.
+
+Assign every task an internal agent disposition and a concrete reason,
+including why a plausible playbook-matched candidate is omitted. Existing
+AI-ready markers do not prove prerequisites or permission. Request useful
+standing-authorized work and propose other ready engagements for approval;
+surface all candidates rather than only those fitting today's free capacity.
+
+Missing information blocks the step that requires it. Consider a bounded
+discovery step that can obtain it without guessing or exceeding authority.
+If no useful agent step is possible, name the blocker and the human input
+needed; do not hide the task or present it as implementation-ready. In
+compatibility mode, prepare `ready-for-human/clarify` for that unresolved
+human input. In attention mode, preserve the native state and propose or
+write factual task guidance under the applicable approval policy; do not
+fabricate an `AI Needs Help` worker checkpoint when no worker asked a question.
 
 ## 2. Reconcile objective lifecycle facts
 
@@ -82,7 +109,11 @@ other real playbook gates remain open.
 
 ## 3. Prepare the next action
 
-For each nonterminal task, recommend one valid checked pair:
+After the opportunity assessment, map the chosen next step to the selected
+lifecycle. The checked pairs and task-side metadata below apply only to the
+compatibility lifecycle; attention mode follows
+[attention lifecycle](attention-lifecycle.md) without writing these fields.
+For each nonterminal compatibility task, recommend one valid checked pair:
 
 - `ready-for-human/clarify` — one focused missing fact;
 - `ready-for-human/discuss` — an interactive choice or tradeoff;
@@ -151,7 +182,8 @@ Domain policy explicitly covers the exact action.
 
 ## Scheduled triage
 
-A scheduled TRIAGE pass performs the same complete live reads. It may:
+A scheduled TRIAGE pass performs the same complete live reads and explicit
+agent-opportunity assessment. It may:
 
 - register missing records only when the selected backend contract requires it;
 - prepare research, summaries, dependencies, proposed next actions, and
@@ -166,5 +198,6 @@ remains mechanical.
 ## Daily planning
 
 Triage prepares the portfolio. Daily commitment follows
-[Daily Briefing](daily-briefing.md): recommend from complete live state, obtain
-explicit agreement, and then change only the agreed human attention dates.
+[Daily Briefing](daily-briefing.md): recommend human attention and agent
+throughput from complete live state, obtain explicit agreement, and then apply
+only the agreed date and attention transitions.

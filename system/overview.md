@@ -31,8 +31,12 @@ these documents clearer.
   perform a claimed task, following that task's playbook. See
   [worker base instructions](worker-base-instructions.md).
 - **Daily Briefing** — an interactive review that turns complete live Domain
-  state into an agreed, realistically sized plan for the user's day. See
+  state into an agreed, realistically sized human plan and agent-throughput
+  plan. See
   [Daily Briefing](daily-briefing.md).
+- **Agent momentum** — a complete chief-owned portfolio scan that keeps
+  authorized agent work moving between briefings and prepares approvals when
+  authority is absent. See [agent momentum](agent-momentum.md).
 - **Source intake** — chief-owned registration of explicitly scoped GitHub
   Issues into a non-GitHub authoritative backend. It runs before briefing and
   triage, preserves durable receipts, and never authorizes imported work. See
@@ -56,13 +60,20 @@ See [Outcome task lifecycle](task-lifecycle.md).
 1. Tasks arrive in the selected backend. For a GitHub-backed Domain, external
    backlog Issues may be referenced by its Project. For a Todoist-backed
    Domain, GitHub source links are reference history rather than another queue.
-2. **Triage** prepares the next action, dependencies, authorization, priority,
-   and playbook. Scheduled triage may apply only standing permissions and
-   objective reconciliations; scope expansion and consequential decisions
-   remain human. See [triage](triage.md).
-3. **Daily Briefing** reviews the live portfolio and workstream context,
-   recommends a plan, and, after agreement, dates exactly the selected human
-   tasks for today. See [Daily Briefing](daily-briefing.md).
+2. **Triage** reads live machine playbooks and performs the
+   [agent-opportunity pass](agent-momentum.md#agent-opportunity-pass) across
+   every eligible task before preparing next actions, authorization, and
+   priority. Each task has an internal agent disposition; plausible omissions
+   require a concrete reason. Scheduled triage may apply only standing
+   permissions and objective reconciliations; scope expansion and
+   consequential decisions remain human. See [triage](triage.md).
+3. **Daily Briefing** reviews the complete live portfolio and workstream
+   context, recommends human attention plus agent starts/resumes, and, after
+   agreement, applies exactly the selected date and attention effects. Between
+   briefings, optional chief-owned [agent momentum](agent-momentum.md) scans
+   use the same explicit capability assessment. Neither dates, priority,
+   labels, sessions, nor import state filter agent discovery; full runner
+   capacity delays launch rather than hiding useful candidates.
 4. **Runners** poll the selected backend. The opt-in Todoist attention pilot
    launches `AI Attention Requested`; the compatibility lifecycle launches
    checked `ready-for-ai/execute`. Dates never gate or order AI work. See
@@ -88,6 +99,7 @@ Load only what the current job needs; skip the rest until you need it.
 | Triaging the backlog | [triage](triage.md) + [playbooks](playbooks.md) |
 | Importing declared GitHub Issues | [source intake](source-intake.md) |
 | Planning the user's day | [Daily Briefing](daily-briefing.md) |
+| Keeping agent work moving | [agent momentum](agent-momentum.md) |
 | Reviewing a briefing in the local web UI | [Daily Briefing review UI](briefing-ui.md) |
 | Creating or completing recurring tasks | [recurrence](recurrence.md) |
 | Recording knowledge / routing info | [workstreams](workstreams.md) |

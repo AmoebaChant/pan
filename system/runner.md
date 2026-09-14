@@ -5,6 +5,13 @@ For a Todoist backend configured with `lifecycleMode=attention-labels-v1`, the
 selection, association, workspace, and question projection below. Exact
 process-tree release rules remain unchanged.
 
+An attention worker may explicitly pair its empty release signal with the
+session-bound `workspace-continuation.json` contract. Continuation never
+authorizes termination by itself. After verified release, the runner validates
+the exact run/session/machine and canonical allowed `task-session.json` target,
+re-reads native task state, and requeues only an unchanged open, non-recurring
+session with no pending answer marker. Ordinary release remains non-runnable.
+
 The runner is mechanical. One instance polls the selected backend, launches
 explicitly runnable AI work within local capacity, and maintains only the
 process/workspace guards needed to avoid duplicate local workers. It does not
@@ -12,10 +19,41 @@ triage, choose priority, reinterpret holds, plan dates, expand scope, decide
 deliverable correctness, create recurring occurrences, or manage the backlog.
 Pan's main chief-of-staff session decides and writes either the compatibility
 `ready-for-ai` state or the opt-in native attention request.
+The chief may do so during Daily Briefing or an
+[agent-momentum](agent-momentum.md) scan. The runner never schedules,
+prioritizes, or owns a recurring momentum scan.
 
 Read [task lifecycle](task-lifecycle.md), [project
 schema](project-schema.md), [playbooks](playbooks.md), and [worker base
 instructions](worker-base-instructions.md).
+
+## Chief launcher
+
+`pan-chief resume --config /absolute/path/to/binding.json` restores the saved
+chief conversation. To deliberately replace its conversational context, exit
+the old chief and run `pan-chief fresh --config /absolute/path/to/binding.json`.
+This is an explicit operator action, not task-session release or a routine
+restart.
+
+Fresh allocates a new session ID, backs up the binding beside the original as
+`<binding>.before-fresh-<new-session-id>`, and atomically updates the canonical
+`chiefSessionId` before launching. It retains the old conversation on disk,
+the configured Copilot home, permissions, backend, and runner settings. It
+replaces configured agent/startup-prompt arguments with the Pan chief agent
+and a neutral Domain-only opening prompt; no previous conversation is passed
+to the new chief. Durable repository and Domain instructions still apply.
+This is not isolation from other durable memory or accessible session files.
+
+Fresh refuses while the configured chief is visibly running and serializes
+start/fresh launch preparation. It never kills a process or changes task-worker
+sessions. If the executable cannot spawn, it restores the old binding unless
+another writer changed it. Once the process spawns, the new ID remains canonical
+even if the CLI subsequently exits unsuccessfully; the backup is retained for
+explicit recovery. Do not concurrently invoke other chief launchers.
+
+`--print-command` previews the launch without changing the binding or starting
+a process. Initial provisioning still uses `start`, which refuses an existing
+canonical chief.
 
 ## Backend runner pilot
 
@@ -56,6 +94,18 @@ scope. Worker progress/questions/results are recorded through backend
 `report`/`update` operations, not GitHub Issue mutation.
 
 An enabled pilot also requires an absolute trusted `panTaskCommand`. The runner
+checks that its packaged `.github/agents/pan-worker.agent.md` is available and
+installs that definition into the worker's private `COPILOT_HOME/agents/` on
+every launch/resume. It must not rely on startup agent discovery through
+`--add-dir`, or on the task working directory containing Pan's `.github/agents/`.
+It passes its own Pan checkout root via `--add-dir` for contract access and
+sets `PAN_SYSTEM_DIR` to the absolute system-contract directory, so the
+installed definition can resolve its instructions from any workspace.
+The worker's working directory and persistent Copilot home remain unchanged;
+no agent definitions are written into target repositories or the user's
+global Copilot home.
+
+The compatibility runner
 requires the selected task's exact playbook to exist and have nonzero capacity,
 resolves its fixed directory, first free `workspaceSlots` entry, or an isolated
 directory under `workspaceRoot`, and snapshots the live playbook, Domain

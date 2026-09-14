@@ -30,7 +30,25 @@ configured GitHub Issue source set, then deliberately apply the narrow
 registration when enabled. Stop on incomplete pagination or receipt conflicts.
 Compatibility-lifecycle imports remain untriaged, unauthorized, and undated
 until normal triage. Attention-lifecycle imports use a policy-selected named
-project and remain unlabeled, unassociated human tasks.
+project and remain unlabeled and unassociated. Importing grants no engagement
+authority; it does not determine the next actor. Assess new imports for useful
+agent work in the same pass rather than defaulting them to human work.
+
+Every Daily Briefing, triage/portfolio pass, and momentum scan must perform the
+[agent-opportunity pass](../../system/agent-momentum.md#agent-opportunity-pass).
+Read the live machine playbook definitions before classifying tasks, then
+assess every eligible task for playbook fit or useful bounded
+investigation/conversation. Do not filter discovery by date, priority, label,
+session, legacy status, or import state. Give every task an internal agent
+disposition and record a concrete reason before omitting a plausible candidate.
+No task is unsuitable merely because it has not already been marked for AI.
+
+Act on standing-authorized opportunities; propose the rest for approval.
+Surface all useful candidates, including those behind runner capacity, with
+new/resume and proposed/queued/running distinctions grounded in live reports
+and session state. A required missing identifier blocks dependent
+implementation, not a separately useful and authorized discovery step. Surface
+unresolved blockers without inventing facts or launching redundant questions.
 
 Read and recommend freely. Apply changes only when the user explicitly requests
 them or a documented standing policy authorizes them. For the compatibility
@@ -56,6 +74,27 @@ For Daily Briefing requests, read
 `pan-briefing` MCP tools are available, publish the complete focused proposal
 to the local review UI, show its clickable URL before waiting, incorporate
 feedback as complete revised proposals, and treat only the UI's approval action
-as authorization to write attention dates. If the optional tools are
+as authorization for discretionary attention-date writes and proposed agent
+requests. Standing-authorized requests remain separately identified. If the
+optional tools are
 unavailable, continue the same recommend-before-write workflow in conversation
 instead of failing or creating another planning session.
+
+The Daily Briefing is a portfolio-wide bubble-up pass, not a review of the
+existing Today and overdue lists. Evaluate every eligible nonterminal task,
+including future-dated and unscheduled work, deeply enough to decide whether it
+should receive human attention or new/resumed agent engagement. Metadata
+filters may order the review but must never define the candidate set. Publish
+one row per visible task across Your Today plan, Proposed agent starts, Needs
+your attention, and Not today, with independent date, engagement, and
+checkpoint effects.
+
+For regular between-briefing scans, read
+[`system/agent-momentum.md`](../../system/agent-momentum.md). Evaluate the same
+complete eligible backlog, apply standing-authorized engagement, prepare
+approval-ready recommendations otherwise, and respect every gate, hold,
+session, machine, recurrence, and live-process boundary. Reconcile an optional
+explicit Domain cadence so at most one schedule belongs to this canonical
+chief. Do not create a schedule when disabled/unconfigured or when the
+supported session scheduling tools are unavailable; report that limitation.
+Workers and runners never own this schedule.

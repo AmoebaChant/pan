@@ -557,6 +557,270 @@ async function config(testRoot) {
   };
 }
 
+test('verified workspace continuation requeues and resumes the same session in its target', async () => {
+    const testRoot = root();
+    const targetRoot = path.join(testRoot, 'approved-workspaces');
+    const target = path.join(targetRoot, 'task-worktree');
+    const cfg = {
+      ...await config(testRoot),
+      attentionLifecycle: { allowedWorkspaceRoots: [targetRoot] },
+      attentionPlaybooks: new Map([['implementation', {
+        name: 'implementation',
+        text: '# Implementation\n',
+      }]]),
+    };
+    const backend = attentionBackend({
+      id: 'task-1', title: 'Task', url: 'https://todoist.com/showTask?id=task-1',
+      lifecycleMode: 'attention-labels-v1', attentionState: 'requested',
+      sessionId: '', machineId: '', revision: 'r1', recurring: false,
+    });
+    let owner = 300;
+    const launch = async (stateDir, workingDirectory) => {
+      assert.equal(workingDirectory, owner === 300
+        ? path.join(testRoot, 'task-homes', 'task-1')
+        : target);
+      await writeFile(path.join(stateDir, 'owner.json'), JSON.stringify({
+        pid: owner, processStart: `start-${owner}`,
+      }));
+      await writeFile(path.join(stateDir, 'child.json'), JSON.stringify({
+        pid: owner + 100,
+        processStart: `start-${owner + 100}`,
+        sessionId: backend.current().sessionId || JSON.parse(
+          await readFile(path.join(stateDir, 'run.json'), 'utf8'),
+        ).sessionId,
+      }));
+    };
+    try {
+      await launchTask(backend.current(), cfg, backend, {
+        launchTerminal: launch,
+        inspect: async (pid) => ({ state: 'live', identity: `start-${pid}` }),
+        sleep: async () => {},
+      });
+      const sessionId = backend.current().sessionId;
+      const stateDir = path.join(testRoot, 'runs', 'task-1');
+      const run = JSON.parse(await readFile(path.join(stateDir, 'run.json'), 'utf8'));
+      await mkdir(target, { recursive: true });
+      await writeFile(path.join(stateDir, 'task-session.json'), JSON.stringify({
+        playbookName: 'implementation',
+        workingDirectory: target,
+        resumptionNote: 'Continue implementation in the isolated worktree.',
+      }));
+      await writeFile(path.join(stateDir, 'workspace-continuation.json'), JSON.stringify({
+        version: 1,
+        sessionId,
+        machineId: 'machine-a',
+        runCreatedAt: run.createdAt,
+        playbookName: 'implementation',
+        workingDirectory: target,
+        requestedAt: new Date().toISOString(),
+      }));
+      await writeFile(path.join(stateDir, 'worker-release.json'), '');
+      let alive = true;
+      const liveRun = {
+        ...run,
+        dir: stateDir,
+        owner: { pid: owner, processStart: `start-${owner}` },
+        releaseRequested: true,
+      };
+      const first = await reconcileLiveReleaseRequests(testRoot, [liveRun], backend, {
+        config: cfg,
+        inspect: async () => alive
+          ? { state: 'live', identity: `start-${owner}` }
+          : { state: 'dead', identity: null },
+        terminateProcessTree: async (_identity, options) => {
+          await options.onCaptured({ owner: liveRun.owner, descendants: [] });
+          alive = false;
+        },
+      });
+      assert.deepEqual(first.failures, []);
+      assert.equal(backend.current().attentionState, 'requested');
+      assert.equal(backend.current().sessionId, sessionId);
+      assert.equal(JSON.parse(await readFile(
+        path.join(stateDir, 'worker-release-consumed.json'),
+      )).workspaceContinuation, 'requested');
+
+      const updateCount = backend.updates.length;
+      const replay = await reconcileLiveReleaseRequests(testRoot, [liveRun], backend, {
+        config: cfg,
+        inspect: async () => ({ state: 'dead', identity: null }),
+      });
+      assert.deepEqual(replay.failures, []);
+      assert.equal(backend.updates.length, updateCount);
+
+      const savedSession = path.join(stateDir, 'copilot-home', 'session-state', sessionId);
+      await mkdir(savedSession, { recursive: true });
+      await writeFile(path.join(savedSession, 'events.jsonl'), '{"type":"session"}\n');
+      owner = 301;
+      await launchTask(backend.current(), cfg, backend, {
+        launchTerminal: launch,
+        inspect: async (pid) => ({ state: 'live', identity: `start-${pid}` }),
+        sleep: async () => {},
+      });
+      assert.equal(backend.current().sessionId, sessionId);
+      assert.equal(backend.current().attentionState, 'open');
+      await assert.rejects(
+        readFile(path.join(stateDir, 'workspace-continuation.json')),
+        { code: 'ENOENT' },
+      );
+    } finally {
+      await rm(testRoot, { recursive: true, force: true });
+    }
+});
+
+test('workspace continuation preserves overrides and rejects questions or stale signals', async () => {
+    const states = [
+      ['needsHelp', false, 'needsHelp'],
+      ['onHold', false, 'onHold'],
+      ['externalWaiting', false, 'externalWaiting'],
+      ['none', false, 'none'],
+      ['requested', false, 'requested'],
+      ['done', false, 'done'],
+      ['rejected', false, 'rejected'],
+      ['open', true, 'none'],
+    ];
+    for (const [attentionState, recurring, expected] of states) {
+      const testRoot = root();
+      const target = path.join(testRoot, 'approved', 'target');
+      const cfg = {
+        ...await config(testRoot),
+        attentionLifecycle: { allowedWorkspaceRoots: [path.dirname(target)] },
+        attentionPlaybooks: new Map([['implementation', {
+          name: 'implementation', text: '# Implementation\n',
+        }]]),
+      };
+      const stateDir = path.join(testRoot, 'runs', 'task-1');
+      const run = {
+        version: 1,
+        lifecycleMode: 'attention-labels-v1',
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        machine: 'machine-a',
+        workingDirectory: path.join(testRoot, 'task-homes', 'task-1'),
+        createdAt: '2026-09-13T20:00:00.000Z',
+      };
+      const backend = attentionBackend({
+        id: 'task-1', lifecycleMode: 'attention-labels-v1', attentionState,
+        sessionId: 'session-1', machineId: 'machine-a', revision: 'r1', recurring,
+      });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(target, { recursive: true });
+      await writeFile(path.join(stateDir, 'task-session.json'), JSON.stringify({
+        playbookName: 'implementation', workingDirectory: target,
+      }));
+      await writeFile(path.join(stateDir, 'workspace-continuation.json'), JSON.stringify({
+        version: 1,
+        sessionId: 'session-1',
+        machineId: 'machine-a',
+        runCreatedAt: run.createdAt,
+        playbookName: 'implementation',
+        workingDirectory: target,
+        requestedAt: '2026-09-13T20:01:00.000Z',
+      }));
+      await writeFile(path.join(stateDir, 'worker-release.json'), '');
+      try {
+        const result = await reconcileLiveReleaseRequests(testRoot, [{
+          ...run,
+          dir: stateDir,
+          owner: { pid: 10, processStart: 'dead' },
+          releaseRequested: true,
+        }], backend, {
+          config: cfg,
+          inspect: async () => ({ state: 'dead', identity: null }),
+        });
+        assert.deepEqual(result.failures, []);
+        assert.equal(backend.current().attentionState, expected);
+      } finally {
+        await rm(testRoot, { recursive: true, force: true });
+      }
+    }
+
+    for (const variant of ['awaiting', 'awaiting-requested', 'stale', 'unavailable']) {
+      const testRoot = root();
+      const target = path.join(testRoot, 'approved', 'target');
+      const cfg = {
+        ...await config(testRoot),
+        attentionLifecycle: { allowedWorkspaceRoots: [path.dirname(target)] },
+        attentionPlaybooks: new Map(variant === 'unavailable' ? [] : [['implementation', {
+          name: 'implementation', text: '# Implementation\n',
+        }]]),
+      };
+      const stateDir = path.join(testRoot, 'runs', 'task-1');
+      const run = {
+        version: 1,
+        lifecycleMode: 'attention-labels-v1',
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        machine: 'machine-a',
+        createdAt: '2026-09-13T20:00:00.000Z',
+      };
+      const backend = attentionBackend({
+        id: 'task-1', lifecycleMode: 'attention-labels-v1',
+        attentionState: variant === 'awaiting-requested' ? 'requested' : 'open',
+        sessionId: 'session-1', machineId: 'machine-a', revision: 'r1', recurring: false,
+      });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(target, { recursive: true });
+      await writeFile(path.join(stateDir, 'task-session.json'), JSON.stringify({
+        playbookName: 'implementation', workingDirectory: target,
+      }));
+      await writeFile(path.join(stateDir, 'workspace-continuation.json'), JSON.stringify({
+        version: 1,
+        sessionId: variant === 'stale' ? 'older-session' : 'session-1',
+        machineId: 'machine-a',
+        runCreatedAt: run.createdAt,
+        playbookName: 'implementation',
+        workingDirectory: target,
+        requestedAt: '2026-09-13T20:01:00.000Z',
+      }));
+      if (variant.startsWith('awaiting')) {
+        await writeFile(path.join(stateDir, 'awaiting-answer.json'), JSON.stringify({
+          version: 1,
+          sessionId: 'session-1',
+          checkpointId: 'question-1',
+          timestamp: '2026-09-13T20:01:00.000Z',
+          action: 'clarify',
+          question: 'Need an answer.',
+        }));
+      }
+      await writeFile(path.join(stateDir, 'worker-release.json'), '');
+      try {
+        const result = await reconcileLiveReleaseRequests(testRoot, [{
+          ...run,
+          dir: stateDir,
+          owner: { pid: 10, processStart: 'dead' },
+          releaseRequested: true,
+        }], backend, {
+          config: cfg,
+          inspect: async () => ({ state: 'dead', identity: null }),
+        });
+        if (variant === 'awaiting') {
+          assert.deepEqual(result.failures, []);
+          assert.equal(backend.current().attentionState, 'needsHelp');
+        } else if (variant === 'awaiting-requested') {
+          assert.equal(result.failures.length, 1);
+          assert.match(result.failures[0].error, /blocked by an unanswered marker/);
+          assert.equal(backend.current().attentionState, 'requested');
+          await assert.rejects(
+            readFile(path.join(stateDir, 'worker-release-consumed.json')),
+            { code: 'ENOENT' },
+          );
+        } else if (variant === 'stale') {
+          assert.equal(result.failures.length, 1);
+          assert.match(result.failures[0].error, /does not match the current run/);
+          await assert.rejects(
+            readFile(path.join(stateDir, 'worker-release-consumed.json')),
+            { code: 'ENOENT' },
+          );
+        } else {
+          assert.equal(result.failures.length, 1);
+          assert.match(result.failures[0].error, /playbook implementation is unavailable/);
+        }
+      } finally {
+        await rm(testRoot, { recursive: true, force: true });
+      }
+    }
+});
+
 test('attention launch, explicit release, and resume retain one session and Copilot home', async () => {
   const testRoot = root();
   const cfg = await config(testRoot);
@@ -590,6 +854,13 @@ test('attention launch, explicit release, and resume retain one session and Copi
     assert.equal(associated.attentionState, 'open');
     const stateDir = path.join(testRoot, 'runs', 'task-1');
     assert.match(await readFile(path.join(stateDir, 'launch.mjs'), 'utf8'), new RegExp(firstSession));
+    const firstLauncher = await readFile(path.join(stateDir, 'launch.mjs'), 'utf8');
+    assert.ok(firstLauncher.includes(JSON.stringify(path.resolve('.'))));
+    assert.match(firstLauncher, /args\.push\('--add-dir',directory\)/);
+    assert.ok(firstLauncher.includes(`PAN_SYSTEM_DIR:${JSON.stringify(path.resolve('system'))}`));
+    const installedAgent = path.join(stateDir, 'copilot-home', 'agents', 'pan-worker.agent.md');
+    const bundledAgent = await readFile('.github/agents/pan-worker.agent.md', 'utf8');
+    assert.equal(await readFile(installedAgent, 'utf8'), bundledAgent);
     const prompt = await readFile(path.join(stateDir, 'launch-prompt.txt'), 'utf8');
     assert.match(prompt, /expectedSessionId/);
     assert.match(prompt, /expectedMachineId/);
@@ -619,6 +890,7 @@ test('attention launch, explicit release, and resume retain one session and Copi
     const savedSession = path.join(stateDir, 'copilot-home', 'session-state', firstSession);
     await mkdir(savedSession, { recursive: true });
     await writeFile(path.join(savedSession, 'events.jsonl'), '{"type":"session"}\n');
+    await writeFile(installedAgent, 'outdated worker definition\n');
     owner = 101;
     assert.equal(await launchTask(backend.current(), cfg, backend, {
       launchTerminal: launch,
@@ -627,6 +899,9 @@ test('attention launch, explicit release, and resume retain one session and Copi
     }), true);
     assert.equal(backend.current().sessionId, firstSession);
     assert.match(await readFile(path.join(stateDir, 'launch.mjs'), 'utf8'), new RegExp(firstSession));
+    assert.ok((await readFile(path.join(stateDir, 'launch.mjs'), 'utf8'))
+      .includes(JSON.stringify(path.resolve('.'))));
+    assert.equal(await readFile(installedAgent, 'utf8'), bundledAgent);
   } finally {
     await rm(testRoot, { recursive: true, force: true });
   }

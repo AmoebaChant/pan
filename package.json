@@ -4,10 +4,12 @@
   "description": "Markdown-defined personal chief-of-staff system with a small work runner.",
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "eval:chief": "node bin/pan-chief-eval.js"
   },
   "bin": {
     "pan-chief": "./bin/pan-chief.js",
+    "pan-chief-eval": "./bin/pan-chief-eval.js",
     "pan-task": "./bin/pan-task.js",
     "pan-backend-runner": "./bin/pan-backend-runner.js",
     "pan-briefing": "./bin/pan-briefing-mcp.js",
@@ -22,6 +24,7 @@
     "AGENTS.md",
     "README.md",
     "briefing-ui",
+    "fixtures",
     "task-ui",
     "system",
     "skills",

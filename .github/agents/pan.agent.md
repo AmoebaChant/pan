@@ -18,7 +18,8 @@ contracts the task needs, especially
 [`triage.md`](../../system/triage.md), and the Domain's optional `pan.md`.
 For daily planning, also read
 [`daily-briefing.md`](../../system/daily-briefing.md) before recommending or
-changing any date.
+changing any date or requesting agent attention. For regular agent-throughput
+scans, read [`agent-momentum.md`](../../system/agent-momentum.md).
 
 Discover the normal interactive Domain binding from the machine-local Pan
 config described in [`domain.md`](../../system/domain.md). Do not guess when it
@@ -28,6 +29,17 @@ never rely on this agent's global configuration.
 
 ## Operating rules
 
+- Every Daily Briefing, triage/portfolio pass, and momentum scan performs the
+  [agent-opportunity pass](../../system/agent-momentum.md#agent-opportunity-pass).
+  Read live machine playbooks before classifying tasks. Assess every eligible
+  task for playbook fit or useful investigation/conversation, including
+  untriaged imports and unlabeled tasks. Record an internal agent disposition
+  and concrete omission reason. Neither date, priority, labels, sessions,
+  legacy status, nor import state filters discovery; full runner capacity
+  delays launch, not assessment or valid queueing. Request eligible
+  standing-authorized work and propose other useful engagements for approval.
+  Missing prerequisites block dependent implementation, not an explicitly
+  bounded useful discovery step.
 - The Domain's selected task backend is canonical for every eligible personal
   task. Use the thin task tool for reads and writes; do not create a shadow
   GitHub queue. Workstreams are durable narrative.
@@ -52,8 +64,9 @@ never rely on this agent's global configuration.
   replace a deadline, or move recurrence cadence. A new checkpoint is not
   automatically Today.
 - A Daily Briefing first reads and recommends across the complete selected
-  backend. Only explicit agreement authorizes native attention-date changes,
-  including recurrence-preserving occurrence-date moves.
+  backend for both human and agent next action. Only explicit agreement
+  authorizes discretionary attention-date changes or agent requests; standing
+  policy may already authorize a transparently identified request.
 - Review/approval/discussion exist only for actual task/playbook gates. Whole
   outcome complete means Done; AI preparation needing a decision means one
   exact human action; an authorized AI next step continues.
@@ -67,7 +80,8 @@ never rely on this agent's global configuration.
   apply only explicitly enabled GitHub Issue intake into the selected
   non-GitHub backend. Compatibility imports stay untriaged, unauthorized, and
   undated; attention-lifecycle imports stay unlabeled and unassociated in
-  their policy-selected named project.
+  their policy-selected named project. Neither import state implies that the
+  next step belongs to a human; assess agent opportunities in the same pass.
 - Surface worker questions and real review gates while preserving their worker
   attachment. Compatibility mode uses its exact human checkpoint;
   `attention-labels-v1` uses the mechanically maintained `AI Needs Help` label.

@@ -127,9 +127,16 @@ function renderCompletion(result) {
   const completion = result && typeof result === 'object' ? result : {};
   elements.completionSummary.textContent = completion.summary
     || completion.message
-    || 'The approved plan has been applied and verified.';
+    || 'The approved plan has been checked.';
+  const heading = elements.completion.querySelector('h2');
+  heading.textContent = completion.status === 'confirmed'
+    ? 'Briefing actions confirmed'
+    : completion.status === 'partial'
+      ? 'Briefing partially applied'
+      : 'Briefing could not be applied';
 
   const sections = [
+    completionList('Confirmed human plan', completion.confirmedHumanPlan),
     completionList('Today', completion.today),
     completionList(
       'Planning guidance updated',
@@ -142,9 +149,15 @@ function renderCompletion(result) {
         }
       },
     ),
-    completionList(
-      'Agent attention',
-      completion.agentAttention,
+    ...[
+      ['Agents launched', completion.agentsLaunched],
+      ['Agents queued', completion.agentsQueued],
+      ['Waiting workers', completion.waitingWorkers],
+      ['Partial failures', completion.partialFailures],
+      ['Agent attention', completion.agentAttention],
+    ].map(([title, items]) => completionList(
+      title,
+      items,
       (row, item) => {
         const title = completionItemText(item);
         if (item?.url) {
@@ -157,17 +170,53 @@ function renderCompletion(result) {
         const detail = item?.instruction || item?.status;
         if (detail) row.append(document.createTextNode(` — ${detail}`));
       },
-    ),
+    )),
   ].filter(Boolean);
 
   elements.completionDetails.replaceChildren(...sections);
 }
 
 function taskGroup(task) {
-  if (task.group === 'today' || task.group === 'not-today') return task.group;
+  if (['today', 'agent-starts', 'needs-attention', 'not-today'].includes(task.group)) {
+    return task.group;
+  }
   return task.proposedDate && task.proposedDate === snapshot.proposal.today
     ? 'today'
     : 'not-today';
+}
+
+function humanDateEffect(task) {
+  if (task.humanDateAction === 'set') {
+    return `Human date: set to ${formatDate(task.proposedDate)}`;
+  }
+  if (task.humanDateAction === 'clear') return 'Human date: clear';
+  if (task.humanDateAction === 'keep') return 'Human date: unchanged';
+  if (taskGroup(task) === 'today') return 'Human date: set to today';
+  if (taskGroup(task) === 'not-today') {
+    return task.proposedDate
+      ? `Human date: set to ${formatDate(task.proposedDate)}`
+      : 'Human date: clear';
+  }
+  return 'Human date: unchanged';
+}
+
+function agentEffect(task) {
+  const kind = task.agentAction === 'request-new'
+    ? 'new conversation'
+    : task.agentAction === 'request-resume'
+      ? 'existing session resume'
+      : null;
+  if (!kind) return null;
+  if (task.agentAuthorization === 'standing') {
+    return `Agent: ${kind} request is standing-authorized and does not await this approval`;
+  }
+  if (task.agentAuthorization === 'already-requested') {
+    return `Agent: ${kind} request is already queued`;
+  }
+  if (task.agentAction === 'request-new') {
+    return 'Agent: request a new conversation if this proposal is approved';
+  }
+  return 'Agent: request the existing session to resume if this proposal is approved';
 }
 
 function radioChoice(name, value, label, checked, disabled) {
@@ -193,7 +242,15 @@ function renderTask(task, index) {
   const main = element('div', 'task-main');
   const copy = element('div', 'task-copy');
   const titleLine = element('div', 'task-title-line');
-  titleLine.append(element('h3', 'task-title', task.title));
+  const title = element('h3', 'task-title');
+  if (task.url) {
+    const link = element('a', null, task.title);
+    link.href = task.url;
+    title.append(link);
+  } else {
+    title.textContent = task.title;
+  }
+  titleLine.append(title);
   copy.append(titleLine);
   if (task.reason) copy.append(element('p', 'reason', displayReason(task.reason)));
   if (task.planningGuidance) {
@@ -212,12 +269,35 @@ function renderTask(task, index) {
     );
     copy.append(response);
   }
-  const meta = taskGroup(task) === 'today'
-    ? 'Planned for today'
-    : task.proposedDate
-      ? `Proposed date: ${formatDate(task.proposedDate)}`
-      : 'Reconsidered in every daily briefing';
-  copy.append(element('div', 'task-meta', meta));
+  const effects = element('div', 'task-effects');
+  effects.append(element('span', 'effect-pill', humanDateEffect(task)));
+  const agent = agentEffect(task);
+  if (agent) {
+    effects.append(element('span', 'effect-pill effect-agent', agent));
+  }
+  if (task.checkpointPriority && task.checkpointPriority !== 'none') {
+    effects.append(element(
+      'span',
+      'effect-pill effect-checkpoint',
+      `Checkpoint: ${task.checkpointPriority === 'today' ? 'prioritize today' : 'leave for later'}`,
+    ));
+  }
+  copy.append(effects);
+  if (task.playbook || task.workMode) {
+    copy.append(element('p', 'task-detail', `Mode: ${task.playbook || task.workMode}`));
+  }
+  if (task.expectedOutcome) {
+    copy.append(element('p', 'task-detail', `Expected outcome: ${task.expectedOutcome}`));
+  }
+  if (task.laterHumanCheckpoint) {
+    copy.append(element('p', 'task-detail', `Later human checkpoint: ${task.laterHumanCheckpoint}`));
+  }
+  if (task.requestedHumanAction) {
+    copy.append(element('p', 'task-detail', `Requested action: ${task.requestedHumanAction}`));
+  }
+  if (task.terminalContext) {
+    copy.append(element('p', 'task-detail', `Worker terminal: ${task.terminalContext}`));
+  }
 
   const radioName = `task-${index}`;
   const agree = radioChoice(
@@ -322,8 +402,13 @@ function render(nextSnapshot) {
   elements.completion.hidden = snapshot.phase !== 'complete';
 
   if (snapshot.phase === 'complete') {
+    const completionStatus = snapshot.completion?.status;
     elements.revision.textContent = 'Complete';
-    elements.phase.textContent = 'Plan confirmed';
+    elements.phase.textContent = completionStatus === 'confirmed'
+      ? 'Actions confirmed'
+      : completionStatus === 'partial'
+        ? 'Partially applied'
+        : 'Apply failed';
     elements.submit.disabled = true;
     elements.submit.textContent = 'Complete';
     renderCompletion(snapshot.completion);
@@ -342,7 +427,9 @@ function render(nextSnapshot) {
   elements.generalFeedback.value = draft.generalFeedback;
   elements.generalFeedback.disabled = waiting;
   elements.tasks.replaceChildren(
-    renderGroup('today', 'Today'),
+    renderGroup('today', 'Your Today plan'),
+    renderGroup('agent-starts', 'Proposed agent starts'),
+    renderGroup('needs-attention', 'Needs your attention'),
     renderGroup('not-today', 'Not today'),
   );
   elements.submit.disabled = submitting || waiting;
@@ -369,6 +456,9 @@ function reviewPayload(action) {
       id: task.id,
       recommendation: task.recommendation ?? null,
       proposedDate: task.proposedDate ?? null,
+      humanDateAction: task.humanDateAction ?? null,
+      agentAction: task.agentAction ?? 'none',
+      checkpointPriority: task.checkpointPriority ?? 'none',
       decision: draft.tasks[task.id]?.decision === 'disagree' ? 'disagree' : 'accept',
       requestedDate: null,
       feedback: draft.tasks[task.id]?.decision === 'disagree'

@@ -76,8 +76,9 @@ interaction.
 
 Sending feedback is not approval. The browser's **Approve proposal** action is
 the explicit agreement required before Pan makes discretionary planning-date
-writes. If the user has unsent markup, the UI requires that feedback to be sent
-and incorporated into a new proposal before approval.
+writes or approval-required agent attention requests. If the user has unsent
+markup, the UI requires that feedback to be sent and incorporated into a new
+proposal before approval.
 
 The review surface is intentionally dense. Each task is one compact row with
 **Agree** and **Disagree** choices. Agree is selected initially. Disagree opens
@@ -86,23 +87,42 @@ planning guidance such as "next week" or "on a quiet day" into a date. A
 minimal sticky header keeps the revision, Pan's waiting/thinking state, and the
 single submit action visible while scrolling.
 
-Every proposal groups rows into **Today** and **Not today** so the daily
-commitment is visible without interpreting recommendation pills. The proposal
-is a focused review surface, not a rendering of the complete human queue:
+Every proposal groups each task into exactly one primary section, chosen by its
+current next actor and visible recommendation:
 
-- **Today** shows every task Pan recommends doing today.
+- **Needs your attention** takes precedence for an existing worker checkpoint
+  and shows the exact action, worker-terminal context, and Today/later priority.
+- **Proposed agent starts** shows agent-led approval-ready new/resumed engagement and
+  transparently marked standing-authorized requests.
+- **Your Today plan** shows human-led, non-checkpoint work Pan recommends doing
+  today.
 - **Not today** shows every overdue or currently-today task that Pan recommends
   moving to a future date or clearing.
 - Future-dated or undated tasks not selected for Today are omitted. Pan still
   considered them during the complete live read, and their planning dates
-  remain unchanged.
+  remain unchanged. This last rule limits only the human backlog display; it
+  never hides agent opportunities or existing checkpoints.
 
-Pan supplies a required `group` value of `today` or `not-today` for each
-displayed task. Recommendation text explains why the task belongs in its group.
+Pan supplies a required `group` value of `today`, `agent-starts`,
+`needs-attention`, or `not-today` for each displayed task. Recommendation text
+explains why the task belongs in its group.
 Pan must make this classification before publishing the first proposal;
 Agree/Disagree asks whether the user agrees with that recommendation and never
 substitutes for it. Never populate Not today with future or undated backlog, but
 never omit overdue work from the recommendation.
+
+Every row presents effects independently:
+
+- `humanDateAction=keep|set|clear`, with `proposedDate` only for `set`;
+- `agentAction=none|request-new|request-resume`, with standing, pending, or
+  already-requested authorization status; and
+- `checkpointPriority=none|today|later`.
+
+Agent proposals also show a task link, proposed playbook or work mode, expected
+outcome, and honest later-checkpoint expectation. Missing agent date data is a
+human-date no-op, never an instruction to clear a date. One task appears in
+only one section; its independent effect fields remain visible there rather
+than creating duplicate rows.
 
 A revised row may include `feedbackResponse`, shown explicitly as Pan's response
 to the prior review. It must describe what Pan changed or retained and must not
@@ -128,8 +148,10 @@ It exposes three tools:
 
 The completion view presents that outcome for a person rather than displaying
 the raw MCP result object. It leads with the confirmed summary and renders
-available structured sections such as today's tasks, durable guidance updates,
-and linked agent-attention items. Internal identifiers and transport fields
+available structured sections for the confirmed human plan, agents actually
+launched, agents queued, waiting workers, and partial failures. A completion
+has `status=confirmed|partial|failed`; partial and failed results must name
+their failures and never use a generic success heading. Internal identifiers and transport fields
 such as `briefingId`, `revision`, and `status` are not the primary completion
 content.
 
