@@ -49,6 +49,11 @@ supplied `idempotencyKey` instead of pretending retries are safe. This does not
 limit GitHub-backed Domain capture: GitHub Issue source intake applies only
 when a non-GitHub backend is authoritative.
 
+If a requested follow-up update fails after GitHub capture returns the created
+task, `create` reports a partial write with the canonical Issue URL and number
+and the Project item identifier when available. The caller must retain that
+identity and must not retry creation blindly.
+
 A machine-local GitHub backend configuration is:
 
 ```json

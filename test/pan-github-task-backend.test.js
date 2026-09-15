@@ -252,7 +252,76 @@ test('GitHub adapter preserves verified partial-create identity', async () => {
       && error.details.issueUrl === issueUrl
       && /do not retry/.test(error.message),
   );
-})
+});
+
+test('GitHub adapter preserves created identity when a follow-up read fails', async () => {
+  const store = new FakeStore();
+  let captured = false;
+  store.capture = async (input) => {
+    const created = await FakeStore.prototype.capture.call(store, input);
+    captured = true;
+    return created;
+  };
+  store.detail = async () => {
+    assert.equal(captured, true);
+    throw Object.assign(new Error('simulated follow-up read failure'), {
+      statusCode: 503,
+    });
+  };
+  const backend = await new GitHubTaskBackend(
+    { backend: 'github' },
+    { store },
+  ).initialize();
+
+  await assert.rejects(
+    backend.create({
+      title: 'Create once',
+      playbook: 'delivery',
+    }),
+    (error) =>
+      error.code === 'partial-write'
+      && error.status === 503
+      && error.details.taskId === 'item-1'
+      && error.details.issueUrl === 'https://github.com/example/domain/issues/1'
+      && error.details.issueNumber === 1
+      && error.details.projectItemId === 'item-1'
+      && error.details.projectItemCreated === true
+      && /do not retry task creation blindly/.test(error.message),
+  );
+});
+
+test('GitHub adapter replaces untrusted identity on a follow-up mutation failure', async () => {
+  const store = new FakeStore();
+  store.mutate = async () => {
+    throw Object.assign(new Error('simulated follow-up mutation failure'), {
+      details: {
+        diagnostic: 'edit rejected',
+        taskId: 'wrong-task',
+        issueUrl: 'https://github.com/wrong/repository/issues/999',
+        issueNumber: 999,
+        projectItemId: 'wrong-item',
+      },
+    });
+  };
+  const backend = await new GitHubTaskBackend(
+    { backend: 'github' },
+    { store },
+  ).initialize();
+
+  await assert.rejects(
+    backend.create({
+      title: 'Create once',
+      playbook: 'delivery',
+    }),
+    (error) =>
+      error.code === 'partial-write'
+      && error.details.diagnostic === 'edit rejected'
+      && error.details.taskId === 'item-1'
+      && error.details.issueUrl === 'https://github.com/example/domain/issues/1'
+      && error.details.issueNumber === 1
+      && error.details.projectItemId === 'item-1',
+  );
+});
 
 test('GitHub adapter rejects stale writes and session reassignment', async () => {
   const backend = await new GitHubTaskBackend(

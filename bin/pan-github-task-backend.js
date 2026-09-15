@@ -96,6 +96,32 @@ function backendError(error) {
   });
 }
 
+function partialCreateError(error, created) {
+  const failure = backendError(error);
+  const details = failure.details && typeof failure.details === 'object'
+    ? failure.details
+    : {};
+  return Object.assign(
+    new TaskBackendError(
+      `${failure.message} Issue creation was confirmed at ${created.url}; ` +
+      'do not retry task creation blindly.',
+      {
+        code: 'partial-write',
+        status: failure.status,
+        details: {
+          ...details,
+          taskId: created.id,
+          issueUrl: created.url,
+          issueNumber: created.number,
+          projectItemId: created.itemId ?? null,
+          projectItemCreated: Boolean(created.itemId),
+        },
+      },
+    ),
+    { cause: error },
+  );
+}
+
 export class GitHubTaskBackend {
   constructor(config, dependencies = {}) {
     assertObject(config, 'backend config');
@@ -150,8 +176,9 @@ export class GitHubTaskBackend {
         { code: 'idempotency-unsupported' },
       );
     }
+    let created;
     try {
-      let created = canonicalTask(await this.store.capture({
+      created = canonicalTask(await this.store.capture({
         title: input.title,
         details: input.description ?? '',
         priority: input.priority,
@@ -161,6 +188,10 @@ export class GitHubTaskBackend {
         recurrence: input.recurrence,
         currentActionDetail: input.nextActionDetail,
       }));
+    } catch (error) {
+      throw backendError(error);
+    }
+    try {
       const requested = {
         title: input.title,
         description: input.description,
@@ -187,7 +218,7 @@ export class GitHubTaskBackend {
       }
       return created;
     } catch (error) {
-      throw backendError(error);
+      throw partialCreateError(error, created);
     }
   }
 
