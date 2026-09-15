@@ -1655,31 +1655,49 @@ export class GitHubTaskStore {
     const issue = JSON.parse(raw);
     issue.url = issue.html_url || issue.url;
     if (!issue.url || !issue.number) throw new Error('GitHub did not confirm Issue creation');
-    const itemId = await this.#addToProject(issue.url);
-    await this.#setSelect(itemId, 'Status', 'ready-for-human');
-    await this.#setSelect(itemId, 'next-action', 'clarify');
-    await this.#setSelect(itemId, 'priority', input.priority || 'normal');
-    await this.#setSelect(itemId, 'execution-authorized', 'no');
-    await this.#setSelect(itemId, 'worker-state', 'idle');
-    await this.#setText(itemId, 'task-revision', String(revision));
-    if (nextActionDate) await this.#setDate(itemId, 'next-action-date', nextActionDate);
-    if (input.deadline) {
-      await this.#setDate(itemId, 'deadline', assertDate(input.deadline, 'deadline'));
+    let itemId = null;
+    try {
+      itemId = await this.#addToProject(issue.url);
+      await this.#setSelect(itemId, 'Status', 'ready-for-human');
+      await this.#setSelect(itemId, 'next-action', 'clarify');
+      await this.#setSelect(itemId, 'priority', input.priority || 'normal');
+      await this.#setSelect(itemId, 'execution-authorized', 'no');
+      await this.#setSelect(itemId, 'worker-state', 'idle');
+      await this.#setText(itemId, 'task-revision', String(revision));
+      if (nextActionDate) await this.#setDate(itemId, 'next-action-date', nextActionDate);
+      if (input.deadline) {
+        await this.#setDate(itemId, 'deadline', assertDate(input.deadline, 'deadline'));
+      }
+      if (input.workstream) {
+        await this.#setText(itemId, 'workstream', await this.#validateWorkstream(input.workstream));
+      }
+      const confirmed = await this.#item(itemId);
+      if (
+        !confirmed
+        || confirmed.issue.url !== issue.url
+        || confirmed.fields.Status !== 'ready-for-human'
+        || confirmed.fields['next-action'] !== 'clarify'
+        || parseRevision(confirmed.fields['task-revision']) !== revision
+      ) {
+        throw new Error('GitHub did not verify the captured task');
+      }
+      return this.detail(itemId);
+    } catch (error) {
+      const message = (
+        `${error.message} Issue creation was confirmed at ${issue.url}; ` +
+        'do not retry task creation blindly.'
+      );
+      throw Object.assign(new Error(message, { cause: error }), {
+        code: 'partial-write',
+        statusCode: error.statusCode ?? null,
+        details: {
+          issueUrl: issue.url,
+          issueNumber: issue.number,
+          projectItemId: itemId,
+          projectItemCreated: Boolean(itemId),
+        },
+      });
     }
-    if (input.workstream) {
-      await this.#setText(itemId, 'workstream', await this.#validateWorkstream(input.workstream));
-    }
-    const confirmed = await this.#item(itemId);
-    if (
-      !confirmed
-      || confirmed.issue.url !== issue.url
-      || confirmed.fields.Status !== 'ready-for-human'
-      || confirmed.fields['next-action'] !== 'clarify'
-      || parseRevision(confirmed.fields['task-revision']) !== revision
-    ) {
-      throw new Error('GitHub did not verify the captured task');
-    }
-    return this.detail(itemId);
   }
 
   async importTodoistTask(record) {

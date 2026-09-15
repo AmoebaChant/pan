@@ -303,29 +303,63 @@ test('reports are fully paginated after the scoped task read', async () => {
   assert.equal(calls.length, 4);
 });
 
-test('complete checks revision and calls the native close endpoint', async () => {
+test('complete returns canonical done and rejected terminal tasks', async () => {
   const calls = [];
+  let labels = ['AI Needs Help'];
   const fetchImpl = async (url, options) => {
     calls.push([url, options.method]);
     if (url.endsWith('/user')) return response({ id: 'self' });
     if (url.endsWith('/tasks/1') && options.method === 'GET') {
       return response({
         id: '1', content: 'Task', description: '', priority: 1,
-        project_id: 'p', responsible_uid: null, updated_at: 'r1',
+        project_id: 'p', responsible_uid: null, updated_at: 'r1', labels,
+      });
+    }
+    if (url.endsWith('/tasks/1') && options.method === 'POST') {
+      labels = JSON.parse(options.body).labels;
+      return response({
+        id: '1', content: 'Task', description: '', priority: 1,
+        project_id: 'p', responsible_uid: null, updated_at: 'r2', labels,
       });
     }
     if (url.endsWith('/tasks/1/close')) return response(null, 204);
     throw new Error(`unexpected request ${options.method} ${url}`);
   };
   const backend = await new TodoistTaskBackend(
-    { backend: 'todoist' },
+    {
+      backend: 'todoist',
+      lifecycleMode: 'attention-labels-v1',
+      attentionLabels: {
+        requested: 'AI Attention Requested',
+        open: 'AI Session Open',
+        needsHelp: 'AI Needs Help',
+        externalWaiting: 'External Waiting',
+        onHold: 'On Hold',
+        rejected: 'Rejected',
+      },
+    },
     { fetchImpl, readFileImpl: async () => 'TODOIST_API_KEY=secret' },
   ).initialize();
-  assert.deepEqual(await backend.complete('1', { expectedRevision: 'r1' }), {
-    taskId: '1',
-    completed: true,
+  const done = await backend.complete('1', {
+    expectedRevision: 'r1',
+    outcome: 'done',
   });
-  assert.deepEqual(calls.map(([, method]) => method), ['GET', 'GET', 'POST']);
+  assert.equal(done.id, '1');
+  assert.equal(done.status, 'done');
+  assert.equal(done.revision, 'r2');
+
+  labels = ['AI Needs Help'];
+  const rejected = await backend.complete('1', {
+    expectedRevision: 'r1',
+    outcome: 'rejected',
+  });
+  assert.equal(rejected.id, '1');
+  assert.equal(rejected.status, 'rejected');
+  assert.equal(rejected.revision, 'r2');
+  assert.deepEqual(
+    calls.map(([, method]) => method),
+    ['GET', 'GET', 'POST', 'POST', 'GET', 'POST', 'POST'],
+  );
 });
 
 test('mechanical runner launches only authorized ready tasks without date gating', async () => {

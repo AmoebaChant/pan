@@ -220,6 +220,40 @@ test('GitHub adapter creates through the checked store and rejects unsupported i
   );
 });
 
+test('GitHub adapter preserves verified partial-create identity', async () => {
+  const issueUrl = 'https://github.com/example/domain/issues/99';
+  const store = new FakeStore();
+  store.capture = async () => {
+    throw Object.assign(
+      new Error(
+        `Project initialization failed. Issue creation was confirmed at ${issueUrl}; ` +
+        'do not retry task creation blindly.',
+      ),
+      {
+        code: 'partial-write',
+        details: {
+          issueUrl,
+          issueNumber: 99,
+          projectItemId: 'item-99',
+          projectItemCreated: true,
+        },
+      },
+    );
+  };
+  const backend = await new GitHubTaskBackend(
+    { backend: 'github' },
+    { store },
+  ).initialize();
+
+  await assert.rejects(
+    backend.create({ title: 'Create once' }),
+    (error) =>
+      error.code === 'partial-write'
+      && error.details.issueUrl === issueUrl
+      && /do not retry/.test(error.message),
+  );
+})
+
 test('GitHub adapter rejects stale writes and session reassignment', async () => {
   const backend = await new GitHubTaskBackend(
     { backend: 'github' },

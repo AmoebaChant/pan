@@ -622,6 +622,38 @@ async function fakeStore(state = fakeGitHubState()) {
       return { store, state };
     }
 
+test('capture reports verified Issue identity after a partial Project write', async () => {
+      const state = fakeGitHubState();
+      const liveGh = state.gh;
+      state.gh = async (args) => {
+        if (
+          args[0] === 'project'
+          && args[1] === 'item-edit'
+          && state.writes.includes('project:add')
+        ) {
+          throw new Error('simulated Project initialization failure');
+        }
+        return liveGh(args);
+      };
+      const { store } = await fakeStore(state);
+
+      await assert.rejects(
+        store.capture({
+          title: 'Create once',
+          details: 'Preserve the partial identity.',
+          priority: 'normal',
+        }),
+        (error) =>
+          error.code === 'partial-write'
+          && error.details.issueUrl === 'https://github.com/example/domain/issues/2'
+          && error.details.projectItemId === 'item-2'
+          && error.details.projectItemCreated === true
+          && /do not retry task creation blindly/.test(error.message),
+      );
+      assert.equal(state.issues.at(-1).url, 'https://github.com/example/domain/issues/2');
+      assert.equal(state.items.at(-1).id, 'item-2');
+})
+
 test('task-store projection preserves Issue state and state reason from Project GraphQL', async () => {
       const { store, state } = await fakeStore();
       let task = (await store.list()).tasks[0];

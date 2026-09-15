@@ -707,9 +707,11 @@ export class TodoistTaskBackend {
       });
     }
     let current;
+    let nativeTask = null;
     let rejectedAlready = false;
     if (this.lifecycleMode === ATTENTION_LIFECYCLE_MODE) {
       const native = await this.nativeTask(id);
+      nativeTask = native;
       const recognizedLabels = Object.values(this.labels)
         .filter((label) => (native.labels ?? []).includes(label));
       if (recognizedLabels.length > 1) {
@@ -748,6 +750,7 @@ export class TodoistTaskBackend {
             this.config,
           ),
         });
+        nativeTask = updated;
         completionRevision = updated.updated_at || updated.added_at || completionRevision;
       }
     }
@@ -762,7 +765,18 @@ export class TodoistTaskBackend {
       }
       throw error;
     }
-    return { taskId: String(id), completed: true };
+    if (this.lifecycleMode === ATTENTION_LIFECYCLE_MODE) {
+      return this.canonical({
+        ...nativeTask,
+        checked: true,
+        completed: true,
+      });
+    }
+    return {
+      ...current,
+      status: outcome,
+      revision: completionRevision,
+    };
   }
 
   async remove(id) {

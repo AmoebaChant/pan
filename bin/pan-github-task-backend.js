@@ -89,8 +89,10 @@ function canonicalTask(task, position = null) {
 function backendError(error) {
   if (error instanceof TaskBackendError) return error;
   return new TaskBackendError(error.message, {
-    code: error.statusCode === 409 ? 'revision-conflict' : 'github-backend-error',
+    code: error.code
+      || (error.statusCode === 409 ? 'revision-conflict' : 'github-backend-error'),
     status: error.statusCode ?? null,
+    details: error.details ?? null,
   });
 }
 
