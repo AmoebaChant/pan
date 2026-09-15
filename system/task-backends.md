@@ -34,6 +34,31 @@ native task, and re-reads the result without rewriting lifecycle metadata or
 dates. Source intake uses this operation to apply declared project mappings
 to previously imported tasks.
 
+The built-in GitHub adapter uses the same commands for the outcome lifecycle.
+It maps the common record to the configured Domain Project and Issue, requires
+the backend revision for checked writes, and also accepts the Project
+projection fingerprint when a client has one. It delegates lifecycle validation
+and revision-last writes to the same GitHub task store used by Pan's runner and
+local task service; a desktop client must not implement a second Project writer.
+Worker reports name the expected session and machine, while chief or migration
+notes must explicitly identify their actor.
+
+GitHub Issue creation does not provide an atomic idempotency key. The GitHub
+adapter therefore advertises `supportsIdempotentCreate=false` and rejects a
+supplied `idempotencyKey` instead of pretending retries are safe. This does not
+limit GitHub-backed Domain capture: GitHub Issue source intake applies only
+when a non-GitHub backend is authoritative.
+
+A machine-local GitHub backend configuration is:
+
+```json
+{
+  "backend": "github",
+  "bindingConfig": "C:\\absolute\\path\\to\\machine-binding.json",
+  "panCheckout": "C:\\absolute\\path\\to\\pan"
+}
+```
+
 The compatibility common record exposes `id`, `url`, `title`, `description`, `status`,
 `nextAction`, `nextActionDetail`, `priority`, `nextActionDate`, `deadline`,
 `playbook`, `workstream`, `executionAuthorized`, `dependencies`, worker
@@ -93,9 +118,11 @@ The Todoist adapter is built into the pinned Pan checkout. A future
 Domain-supplied executable adapter must be installed explicitly from a trusted,
 pinned revision; polling must never download and execute changing code.
 
-GitHub Issues and Projects remain the built-in compatibility backend. The
-existing GitHub runner and Project contracts continue to apply to Domains that
-select it; they are not a shadow queue for a Todoist-backed Domain.
+GitHub Issues and Projects remain the built-in compatibility backend. A
+machine-local backend config selects it with `backend: "github"` and names the
+absolute Pan binding and checkout paths. The existing GitHub runner and Project
+contracts continue to apply to Domains that select it; they are not a shadow
+queue for a Todoist-backed Domain.
 
 Todoist may explicitly opt into
 [`attention-labels-v1`](attention-lifecycle.md). In that mode native labels and

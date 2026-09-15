@@ -16,13 +16,17 @@ export async function loadTaskBackend(configPath, dependencies = {}) {
   const absolute = path.resolve(configPath);
   const config = dependencies.backendConfig
     ?? JSON.parse(await readFile(absolute, 'utf8'));
-  if (config.backend !== 'todoist') {
-    throw new TaskBackendError(`unsupported task backend: ${JSON.stringify(config.backend)}`, {
-      code: 'unsupported-backend',
-    });
+  if (config.backend === 'todoist') {
+    const { TodoistTaskBackend } = await import('./pan-todoist-task-backend.js');
+    return new TodoistTaskBackend(config, dependencies);
   }
-  const { TodoistTaskBackend } = await import('./pan-todoist-task-backend.js');
-  return new TodoistTaskBackend(config, dependencies);
+  if (config.backend === 'github') {
+    const { GitHubTaskBackend } = await import('./pan-github-task-backend.js');
+    return new GitHubTaskBackend(config, dependencies);
+  }
+  throw new TaskBackendError(`unsupported task backend: ${JSON.stringify(config.backend)}`, {
+    code: 'unsupported-backend',
+  });
 }
 
 export function writeJson(value, stream = process.stdout) {

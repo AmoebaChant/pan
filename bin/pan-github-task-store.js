@@ -1451,6 +1451,78 @@ export class GitHubTaskStore {
     };
   }
 
+  async report(itemId, input) {
+    const item = await this.#item(itemId);
+    if (!item) throw Object.assign(new Error('task not found'), { statusCode: 404 });
+    if (!this.binding.allowedRepos.has(item.issue.repo)) {
+      throw Object.assign(new Error('task repository is outside the configured boundary'), { statusCode: 403 });
+    }
+    const content = text(input.content, 'report content', 60000, { allowEmpty: false });
+    const hasSessionExpectation = (
+      input.expectedSessionId !== undefined
+      || input.expectedMachineId !== undefined
+    );
+    if (hasSessionExpectation) {
+      if (
+        !text(input.expectedSessionId, 'expectedSessionId', 200, { allowEmpty: false })
+        || !text(input.expectedMachineId, 'expectedMachineId', 300, { allowEmpty: false })
+      ) {
+        throw new Error('session-bound report requires expectedSessionId and expectedMachineId');
+      }
+      if (
+        item.fields['session-id'] !== input.expectedSessionId
+        || item.fields.machine !== input.expectedMachineId
+      ) {
+        throw Object.assign(
+          new Error('task session association changed before report'),
+          { statusCode: 409 },
+        );
+      }
+    } else if (!['chief', 'migration'].includes(input.actor)) {
+      throw Object.assign(
+        new Error('report requires a session expectation or actor=chief|migration'),
+        { statusCode: 403 },
+      );
+    }
+    const raw = await this.gh([
+      'api',
+      `repos/${item.issue.repo}/issues/${item.issue.number}/comments`,
+      '-f',
+      `body=${content}`,
+    ]);
+    const created = JSON.parse(raw);
+    if (!created.id) throw new Error('GitHub did not confirm report creation');
+    const comments = await this.#comments(item.issue.repo, item.issue.number);
+    const confirmed = comments.find(
+      (comment) => String(comment.id) === String(created.node_id || created.id),
+    ) ?? comments.find((comment) => comment.url === created.html_url);
+    if (!confirmed || confirmed.body !== content) {
+      throw new Error('GitHub did not verify the recorded report');
+    }
+    return {
+      taskId: itemId,
+      commentId: String(created.node_id || created.id),
+      recorded: true,
+    };
+  }
+
+  async reports(itemId) {
+    const item = await this.#item(itemId);
+    if (!item) throw Object.assign(new Error('task not found'), { statusCode: 404 });
+    if (!this.binding.allowedRepos.has(item.issue.repo)) {
+      throw Object.assign(new Error('task repository is outside the configured boundary'), { statusCode: 403 });
+    }
+    return (await this.#comments(item.issue.repo, item.issue.number)).map((comment) => ({
+      id: String(comment.id),
+      taskId: itemId,
+      content: comment.body,
+      postedAt: comment.createdAt,
+      updatedAt: comment.updatedAt,
+      url: comment.url,
+      author: comment.author,
+    }));
+  }
+
   #field(name) {
     const field = this.meta.fields.get(name);
     if (!field) throw new Error(`Project has no field "${name}"`);

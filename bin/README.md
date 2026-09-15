@@ -15,6 +15,10 @@ node bin/pan-task.js --config /absolute/path/backend.json reports <id>
 node bin/pan-task.js --config /absolute/path/backend.json complete <id>
 ```
 
+`backend: "github"` configs also name absolute `bindingConfig` and
+`panCheckout` paths. The adapter reuses Pan's checked GitHub lifecycle store;
+clients should use this command instead of writing Project fields directly.
+
 The first adapter uses Todoist API v1, fully paginates active tasks, and scopes
 reads/writes to the authenticated user or unassigned tasks plus any configured
 project allowlist. `TODOIST_API_KEY` or `TODOIST_API_TOKEN` is parsed from a

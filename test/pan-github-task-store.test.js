@@ -553,6 +553,32 @@ function fakeGitHubState({ projectReadNodes = null } = {}) {
           writes.push('issue:comment');
           return '';
         }
+        if (
+          args[0] === 'api'
+          && /^repos\/example\/domain\/issues\/\d+\/comments$/.test(String(args[1]))
+          && args.includes('-f')
+        ) {
+          const issueNumber = Number(String(args[1]).match(/\/issues\/(\d+)\/comments$/)?.[1]);
+          const issueComments = commentsByIssue.get(issueNumber) ?? [];
+          const targetIssue = issues.find((entry) => entry.number === issueNumber) ?? issue;
+          const nodeId = `comment-${issueNumber}-${issueComments.length + 1}`;
+          const url = `${targetIssue.url}#issuecomment-${issueComments.length + 1}`;
+          issueComments.push({
+            id: nodeId,
+            author: { login: 'pan' },
+            createdAt: '2026-09-09T00:00:00Z',
+            updatedAt: '2026-09-09T00:00:00Z',
+            url,
+            body: valueAfter(args, '-f').replace(/^body=/, ''),
+          });
+          commentsByIssue.set(issueNumber, issueComments);
+          writes.push('issue:report');
+          return JSON.stringify({
+            id: issueComments.length,
+            node_id: nodeId,
+            html_url: url,
+          });
+        }
         if (args[0] === 'api' && args.includes('--paginate')) {
           const match = String(args.at(-1)).match(/\/issues\/(\d+)\/comments/);
           const issueComments = commentsByIssue.get(Number(match?.[1])) ?? [];
@@ -610,6 +636,27 @@ test('task-store projection preserves Issue state and state reason from Project 
       task = (await store.list()).tasks[0];
       assert.equal(task.issueState, 'CLOSED');
       assert.equal(task.issueStateReason, 'NOT_PLANNED');
+});
+
+test('task-store reports require explicit authority and verify the recorded comment', async () => {
+      const { store, state } = await fakeStore();
+
+      await assert.rejects(
+        store.report('item-1', { content: 'Unattributed note.' }),
+        (error) => error.statusCode === 403,
+      );
+      const result = await store.report('item-1', {
+        content: 'Checkpoint recorded.',
+        actor: 'chief',
+      });
+
+      assert.deepEqual(result, {
+        taskId: 'item-1',
+        commentId: 'comment-1-3',
+        recorded: true,
+      });
+      assert.equal(state.writes.at(-1), 'issue:report');
+      assert.equal((await store.reports('item-1')).at(-1).content, 'Checkpoint recorded.');
 });
 
 test('Todoist repair reconciles exact Issue, comments, fields, and writes revision last', async () => {
