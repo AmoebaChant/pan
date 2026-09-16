@@ -831,6 +831,46 @@ test('explicit worker release after manual completion preserves the retained ses
   assert.equal(await readFile(path.join(harness.worker.panDir, 'worker.stop'), 'utf8'), '');
 });
 
+for (const outcome of ['done', 'needs-human']) {
+  test(`late ${outcome} report is receipted after explicit release without changing completion`, async (t) => {
+    const harness = await finalizationHarness(t, outcome);
+    const live = markManuallyCompleted(harness);
+    await rm(harness.resultPath);
+    await writeFile(path.join(harness.worker.panDir, 'worker-release.json'), '');
+    harness.runner.withGenerationMutationLock = async (_worker, _context, action) => action();
+
+    assert.equal(await harness.runner.releaseWorker(harness.worker), true);
+    assert.equal(live.fields[FIELD.workerState], 'stopped');
+    assert.equal(live.fields[FIELD.claimedBy], '');
+    assert.equal(live.fields[FIELD.leaseUntil], '');
+    assert.equal(live.fields[FIELD.machine], 'machine-a');
+    assert.equal(live.fields[FIELD.sessionId], harness.worker.sessionId);
+    assert.equal(live.fields[FIELD.claimGeneration], harness.worker.claimGeneration);
+    const released = structuredClone(live);
+    harness.calls.length = 0;
+    await writeFile(harness.resultPath, harness.bytes);
+
+    assert.equal(await harness.runner.finalizeOutcomeLifecycle(
+      harness.worker,
+      harness.resultPath,
+      harness.bytes,
+      harness.result,
+    ), true);
+
+    assert.deepEqual(live, released);
+    assert.deepEqual(harness.calls, ['comment']);
+    assert.equal(
+      JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')))
+        .panRunnerResultConsumed,
+      true,
+    );
+    await assert.rejects(
+      readFile(path.join(harness.worker.attemptDir, 'terminal-release.json')),
+      /ENOENT/,
+    );
+  });
+}
+
 test('checkpoint release journals first, confirms the owned launcher stopped, then releases Project ownership', async (t) => {
   const harness = await finalizationHarness(t, 'needs-human');
   await rm(harness.resultPath);

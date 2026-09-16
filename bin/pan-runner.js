@@ -3881,15 +3881,6 @@ child.on('exit', (code, signal) => {
     if (!fresh) {
       throw new Error('result finalization cannot record a receipt because its Project item disappeared');
     }
-    if (statusOf(fresh) === 'done' && workerStateOf(fresh) !== 'stopped') {
-      return this.receiptResultAfterManualCompletion(
-        w,
-        resultPath,
-        resultBytes,
-        { outcome, summary: result.summary, details: result.details },
-        fresh,
-      );
-    }
     const currentClaimedBy = val(fresh, FIELD.claimedBy, '');
     const activeOwned = (
       currentClaimedBy === this.cfg.identity
@@ -3928,7 +3919,37 @@ child.on('exit', (code, signal) => {
       && [w.sessionId, ''].includes(val(fresh, FIELD.sessionId, ''))
       && [w.claimGeneration, ''].includes(val(fresh, FIELD.claimGeneration, ''))
     );
-    if (releaseTupleMatchesManifest && !releaseJournalState.present) {
+    const releasedLegacyTuple = (
+      !currentClaimedBy
+      && !val(fresh, FIELD.leaseUntil, '')
+      && !val(fresh, FIELD.machine, '')
+      && !val(fresh, FIELD.sessionId, '')
+      && !val(fresh, FIELD.claimGeneration, '')
+    );
+    const ownedLegacyTuple = (
+      currentClaimedBy === this.cfg.identity
+      && val(fresh, FIELD.machine, '') === expectedMachine
+      && val(fresh, FIELD.sessionId, '') === w.sessionId
+      && val(fresh, FIELD.claimGeneration, '') === w.claimGeneration
+    );
+    const reconstructableLegacyTerminalRelease = (
+      releaseTupleMatchesManifest
+      && (releasedLegacyTuple || ownedLegacyTuple)
+    );
+    const hasLegacyTerminalReleaseEvidence = (
+      releaseJournalState.present
+      || reconstructableLegacyTerminalRelease
+    );
+    if (statusOf(fresh) === 'done' && !hasLegacyTerminalReleaseEvidence) {
+      return this.receiptResultAfterManualCompletion(
+        w,
+        resultPath,
+        resultBytes,
+        { outcome, summary: result.summary, details: result.details },
+        fresh,
+      );
+    }
+    if (reconstructableLegacyTerminalRelease && !releaseJournalState.present) {
       releaseJournalState = await this.prepareTerminalReleaseJournal(
         w,
         resultBytes,
@@ -3979,6 +4000,11 @@ child.on('exit', (code, signal) => {
         { status, nextAction, detail, revision },
       );
       return this.finishFinalization(w, status, resultPath, resultBytes);
+    }
+    if (releaseJournalState.present) {
+      throw new Error(
+        `#${w.issueNumber} terminal release journal no longer matches its result projection`,
+      );
     }
     if (
       (!activeOwned && !partiallyFinalized)
