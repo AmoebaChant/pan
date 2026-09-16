@@ -329,8 +329,8 @@ test('resume candidates require an open Issue and ordinary retained affinity', a
   assert.deepEqual(result.candidates.map((item) => item.itemId), ['resume-open']);
 });
 
-test('terminal tasks have stale lease fields cleared and confirmed', async () => {
-  const source = ['in-review', 'done', 'blocked'].map((status, index) => {
+test('states that cannot retain workers have stale lease fields cleared and confirmed', async () => {
+  const source = ['in-review', 'rejected', 'blocked'].map((status, index) => {
     const item = projectItem({
       id: `terminal-${status}`,
       number: 20 + index,
@@ -359,9 +359,9 @@ test('terminal tasks have stale lease fields cleared and confirmed', async () =>
   }
 });
 
-test('terminal cleanup does not touch work that became active on re-read', async () => {
+test('lease cleanup does not touch work that became active on re-read', async () => {
   const source = projectItem({ id: 'terminal-race', number: 23 });
-  source.fields[FIELD.status] = 'done';
+  source.fields[FIELD.status] = 'in-review';
   let writes = 0;
 
   const cleaned = await cleanTerminalLeaseFields([source], {
@@ -376,8 +376,29 @@ test('terminal cleanup does not touch work that became active on re-read', async
   assert.deepEqual(cleaned, []);
 });
 
+test('done never authorizes implicit claim or lease cleanup', async () => {
+  const source = projectItem({ id: 'completed-live', number: 24 });
+  source.fields[FIELD.status] = 'done';
+  source.fields[FIELD.workerState] = 'running';
+  const originalClaimedBy = source.fields[FIELD.claimedBy];
+  const originalLeaseUntil = source.fields[FIELD.leaseUntil];
+  let writes = 0;
+
+  const cleaned = await cleanTerminalLeaseFields([source], {
+    readItem: async () => clone(source),
+    clearFields: async () => {
+      writes += 1;
+    },
+  });
+
+  assert.equal(writes, 0);
+  assert.deepEqual(cleaned, []);
+  assert.equal(source.fields[FIELD.claimedBy], originalClaimedBy);
+  assert.equal(source.fields[FIELD.leaseUntil], originalLeaseUntil);
+});
+
 test('terminal lease cleanup never erases contradictory historical provenance evidence', async () => {
-  const source = projectItem({ id: 'historical-terminal', number: 24 });
+  const source = projectItem({ id: 'historical-terminal', number: 25 });
   source.fields[FIELD.status] = 'done';
   source.fields[FIELD.workerState] = 'stopped';
   source.fields[FIELD.resourceSemantics] = 'historical-provenance';
@@ -577,7 +598,7 @@ test('active and finalization-pending workers occupy their recorded slots', () =
   assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'pooled')].sort(), ['primary', 'secondary']);
 });
 
-test('Project composite affinities occupy by lease state, not lifecycle status', () => {
+test('Project composite affinities remain occupied until checked worker release', () => {
   const warnings = [];
   const items = [
     compositeItem({ id: 'valid', number: 1, slot: 'primary', leaseUntil: VALID }),
@@ -585,8 +606,17 @@ test('Project composite affinities occupy by lease state, not lifecycle status',
     compositeItem({ id: 'malformed', number: 3, slot: 'tertiary', leaseUntil: 'not-a-time' }),
     compositeItem({ id: 'other-machine', number: 4, machine: 'machine-b', slot: 'primary', leaseUntil: VALID }),
     compositeItem({ id: 'exact', number: 5, slot: null, leaseUntil: VALID }),
+    compositeItem({ id: 'released', number: 6, slot: 'released', leaseUntil: '' }),
+    compositeItem({ id: 'held', number: 7, slot: 'held', leaseUntil: '' }),
   ];
   items[0].fields[FIELD.status] = 'in-review';
+  items[1].fields[FIELD.workerState] = 'paused';
+  items[5].fields[FIELD.claimedBy] = '';
+  items[5].fields[FIELD.workerState] = 'stopped';
+  items[6].fields[FIELD.claimedBy] = '';
+  items[6].fields[FIELD.workerState] = 'checkpointed';
+  items[6].fields[FIELD.status] = 'done';
+  items[6].fields[FIELD.resourceSemantics] = 'held-affinity';
   const occupied = computeMachineSlotOccupancy({
     active: new Map(),
     items,
@@ -595,9 +625,10 @@ test('Project composite affinities occupy by lease state, not lifecycle status',
     warn: (message) => warnings.push(message),
   });
 
-  // Valid and malformed (fail-closed) occupy; expired frees; another machine
-  // and an exact-machine (non-slot) value are ignored.
-  assert.deepEqual([...occupiedSlotsForPlaybook(occupied, 'pooled')].sort(), ['primary', 'tertiary']);
+  assert.deepEqual(
+    [...occupiedSlotsForPlaybook(occupied, 'pooled')].sort(),
+    ['held', 'primary', 'secondary', 'tertiary'],
+  );
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /unparseable lease-until/);
 });

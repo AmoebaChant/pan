@@ -3437,7 +3437,7 @@ export class GitHubTaskStore {
       return this.detail(item.itemId);
     }
 
-    this.#assertNoLiveWorker(item, operation);
+    if (operation !== 'finish') this.#assertNoLiveWorker(item, operation);
 
     if (operation === 'hold') {
       const tuple = [
@@ -3488,7 +3488,6 @@ export class GitHubTaskStore {
         resourceSemantics: '',
       });
     } else if (operation === 'finish') {
-      this.#assertNoRetainedAffinity(item, operation);
       const recurring = isRecurringBody(item.issue.body);
       if (recurring) {
         await this.#createRecurringSuccessor(item);
@@ -3529,7 +3528,6 @@ export class GitHubTaskStore {
         status: 'done',
         action: 'none',
         detail: input.detail || 'Outcome complete.',
-        workerState: 'stopped',
         needsHumanSince: '',
       });
     } else if (operation === 'reject') {

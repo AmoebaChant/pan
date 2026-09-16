@@ -2830,8 +2830,37 @@ test('legacy execution authorization default still rejects a substantive live ch
       assert.equal(state.writes.length, before);
 });
 
-test('browser terminal actions refuse retained checkpoint affinity before any write', async () => {
-      for (const operation of ['finish', 'reject']) {
+test('browser finish preserves absent, held, and live worker authority', async () => {
+      const scenarios = [
+        {
+          name: 'no affinity',
+          fields: {
+            'worker-state': 'idle',
+          },
+        },
+        {
+          name: 'held affinity',
+          fields: {
+            'worker-state': 'checkpointed',
+            machine: 'machine-a',
+            'session-id': 'session-a',
+            'claim-generation': '',
+            'resource-semantics': 'held-affinity',
+          },
+        },
+        {
+          name: 'live worker',
+          fields: {
+            'worker-state': 'running',
+            machine: 'machine-a',
+            'session-id': 'session-a',
+            'claim-generation': 'generation-a',
+            'claimed-by': 'runner-a',
+            'lease-until': '2030-09-01T00:00:00.000Z',
+          },
+        },
+      ];
+      for (const scenario of scenarios) {
         const state = fakeGitHubState();
         state.issue.body = renderCurrentActionBlock({
           status: 'ready-for-human',
@@ -2842,30 +2871,113 @@ test('browser terminal actions refuse retained checkpoint affinity before any wr
         });
         state.item.fields.Status = 'ready-for-human';
         state.item.fields['next-action'] = 'approve';
-        state.item.fields['worker-state'] = 'checkpointed';
-        state.item.fields.machine = 'machine-a';
-        state.item.fields['session-id'] = 'session-a';
-        state.item.fields['claim-generation'] = 'generation-a';
+        Object.assign(state.item.fields, scenario.fields);
         const { store } = await fakeStore(state);
         const detail = await store.detail('item-1');
-        const before = state.writes.length;
-
-        await assert.rejects(
-          store.mutate({
-            itemId: detail.itemId,
-            revision: detail.revision,
-            projection: detail.projection,
-            operation,
-            detail: operation === 'finish' ? 'Complete.' : 'Reject.',
-          }),
-          /retained workspace affinity/,
+        const expectedAuthority = Object.fromEntries(
+          [
+            'worker-state',
+            'machine',
+            'session-id',
+            'claim-generation',
+            'claimed-by',
+            'lease-until',
+            'resource-semantics',
+          ].map((field) => [field, state.item.fields[field] ?? '']),
         );
-        assert.equal(state.writes.length, before);
-        assert.equal(state.issue.state, 'OPEN');
-        assert.equal(state.item.fields.machine, 'machine-a');
-        assert.equal(state.item.fields['session-id'], 'session-a');
-        assert.equal(state.item.fields['claim-generation'], 'generation-a');
+
+        await store.mutate({
+          itemId: detail.itemId,
+          revision: detail.revision,
+          projection: detail.projection,
+          operation: 'finish',
+          detail: 'Complete.',
+        });
+
+        assert.equal(state.issue.state, 'CLOSED', scenario.name);
+        assert.equal(state.issue.stateReason, 'COMPLETED', scenario.name);
+        assert.equal(state.item.fields.Status, 'done', scenario.name);
+        assert.equal(state.item.fields['next-action'], 'none', scenario.name);
+        assert.equal(state.item.fields['task-revision'], '2', scenario.name);
+        for (const [field, value] of Object.entries(expectedAuthority)) {
+          assert.equal(state.item.fields[field] ?? '', value, `${scenario.name}: ${field}`);
+        }
       }
+});
+
+test('browser finish rejects concurrent worker drift before any write', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = renderCurrentActionBlock({
+        status: 'ready-for-human',
+        action: 'review',
+        detail: 'Review the worker output.',
+        revision: 1,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      });
+      Object.assign(state.item.fields, {
+        Status: 'ready-for-human',
+        'next-action': 'review',
+        'worker-state': 'running',
+        machine: 'machine-a',
+        'session-id': 'session-a',
+        'claim-generation': 'generation-a',
+        'claimed-by': 'runner-a',
+        'lease-until': '2030-09-01T00:00:00.000Z',
+      });
+      const { store } = await fakeStore(state);
+      const detail = await store.detail('item-1');
+      state.item.fields['lease-until'] = '2030-09-01T00:05:00.000Z';
+      const before = state.writes.length;
+
+      await assert.rejects(
+        store.mutate({
+          itemId: detail.itemId,
+          revision: detail.revision,
+          projection: detail.projection,
+          operation: 'finish',
+          detail: 'Complete.',
+        }),
+        /stale task projection/,
+      );
+
+      assert.equal(state.writes.length, before);
+      assert.equal(state.issue.state, 'OPEN');
+      assert.equal(state.item.fields.Status, 'ready-for-human');
+});
+
+test('browser reject still requires checked cleanup for retained affinity', async () => {
+      const state = fakeGitHubState();
+      state.issue.body = renderCurrentActionBlock({
+        status: 'ready-for-human',
+        action: 'approve',
+        detail: 'Approve the completed worker output.',
+        revision: 1,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      });
+      Object.assign(state.item.fields, {
+        Status: 'ready-for-human',
+        'next-action': 'approve',
+        'worker-state': 'checkpointed',
+        machine: 'machine-a',
+        'session-id': 'session-a',
+        'claim-generation': 'generation-a',
+      });
+      const { store } = await fakeStore(state);
+      const detail = await store.detail('item-1');
+      const before = state.writes.length;
+
+      await assert.rejects(
+        store.mutate({
+          itemId: detail.itemId,
+          revision: detail.revision,
+          projection: detail.projection,
+          operation: 'reject',
+          detail: 'Reject.',
+        }),
+        /retained workspace affinity/,
+      );
+      assert.equal(state.writes.length, before);
+      assert.equal(state.issue.state, 'OPEN');
 });
 
 test('browser mutations cannot turn historical provenance into resumable work', async () => {

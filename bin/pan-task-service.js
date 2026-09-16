@@ -222,10 +222,13 @@ export class DemoTaskStore {
       throw Object.assign(new Error('stale task projection'), { statusCode: 409 });
     }
     assertHistoricalProvenanceMutation(task, input);
-    if (['starting', 'running', 'waiting-human', 'uncertain'].includes(task.workerState)) {
+    const operation = input.operation;
+    if (
+      operation !== 'finish'
+      && ['starting', 'running', 'waiting-human', 'uncertain'].includes(task.workerState)
+    ) {
       throw Object.assign(new Error('fixture worker must be continued in its terminal'), { statusCode: 409 });
     }
-    const operation = input.operation;
     if (operation === 'hold') {
       task.status = 'deliberate-hold';
       task.nextAction = 'hold';
@@ -244,7 +247,6 @@ export class DemoTaskStore {
       task.status = 'done';
       task.nextAction = 'none';
       task.nextActionDate = '';
-      task.workerState = 'stopped';
     } else if (operation === 'reject') {
       task.status = 'rejected';
       task.nextAction = 'none';

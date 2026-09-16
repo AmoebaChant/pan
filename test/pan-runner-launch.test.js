@@ -2833,7 +2833,7 @@ test('restart completes partial paused ownership cleanup', async () => {
       items: [paused],
       machine: MACHINE,
     });
-    assert.deepEqual([...occupiedSlotsForPlaybook(occupancy, 'pooled')], []);
+    assert.deepEqual([...occupiedSlotsForPlaybook(occupancy, 'pooled')], ['primary']);
     assert.equal(existsSync(slotDir), true);
   } finally {
     sb.cleanup();
@@ -3260,7 +3260,7 @@ test('rehydrate finishes a receipt after terminal resource fields were already r
   }
 });
 
-test('startup terminal-release failure preserves evidence and restart completes the exact receipt', async () => {
+test('startup receipts a done result and pauses a dead worker without status-based release', async () => {
   const sb = makeSandbox();
   try {
     const repoDir = path.join(sb.dir, 'repo-startup-release');
@@ -3303,16 +3303,11 @@ test('startup terminal-release failure preserves evidence and restart completes 
       updatedAt: '2026-09-09T20:00:00.000Z',
     });
 
-    const makeRunner = ({ failSessionClear = false } = {}) => {
-      let injected = false;
+    const makeRunner = () => {
       const deps = {
         readAllItems: async () => [project],
         readItemById: async () => project,
         setTextField: async (_cfg, _meta, _id, field, value) => {
-          if (failSessionClear && field === FIELD.sessionId && !injected) {
-            injected = true;
-            throw new Error('injected startup session clear failure');
-          }
           project.fields[field] = value ?? '';
         },
         setDateField: async (_cfg, _meta, _id, field, value) => {
@@ -3346,32 +3341,24 @@ test('startup terminal-release failure preserves evidence and restart completes 
       );
     };
 
-    const first = makeRunner({ failSessionClear: true });
-    await first.rehydrate();
+    const runner = makeRunner();
+    await runner.rehydrate();
 
     const journalPath = path.join(seeded.panDir, 'terminal-release.json');
     const resultPath = path.join(seeded.panDir, 'result.json');
     const receiptPath = path.join(seeded.panDir, 'result-consumed.json');
     assert.equal(existsSync(seeded.stateRoot), true);
     assert.equal(existsSync(resultPath), true);
-    assert.equal(JSON.parse(readFileSync(journalPath, 'utf8')).phase, 'prepared');
-    assert.equal(existsSync(receiptPath), false);
-    assert.equal(first.active.get('item-55')?.finalizationPending, true);
-    assert.equal(project.fields[FIELD.machine], '');
+    assert.equal(existsSync(journalPath), false);
+    assert.equal(JSON.parse(readFileSync(receiptPath, 'utf8')).panRunnerResultConsumed, true);
+    assert.equal(project.fields[FIELD.status], 'done');
+    assert.equal(project.fields[FIELD.workerState], 'paused');
+    assert.equal(project.fields[FIELD.claimedBy], '');
+    assert.equal(project.fields[FIELD.leaseUntil], '');
+    assert.equal(project.fields[FIELD.machine], MACHINE);
     assert.equal(project.fields[FIELD.sessionId], seeded.sessionId);
     assert.equal(project.fields[FIELD.claimGeneration], claimGeneration);
-
-    const restarted = makeRunner();
-    await restarted.rehydrate();
-
-    assert.equal(existsSync(seeded.stateRoot), true);
-    assert.equal(existsSync(resultPath), true);
-    assert.equal(JSON.parse(readFileSync(journalPath, 'utf8')).phase, 'released');
-    assert.equal(JSON.parse(readFileSync(receiptPath, 'utf8')).panRunnerResultConsumed, true);
-    assert.equal(project.fields[FIELD.machine], '');
-    assert.equal(project.fields[FIELD.sessionId], '');
-    assert.equal(project.fields[FIELD.claimGeneration], '');
-    assert.equal(restarted.active.has('item-55'), false);
+    assert.equal(runner.active.has('item-55'), false);
   } finally {
     sb.cleanup();
   }

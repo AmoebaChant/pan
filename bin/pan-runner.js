@@ -1410,7 +1410,14 @@ export class Runner {
     const wanted = canonicalPathKey(playbook.workingDirectory);
     return items.some((candidate) => {
       if (candidate.itemId === itemId) return false;
-      if (['done', 'rejected'].includes(statusOf(candidate))) return false;
+      if (
+        ['done', 'rejected'].includes(statusOf(candidate))
+        && workerStateOf(candidate) === 'stopped'
+        && !val(candidate, FIELD.claimedBy, '')
+        && !val(candidate, FIELD.leaseUntil, '')
+      ) {
+        return false;
+      }
       if (!['starting', 'running', 'waiting-human', 'checkpointed', 'paused', 'uncertain']
         .includes(workerStateOf(candidate))) {
         return false;
@@ -3874,6 +3881,15 @@ child.on('exit', (code, signal) => {
     if (!fresh) {
       throw new Error('result finalization cannot record a receipt because its Project item disappeared');
     }
+    if (statusOf(fresh) === 'done' && workerStateOf(fresh) !== 'stopped') {
+      return this.receiptResultAfterManualCompletion(
+        w,
+        resultPath,
+        resultBytes,
+        { outcome, summary: result.summary, details: result.details },
+        fresh,
+      );
+    }
     const currentClaimedBy = val(fresh, FIELD.claimedBy, '');
     const activeOwned = (
       currentClaimedBy === this.cfg.identity
@@ -3977,7 +3993,9 @@ child.on('exit', (code, signal) => {
     }
 
     const needsHumanSince = outcome === 'needs-human' ? new Date().toISOString() : '';
-    const workerState = outcome === 'done' ? 'stopped' : 'checkpointed';
+    const workerState = outcome === 'done'
+      ? workerStateOf(fresh)
+      : 'checkpointed';
 
     await this.repairOutcomeFinalization(w, fresh, {
       outcome,
@@ -4193,19 +4211,7 @@ child.on('exit', (code, signal) => {
           'result finalization under the expected generation',
       );
     }
-    if (outcome === 'done') {
-      const journalState = await this.prepareTerminalReleaseJournal(
-        w,
-        resultBytes,
-        confirmed,
-        { status, nextAction, detail, revision: finalRevision },
-      );
-      await this.completeTerminalRelease(
-        w,
-        journalState.journal,
-        { status, nextAction, detail, revision: finalRevision },
-      );
-    } else {
+    if (outcome !== 'done') {
       if (val(confirmed, FIELD.leaseUntil, '')) {
         await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
       }
@@ -4228,6 +4234,77 @@ child.on('exit', (code, signal) => {
         throw new Error('GitHub did not confirm checkpoint result lease release');
       }
     }
+  }
+
+  completedProjectionMatchesWorker(item, w, expected) {
+    const block = item ? parseCurrentActionBlock(item.issue?.body ?? '') : null;
+    return !!(
+      item
+      && item.issue?.state === 'CLOSED'
+      && item.issue?.stateReason === 'COMPLETED'
+      && statusOf(item) === 'done'
+      && val(item, FIELD.nextAction, '') === 'none'
+      && !val(item, FIELD.nextActionDate, '')
+      && workerStateOf(item) === expected.workerState
+      && val(item, FIELD.needsHumanSince, '') === expected.needsHumanSince
+      && val(item, FIELD.claimedBy, '') === expected.claimedBy
+      && val(item, FIELD.leaseUntil, '') === expected.leaseUntil
+      && val(item, FIELD.machine, '') === expected.machine
+      && val(item, FIELD.sessionId, '') === w.sessionId
+      && val(item, FIELD.claimGeneration, '') === w.claimGeneration
+      && val(item, FIELD.resourceSemantics, '') === expected.resourceSemantics
+      && parseRevision(val(item, FIELD.taskRevision, '')) === expected.revision
+      && block
+      && block.revision === expected.revision
+      && block.status === 'done'
+      && block.action === 'none'
+      && block.detail === expected.detail
+      && [this.cfg.identity, ''].includes(expected.claimedBy)
+      && affinityMatchesMachine(expected.machine, this.cfg.machine)
+      && expected.resourceSemantics !== 'historical-provenance'
+    );
+  }
+
+  async receiptResultAfterManualCompletion(
+    w,
+    resultPath,
+    resultBytes,
+    { outcome, summary, details },
+    initial,
+  ) {
+    const block = parseCurrentActionBlock(initial.issue?.body ?? '');
+    const expected = {
+      revision: parseRevision(val(initial, FIELD.taskRevision, '')),
+      detail: block?.detail ?? '',
+      workerState: workerStateOf(initial),
+      needsHumanSince: val(initial, FIELD.needsHumanSince, ''),
+      claimedBy: val(initial, FIELD.claimedBy, ''),
+      leaseUntil: val(initial, FIELD.leaseUntil, ''),
+      machine: val(initial, FIELD.machine, ''),
+      resourceSemantics: val(initial, FIELD.resourceSemantics, ''),
+    };
+    if (!this.completedProjectionMatchesWorker(initial, w, expected)) {
+      throw new Error(
+        `#${w.issueNumber} completed outcome changed or no longer matches this worker generation`,
+      );
+    }
+    let resultComment =
+      `ℹ️ Worker report received after manual task completion (${outcome}): ${summary}`;
+    if (details) resultComment += `\n\n${details}`;
+    await this.deps.ensureIssueComment(
+      this.deps.gh,
+      this.issueRepoOf(w),
+      w.issueNumber,
+      `<!-- pan-result:${w.sessionId}:${w.claimGeneration} -->`,
+      resultComment,
+    );
+    const confirmed = await this.deps.readItemById(w.itemId);
+    if (!this.completedProjectionMatchesWorker(confirmed, w, expected)) {
+      throw new Error(
+        `#${w.issueNumber} completed outcome changed while its worker report was being receipted`,
+      );
+    }
+    return this.finishFinalization(w, 'done', resultPath, resultBytes);
   }
 
   async prepareTerminalReleaseJournal(w, resultBytes, item, {
@@ -4495,6 +4572,16 @@ child.on('exit', (code, signal) => {
       return true;
     }
 
+    if (['done', 'rejected'].includes(currentStatus)) {
+      logErr(
+        `finalization escalation for #${w.issueNumber} found terminal outcome ${currentStatus}; ` +
+          'preserving the user outcome and worker evidence without lifecycle writes',
+      );
+      w.finalizationPending = false;
+      w.occupancyOnly = true;
+      return true;
+    }
+
     if (currentStatus === targetStatus || currentStatus === 'blocked') {
       w.nextFinalizeAttemptAt = Date.now() + 60000;
       try {
@@ -4575,9 +4662,21 @@ child.on('exit', (code, signal) => {
 
   async releaseWorker(w) {
     return this.withGenerationMutationLock(w, 'worker release', async () => {
+      const releasePath = path.join(w.panDir, 'worker-release.json');
+      let releaseBytes;
+      try {
+        releaseBytes = await readFile(releasePath);
+      } catch {
+        return false;
+      }
+      if (releaseBytes.length !== 0) {
+        throw new Error('worker release signal must be an exact empty file');
+      }
       const fresh = await this.deps.readItemById(w.itemId);
       if (!fresh) return false;
       const machine = val(fresh, FIELD.machine, '');
+      const expectedSessionId = val(fresh, FIELD.sessionId, '');
+      const expectedClaimGeneration = val(fresh, FIELD.claimGeneration, '');
       const resultPath = path.join(w.panDir, 'result.json');
       const hasResult = existsSync(resultPath);
       const consumed = hasResult && await resultIsConsumed({
@@ -4600,13 +4699,33 @@ child.on('exit', (code, signal) => {
         return false;
       }
       w.releasePending = true;
+      await privateWriteFile(path.join(w.panDir, 'worker.stop'), '');
+      if (this.usesOutcomeLifecycle() && workerStateOf(fresh) !== 'stopped') {
+        await this.deps.setSelectField(
+          this.cfg,
+          this.meta,
+          w.itemId,
+          FIELD.workerState,
+          'stopped',
+        );
+      }
       await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.leaseUntil, '');
       await this.deps.setTextField(this.cfg, this.meta, w.itemId, FIELD.claimedBy, '');
       const confirmed = await this.deps.readItemById(w.itemId);
-      if (!confirmed || val(confirmed, FIELD.claimedBy, '') || val(confirmed, FIELD.leaseUntil, '')) {
+      if (
+        !confirmed
+        || val(confirmed, FIELD.claimedBy, '')
+        || val(confirmed, FIELD.leaseUntil, '')
+        || val(confirmed, FIELD.machine, '') !== machine
+        || val(confirmed, FIELD.sessionId, '') !== expectedSessionId
+        || val(confirmed, FIELD.claimGeneration, '') !== expectedClaimGeneration
+        || (
+          this.usesOutcomeLifecycle()
+          && workerStateOf(confirmed) !== 'stopped'
+        )
+      ) {
         return false;
       }
-      await privateWriteFile(path.join(w.panDir, 'worker.stop'), '');
       w.releasePending = false;
       w.finished = true;
       this.active.delete(w.itemId);

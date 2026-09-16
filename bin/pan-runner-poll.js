@@ -143,7 +143,7 @@ export async function cleanTerminalLeaseFields(
     warn = () => {},
   },
 ) {
-  const terminalStatuses = new Set(['in-review', 'done', 'rejected', 'blocked', 'external-waiting']);
+  const terminalStatuses = new Set(['in-review', 'rejected', 'blocked', 'external-waiting']);
   const cleaned = [];
 
   for (const item of items) {
@@ -226,9 +226,9 @@ export function leaseIsFree(item, identity, { now = Date.now(), warn = () => {} 
  *
  *  A slot is occupied by (a) any in-memory active worker recorded in that slot
  *  — including a finalization-pending worker whose directory is not yet free —
- *  and (b) any Project item with a composite affinity for this machine unless
- *  its lease expired or its claim and lease were both cleared. A malformed
- *  lease or partial release fails closed (occupies). This is sufficient
+ *  and (b) any outcome-lifecycle item whose worker state retains a composite
+ *  affinity, independent of task status. Legacy items continue to use lease
+ *  state. A malformed lease or partial release fails closed (occupies). This is sufficient
  *  for the one-runner-per-machine contract: it needs no process, PID, or
  *  filesystem rehydration. The physical same-directory active guard at claim
  *  time remains the final cross-playbook backstop. */
@@ -256,7 +256,6 @@ export function computeMachineSlotOccupancy({
     const { base, slot } = splitAffinity(val(item, FIELD.machine, ''));
     if (slot == null || base !== machine) continue;
     const claimedBy = val(item, FIELD.claimedBy, '');
-    const status = statusOf(item);
     const workerState = workerStateOf(item);
     const newLifecycleOwned = [
       'starting',
@@ -265,7 +264,7 @@ export function computeMachineSlotOccupancy({
       'checkpointed',
       'paused',
       'uncertain',
-    ].includes(workerState) && !['done', 'rejected'].includes(status);
+    ].includes(workerState);
     if (newLifecycleOwned) {
       mark(val(item, FIELD.playbook, ''), slot);
       continue;

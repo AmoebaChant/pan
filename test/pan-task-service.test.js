@@ -128,7 +128,7 @@ test('task HTTP boundary enforces Host, Origin, JSON, and stale revisions', asyn
   assert.equal(stale.status, 409);
 });
 
-test('task service refuses success-shaped writes against a live worker', async (t) => {
+test('task service finishes a task without changing its live worker authority', async (t) => {
   const service = createTaskHttpServer(new DemoTaskStore());
   const address = await service.listen({ port: 0 });
   t.after(() => service.close());
@@ -146,8 +146,15 @@ test('task service refuses success-shaped writes against a live worker', async (
       operation: 'finish',
     }),
   });
-  assert.equal(response.status, 409);
-  assert.match((await response.json()).error, /worker/i);
+  assert.equal(response.status, 200);
+  const completed = await response.json();
+  assert.equal(completed.status, 'done');
+  assert.equal(completed.workerState, detail.workerState);
+  assert.equal(completed.claimedBy, detail.claimedBy);
+  assert.equal(completed.leaseUntil, detail.leaseUntil);
+  assert.equal(completed.machine, detail.machine);
+  assert.equal(completed.sessionId, detail.sessionId);
+  assert.equal(completed.claimGeneration, detail.claimGeneration);
 
   const edit = await fetch(`${address.url}/api/tasks/demo-2/actions`, {
     method: 'POST',

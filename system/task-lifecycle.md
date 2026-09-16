@@ -118,7 +118,9 @@ protocol:
 3. For worker writes, also require the exact live `claim-generation`,
    `session-id`, machine/slot affinity, and runner claim. For UI writes that
    would disturb a worker or workspace, require an explicit operation whose
-   preconditions name the current worker/resource state.
+   preconditions name the current worker/resource state. Recording `done`
+   changes only outcome state and therefore preserves the worker/resource
+   tuple after verifying it has not drifted.
 4. Validate the complete proposed state/action matrix and operation-specific
    rules.
 5. Apply only the requested fields and Issue block/comment.
@@ -153,8 +155,8 @@ or overwrite a newer generation.
 - `paused` — execution stopped unexpectedly or during runner drain and may
   resume only through the owning machine/session;
 - `uncertain` — process or generation ownership cannot be proved; fail closed;
-- `stopped` — no execution remains after a confirmed terminal or released
-  checkpoint transition.
+- `stopped` — no execution remains after a confirmed worker or checkpoint
+  release.
 
 A valid lease means the named runner is actively supervising the generation.
 An expired lease does **not** mean the workspace is free. Workspace affinity
@@ -163,21 +165,25 @@ persists through `paused`, `waiting-human`, and `checkpointed` until one of:
 - the same session resumes;
 - a checked handoff explicitly clears `machine`, `session-id`, and
   `claim-generation` after preserving any result/checkpoint;
-- terminal cleanup confirms `done` or `rejected`; or
+- a checked worker release confirms that the exact launcher may stop and clears
+  active claim/lease authority; or
 - operator recovery proves every possible launcher dead, preserves all results,
   and deliberately releases the workspace under the runner recovery contract.
 
 An additive migration may encounter a closed terminal task whose
 `machine`/`session-id` pair was retained by the prior lifecycle as history
 before claim generations existed. The pair may therefore have an empty
-`claim-generation`. A complete machine/session/generation tuple is current
-operational evidence, not historical provenance, and is invalid on a terminal
-item even when claim and lease are empty. When
-`worker-state` is empty, `idle`, or `stopped`, `claimed-by`, `lease-until`, and
-`needs-human-since` are empty, the Issue close reason matches `done` or
-`rejected`, and operator preflight confirms there is no live/uncertain launcher,
-pending result, checkpoint receipt, or terminal-release journal, that tuple is
-**historical provenance**, not workspace ownership. Migration records
+`claim-generation`. A complete machine/session/generation tuple remains
+operational evidence while its worker is active, paused, checkpointed, or
+uncertain even when the outcome is terminal. After checked release,
+`worker-state=stopped` and empty claim/lease make the retained tuple provenance
+for the completed task and session rather than resume authority. When
+that pre-generation pair has `worker-state` empty, `idle`, or `stopped`,
+`claimed-by`, `lease-until`, and `needs-human-since` are empty, the Issue close
+reason matches `done` or `rejected`, and operator preflight confirms there is no
+live/uncertain launcher, pending result, checkpoint receipt, or
+terminal-release journal, it is **historical provenance**, not workspace
+ownership. Migration records
 `resource-semantics=historical-provenance`; migration and rollback preserve it.
 That marker is immutable through routine browser and service mutations:
 metadata-only edits may preserve it, but no hold, handoff, worker-state edit,
@@ -276,11 +282,19 @@ contract requires it. A playbook that requires the worker to remain through
 live validation does not emit a terminal result at PR creation or merge.
 
 Terminal writes clear and verify `next-action-date` before Issue closure and
-write `Status=done` or `Status=rejected` last among lifecycle fields. Terminal
-cleanup then releases active runner/resource fields without changing task
-history. This remains the rule for new terminal transitions; the additive
-migration exception above preserves already-historical provenance rather than
-pretending it is a live release operation.
+write `Status=done` or `Status=rejected` last among lifecycle fields. A human
+may record `done` while a worker is live, paused, checkpointed, or still owns a
+workspace; that transition preserves worker state, claim, lease, machine,
+session, and generation. The worker may finish naturally. A later report is
+recorded and receipted only while the completed projection and exact worker
+tuple remain unchanged, and it never replaces the user's terminal outcome.
+
+Outcome state never grants release permission. The exact worker must signal
+release under its playbook contract, or checked operator recovery must prove
+the launcher is gone. Release sets worker liveness to `stopped`, clears active
+claim/lease authority, and preserves the completed task's session/workspace
+provenance. Legacy interrupted terminal-release journals remain recovery
+evidence only; they are not created merely because a task becomes terminal.
 
 ## Human attention dates and deadlines
 
@@ -327,7 +341,8 @@ Playbooks declare `humanAttention: autonomous` when the currently authorized
 scope can complete without a human checkpoint; the default is
 `may-request`. At or above the soft limit, `prefer-autonomous` continues
 autonomous-completable work and temporarily skips only `may-request` starts.
-It does not pause live workers, block terminal cleanup, or stop autonomous work.
+It does not pause live workers, block explicit release reconciliation, or stop
+autonomous work.
 `mode: "off"` disables this policy.
 
 ## Everyday derived views

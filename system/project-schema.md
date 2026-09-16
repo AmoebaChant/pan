@@ -26,10 +26,10 @@ resource, revision, date, and transition rules are defined in
 | `needs-human-since` | text | RFC 3339 UTC timestamp for an open human checkpoint. It may coexist with a live lease. |
 | `lease-until` | text | RFC 3339 UTC timestamp for active runner supervision. |
 | `claimed-by` | text | Stable runner identity currently supervising execution. |
-| `machine` | text | Machine or `<machine>::<slot>` workspace affinity. Persists until explicit resource release; a migrated pre-generation machine/session pair may instead be retained historical provenance or held affinity. |
-| `session-id` | text | Durable Copilot session id. On a stopped terminal item it may be provenance, never resume authority. |
-| `claim-generation` | text | UUID binding one claim/launch lineage. Stale generations may not write; a terminal provenance value grants no write or cleanup authority. |
-| `resource-semantics` | single select | Empty for ordinary operational ownership; `historical-provenance` for migrated terminal history that grants no authority; `held-affinity` for a verified non-execution human checkpoint or deliberate hold. |
+| `machine` | text | Machine or `<machine>::<slot>` workspace affinity. It reserves the workspace until checked release; a stopped completed task may retain it as provenance. A migrated pre-generation machine/session pair may instead be historical provenance or held affinity. |
+| `session-id` | text | Durable Copilot session id. It remains linked after completion and release; on a stopped terminal item it is provenance, never resume authority. |
+| `claim-generation` | text | UUID binding one claim/launch lineage. Stale generations may not write; after checked release its terminal value is provenance and grants no write or cleanup authority. |
+| `resource-semantics` | single select | Empty for ordinary operational ownership or checked released provenance; `historical-provenance` for migrated terminal history that grants no authority; `held-affinity` for a verified non-execution human checkpoint or deliberate hold. |
 | `task-revision` | text | Non-negative decimal revision. Writers compare live state and increment this last. |
 | `owner` | single select | **Legacy pilot recovery only:** `unassigned`, `human`, or `agent`. New lifecycle logic and UI never read or write it. |
 
@@ -94,8 +94,11 @@ For `done` and `rejected`:
    its state reason.
 5. Re-read the Project item and write the terminal checked pair.
 6. Update the Issue block/comment, increment `task-revision` last, and verify.
-7. Clear active lease/claim/resource fields only after terminal state is
-   confirmed; never delete session history or results.
+7. Preserve worker state and resource authority. A live, paused, checkpointed,
+   or uncertain worker may coexist with `done`; status is not release
+   permission.
+8. On a later exact worker release, set `worker-state=stopped`, clear active
+   claim/lease authority, and preserve session/workspace provenance and results.
 
 A failure leaves the confirmed partial state visible for retry. Clients never
 return success merely because an earlier write succeeded. Revision-last

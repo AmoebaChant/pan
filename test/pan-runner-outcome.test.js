@@ -525,6 +525,33 @@ test('a stopped process does not free a fixed workspace owned by a paused task',
     runner.fixedResourceOwnedByOther(paused.itemId, runner.playbooks.get('fixed'), [paused, candidate]),
     false,
   );
+
+  const completedLive = structuredClone(paused);
+  completedLive.itemId = 'completed-live';
+  completedLive.fields[FIELD.status] = 'done';
+  completedLive.fields[FIELD.workerState] = 'running';
+  completedLive.fields[FIELD.claimedBy] = 'runner-a';
+  completedLive.fields[FIELD.leaseUntil] = '2030-01-01T00:00:00.000Z';
+  assert.equal(
+    runner.fixedResourceOwnedByOther(
+      candidate.itemId,
+      runner.playbooks.get('fixed'),
+      [completedLive, candidate],
+    ),
+    true,
+  );
+
+  completedLive.fields[FIELD.workerState] = 'stopped';
+  completedLive.fields[FIELD.claimedBy] = '';
+  completedLive.fields[FIELD.leaseUntil] = '';
+  assert.equal(
+    runner.fixedResourceOwnedByOther(
+      candidate.itemId,
+      runner.playbooks.get('fixed'),
+      [completedLive, candidate],
+    ),
+    false,
+  );
 });
 
 async function finalizationHarness(t, outcome) {
@@ -600,6 +627,24 @@ async function finalizationHarness(t, outcome) {
   return { runner, store, calls, worker, result, resultPath, bytes };
 }
 
+function markManuallyCompleted(harness) {
+  const live = harness.store.get(harness.worker.itemId);
+  live.issue.state = 'CLOSED';
+  live.issue.stateReason = 'COMPLETED';
+  live.fields[FIELD.status] = 'done';
+  live.fields[FIELD.nextAction] = 'none';
+  live.fields[FIELD.nextActionDate] = '';
+  live.fields[FIELD.needsHumanSince] = '';
+  live.issue.body = renderCurrentActionBlock({
+    status: 'done',
+    action: 'none',
+    detail: 'User confirmed the outcome is complete.',
+    revision: 4,
+    updatedAt: '2026-09-09T20:00:00.000Z',
+  });
+  return live;
+}
+
 test('whole-outcome completion clears planning, closes the Issue, then commits done', async (t) => {
   const harness = await finalizationHarness(t, 'done');
   const completed = await harness.runner.finalizeOutcomeLifecycle(
@@ -614,13 +659,19 @@ test('whole-outcome completion clears planning, closes the Issue, then commits d
   assert.equal(live.fields[FIELD.nextActionDate], '');
   assert.equal(live.fields[FIELD.status], 'done');
   assert.equal(live.fields[FIELD.nextAction], 'none');
-  assert.equal(live.fields[FIELD.workerState], 'stopped');
+  assert.equal(live.fields[FIELD.workerState], 'running');
   assert.equal(live.fields[FIELD.taskRevision], '5');
-  assert.equal(live.fields[FIELD.machine], '');
-  assert.equal(live.fields[FIELD.sessionId], '');
-  assert.equal(live.fields[FIELD.claimGeneration], '');
+  assert.equal(live.fields[FIELD.claimedBy], 'runner-a');
+  assert.equal(live.fields[FIELD.leaseUntil], '2030-01-01T00:00:00.000Z');
+  assert.equal(live.fields[FIELD.machine], 'machine-a');
+  assert.equal(live.fields[FIELD.sessionId], harness.worker.sessionId);
+  assert.equal(live.fields[FIELD.claimGeneration], harness.worker.claimGeneration);
   assert.ok(harness.calls.indexOf(FIELD.nextActionDate) < harness.calls.indexOf('issue-closed'));
   assert.ok(harness.calls.indexOf('issue-closed') < harness.calls.indexOf('Status:done'));
+  await assert.rejects(
+    readFile(path.join(harness.worker.attemptDir, 'terminal-release.json')),
+    /ENOENT/,
+  );
 });
 
 test('AI-part completion creates an exact human checkpoint without closing the Issue', async (t) => {
@@ -645,42 +696,75 @@ test('AI-part completion creates an exact human checkpoint without closing the I
   assert.equal(harness.calls.includes('issue-closed'), false);
 });
 
-test('matching done/none without the other completion invariants is fully repaired before receipt', async (t) => {
-  const harness = await finalizationHarness(t, 'done');
-  const live = harness.store.get(harness.worker.itemId);
-  live.fields[FIELD.status] = 'done';
-  live.fields[FIELD.nextAction] = 'none';
-  live.fields[FIELD.workerState] = 'running';
-  live.fields[FIELD.nextActionDate] = '2026-09-09';
-  live.issue.body = renderCurrentActionBlock({
-    status: 'ai-executing',
-    action: 'execute',
-    detail: 'Still running.',
-    revision: 4,
-    updatedAt: '2026-09-09T19:00:00.000Z',
+for (const outcome of ['done', 'needs-human', 'external-waiting']) {
+  test(`late ${outcome} report cannot undo manual completion`, async (t) => {
+    const harness = await finalizationHarness(t, outcome);
+    const live = markManuallyCompleted(harness);
+    const before = structuredClone(live);
+
+    assert.equal(await harness.runner.finalizeOutcomeLifecycle(
+      harness.worker,
+      harness.resultPath,
+      harness.bytes,
+      harness.result,
+    ), true);
+
+    assert.deepEqual(live, before);
+    assert.deepEqual(harness.calls, ['comment']);
+    assert.equal(
+      JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')))
+        .panRunnerResultConsumed,
+      true,
+    );
+    assert.equal(await readFile(harness.resultPath, 'utf8'), JSON.stringify(harness.result));
+    await assert.rejects(
+      readFile(path.join(harness.worker.attemptDir, 'terminal-release.json')),
+      /ENOENT/,
+    );
+    await assert.rejects(
+      readFile(path.join(harness.worker.attemptDir, 'worker.stop')),
+      /ENOENT/,
+    );
   });
+}
 
-  const completed = await harness.runner.finalizeOutcomeLifecycle(
-    harness.worker,
-    harness.resultPath,
-    harness.bytes,
-    harness.result,
+test('late report rejects completed projection drift without a receipt', async (t) => {
+  const harness = await finalizationHarness(t, 'done');
+  const live = markManuallyCompleted(harness);
+  live.fields[FIELD.nextActionDate] = '2026-09-10';
+
+  await assert.rejects(
+    harness.runner.finalizeOutcomeLifecycle(
+      harness.worker,
+      harness.resultPath,
+      harness.bytes,
+      harness.result,
+    ),
+    /completed outcome changed/,
   );
-  const receipt = JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')));
+  assert.deepEqual(harness.calls, []);
+  await assert.rejects(
+    readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')),
+    /ENOENT/,
+  );
+});
 
-  assert.equal(completed, true);
-  assert.equal(live.fields[FIELD.nextActionDate], '');
-  assert.equal(live.fields[FIELD.workerState], 'stopped');
-  assert.equal(live.fields[FIELD.claimedBy], '');
-  assert.equal(live.fields[FIELD.leaseUntil], '');
-  assert.equal(live.fields[FIELD.machine], '');
-  assert.equal(live.fields[FIELD.sessionId], '');
-  assert.equal(live.fields[FIELD.claimGeneration], '');
-  assert.equal(live.fields[FIELD.taskRevision], '5');
-  assert.match(live.issue.body, /- State: done/);
-  assert.ok(harness.calls.includes('issue-closed'));
-  assert.equal(receipt.panRunnerResultConsumed, true);
-  assert.ok(harness.calls.indexOf('issue-action') < harness.calls.indexOf(FIELD.claimedBy));
+test('finalization escalation cannot reopen a manually completed outcome', async (t) => {
+  const harness = await finalizationHarness(t, 'needs-human');
+  const live = markManuallyCompleted(harness);
+  harness.worker.finalizationFailures = 2;
+
+  assert.equal(await harness.runner.handleFinalizationFailure(
+    harness.worker,
+    new Error('completed projection changed'),
+    'ready-for-human',
+  ), true);
+
+  assert.equal(live.fields[FIELD.status], 'done');
+  assert.equal(live.fields[FIELD.nextAction], 'none');
+  assert.equal(live.fields[FIELD.taskRevision], '4');
+  assert.equal(harness.worker.occupancyOnly, true);
+  assert.deepEqual(harness.calls, []);
 });
 
 test('terminal state released without its prior journal is reconstructed from exact attempt/result evidence', async (t) => {
@@ -724,58 +808,27 @@ test('terminal state released without its prior journal is reconstructed from ex
   assert.equal(harness.calls.some((call) => call === 'Status:done'), false);
 });
 
-test('terminal release journal recovers a crash after machine clear and never reports success without a receipt', async (t) => {
+test('explicit worker release after manual completion preserves the retained session link', async (t) => {
   const harness = await finalizationHarness(t, 'done');
-  const originalSetText = harness.runner.deps.setTextField;
-  let injected = false;
-  harness.runner.deps.setTextField = async (...args) => {
-    if (args[3] === FIELD.sessionId && !injected) {
-      injected = true;
-      throw new Error('injected session clear failure');
-    }
-    return originalSetText(...args);
-  };
-
-  await assert.rejects(
-    harness.runner.finalizeOutcomeLifecycle(
-      harness.worker,
-      harness.resultPath,
-      harness.bytes,
-      harness.result,
-    ),
-    /injected session clear failure/,
-  );
-
-  const partial = harness.store.get(harness.worker.itemId);
-  assert.equal(partial.fields[FIELD.status], 'done');
-  assert.equal(partial.fields[FIELD.workerState], 'stopped');
-  assert.equal(partial.fields[FIELD.machine], '');
-  assert.equal(partial.fields[FIELD.sessionId], harness.worker.sessionId);
-  assert.equal(partial.fields[FIELD.claimGeneration], harness.worker.claimGeneration);
-  assert.equal(
-    await readFile(path.join(harness.worker.attemptDir, 'terminal-release.json'), 'utf8')
-      .then((value) => JSON.parse(value).phase),
-    'prepared',
-  );
-  await assert.rejects(
-    readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')),
-    /ENOENT/,
-  );
-
-  harness.runner.deps.setTextField = originalSetText;
+  const live = markManuallyCompleted(harness);
   assert.equal(await harness.runner.finalizeOutcomeLifecycle(
     harness.worker,
     harness.resultPath,
     harness.bytes,
     harness.result,
   ), true);
-  assert.equal(partial.fields[FIELD.sessionId], '');
-  assert.equal(partial.fields[FIELD.claimGeneration], '');
-  assert.equal(
-    JSON.parse(await readFile(path.join(harness.worker.attemptDir, 'result-consumed.json')))
-      .panRunnerResultConsumed,
-    true,
-  );
+  await writeFile(path.join(harness.worker.panDir, 'worker-release.json'), '');
+  harness.runner.withGenerationMutationLock = async (_worker, _context, action) => action();
+
+  assert.equal(await harness.runner.releaseWorker(harness.worker), true);
+  assert.equal(live.fields[FIELD.status], 'done');
+  assert.equal(live.fields[FIELD.workerState], 'stopped');
+  assert.equal(live.fields[FIELD.claimedBy], '');
+  assert.equal(live.fields[FIELD.leaseUntil], '');
+  assert.equal(live.fields[FIELD.machine], 'machine-a');
+  assert.equal(live.fields[FIELD.sessionId], harness.worker.sessionId);
+  assert.equal(live.fields[FIELD.claimGeneration], harness.worker.claimGeneration);
+  assert.equal(await readFile(path.join(harness.worker.panDir, 'worker.stop'), 'utf8'), '');
 });
 
 test('checkpoint release journals first, confirms the owned launcher stopped, then releases Project ownership', async (t) => {

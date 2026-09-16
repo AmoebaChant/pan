@@ -401,19 +401,22 @@ supervision continues.
 For every valid result the runner:
 
 1. locks and rechecks revision/generation/session/resource ownership;
-2. posts one idempotent result/transition comment;
-3. applies the checked outcome pair and Issue current-next-action block;
+2. if a user already completed the task, rechecks the exact completed
+   revision/block and worker tuple, posts one idempotent report comment, and
+   leaves the terminal outcome unchanged;
+3. otherwise posts one idempotent result/transition comment and applies the
+   checked outcome pair and Issue current-next-action block;
 4. for `done`, clears/verifies attention date, closes/verifies the Issue, then
-   writes terminal state;
-5. increments revision last and confirms;
-6. for terminal workspace release, writes a digest/generation-bound release
-   journal before clearing any lease/claim/machine/session/generation field;
-7. clears and verifies every remaining release field, recovering any
-   monotonic interrupted prefix from that journal or, for a pre-journal crash,
-   reconstructing it only from the exact terminal projection plus immutable
-   result/manifest evidence;
-8. writes and re-reads a digest-bound `result-consumed.json`; and
-9. writes `worker.stop`.
+   writes terminal state without changing worker/resource fields;
+5. increments revision last and confirms when the outcome changed; and
+6. writes and re-reads a digest-bound `result-consumed.json`.
+
+The worker remains supervised after result consumption. Only its exact empty
+`worker-release.json` grants permission to write `worker.stop`, set
+`worker-state=stopped`, and clear active claim/lease authority. Machine,
+session, generation, result, and report provenance remain attached to the
+completed task. Existing terminal-release journals are honored only as
+recovery evidence for interrupted operations created by earlier versions.
 
 No generic review is inserted because AI acted. The playbook decides whether
 review, merge, rollout, restart, or live validation remains. A worker whose
@@ -444,8 +447,8 @@ workspace release.
 - Deliberate hold or human checkpoint → never automatic resume.
 
 Process exit alone never frees a workspace. Slot occupancy includes active,
-waiting, checkpointed, paused, and uncertain affined sessions until explicit
-handoff or terminal cleanup.
+waiting, checkpointed, paused, uncertain, and manually completed affined
+sessions until explicit handoff, worker release, or checked operator recovery.
 
 ## Recovery
 
