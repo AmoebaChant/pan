@@ -128,6 +128,40 @@ test('pending result consumption follows worker ownership, not lifecycle status'
   );
 });
 
+test('checked released manual completion admits only protected late report outcomes', () => {
+  for (const pendingStatus of ['done', 'ready-for-human', 'external-waiting']) {
+    assert.equal(
+      pendingFinalizationKind({
+        projectStatus: 'done',
+        pendingStatus,
+        claimedBy: '',
+        identity: 'runner-a',
+        checkedReleasedManualCompletion: true,
+      }),
+      'released-manual',
+    );
+  }
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'done',
+      pendingStatus: 'in-review',
+      claimedBy: '',
+      identity: 'runner-a',
+      checkedReleasedManualCompletion: true,
+    }),
+    null,
+  );
+  assert.equal(
+    pendingFinalizationKind({
+      projectStatus: 'done',
+      pendingStatus: 'ready-for-human',
+      claimedBy: '',
+      identity: 'runner-a',
+    }),
+    null,
+  );
+});
+
 test('leaseExpiredOrMissing distinguishes gone leases from held and unreadable ones', () => {
   const at = (leaseUntil) => ({ fields: { [FIELD.leaseUntil]: leaseUntil } });
   // Missing and expired leases are unambiguously gone.

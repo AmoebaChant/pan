@@ -58,6 +58,7 @@ export function pendingFinalizationKind({
   claimedBy,
   identity,
   sweptEligible = false,
+  checkedReleasedManualCompletion = false,
 }) {
   if (
     ['blocked', 'ready-for-human'].includes(projectStatus) &&
@@ -66,6 +67,12 @@ export function pendingFinalizationKind({
     return 'escalated';
   }
   if (projectStatus !== 'paused' && claimedBy === identity) return 'active';
+  if (
+    checkedReleasedManualCompletion
+    && ['done', 'ready-for-human', 'external-waiting'].includes(pendingStatus)
+  ) {
+    return 'released-manual';
+  }
   if (
     pendingStatus === projectStatus &&
     (!claimedBy || claimedBy === identity)

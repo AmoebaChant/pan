@@ -3260,6 +3260,152 @@ test('rehydrate finishes a receipt after terminal resource fields were already r
   }
 });
 
+for (const outcome of ['done', 'needs-human', 'external-waiting']) {
+  test(`rehydrate receipts a late ${outcome} report after checked manual-completion release`, async () => {
+    const sb = makeSandbox();
+    try {
+      const repoDir = path.join(sb.dir, `repo-released-${outcome}`);
+      mkdirSync(repoDir, { recursive: true });
+      const claimGeneration = randomUUID();
+      const result = {
+        outcome,
+        ...(outcome === 'needs-human' ? { action: 'approve' } : {}),
+        summary: `Late ${outcome} report.`,
+        details: `Worker reported ${outcome} after release.`,
+      };
+      const seeded = seedStateRoot(sb, {
+        number: 56,
+        itemId: 'item-56',
+        workingDir: repoDir,
+        isolated: false,
+        alive: false,
+        claimGeneration,
+        result,
+      });
+      writeFileSync(path.join(seeded.panDir, 'worker-release.json'), '');
+      writeFileSync(path.join(seeded.panDir, 'worker.stop'), '');
+      const project = projectItem({
+        itemId: 'item-56',
+        number: 56,
+        status: 'done',
+        machine: MACHINE,
+        sessionId: seeded.sessionId,
+        claimGeneration,
+        workerState: 'stopped',
+        nextAction: 'none',
+        revision: '8',
+      });
+      project.fields[FIELD.nextActionDate] = '';
+      project.fields[FIELD.needsHumanSince] = '';
+      project.issue.state = 'CLOSED';
+      project.issue.stateReason = 'COMPLETED';
+      project.issue.body = renderCurrentActionBlock({
+        status: 'done',
+        action: 'none',
+        detail: 'Completed manually.',
+        revision: 8,
+        updatedAt: '2026-09-09T20:00:00.000Z',
+      });
+      const original = structuredClone(project);
+      const comments = [];
+      const { runner } = makeLaunchRunner(sb, fixedPlaybook(repoDir));
+      runner.cfg.lifecycleVersion = 2;
+      runner.deps.readAllItems = async () => [structuredClone(project)];
+      runner.deps.readItemById = async () => structuredClone(project);
+      runner.deps.ensureIssueComment = async (...args) => comments.push(args);
+      runner.deps.ensureIssueClosed = async () => assert.fail('manual completion is already closed');
+      runner.deps.setTextField = async () => assert.fail('late report must not rewrite Project text');
+      runner.deps.setDateField = async () => assert.fail('late report must not rewrite Project dates');
+      runner.deps.setSelectField = async () => assert.fail('late report must not rewrite Project selections');
+      runner.deps.updateIssueCurrentAction = async () => assert.fail('late report must not rewrite Issue state');
+
+      await runner.rehydrate();
+
+      assert.deepEqual(project, original);
+      assert.equal(comments.length, 1);
+      assert.match(comments[0][4], /Worker report received after manual task completion/);
+      const receipt = JSON.parse(
+        readFileSync(path.join(seeded.panDir, 'result-consumed.json'), 'utf8'),
+      );
+      assert.equal(receipt.panRunnerResultConsumed, true);
+      assert.equal(
+        receipt.resultSha256,
+        createHash('sha256')
+          .update(readFileSync(path.join(seeded.panDir, 'result.json')))
+          .digest('hex'),
+      );
+    } finally {
+      sb.cleanup();
+    }
+  });
+}
+
+for (const missingEvidence of ['wrong retained tuple', 'no checked release evidence']) {
+  test(`rehydrate rejects a late non-done report with ${missingEvidence}`, async () => {
+    const sb = makeSandbox();
+    try {
+      const repoDir = path.join(sb.dir, `repo-rejected-${missingEvidence.replaceAll(' ', '-')}`);
+      mkdirSync(repoDir, { recursive: true });
+      const claimGeneration = randomUUID();
+      const seeded = seedStateRoot(sb, {
+        number: 57,
+        itemId: 'item-57',
+        workingDir: repoDir,
+        isolated: false,
+        alive: false,
+        claimGeneration,
+        result: {
+          outcome: 'needs-human',
+          action: 'approve',
+          summary: 'Late report.',
+        },
+      });
+      if (missingEvidence === 'wrong retained tuple') {
+        writeFileSync(path.join(seeded.panDir, 'worker-release.json'), '');
+        writeFileSync(path.join(seeded.panDir, 'worker.stop'), '');
+      } else {
+        writeFileSync(path.join(seeded.panDir, 'worker-release.json'), '');
+      }
+      const project = projectItem({
+        itemId: 'item-57',
+        number: 57,
+        status: 'done',
+        machine: MACHINE,
+        sessionId: missingEvidence === 'wrong retained tuple'
+          ? randomUUID()
+          : seeded.sessionId,
+        claimGeneration,
+        workerState: 'stopped',
+        nextAction: 'none',
+        revision: '3',
+      });
+      project.issue.state = 'CLOSED';
+      project.issue.stateReason = 'COMPLETED';
+      project.issue.body = renderCurrentActionBlock({
+        status: 'done',
+        action: 'none',
+        detail: 'Completed manually.',
+        revision: 3,
+        updatedAt: '2026-09-09T20:00:00.000Z',
+      });
+      const runner = makeRehydrateRunner(sb, [project], fixedPlaybook(repoDir));
+      let finalized = false;
+      runner.finalize = async () => {
+        finalized = true;
+        return true;
+      };
+
+      await runner.rehydrate();
+
+      assert.equal(finalized, false);
+      assert.equal(existsSync(path.join(seeded.panDir, 'result-consumed.json')), false);
+      assert.equal(existsSync(path.join(seeded.panDir, 'result.json')), true);
+    } finally {
+      sb.cleanup();
+    }
+  });
+}
+
 test('startup receipts a done result and pauses a dead worker without status-based release', async () => {
   const sb = makeSandbox();
   try {

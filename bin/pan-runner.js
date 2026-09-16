@@ -203,6 +203,15 @@ async function resultIsConsumed(attempt) {
   }
 }
 
+async function isExactEmptyFile(filePath) {
+  try {
+    return (await readFile(filePath)).length === 0;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 function terminalReleaseJournalMatches(w, resultBytes, journal) {
   return !!(
     journal
@@ -6115,6 +6124,10 @@ child.on('exit', (code, signal) => {
         )
         ? currentAttempt
         : null;
+      // A release request alone is not evidence that the checked release ran.
+      const checkedReleaseEvidence = !!selectedAttempt
+        && await isExactEmptyFile(path.join(selectedAttempt.signalDir, 'worker-release.json'))
+        && await isExactEmptyFile(path.join(selectedAttempt.signalDir, 'worker.stop'));
       const hasAnyResult = attemptScan.attempts.some(
         (attempt) =>
           attempt.launchId
@@ -6166,6 +6179,7 @@ child.on('exit', (code, signal) => {
         currentResultConsumed,
         checkpointReceipt: checkpointReceiptState.receipt,
         terminalReleaseJournal: terminalReleaseJournalState.journal,
+        checkedReleaseEvidence,
         hasRecoveryEvidence,
         mtimeMs: st.mtimeMs,
       });
@@ -6204,6 +6218,7 @@ child.on('exit', (code, signal) => {
         checkpointReceipt,
         hasRecoveryEvidence,
         terminalReleaseJournal,
+        checkedReleaseEvidence,
       } = workspace;
 
       // Deletion is fail-closed on ownership (`owned` = a fully valid marker). The
@@ -6463,12 +6478,38 @@ child.on('exit', (code, signal) => {
             continue;
           }
 
+          let checkedReleasedManualCompletion = false;
+          if (
+            checkedReleaseEvidence
+            && selectedAttempt
+            && projectStatus === 'done'
+            && match.issue?.state === 'CLOSED'
+            && match.issue?.stateReason === 'COMPLETED'
+            && val(match, FIELD.nextAction, '') === 'none'
+            && !val(match, FIELD.nextActionDate, '')
+            && projectWorkerState === 'stopped'
+            && !val(match, FIELD.needsHumanSince, '')
+            && !claimedBy
+            && !val(match, FIELD.leaseUntil, '')
+            && projectMachine === formatAffinity(this.cfg.machine, launchSlot)
+            && projectSessionId === selectedAttempt.attempt?.sessionId
+            && projectClaimGeneration === selectedAttempt.attempt?.claimGeneration
+          ) {
+            const block = parseCurrentActionBlock(match.issue?.body ?? '');
+            checkedReleasedManualCompletion = !!(
+              block
+              && block.status === 'done'
+              && block.action === 'none'
+              && block.revision === parseRevision(val(match, FIELD.taskRevision, ''))
+            );
+          }
           const finalizationKind = pendingFinalizationKind({
             projectStatus,
             pendingStatus,
             claimedBy,
             identity: this.cfg.identity,
             sweptEligible,
+            checkedReleasedManualCompletion,
           });
 
           if (!finalizationKind) {
@@ -6490,6 +6531,9 @@ child.on('exit', (code, signal) => {
           if (w.finalizationPending) {
             this.active.set(match.itemId, w);
             log(`rehydrated pending finalization for #${number} from ${sessionRoot}`);
+            continue;
+          }
+          if (finalizationKind === 'released-manual') {
             continue;
           }
           // finalize returned false (transient); fall through to liveness handling.
