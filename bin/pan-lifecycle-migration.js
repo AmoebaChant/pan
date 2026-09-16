@@ -36,6 +36,15 @@ const HUMAN_CHECKPOINT_ACTIONS = new Set([
 const VERIFIED_CUTOVER_CLASSIFICATIONS = new Set([
   'verifiedHumanCheckpoint',
   'verifiedDeliberateHold',
+  'verifiedRetainedCheckpoint',
+  'verifiedRetainedReview',
+  'verifiedRetainedHold',
+]);
+
+const RETAINED_CUTOVER_CLASSIFICATIONS = new Set([
+  'verifiedRetainedCheckpoint',
+  'verifiedRetainedReview',
+  'verifiedRetainedHold',
 ]);
 
 function hasCompleteResourceTuple(task) {
@@ -101,7 +110,12 @@ function safeHeldAffinity(task, status = task.status) {
   if (!['ready-for-human', 'deliberate-hold'].includes(status)) return false;
   if (task.resourceSemantics !== 'held-affinity') return false;
   if (status === 'ready-for-human') {
-    if (!hasLegacyResourcePair(task) || !task.needsHumanSince) return false;
+    if (
+      !hasLegacyResourcePair(task)
+      || (!task.needsHumanSince && task.nextAction !== 'review')
+    ) {
+      return false;
+    }
   } else if (!hasCompleteResourceTuple(task) && !hasLegacyResourcePair(task)) {
     return false;
   }
@@ -151,13 +165,22 @@ function isVerifiedCutoverAuthorization(authorization) {
   return VERIFIED_CUTOVER_CLASSIFICATIONS.has(authorization?.classification);
 }
 
+function isRetainedCutoverAuthorization(authorization) {
+  return RETAINED_CUTOVER_CLASSIFICATIONS.has(authorization?.classification);
+}
+
 function verifiedCutoverMismatch(task, authorization, now) {
   if (!isVerifiedCutoverAuthorization(authorization)) return '';
   const expected = {
+    number: task.number,
     projection: task.projection,
+    revision: String(task.revision ?? ''),
+    playbook: task.playbook || '',
+    dependencies: task.dependencies || '',
     status: task.status,
     owner: task.legacyOwner || 'unassigned',
     issueState: task.issueState,
+    issueStateReason: task.issueStateReason || '',
     workerState: task.workerState || '',
     machine: task.machine || '',
     sessionId: task.sessionId || '',
@@ -165,6 +188,8 @@ function verifiedCutoverMismatch(task, authorization, now) {
     claimedBy: task.claimedBy || '',
     leaseUntil: task.leaseUntil || '',
     needsHumanSince: task.needsHumanSince || '',
+    resourceSemantics: task.resourceSemantics || '',
+    sourceExecutionAuthorized: task.executionAuthorized || 'no',
   };
   for (const [field, value] of Object.entries(expected)) {
     if (authorization[field] !== value) {
@@ -192,7 +217,14 @@ function verifiedCutoverMismatch(task, authorization, now) {
   if (!hasLegacyResourcePair(task)) {
     return 'verified cutover authorization requires an exact legacy machine/session pair without claim-generation';
   }
-  if (!task.needsHumanSince) {
+  if (
+    [
+      'verifiedHumanCheckpoint',
+      'verifiedDeliberateHold',
+      'verifiedRetainedCheckpoint',
+    ].includes(authorization.classification)
+    && !task.needsHumanSince
+  ) {
     return 'verified cutover authorization requires the preserved needs-human-since checkpoint';
   }
   if (
@@ -214,7 +246,10 @@ function verifiedCutoverMismatch(task, authorization, now) {
   if (!['', 'idle', 'checkpointed', 'paused', 'stopped'].includes(task.workerState || '')) {
     return 'verified cutover authorization has an unsupported legacy worker state';
   }
-  if (task.legacyOwner !== 'agent') {
+  if (
+    !isRetainedCutoverAuthorization(authorization)
+    && task.legacyOwner !== 'agent'
+  ) {
     return 'verified cutover authorization requires the exact legacy agent owner';
   }
   if (
@@ -229,17 +264,77 @@ function verifiedCutoverMismatch(task, authorization, now) {
   ) {
     return 'verifiedDeliberateHold requires legacy Status blocked';
   }
+  if (
+    authorization.classification === 'verifiedRetainedCheckpoint'
+    && (
+      task.status !== 'in-progress'
+      || task.legacyOwner !== 'agent'
+      || !task.needsHumanSince
+    )
+  ) {
+    return 'verifiedRetainedCheckpoint requires an exact legacy agent in-progress checkpoint';
+  }
+  if (
+    authorization.classification === 'verifiedRetainedReview'
+    && (
+      task.status !== 'in-review'
+      || task.legacyOwner !== 'agent'
+    )
+  ) {
+    return 'verifiedRetainedReview requires an exact legacy agent in-review projection';
+  }
+  if (
+    authorization.classification === 'verifiedRetainedHold'
+    && task.status !== 'blocked'
+  ) {
+    return 'verifiedRetainedHold requires legacy Status blocked';
+  }
+  if (
+    isRetainedCutoverAuthorization(authorization)
+    && (
+      !authorization.runtimeEvidence
+      || authorization.runtimeEvidence.version !== 1
+      || authorization.runtimeEvidence.stateRoot !== authorization.stateRoot
+    )
+  ) {
+    return 'verified retained cutover authorization requires exact runtime evidence';
+  }
+  if (
+    authorization.classification === 'verifiedRetainedCheckpoint'
+    && !authorization.runtimeEvidence.needsHumanSha256
+  ) {
+    return 'verifiedRetainedCheckpoint requires exact needs-human evidence';
+  }
+  if (
+    authorization.classification === 'verifiedRetainedReview'
+    && (
+      !authorization.runtimeEvidence.resultSha256
+      || !authorization.runtimeEvidence.resultConsumedSha256
+    )
+  ) {
+    return 'verifiedRetainedReview requires exact consumed-result evidence';
+  }
+  if (
+    authorization.classification === 'verifiedRetainedHold'
+    && authorization.runtimeEvidence.localState !== 'absent'
+  ) {
+    return 'verifiedRetainedHold requires exact missing local state evidence';
+  }
   return '';
 }
 
 function verifiedCutoverTarget(task, authorization) {
-  const deliberateHold = authorization.classification === 'verifiedDeliberateHold';
+  const deliberateHold = [
+    'verifiedDeliberateHold',
+    'verifiedRetainedHold',
+  ].includes(authorization.classification);
+  const review = authorization.classification === 'verifiedRetainedReview';
   return {
     executionAuthorized: 'no',
     dependencies: task.dependencies || '',
     workerState: authorization.targetWorkerState,
     status: deliberateHold ? 'deliberate-hold' : 'ready-for-human',
-    nextAction: deliberateHold ? 'hold' : authorization.action,
+    nextAction: deliberateHold ? 'hold' : review ? 'review' : authorization.action,
     detail: authorization.detail,
     requiresCutoverHold: false,
     requiresAuthorization: false,
@@ -277,9 +372,13 @@ function validateMigrationAuthorizations(items) {
       }
       const requiredStrings = [
         'projection',
+        'revision',
+        'playbook',
+        'dependencies',
         'status',
         'owner',
         'issueState',
+        'issueStateReason',
         'workerState',
         'machine',
         'sessionId',
@@ -287,12 +386,18 @@ function validateMigrationAuthorizations(items) {
         'claimedBy',
         'leaseUntil',
         'needsHumanSince',
+        'resourceSemantics',
+        'sourceExecutionAuthorized',
         'action',
         'detail',
         'targetWorkerState',
       ];
-      if (requiredStrings.some((field) => typeof entry[field] !== 'string')) {
-        throw new Error(`verified cutover authorization for ${entry.itemId} must contain every exact string binding`);
+      if (
+        !Number.isInteger(entry.number)
+        || entry.number <= 0
+        || requiredStrings.some((field) => typeof entry[field] !== 'string')
+      ) {
+        throw new Error(`verified cutover authorization for ${entry.itemId} must contain every exact source binding`);
       }
       const detail = exactCurrentActionDetail(
         entry.detail,
@@ -303,7 +408,6 @@ function validateMigrationAuthorizations(items) {
         || !entry.machine
         || !entry.sessionId
         || entry.claimGeneration
-        || !entry.needsHumanSince
         || entry.issueState !== 'OPEN'
         || entry.executionAuthorized !== false
         || entry.verifiedDeadProcess !== true
@@ -311,7 +415,7 @@ function validateMigrationAuthorizations(items) {
         || !['checkpointed', 'paused'].includes(entry.targetWorkerState)
         || (entry.claimedBy ? !entry.leaseUntil : !!entry.leaseUntil)
         || (entry.leaseUntil && !Number.isFinite(Date.parse(entry.leaseUntil)))
-        || !Number.isFinite(Date.parse(entry.needsHumanSince))
+        || (entry.needsHumanSince && !Number.isFinite(Date.parse(entry.needsHumanSince)))
       ) {
         throw new Error(`verified cutover authorization for ${entry.itemId} is incomplete or unsafe`);
       }
@@ -326,6 +430,39 @@ function validateMigrationAuthorizations(items) {
         && entry.action !== 'hold'
       ) {
         throw new Error(`verifiedDeliberateHold for ${entry.itemId} must use action=hold`);
+      }
+      if (
+        isRetainedCutoverAuthorization(entry)
+        && (
+          typeof entry.stateRoot !== 'string'
+          || !entry.stateRoot
+          || !entry.runtimeEvidence
+          || typeof entry.runtimeEvidence !== 'object'
+        )
+      ) {
+        throw new Error(`verified retained cutover authorization for ${entry.itemId} lacks runtime evidence`);
+      }
+      if (
+        [
+          'verifiedHumanCheckpoint',
+          'verifiedDeliberateHold',
+          'verifiedRetainedCheckpoint',
+        ].includes(entry.classification)
+        && !entry.needsHumanSince
+      ) {
+        throw new Error(`${entry.classification} for ${entry.itemId} requires the exact checkpoint timestamp`);
+      }
+      if (
+        entry.classification === 'verifiedRetainedReview'
+        && entry.action !== 'review'
+      ) {
+        throw new Error(`${entry.classification} for ${entry.itemId} must use action=review`);
+      }
+      if (
+        entry.classification === 'verifiedRetainedHold'
+        && entry.action !== 'hold'
+      ) {
+        throw new Error(`verifiedRetainedHold for ${entry.itemId} must use action=hold`);
       }
       return { ...entry, detail };
     }
@@ -664,6 +801,7 @@ function currentTupleComplete(task) {
 
 function expectedProjection(task) {
   return {
+    number: task.number,
     projection: task.projection,
     owner: task.legacyOwner || 'unassigned',
     status: task.status,
@@ -750,6 +888,10 @@ export function planLifecycleMigration(tasks, options = {}) {
           detail: authorization.detail,
           verifiedDeadProcess: true,
           verifiedWritersStopped: true,
+          ...(isRetainedCutoverAuthorization(authorization) ? {
+            stateRoot: authorization.stateRoot,
+            runtimeEvidence: authorization.runtimeEvidence,
+          } : {}),
         },
       } : {}),
       expected: expectedProjection(task),
@@ -876,7 +1018,9 @@ function rollbackInvalidReason(task, source) {
   ) {
     return 'Issue current-action projection does not match the rollback source';
   }
-  const runtimeReason = rollbackSafetyReason(task, source.status);
+  const runtimeReason = retainedMigrationRollbackSafe(task, source)
+    ? ''
+    : rollbackSafetyReason(task, source.status);
   if (runtimeReason) return runtimeReason;
   if (
     ['done', 'rejected'].includes(source.status)
@@ -891,17 +1035,68 @@ function rollbackInvalidReason(task, source) {
   return '';
 }
 
+export function retainedMigrationRollbackSafe(task, source) {
+  const legacyPair = !!task.machine && !!task.sessionId && !task.claimGeneration;
+  if (
+    !source
+    || task.resourceSemantics !== 'held-affinity'
+    || !legacyPair
+    || task.claimedBy
+    || task.leaseUntil
+    || !['checkpointed', 'paused'].includes(task.workerState)
+    || task.executionAuthorized !== 'no'
+    || task.issueState !== 'OPEN'
+  ) {
+    return false;
+  }
+  if (source.status === 'deliberate-hold' && source.nextAction === 'hold') {
+    return true;
+  }
+  return (
+    source.status === 'ready-for-human'
+    && (
+      source.nextAction === 'review'
+      || (
+        !!task.needsHumanSince
+        && ['clarify', 'discuss', 'approve'].includes(source.nextAction)
+      )
+    )
+  );
+}
+
+function retainedLegacyRecoveryTarget(task, source) {
+  if (!retainedMigrationRollbackSafe(task, source)) {
+    return legacyRecoveryTarget({
+      status: source.status,
+      action: source.nextAction,
+      workerState: task.workerState,
+    });
+  }
+  if (source.status === 'deliberate-hold') {
+    return {
+      owner: task.legacyOwner || 'human',
+      status: 'blocked',
+    };
+  }
+  if (source.nextAction === 'review') {
+    return {
+      owner: task.legacyOwner || 'agent',
+      status: 'in-review',
+    };
+  }
+  return {
+    owner: task.legacyOwner || 'agent',
+    status: 'in-progress',
+  };
+}
+
 export function planLifecycleRollback(tasks) {
   const actions = tasks.map((task) => {
     const source = rollbackSource(task);
     const invalidReason = rollbackInvalidReason(task, source);
     let target = null;
     if (!invalidReason) {
-      target = legacyRecoveryTarget({
-        status: source.status,
-        action: source.nextAction,
-        workerState: task.workerState,
-      });
+      target = retainedLegacyRecoveryTarget(task, source);
     }
     const alreadyRolledBack = !!(
       target
@@ -931,6 +1126,7 @@ export function planLifecycleRollback(tasks) {
         nextAction: source.nextAction,
         detail: source.detail,
       },
+      retainedMigrationRollback: retainedMigrationRollbackSafe(task, source),
       legacyTarget: target,
       preserve: {
         nextActionDate: task.nextActionDate,

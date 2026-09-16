@@ -83,13 +83,18 @@ pilot recovery mappings without deleting source tasks or history. See
 Lifecycle cutover is deliberately separate and writer-exclusive. Stop every
 runner, task UI, briefing session, and other Project writer; save a baseline
 plan; review an explicit per-item authorization file that matches each approved
-agent task's playbook and dependency text; then apply:
+agent task's playbook and dependency text; derive retained-state entries from
+private captured evidence; replan; then apply:
 
 ```sh
 node bin/pan-lifecycle-migrate.js plan \
   --config /absolute/path/to/config.json --checkout "$PWD" \
-  --authorization /absolute/path/to/authorization.json \
   --report /absolute/path/to/baseline.json
+node bin/pan-lifecycle-authorize-retained.js \
+  --plan /absolute/path/to/baseline.json \
+  --decisions /private/path/to/retained-decisions.json \
+  --state-root /private/path/to/captured-runner-state \
+  --output /private/path/to/retained-authorization.json
 node bin/pan-lifecycle-migrate.js apply \
   --config /absolute/path/to/config.json --checkout "$PWD" \
   --authorization /absolute/path/to/authorization.json \
@@ -112,12 +117,17 @@ The authorization document is
 `{"format":"pan-lifecycle-migration-authorization","version":1,"items":[...]}`;
 each item contains exact `itemId`, `playbook`, `dependencies`, and
 `"executionAuthorized":true`. Legacy ownership alone never authorizes AI.
-Version 1 also accepts exact `verifiedHumanCheckpoint` and
-`verifiedDeliberateHold` entries that explicitly deny execution and attest
-verified process death and stopped writers; see the complete schema in
+Version 1 also accepts exact checkpoint, deliberate-hold, and retained-state
+entries that explicitly deny execution and attest verified process death and
+stopped writers; see the complete schema in
 [`system/todoist-migration.md`](system/todoist-migration.md). An expired lease
-alone is not death evidence. Unapproved retained sessions remain held for
-operator reconciliation. Closed terminal machine/session provenance predating
+alone is not death evidence. Retained entries bind the baseline's exact source
+revision and lifecycle/resource projection plus hashes of observable local
+attempt evidence. Apply recaptures that evidence immediately before the checked
+store write. Retained sessions become non-executable held affinity; a captured
+release remains evidence only and is not consumed or treated as completion.
+Unapproved retained sessions remain held for operator reconciliation. Closed
+terminal machine/session provenance predating
 claim generations is preserved as non-runnable history. Rollback is generated
 only from current live pilot state, checks the complete Issue/Project projection
 again before every write, preserves dates, playbooks, dependencies,

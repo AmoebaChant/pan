@@ -106,17 +106,24 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
    approved legacy agent item. Each entry must contain the exact `itemId`,
    non-empty `playbook`, exact `dependencies` text, and
    `executionAuthorized: true`. Legacy `owner=agent` is never authorization.
-   Version 1 is backwards-compatible and also permits either of these explicit
-   non-execution classifications:
+   Version 1 also permits exact non-execution classifications. Every such entry
+   binds the source Issue number, projection, revision, playbook, dependencies,
+   lifecycle state, Issue state and reason, source authorization, and complete
+   worker/resource projection. For example:
 
    ```json
    {
      "itemId": "PVTI_sanitized",
+     "number": 101,
      "classification": "verifiedHumanCheckpoint",
      "projection": "sha256-from-plan",
+     "revision": "4",
+     "playbook": "tool-development",
+     "dependencies": "",
      "status": "paused",
      "owner": "agent",
      "issueState": "OPEN",
+     "issueStateReason": "",
      "workerState": "",
      "machine": "machine-a",
      "sessionId": "sanitized-session",
@@ -124,6 +131,8 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
      "claimedBy": "old-runner",
      "leaseUntil": "2026-09-10T01:00:00.000Z",
      "needsHumanSince": "2026-09-10T01:30:00.000Z",
+     "resourceSemantics": "",
+     "sourceExecutionAuthorized": "no",
      "action": "approve",
      "detail": "Approve publishing the verified build, or discuss the build number.",
      "targetWorkerState": "checkpointed",
@@ -136,11 +145,16 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
    ```json
    {
      "itemId": "PVTI_sanitized",
+     "number": 102,
      "classification": "verifiedDeliberateHold",
      "projection": "sha256-from-plan",
+     "revision": "4",
+     "playbook": "tool-development",
+     "dependencies": "",
      "status": "blocked",
      "owner": "agent",
      "issueState": "OPEN",
+     "issueStateReason": "",
      "workerState": "",
      "machine": "machine-a",
      "sessionId": "sanitized-session",
@@ -148,6 +162,8 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
      "claimedBy": "",
      "leaseUntil": "",
      "needsHumanSince": "2026-09-10T01:30:00.000Z",
+     "resourceSemantics": "",
+     "sourceExecutionAuthorized": "no",
      "action": "hold",
      "detail": "Keep paused until the user explicitly marks the outcome ready again.",
      "targetWorkerState": "paused",
@@ -165,13 +181,44 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
    collapsible whitespace, or value that would be normalized or truncated.
    The operator must verify the process is dead and all possible
    writers are stopped; timestamps and an expired lease are not proof.
-4. Run `pan-lifecycle-migrate apply` with that file and
+
+   Ambiguous retained legacy sessions use
+   `verifiedRetainedCheckpoint`, `verifiedRetainedReview`, or
+   `verifiedRetainedHold`. Create their entries from the un-authorized baseline
+   rather than typing source bindings:
+
+   ```sh
+   node bin/pan-lifecycle-authorize-retained.js \
+     --plan /private/path/baseline.json \
+     --decisions /private/path/retained-decisions.json \
+     --state-root /private/path/captured-runner-state \
+     --output /private/path/retained-authorization.json
+   ```
+
+   The private decisions document contains only `itemId`, classification,
+   action, canonical detail, and target worker state. The generator copies all
+   source bindings from the plan and hashes the observable current attempt
+   manifest, attempt, owner, exit, PID, result, result-consumption, release, and
+   needs-human files when present. A retained checkpoint requires its observed
+   needs-human file; retained review requires its observed consumed result; a
+   retained hold requires the reviewed absence of matching local state. A
+   release file is bound when present but remains pending evidence: migration
+   neither consumes it nor infers completion. All three targets preserve
+   affinity and explicitly deny execution.
+
+   Combine these generated entries with the separately reviewed execution
+   approvals and rerun `plan`. Continue only when the plan has no
+   `requires-cutover-hold`, `requires-authorization`, or `invalid-state`
+   actions.
+4. Run `pan-lifecycle-migrate apply` with the reviewed combined file and
    `--confirm-writers-stopped`. Active or uncertain workers, claims, leases,
    partial tuples, live leases, generated operational tuples, and ambiguous
    retained sessions remain held for operator reconciliation rather than being
-   guessed safe. A matching verified non-execution entry may clear only its
-   exact stale claim/lease and preserves the human checkpoint, machine, and
-   session as held affinity. Before apply, inspect every terminal tuple's owning
+   guessed safe. Immediately before each checked store write, retained local
+   evidence is recaptured and must match the authorization. A matching verified
+   non-execution entry may clear only its exact stale claim/lease and preserves
+   the unresolved action, machine, and session as held affinity. Before apply,
+   inspect every terminal tuple's owning
    machine state and confirm there is no live/uncertain launcher, unconsumed
    result, checkpoint receipt, or terminal-release journal. A closed terminal
    machine/session pair with empty claim generation and none of that evidence
@@ -240,7 +287,10 @@ replay and is identified by the preserved
 `resource-semantics=historical-provenance` marker. Passive affinity
 on a durable `deliberate-hold/hold` remains held and non-runnable only when no
 open human checkpoint exists; its `resource-semantics=held-affinity` marker is
-preserved. Plan and apply use
+preserved. Migration-authorized held checkpoints and reviews recover to their
+retained `in-progress` and `in-review` categories, while retained deliberate
+holds recover to `blocked`, without changing ordinary lifecycle rollback
+semantics. Plan and apply use
 the same fail-closed worker/resource predicate, so an unsafe item is never
 presented as an approved rollback or idempotent no-op. A fresh post-apply plan reports
 `already-rolled-back` only for a genuinely safe exact projection, making the

@@ -45,10 +45,15 @@ function verifiedCutover(task, classification, overrides = {}) {
   return {
     itemId: task.itemId,
     classification,
+    number: task.number,
     projection: task.projection,
+    revision: String(task.revision ?? ''),
+    playbook: task.playbook || '',
+    dependencies: task.dependencies || '',
     status: task.status,
     owner: task.legacyOwner || 'unassigned',
     issueState: task.issueState,
+    issueStateReason: task.issueStateReason || '',
     workerState: task.workerState || '',
     machine: task.machine || '',
     sessionId: task.sessionId || '',
@@ -56,6 +61,8 @@ function verifiedCutover(task, classification, overrides = {}) {
     claimedBy: task.claimedBy || '',
     leaseUntil: task.leaseUntil || '',
     needsHumanSince: task.needsHumanSince || '',
+    resourceSemantics: task.resourceSemantics || '',
+    sourceExecutionAuthorized: task.executionAuthorized || 'no',
     action: classification === 'verifiedDeliberateHold' ? 'hold' : 'approve',
     detail: classification === 'verifiedDeliberateHold'
       ? 'Keep paused until the user explicitly marks the outcome ready again.'
@@ -1737,6 +1744,7 @@ test('verified legacy checkpoint and deliberate hold migrations clear only stale
             status: 'ready-for-human',
             action: 'approve',
             workerState: 'checkpointed',
+            needsHumanSince: '2026-09-09T07:30:00.000Z',
           },
         },
         {
@@ -1756,6 +1764,132 @@ test('verified legacy checkpoint and deliberate hold migrations clear only stale
             status: 'deliberate-hold',
             action: 'hold',
             workerState: 'checkpointed',
+            needsHumanSince: '2026-09-09T07:30:00.000Z',
+          },
+        },
+        {
+          classification: 'verifiedRetainedCheckpoint',
+          authorization: {
+            action: 'discuss',
+            detail: 'Discuss the preserved checkpoint before resuming.',
+            stateRoot: 'C:\\state',
+            runtimeEvidence: {
+              version: 1,
+              stateRoot: 'C:\\state',
+              needsHumanSha256: 'needs-human',
+            },
+          },
+          configure(state) {
+            state.item.fields.Status = 'in-progress';
+            state.item.fields.owner = 'agent';
+            state.item.fields['worker-state'] = '';
+            state.item.fields['claimed-by'] = 'old-runner';
+            state.item.fields['lease-until'] = '2026-09-09T08:00:00.000Z';
+            state.item.fields['needs-human-since'] = '2026-09-09T07:30:00.000Z';
+            state.item.fields.machine = 'machine-a';
+            state.item.fields['session-id'] = 'session-a';
+            state.item.fields['claim-generation'] = '';
+          },
+          expected: {
+            status: 'ready-for-human',
+            action: 'discuss',
+            workerState: 'checkpointed',
+            needsHumanSince: '2026-09-09T07:30:00.000Z',
+          },
+        },
+        {
+          classification: 'verifiedRetainedReview',
+          authorization: {
+            action: 'review',
+            detail: 'Review the preserved result and retained session.',
+            stateRoot: 'C:\\state',
+            runtimeEvidence: {
+              version: 1,
+              stateRoot: 'C:\\state',
+              resultSha256: 'result',
+              resultConsumedSha256: 'consumed',
+              releaseSha256: '',
+            },
+          },
+          configure(state) {
+            state.item.fields.Status = 'in-review';
+            state.item.fields.owner = 'agent';
+            state.item.fields['worker-state'] = '';
+            state.item.fields['claimed-by'] = '';
+            state.item.fields['lease-until'] = '';
+            state.item.fields['needs-human-since'] = '';
+            state.item.fields.machine = 'machine-a';
+            state.item.fields['session-id'] = 'session-a';
+            state.item.fields['claim-generation'] = '';
+          },
+          expected: {
+            status: 'ready-for-human',
+            action: 'review',
+            workerState: 'checkpointed',
+            needsHumanSince: '',
+          },
+        },
+        {
+          classification: 'verifiedRetainedHold',
+          authorization: {
+            action: 'hold',
+            detail: 'Keep this retained affinity on deliberate hold.',
+            targetWorkerState: 'paused',
+            stateRoot: 'C:\\state',
+            runtimeEvidence: {
+              version: 1,
+              stateRoot: 'C:\\state',
+              localState: 'absent',
+            },
+          },
+          configure(state) {
+            state.item.fields.Status = 'blocked';
+            state.item.fields.owner = 'human';
+            state.item.fields['worker-state'] = '';
+            state.item.fields['claimed-by'] = '';
+            state.item.fields['lease-until'] = '';
+            state.item.fields['needs-human-since'] = '';
+            state.item.fields.machine = 'machine-a';
+            state.item.fields['session-id'] = 'session-a';
+            state.item.fields['claim-generation'] = '';
+          },
+          expected: {
+            status: 'deliberate-hold',
+            action: 'hold',
+            workerState: 'paused',
+            needsHumanSince: '',
+          },
+        },
+        {
+          classification: 'verifiedRetainedReview',
+          authorization: {
+            action: 'review',
+            detail: 'Review the preserved result after the exact worker release.',
+            stateRoot: 'C:\\state',
+            runtimeEvidence: {
+              version: 1,
+              stateRoot: 'C:\\state',
+              resultSha256: 'result',
+              resultConsumedSha256: 'consumed',
+              releaseSha256: 'release',
+            },
+          },
+          configure(state) {
+            state.item.fields.Status = 'in-review';
+            state.item.fields.owner = 'agent';
+            state.item.fields['worker-state'] = '';
+            state.item.fields['claimed-by'] = 'old-runner';
+            state.item.fields['lease-until'] = '2026-09-09T08:00:00.000Z';
+            state.item.fields['needs-human-since'] = '';
+            state.item.fields.machine = 'machine-a';
+            state.item.fields['session-id'] = 'session-a';
+            state.item.fields['claim-generation'] = '';
+          },
+          expected: {
+            status: 'ready-for-human',
+            action: 'review',
+            workerState: 'checkpointed',
+            needsHumanSince: '',
           },
         },
       ];
@@ -1765,7 +1899,11 @@ test('verified legacy checkpoint and deliberate hold migrations clear only stale
         entry.configure(state);
         const { store } = await fakeStore(state);
         const task = (await store.list()).tasks[0];
-        const authorization = verifiedCutover(task, entry.classification);
+        const authorization = verifiedCutover(
+          task,
+          entry.classification,
+          entry.authorization,
+        );
         const plan = planLifecycleMigration([task], {
           now: Date.parse('2026-09-09T12:00:00.000Z'),
           authorizations: [authorization],
@@ -1785,7 +1923,10 @@ test('verified legacy checkpoint and deliberate hold migrations clear only stale
         assert.equal(state.item.fields['execution-authorized'], 'no');
         assert.equal(state.item.fields['claimed-by'], '');
         assert.equal(state.item.fields['lease-until'], '');
-        assert.equal(state.item.fields['needs-human-since'], '2026-09-09T07:30:00.000Z');
+        assert.equal(
+          state.item.fields['needs-human-since'] || '',
+          entry.expected.needsHumanSince || '',
+        );
         assert.equal(state.item.fields.machine, 'machine-a');
         assert.equal(state.item.fields['session-id'], 'session-a');
         assert.equal(state.item.fields['claim-generation'], '');

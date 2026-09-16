@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { parseLifecycleCli } from '../bin/pan-lifecycle-migrate.js';
+import { evidenceBoundMigrationStore, parseLifecycleCli } from '../bin/pan-lifecycle-migrate.js';
+import { buildRetainedMigrationAuthorization } from '../bin/pan-lifecycle-authorize-retained.js';
+import {
+  captureRetainedMigrationEvidence,
+  verifyRetainedMigrationEvidence,
+} from '../bin/pan-lifecycle-retained-evidence.js';
 import {
   applyLifecycleMigration,
   applyLifecycleRollback,
@@ -13,6 +22,7 @@ import {
 function legacy(overrides = {}) {
   return {
     itemId: 'item-1',
+    number: 1,
     url: 'https://github.com/example/domain/issues/1',
     status: 'ready',
     nextAction: '',
@@ -24,6 +34,7 @@ function legacy(overrides = {}) {
     workstream: 'product',
     dependencies: '',
     workerState: '',
+    needsHumanSince: '',
     claimedBy: '',
     leaseUntil: '',
     machine: '',
@@ -42,10 +53,15 @@ function verifiedCutover(task, classification, overrides = {}) {
   return {
     itemId: task.itemId,
     classification,
+    number: task.number,
     projection: task.projection,
+    revision: String(task.revision ?? ''),
+    playbook: task.playbook || '',
+    dependencies: task.dependencies || '',
     status: task.status,
     owner: task.legacyOwner || 'unassigned',
     issueState: task.issueState,
+    issueStateReason: task.issueStateReason || '',
     workerState: task.workerState || '',
     machine: task.machine || '',
     sessionId: task.sessionId || '',
@@ -53,6 +69,8 @@ function verifiedCutover(task, classification, overrides = {}) {
     claimedBy: task.claimedBy || '',
     leaseUntil: task.leaseUntil || '',
     needsHumanSince: task.needsHumanSince || '',
+    resourceSemantics: task.resourceSemantics || '',
+    sourceExecutionAuthorized: task.executionAuthorized || 'no',
     action: classification === 'verifiedDeliberateHold' ? 'hold' : 'approve',
     detail: classification === 'verifiedDeliberateHold'
       ? 'Keep paused until the user explicitly marks the outcome ready again.'
@@ -63,6 +81,73 @@ function verifiedCutover(task, classification, overrides = {}) {
     verifiedWritersStopped: true,
     ...overrides,
   };
+}
+
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+async function writeRetainedAttempt(stateRoot, task, {
+  launchId,
+  result = false,
+  release = false,
+  needsHuman = false,
+} = {}) {
+  const panDir = path.join(
+    stateRoot,
+    `pan-${task.number}-${task.sessionId}`,
+    '.pan',
+  );
+  const attemptDir = path.join(panDir, 'runs', launchId);
+  await mkdir(attemptDir, { recursive: true });
+  await writeFile(path.join(panDir, 'attempts.json'), `${JSON.stringify({
+    panRunnerAttemptManifest: true,
+    version: 1,
+    sessionId: task.sessionId,
+    itemId: task.itemId,
+    number: task.number,
+    machine: 'machine-a',
+    identity: 'runner-a',
+    attempts: [{ launchId }],
+    currentLaunchId: launchId,
+  }, null, 2)}\n`);
+  await writeFile(path.join(attemptDir, 'attempt.json'), `${JSON.stringify({
+    panRunnerAttempt: true,
+    version: 1,
+    launchId,
+    sessionId: task.sessionId,
+    itemId: task.itemId,
+    number: task.number,
+    machine: 'machine-a',
+    identity: 'runner-a',
+    isolated: true,
+    slot: null,
+    workingDir: path.join(stateRoot, 'workspace'),
+  }, null, 2)}\n`);
+  await writeFile(path.join(attemptDir, 'owner.json'), '{"owner":"recorded"}\n');
+  await writeFile(path.join(attemptDir, 'exit.json'), '{"reason":"dead"}\n');
+  await writeFile(path.join(attemptDir, 'worker.pid'), '4242\n');
+  if (needsHuman) {
+    await writeFile(path.join(attemptDir, 'needs-human.json'), `${JSON.stringify({
+      question: 'Review the preserved checkpoint.',
+      since: task.needsHumanSince,
+    })}\n`);
+  }
+  if (result) {
+    const bytes = Buffer.from('{"outcome":"needs-review","summary":"Review result."}\n');
+    await writeFile(path.join(attemptDir, 'result.json'), bytes);
+    await writeFile(path.join(attemptDir, 'result-consumed.json'), `${JSON.stringify({
+      panRunnerResultConsumed: true,
+      version: 1,
+      launchId,
+      sessionId: task.sessionId,
+      itemId: task.itemId,
+      number: task.number,
+      resultSha256: sha256(bytes),
+    })}\n`);
+  }
+  if (release) await writeFile(path.join(attemptDir, 'worker-release.json'), '');
+  return attemptDir;
 }
 
 test('legacy migration keeps stable outcomes and does not use dates as AI gates', () => {
@@ -605,6 +690,307 @@ test('verified deliberate hold requires exact legacy hold projection and remains
   assert.equal(action.target.workerState, 'paused');
   assert.equal(action.target.executionAuthorized, 'no');
   assert.equal(action.preserve.resourceSemantics, 'held-affinity');
+});
+
+test('retained migration authorizations preserve exact non-executable categories', async () => {
+  const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'pan-retained-migration-'));
+  try {
+    const checkpoint = legacy({
+      itemId: 'item-104',
+      number: 104,
+      url: 'https://github.com/example/domain/issues/104',
+      projection: 'projection-104',
+      status: 'in-progress',
+      claimedBy: 'runner-a',
+      leaseUntil: '2026-09-10T01:00:00Z',
+      machine: 'machine-a::slot-a',
+      sessionId: 'session-104',
+      needsHumanSince: '2026-09-10T01:30:00Z',
+    });
+    const reviews = [75, 129, 142].map((number) => legacy({
+      itemId: `item-${number}`,
+      number,
+      url: `https://github.com/example/domain/issues/${number}`,
+      projection: `projection-${number}`,
+      status: 'in-review',
+      machine: 'machine-a::slot-a',
+      sessionId: `session-${number}`,
+    }));
+    const hold = legacy({
+      itemId: 'item-84',
+      number: 84,
+      url: 'https://github.com/example/domain/issues/84',
+      projection: 'projection-84',
+      legacyOwner: 'human',
+      status: 'blocked',
+      machine: 'machine-a::slot-a',
+      sessionId: 'session-84',
+    });
+    const releasePending = legacy({
+      itemId: 'item-125',
+      number: 125,
+      url: 'https://github.com/example/domain/issues/125',
+      projection: 'projection-125',
+      status: 'in-review',
+      claimedBy: 'runner-a',
+      leaseUntil: '2026-09-10T01:00:00Z',
+      machine: 'machine-a::slot-b',
+      sessionId: 'session-125',
+    });
+    await writeRetainedAttempt(stateRoot, checkpoint, {
+      launchId: 'launch-104',
+      needsHuman: true,
+    });
+    for (const review of reviews) {
+      await writeRetainedAttempt(stateRoot, review, {
+        launchId: `launch-${review.number}`,
+        result: true,
+      });
+    }
+    await writeRetainedAttempt(stateRoot, releasePending, {
+      launchId: 'launch-125',
+      result: true,
+      release: true,
+    });
+
+    const tasks = [checkpoint, ...reviews, hold, releasePending];
+    const initial = planLifecycleMigration(
+      tasks,
+      { now: Date.parse('2026-09-10T04:00:00Z') },
+    );
+    assert.deepEqual(
+      initial.actions.map((action) => action.action),
+      Array(6).fill('requires-cutover-hold'),
+    );
+    const authorization = await buildRetainedMigrationAuthorization({
+      plan: initial,
+      stateRoot,
+      decisions: {
+        format: 'pan-retained-migration-decisions',
+        version: 1,
+        items: [
+          {
+            itemId: checkpoint.itemId,
+            classification: 'verifiedRetainedCheckpoint',
+            action: 'discuss',
+            detail: 'Discuss the preserved worker checkpoint before resuming.',
+            targetWorkerState: 'checkpointed',
+          },
+          ...reviews.map((review) => ({
+            itemId: review.itemId,
+            classification: 'verifiedRetainedReview',
+            action: 'review',
+            detail: 'Review the preserved worker result and retained session.',
+            targetWorkerState: 'checkpointed',
+          })),
+          {
+            itemId: hold.itemId,
+            classification: 'verifiedRetainedHold',
+            action: 'hold',
+            detail: 'Keep this retained affinity on deliberate hold.',
+            targetWorkerState: 'paused',
+          },
+          {
+            itemId: releasePending.itemId,
+            classification: 'verifiedRetainedReview',
+            action: 'review',
+            detail: 'Review the preserved release-pending result and retained session.',
+            targetWorkerState: 'checkpointed',
+          },
+        ],
+      },
+    });
+    const plan = planLifecycleMigration(
+      tasks,
+      {
+        now: Date.parse('2026-09-10T04:00:00Z'),
+        authorizations: parseMigrationAuthorizations(authorization),
+      },
+    );
+    assert.deepEqual(plan.actions.map((action) => action.action), Array(6).fill('migrate'));
+    assert.deepEqual(
+      plan.actions.map((action) => [
+        action.target.status,
+        action.target.nextAction,
+        action.target.executionAuthorized,
+        action.preserve.resourceSemantics,
+      ]),
+      [
+        ['ready-for-human', 'discuss', 'no', 'held-affinity'],
+        ['ready-for-human', 'review', 'no', 'held-affinity'],
+        ['ready-for-human', 'review', 'no', 'held-affinity'],
+        ['ready-for-human', 'review', 'no', 'held-affinity'],
+        ['deliberate-hold', 'hold', 'no', 'held-affinity'],
+        ['ready-for-human', 'review', 'no', 'held-affinity'],
+      ],
+    );
+    assert.equal(plan.actions[0].preserve.needsHumanSince, checkpoint.needsHumanSince);
+    assert.equal(plan.actions[1].preserve.needsHumanSince, '');
+    assert.equal(plan.actions[4].expected.owner, 'human');
+    assert.ok(plan.actions[5].cutoverAuthorization.runtimeEvidence.releaseSha256);
+    assert.equal(plan.actions[1].cutoverAuthorization.runtimeEvidence.releaseSha256, '');
+    assert.deepEqual(
+      authorization.items.map((item) => item.number),
+      [104, 75, 129, 142, 84, 125],
+    );
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test('retained authorization fails closed on stale source and local evidence', async () => {
+  const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'pan-retained-evidence-'));
+  try {
+    const task = legacy({
+      itemId: 'released',
+      number: 201,
+      url: 'https://github.com/example/domain/issues/201',
+      projection: 'projection-released',
+      status: 'in-review',
+      claimedBy: 'runner-a',
+      leaseUntil: '2026-09-10T01:00:00Z',
+      machine: 'machine-a::slot-a',
+      sessionId: 'session-released',
+    });
+    const attemptDir = await writeRetainedAttempt(stateRoot, task, {
+      launchId: 'launch-released',
+      result: true,
+      release: true,
+    });
+    const initial = planLifecycleMigration([task], {
+      now: Date.parse('2026-09-10T04:00:00Z'),
+    });
+    const decisions = {
+      format: 'pan-retained-migration-decisions',
+      version: 1,
+      items: [{
+        itemId: task.itemId,
+        classification: 'verifiedRetainedReview',
+        action: 'review',
+        detail: 'Review the exact release-pending worker result.',
+        targetWorkerState: 'checkpointed',
+      }],
+    };
+    const authorization = await buildRetainedMigrationAuthorization({
+      plan: initial,
+      decisions,
+      stateRoot,
+    });
+    const evidence = authorization.items[0].runtimeEvidence;
+    await verifyRetainedMigrationEvidence({ stateRoot, task, expected: evidence });
+
+    const wrongSession = {
+      ...task,
+      sessionId: 'different-session',
+    };
+    await assert.rejects(
+      verifyRetainedMigrationEvidence({
+        stateRoot,
+        task: wrongSession,
+        expected: evidence,
+      }),
+      /attempt manifest|evidence changed/,
+    );
+
+    const action = planLifecycleMigration([task], {
+      now: Date.parse('2026-09-10T04:00:00Z'),
+      authorizations: parseMigrationAuthorizations(authorization),
+    }).actions[0];
+    for (const [name, changed] of [
+      ['status', { ...task, status: 'blocked' }],
+      ['revision', { ...task, revision: task.revision + 1 }],
+    ]) {
+      const stale = planLifecycleMigration([changed], {
+        now: Date.parse('2026-09-10T04:00:00Z'),
+        authorizations: parseMigrationAuthorizations(authorization),
+      }).actions[0];
+      assert.equal(stale.action, 'invalid-state', name);
+      assert.match(stale.reason, new RegExp(name), name);
+    }
+
+    await writeFile(path.join(attemptDir, 'worker-release.json'), 'changed');
+    const visited = [];
+    await assert.rejects(
+      evidenceBoundMigrationStore({
+        async migrateLegacyItem(value) {
+          visited.push(value.itemId);
+        },
+      }).migrateLegacyItem(action),
+      /evidence changed: releaseSha256/,
+    );
+    assert.deepEqual(visited, []);
+
+    await rm(path.join(attemptDir, 'worker-release.json'));
+    const releasePending = await buildRetainedMigrationAuthorization({
+      plan: initial,
+      decisions,
+      stateRoot,
+    });
+    assert.equal(releasePending.items[0].runtimeEvidence.releaseSha256, '');
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test('retained migration rollback restores the exact legacy category', () => {
+  const base = {
+    executionAuthorized: 'no',
+    workerState: 'checkpointed',
+    machine: 'machine-a',
+    sessionId: 'session-a',
+    claimGeneration: '',
+    resourceSemantics: 'held-affinity',
+    revision: 4,
+    currentActionRevision: 4,
+    issueState: 'OPEN',
+    issueStateReason: null,
+  };
+  const cases = [
+    {
+      task: legacy({
+        ...base,
+        legacyOwner: 'agent',
+        status: 'ready-for-human',
+        nextAction: 'discuss',
+        nextActionDetail: 'Discuss the checkpoint.',
+        needsHumanSince: '2026-09-10T01:30:00Z',
+        currentActionStatus: 'ready-for-human',
+        currentActionAction: 'discuss',
+      }),
+      expected: { owner: 'agent', status: 'in-progress' },
+    },
+    {
+      task: legacy({
+        ...base,
+        legacyOwner: 'agent',
+        status: 'ready-for-human',
+        nextAction: 'review',
+        nextActionDetail: 'Review the result.',
+        currentActionStatus: 'ready-for-human',
+        currentActionAction: 'review',
+      }),
+      expected: { owner: 'agent', status: 'in-review' },
+    },
+    {
+      task: legacy({
+        ...base,
+        legacyOwner: 'human',
+        status: 'deliberate-hold',
+        nextAction: 'hold',
+        nextActionDetail: 'Keep this retained affinity on hold.',
+        workerState: 'paused',
+        currentActionStatus: 'deliberate-hold',
+        currentActionAction: 'hold',
+      }),
+      expected: { owner: 'human', status: 'blocked' },
+    },
+  ];
+  for (const { task, expected } of cases) {
+    const action = planLifecycleRollback([task]).actions[0];
+    assert.equal(action.action, 'rollback');
+    assert.equal(action.retainedMigrationRollback, true);
+    assert.deepEqual(action.legacyTarget, expected);
+  }
 });
 
 test('verified cutover authorization rejects stale bindings, live leases, and generations', () => {

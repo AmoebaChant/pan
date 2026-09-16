@@ -150,8 +150,17 @@ Current Project state is never overwritten from a stale migration baseline. See
 node bin/pan-lifecycle-migrate.js plan \
   --config /absolute/path/to/machine.json \
   --checkout /absolute/path/to/pan \
-  --authorization /absolute/path/to/authorization.json \
   --report /absolute/path/to/baseline.json
+node bin/pan-lifecycle-authorize-retained.js \
+  --plan /absolute/path/to/baseline.json \
+  --decisions /private/path/to/retained-decisions.json \
+  --state-root /private/path/to/captured-runner-state \
+  --output /private/path/to/retained-authorization.json
+node bin/pan-lifecycle-migrate.js plan \
+  --config /absolute/path/to/machine.json \
+  --checkout /absolute/path/to/pan \
+  --authorization /private/path/to/reviewed-authorization.json \
+  --report /absolute/path/to/authorized-plan.json
 node bin/pan-lifecycle-migrate.js apply \
   --config /absolute/path/to/machine.json \
   --checkout /absolute/path/to/pan \
@@ -173,19 +182,32 @@ The authorization document has format
 `pan-lifecycle-migration-authorization`, version `1`, and exact `itemId`,
 `playbook`, `dependencies`, and `executionAuthorized: true` entries. Legacy
 agent ownership is not authorization. The same version also supports exact
-`verifiedHumanCheckpoint` and `verifiedDeliberateHold` non-execution entries.
+`verifiedHumanCheckpoint`, `verifiedDeliberateHold`,
+`verifiedRetainedCheckpoint`, `verifiedRetainedReview`, and
+`verifiedRetainedHold` non-execution entries.
 Their complete JSON schema and examples are in
 [`system/todoist-migration.md`](../system/todoist-migration.md). They bind the
-plan projection plus every worker/resource value, preserve the unresolved
-human action and held affinity, and require
+Issue number, plan projection, revision, lifecycle inputs, source authorization,
+and every worker/resource value. They preserve the unresolved action and held
+affinity, and require
 `executionAuthorized: false`, `verifiedDeadProcess: true`, and
 `verifiedWritersStopped: true`. The operator must independently verify process
 death and stop every runner, worker, UI, briefing session, and other writer;
 an expired lease is not proof.
 
+Generate retained entries from the un-authorized baseline and a private,
+reviewed decisions file with `pan-lifecycle-authorize-retained.js`. The
+generator captures only observable local attempt evidence and derives every
+source binding from the plan. Combine its entries with separately reviewed
+execution approvals, then replan before apply. A retained checkpoint becomes a
+held human checkpoint, a retained review becomes held review work, and a
+retained blocked item becomes a deliberate hold. A release file, when present,
+is hashed as source evidence but is not consumed and does not imply completion.
+
 Plan translates current live state, repairs partial current tuples, and flags
 unapproved active or paused sessions as `requires-cutover-hold`. Apply is
-idempotent, re-reads every item, clears only exactly authorized stale
+idempotent, recaptures retained local evidence immediately before each checked
+write, re-reads every item, clears only exactly authorized stale
 claim/lease values, preserves legacy owner/options for rollback, refuses
 changed/live items, and verifies the full Issue/Project projection with revision
 last. Closed terminal machine/session provenance from before claim generations

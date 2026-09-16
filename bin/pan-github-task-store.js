@@ -16,6 +16,7 @@ import {
   upsertCurrentActionBlock,
   validLifecyclePair,
 } from './pan-task-model.js';
+import { retainedMigrationRollbackSafe } from './pan-lifecycle-migration.js';
 import {
   ensureIssueComment,
   ensureIssueClosed,
@@ -2376,19 +2377,32 @@ export class GitHubTaskStore {
       throw new Error('migration target has an invalid lifecycle pair');
     }
     if (action.cutoverClassification) {
-      const checkpoint = action.cutoverClassification === 'verifiedHumanCheckpoint';
-      const deliberateHold = action.cutoverClassification === 'verifiedDeliberateHold';
+      const checkpoint = [
+        'verifiedHumanCheckpoint',
+        'verifiedRetainedCheckpoint',
+      ].includes(action.cutoverClassification);
+      const deliberateHold = [
+        'verifiedDeliberateHold',
+        'verifiedRetainedHold',
+      ].includes(action.cutoverClassification);
+      const retainedReview = action.cutoverClassification === 'verifiedRetainedReview';
       const lease = Date.parse(expected.leaseUntil || '');
       if (
-        (!checkpoint && !deliberateHold)
+        (!checkpoint && !deliberateHold && !retainedReview)
         || action.cutoverAuthorization?.verifiedDeadProcess !== true
         || action.cutoverAuthorization?.verifiedWritersStopped !== true
         || expected.issueState !== 'OPEN'
-        || expected.owner !== 'agent'
+        || (
+          !['verifiedRetainedReview', 'verifiedRetainedHold'].includes(action.cutoverClassification)
+          && expected.owner !== 'agent'
+        )
         || !expected.machine
         || !expected.sessionId
         || expected.claimGeneration
-        || !expected.needsHumanSince
+        || (
+          ['verifiedHumanCheckpoint', 'verifiedRetainedCheckpoint'].includes(action.cutoverClassification)
+          && !expected.needsHumanSince
+        )
         || expected.resourceSemantics
         || expected.executionAuthorized === 'yes'
         || !['', 'idle', 'checkpointed', 'paused', 'stopped'].includes(expected.workerState || '')
@@ -2401,7 +2415,7 @@ export class GitHubTaskStore {
         || (
           checkpoint
           && (
-            expected.status !== 'paused'
+            !['paused', 'in-progress'].includes(expected.status)
             || target.status !== 'ready-for-human'
             || !['clarify', 'discuss', 'approve', 'review'].includes(target.nextAction)
           )
@@ -2412,6 +2426,14 @@ export class GitHubTaskStore {
             expected.status !== 'blocked'
             || target.status !== 'deliberate-hold'
             || target.nextAction !== 'hold'
+          )
+        )
+        || (
+          retainedReview
+          && (
+            expected.status !== 'in-review'
+            || target.status !== 'ready-for-human'
+            || target.nextAction !== 'review'
           )
         )
       ) {
@@ -2590,8 +2612,10 @@ export class GitHubTaskStore {
     ) {
       throw new Error('rollback plan has an invalid source or legacy target');
     }
-    const rollbackUnsafe = rollbackSafetyReason({
+    const rollbackTask = {
       status: source.status,
+      nextAction: source.nextAction,
+      executionAuthorized: item.fields['execution-authorized'] || 'no',
       workerState: item.fields['worker-state'] || '',
       needsHumanSince: item.fields['needs-human-since'] || '',
       claimedBy: item.fields['claimed-by'] || '',
@@ -2600,7 +2624,16 @@ export class GitHubTaskStore {
       sessionId: item.fields['session-id'] || '',
       claimGeneration: item.fields['claim-generation'] || '',
       resourceSemantics: item.fields['resource-semantics'] || '',
-    }, source.status);
+      legacyOwner: item.fields.owner || 'unassigned',
+      issueState: item.issue.state,
+    };
+    const retainedRollback = retainedMigrationRollbackSafe(rollbackTask, source);
+    if (retainedRollback !== action.retainedMigrationRollback) {
+      throw new Error('rollback retained-affinity classification changed after planning');
+    }
+    const rollbackUnsafe = retainedRollback
+      ? ''
+      : rollbackSafetyReason(rollbackTask, source.status);
     if (rollbackUnsafe) throw new Error(rollbackUnsafe);
     if (
       ['done', 'rejected'].includes(source.status)

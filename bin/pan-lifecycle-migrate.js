@@ -15,6 +15,7 @@ import {
   planLifecycleMigration,
   planLifecycleRollback,
 } from './pan-lifecycle-migration.js';
+import { verifyRetainedMigrationEvidence } from './pan-lifecycle-retained-evidence.js';
 
 const HELP = `Pan additive lifecycle migration
 
@@ -27,20 +28,27 @@ Usage:
 Plan is read-only. Agent-owned work is not authorized by legacy owner alone:
 the authorization file must explicitly approve each item and exactly match its
 playbook and dependency text. Version 1 also accepts explicit non-execution
-classifications "verifiedHumanCheckpoint" and "verifiedDeliberateHold". Those
-entries must bind the exact plan projection, owner, Status, Issue state,
-worker/resource fields, needs-human-since, requested action/detail, and target
-worker state, with executionAuthorized=false, verifiedDeadProcess=true, and
-verifiedWritersStopped=true. Detail must already be one canonical non-empty
-line of at most 2,000 characters, with no control characters and no whitespace
-normalization required. They never authorize execution.
+classifications "verifiedHumanCheckpoint", "verifiedDeliberateHold",
+"verifiedRetainedCheckpoint", "verifiedRetainedReview", and
+"verifiedRetainedHold". Those entries bind the exact Issue number, plan
+projection, revision, playbook, dependencies, owner, Status, Issue state and
+reason, source authorization, worker/resource fields, requested action/detail,
+and target worker state. They require executionAuthorized=false,
+verifiedDeadProcess=true, and verifiedWritersStopped=true. Retained entries
+also bind hashes of the observable local attempt evidence captured by
+pan-lifecycle-authorize-retained.js. Detail must already be one canonical
+non-empty line of at most 2,000 characters, with no control characters and no
+whitespace normalization required. They never authorize execution.
 
 Apply refuses live or uncertain workers and ambiguous retained sessions. Before
 authorizing a legacy checkpoint or hold, the operator must verify the named
 process is dead and every possible runner, worker, UI, briefing session, and
 other Project writer is stopped. An expired lease alone is not death evidence.
-Apply clears an exactly matched stale claim/lease only for such an authorization
+Apply recaptures retained evidence immediately before each checked store write,
+then clears an exactly matched stale claim/lease only for such an authorization
 and preserves machine, session, needs-human-since, and the unresolved action.
+A captured release file remains evidence only; migration neither consumes it
+nor infers task completion from it.
 A CLOSED terminal item may retain a historical machine/session pair only when
 claim-generation is empty. A complete machine/session/generation tuple remains
 operational evidence and is invalid even without a claim or lease. Before
@@ -121,9 +129,30 @@ export async function runLifecycleCommand(options) {
   }
   const report = rollback
     ? await applyLifecycleRollback(plan, store)
-    : await applyLifecycleMigration(plan, store);
+    : await applyLifecycleMigration(plan, evidenceBoundMigrationStore(store));
   await emit(report, options.report);
   return { exitCode: report.partial ? 2 : 0 };
+}
+
+export function evidenceBoundMigrationStore(store) {
+  return {
+    async migrateLegacyItem(action) {
+      if (action.cutoverAuthorization?.runtimeEvidence) {
+        await verifyRetainedMigrationEvidence({
+          stateRoot: action.cutoverAuthorization.stateRoot,
+          task: {
+            number: action.expected.number,
+            itemId: action.itemId,
+            machine: action.expected.machine,
+            sessionId: action.expected.sessionId,
+            claimGeneration: action.expected.claimGeneration,
+          },
+          expected: action.cutoverAuthorization.runtimeEvidence,
+        });
+      }
+      return store.migrateLegacyItem(action);
+    },
+  };
 }
 
 async function main() {
