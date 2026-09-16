@@ -47,6 +47,17 @@ const RETAINED_CUTOVER_CLASSIFICATIONS = new Set([
   'verifiedRetainedHold',
 ]);
 
+export function closedIssueLifecycleStatus(issueState, issueStateReason) {
+  if (issueState !== 'CLOSED') return '';
+  if (issueStateReason === 'COMPLETED') return 'done';
+  if (['NOT_PLANNED', 'DUPLICATE'].includes(issueStateReason)) return 'rejected';
+  return '';
+}
+
+export function terminalIssueMatchesStatus(issueState, issueStateReason, status) {
+  return closedIssueLifecycleStatus(issueState, issueStateReason) === status;
+}
+
 function hasCompleteResourceTuple(task) {
   return resourceTuple(task).every(Boolean);
 }
@@ -102,8 +113,7 @@ function safeTerminalProvenance(
   if (!hasLegacyResourcePair(task)) return false;
   if (!['', 'historical-provenance'].includes(task.resourceSemantics || '')) return false;
   return (
-    task.issueState === 'CLOSED'
-    && task.issueStateReason === (status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
+    terminalIssueMatchesStatus(task.issueState, task.issueStateReason, status)
     && !hasActiveOrUncertainEvidence(task)
     && (allowLegacyAttention || !task.needsHumanSince)
     && ['', 'idle', 'stopped'].includes(task.workerState || '')
@@ -508,7 +518,10 @@ export function translateLegacyTask(task, {
   authorization = null,
 } = {}) {
   const owner = task.legacyOwner || 'unassigned';
-  const status = task.status || 'untriaged';
+  let status = task.status || 'untriaged';
+  if (['done', 'rejected'].includes(status)) {
+    status = closedIssueLifecycleStatus(task.issueState, task.issueStateReason) || status;
+  }
   const base = {
     executionAuthorized: 'no',
     dependencies: task.dependencies || '',
@@ -743,6 +756,15 @@ function invalidMigrationIssueStateReason(task, target) {
   ) {
     return 'closed Issue conflicts with a nonterminal lifecycle and requires reconciliation';
   }
+  if (task.issueState === 'CLOSED') {
+    const status = closedIssueLifecycleStatus(task.issueState, task.issueStateReason);
+    if (!status) {
+      return 'closed Issue has an unsupported close reason and requires reconciliation';
+    }
+    if (target.status !== status) {
+      return 'closed Issue close reason conflicts with the terminal lifecycle';
+    }
+  }
   return '';
 }
 
@@ -803,8 +825,11 @@ function currentTupleComplete(task) {
       || task.claimedBy
       || task.leaseUntil
       || task.workerState !== 'stopped'
-      || task.issueState !== 'CLOSED'
-      || task.issueStateReason !== (task.status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
+      || !terminalIssueMatchesStatus(
+        task.issueState,
+        task.issueStateReason,
+        task.status,
+      )
     )
   ) {
     return false;
@@ -1049,9 +1074,10 @@ function rollbackInvalidReason(task, source) {
   if (runtimeReason) return runtimeReason;
   if (
     ['done', 'rejected'].includes(source.status)
-      ? (
-        task.issueState !== 'CLOSED'
-        || task.issueStateReason !== (source.status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
+      ? !terminalIssueMatchesStatus(
+        task.issueState,
+        task.issueStateReason,
+        source.status,
       )
       : task.issueState !== 'OPEN'
   ) {

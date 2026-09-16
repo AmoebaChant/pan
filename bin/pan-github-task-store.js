@@ -16,7 +16,10 @@ import {
   upsertCurrentActionBlock,
   validLifecyclePair,
 } from './pan-task-model.js';
-import { retainedMigrationRollbackSafe } from './pan-lifecycle-migration.js';
+import {
+  retainedMigrationRollbackSafe,
+  terminalIssueMatchesStatus,
+} from './pan-lifecycle-migration.js';
 import {
   ensureIssueComment,
   ensureIssueClosed,
@@ -66,6 +69,7 @@ export function runGh(args, { input = null } = {}) {
 
 function projectionFingerprint(item) {
   const issue = item.issue ?? {};
+  const issueState = issue.state ?? '';
   const fields = Object.fromEntries(
     Object.entries(item.fields ?? {})
       .filter(([, value]) => value != null && value !== '')
@@ -80,14 +84,35 @@ function projectionFingerprint(item) {
       body: issue.body ?? '',
       url: issue.url ?? '',
       repo: issue.repo ?? '',
-      state: issue.state ?? '',
-      stateReason: issue.stateReason ?? null,
+      state: issueState,
+      stateReason: canonicalIssueStateReason(issueState, issue.stateReason),
       createdAt: issue.createdAt ?? null,
       updatedAt: issue.updatedAt ?? null,
       closedAt: issue.closedAt ?? null,
     },
     fields,
   })).digest('hex');
+}
+
+function projectionMatchesAfterDateCleanup(item, plannedItem, expectedProjection) {
+  return projectionFingerprint({
+    ...item,
+    projectUpdatedAt: plannedItem.projectUpdatedAt,
+    fields: {
+      ...item.fields,
+      'next-action-date': plannedItem.fields['next-action-date'],
+    },
+  }) === expectedProjection;
+}
+
+function canonicalIssueStateReason(issueState, issueStateReason) {
+  if (
+    issueState === 'OPEN'
+    && (issueStateReason == null || issueStateReason === '')
+  ) {
+    return null;
+  }
+  return issueStateReason ?? null;
 }
 
 function parseRepo(value, name) {
@@ -782,7 +807,10 @@ function normalizedTask(item, today, recentSince) {
     title: item.issue.title,
     url: item.issue.url,
     issueState: item.issue.state,
-    issueStateReason: item.issue.stateReason,
+    issueStateReason: canonicalIssueStateReason(
+      item.issue.state,
+      item.issue.stateReason,
+    ),
     status: fields.Status ?? '',
     nextAction: fields['next-action'] ?? '',
     nextActionDetail: currentAction?.detail ?? '',
@@ -2346,14 +2374,14 @@ export class GitHubTaskStore {
         throw new Error('verified cutover authorization does not match the migration action');
       }
     }
-    const item = await this.#item(action.itemId);
+    let item = await this.#item(action.itemId);
     if (!item) throw new Error('legacy Project item no longer exists');
     const expected = action.expected;
     if (
       typeof expected.projection !== 'string'
       || projectionFingerprint(item) !== expected.projection
       || (item.fields.owner || 'unassigned') !== expected.owner
-      || item.fields.Status !== expected.status
+      || (item.fields.Status || '') !== (expected.status || '')
       || (item.fields['next-action'] || '') !== (expected.nextAction || '')
       || (item.fields['worker-state'] || '') !== (expected.workerState || '')
       || (item.fields['execution-authorized'] || 'no') !== (expected.executionAuthorized || 'no')
@@ -2368,7 +2396,8 @@ export class GitHubTaskStore {
       || (item.fields['resource-semantics'] || '') !== (expected.resourceSemantics || '')
       || parseRevision(item.fields['task-revision'] || '') !== parseRevision(expected.revision || '')
       || item.issue.state !== expected.issueState
-      || item.issue.stateReason !== expected.issueStateReason
+      || canonicalIssueStateReason(item.issue.state, item.issue.stateReason)
+        !== expected.issueStateReason
     ) {
       throw new Error('legacy item changed after the migration plan was generated');
     }
@@ -2446,6 +2475,17 @@ export class GitHubTaskStore {
     if (!terminal && item.issue.state === 'CLOSED') {
       throw new Error('closed Issue with a nonterminal lifecycle requires reconciliation');
     }
+    if (
+      terminal
+      && item.issue.state === 'CLOSED'
+      && !terminalIssueMatchesStatus(
+        item.issue.state,
+        item.issue.stateReason,
+        target.status,
+      )
+    ) {
+      throw new Error('closed Issue reason is incompatible with the terminal migration target');
+    }
     const expectedRevision = parseRevision(item.fields['task-revision'] || '');
     const currentBlock = parseCurrentActionBlock(item.issue.body);
     let nextRevision = expectedRevision + 1;
@@ -2467,11 +2507,17 @@ export class GitHubTaskStore {
         if (!cleared || cleared.fields['next-action-date']) {
           throw new Error('GitHub did not verify terminal migration date cleanup');
         }
+        if (!projectionMatchesAfterDateCleanup(cleared, item, expected.projection)) {
+          throw new Error('legacy item changed during terminal migration date cleanup');
+        }
+        item = cleared;
       }
-      if (target.status === 'done') {
-        await ensureIssueClosed(this.gh, item.issue.repo, item.issue.number);
-      } else {
-        await ensureIssueRejected(this.gh, item.issue.repo, item.issue.number);
+      if (item.issue.state !== 'CLOSED') {
+        if (target.status === 'done') {
+          await ensureIssueClosed(this.gh, item.issue.repo, item.issue.number);
+        } else {
+          await ensureIssueRejected(this.gh, item.issue.repo, item.issue.number);
+        }
       }
     }
     const expectedFields = new Map([
@@ -2564,9 +2610,10 @@ export class GitHubTaskStore {
       || confirmedBlock.detail !== target.detail
       || (
         terminal
-        && (
-          confirmed.issue.state !== 'CLOSED'
-          || confirmed.issue.stateReason !== (target.status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
+        && !terminalIssueMatchesStatus(
+          confirmed.issue.state,
+          confirmed.issue.stateReason,
+          target.status,
         )
       )
       || (!terminal && confirmed.issue.state !== 'OPEN')
@@ -2637,9 +2684,10 @@ export class GitHubTaskStore {
     if (rollbackUnsafe) throw new Error(rollbackUnsafe);
     if (
       ['done', 'rejected'].includes(source.status)
-        ? (
-          item.issue.state !== 'CLOSED'
-          || item.issue.stateReason !== (source.status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
+        ? !terminalIssueMatchesStatus(
+          item.issue.state,
+          item.issue.stateReason,
+          source.status,
         )
         : item.issue.state !== 'OPEN'
     ) {

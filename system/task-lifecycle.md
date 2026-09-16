@@ -191,6 +191,15 @@ checkpoint receipt, or terminal-release journal beside that marker — fails
 closed for operator reconciliation. Unmarked journal-based interrupted
 terminal cleanup remains recoverable under the normal exact binding checks.
 
+For a legacy terminal item, additive migration takes the conservative outcome
+from the already-closed Issue rather than a conflicting legacy Project Status:
+`COMPLETED` maps to `done`, while `NOT_PLANNED` and `DUPLICATE` map to
+`rejected`. Migration preserves the existing close reason and never reopens the
+Issue to manufacture convergence. Any other closed reason fails closed for
+operator reconciliation. A retry may continue after its own verified terminal
+attention-date cleanup, but it must still match the complete current
+Issue/Project projection before writing another field.
+
 Writer-exclusive migration may also preserve a pre-generation
 `machine`/`session-id` pair as `resource-semantics=held-affinity` in exactly two
 operator-authorized non-execution cases:

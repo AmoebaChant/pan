@@ -168,6 +168,8 @@ Issue state, state reason, and playbook text, before apply, and verify the
 matching open or terminal Issue state afterward. Projection fingerprints use a
 canonical complete read: Project item and field-value order is irrelevant, and
 absent, null, or empty representations of an unset field (including nullable
-Issue values) compare as the same unset value. Any substantive Issue content,
-Issue state/reason, or non-empty Project field change still makes the plan
+Issue values) compare as the same unset value. For Issue close reasons, that
+equivalence applies only while the Issue is open; every closed reason is
+substantive migration evidence. Any substantive Issue content, Issue
+state/reason, or non-empty Project field change still makes the plan
 stale before writes.

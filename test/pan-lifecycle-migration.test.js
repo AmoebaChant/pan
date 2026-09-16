@@ -645,6 +645,51 @@ test('terminal provenance migrates safely while terminal active or uncertain evi
   }
 });
 
+test('legacy terminal migration follows supported closed Issue reasons and rejects unknown reasons', () => {
+  const cases = [
+    {
+      name: 'completed overrides rejected',
+      status: 'rejected',
+      issueStateReason: 'COMPLETED',
+      targetStatus: 'done',
+    },
+    {
+      name: 'not planned overrides done',
+      status: 'done',
+      issueStateReason: 'NOT_PLANNED',
+      targetStatus: 'rejected',
+    },
+    {
+      name: 'duplicate remains rejected',
+      status: 'rejected',
+      issueStateReason: 'DUPLICATE',
+      targetStatus: 'rejected',
+    },
+  ];
+  for (const entry of cases) {
+    const action = planLifecycleMigration([
+      legacy({
+        status: entry.status,
+        issueState: 'CLOSED',
+        issueStateReason: entry.issueStateReason,
+      }),
+    ]).actions[0];
+    assert.equal(action.action, 'migrate', entry.name);
+    assert.equal(action.target.status, entry.targetStatus, entry.name);
+    assert.equal(action.target.nextAction, 'none', entry.name);
+  }
+
+  const unsupported = planLifecycleMigration([
+    legacy({
+      status: 'done',
+      issueState: 'CLOSED',
+      issueStateReason: 'REOPENED',
+    }),
+  ]).actions[0];
+  assert.equal(unsupported.action, 'invalid-state');
+  assert.match(unsupported.reason, /unsupported close reason/);
+});
+
 test('verified dead legacy human checkpoint becomes held non-execution work only on exact authorization', () => {
   const task = legacy({
     status: 'paused',

@@ -306,7 +306,7 @@ function fakeGitHubState({ projectReadNodes = null } = {}) {
           createdAt: projectItem.issue.createdAt,
           updatedAt: projectItem.issue.updatedAt,
           closedAt: projectItem.issue.closedAt,
-          repository: { nameWithOwner: 'example/domain' },
+          repository: { nameWithOwner: projectItem.issue.repo ?? 'example/domain' },
         },
         fieldValues: {
           nodes: Object.entries(projectItem.fields).filter(([, value]) => value !== '').map(([name, value]) => {
@@ -2186,6 +2186,391 @@ test('lifecycle plan and apply use one canonical projection across production-sh
         state.items.find((item) => item.id === 'item-21').fields['resource-semantics'],
         'held-affinity',
       );
+});
+
+test('mixed lifecycle retry preserves Issues and converges only the four supported failures', async () => {
+      const state = fakeGitHubState({
+        projectReadNodes(nodes, readIndex) {
+          const shaped = structuredClone(nodes);
+          const open = shaped.find((node) => node.content.number === 143);
+          if (open) {
+            if (readIndex % 2 === 0) open.content.stateReason = '';
+            else delete open.content.stateReason;
+          }
+          return shaped;
+        },
+      });
+      state.items.length = 0;
+      state.issues.length = 0;
+      state.commentsByIssue.clear();
+
+      const addItem = ({
+        id,
+        number,
+        title,
+        body,
+        state: issueState = 'OPEN',
+        stateReason = null,
+        fields,
+        comments = [],
+      }) => {
+        const issue = {
+          number,
+          title,
+          body,
+          html_url: `https://github.com/example/domain/issues/${number}`,
+          url: `https://github.com/example/domain/issues/${number}`,
+          state: issueState,
+          stateReason,
+          createdAt: '2026-09-01T00:00:00Z',
+          updatedAt: '2026-09-01T00:00:00Z',
+          closedAt: issueState === 'CLOSED' ? '2026-09-02T00:00:00Z' : null,
+        };
+        const item = {
+          id,
+          updatedAt: '2026-09-01T00:00:00Z',
+          issue,
+          fields: {
+            Status: 'ready-for-human',
+            'next-action': 'act',
+            owner: 'human',
+            priority: 'normal',
+            'next-action-date': '',
+            deadline: '',
+            workstream: '',
+            playbook: '',
+            dependencies: '',
+            'execution-authorized': 'no',
+            'worker-state': 'idle',
+            'needs-human-since': '',
+            'claimed-by': '',
+            'lease-until': '',
+            machine: '',
+            'session-id': '',
+            'claim-generation': '',
+            'resource-semantics': '',
+            'task-revision': '1',
+            ...fields,
+          },
+        };
+        state.issues.push(issue);
+        state.items.push(item);
+        state.commentsByIssue.set(number, comments.map((comment, index) => ({
+          id: `existing-${number}-${index}`,
+          author: { login: 'user' },
+          createdAt: '2026-08-01T00:00:00Z',
+          updatedAt: '2026-08-01T00:00:00Z',
+          url: `${issue.url}#issuecomment-existing-${index}`,
+          body: comment,
+        })));
+        return item;
+      };
+
+      for (let index = 0; index < 133; index += 1) {
+        const retained = index < 6;
+        const status = 'ready-for-human';
+        const action = retained ? 'review' : 'act';
+        addItem({
+          id: `current-${index + 1}`,
+          number: 1000 + index,
+          title: `Current task ${index + 1}`,
+          body: renderCurrentActionBlock({
+            status,
+            action,
+            detail: retained
+              ? 'Review the preserved worker result.'
+              : 'Perform the current human action.',
+            revision: 1,
+            updatedAt: '2026-09-01T00:00:00.000Z',
+          }),
+          fields: retained ? {
+            Status: status,
+            'next-action': action,
+            'worker-state': 'checkpointed',
+            'needs-human-since': '2026-09-01T01:00:00Z',
+            machine: `machine-${index}`,
+            'session-id': `session-${index}`,
+            'claim-generation': '',
+            'resource-semantics': 'held-affinity',
+            'execution-authorized': 'no',
+          } : {},
+        });
+      }
+
+      const failures = [
+        {
+          id: 'failed-55',
+          number: 55,
+          title: 'test',
+          body: '',
+          state: 'CLOSED',
+          stateReason: 'NOT_PLANNED',
+          fields: {
+            Status: 'done',
+            'next-action': '',
+            owner: '',
+            'next-action-date': '',
+            'worker-state': '',
+            'task-revision': '',
+          },
+          target: 'rejected',
+        },
+        {
+          id: 'failed-103',
+          number: 103,
+          title: 'Figure out border treatment requirements',
+          body: 'Command Center task metadata.\n\n## History\n\nPreserve this user history.',
+          state: 'CLOSED',
+          stateReason: 'DUPLICATE',
+          fields: {
+            Status: 'rejected',
+            'next-action': '',
+            'next-action-date': '',
+            'worker-state': '',
+            'task-revision': '',
+          },
+          target: 'rejected',
+        },
+        {
+          id: 'failed-131',
+          number: 131,
+          title: 'Create diagnostics overlay',
+          body: 'Keep the diagnostics outcome and discussion intact.',
+          state: 'CLOSED',
+          stateReason: 'COMPLETED',
+          fields: {
+            Status: 'rejected',
+            'next-action': '',
+            'next-action-date': '',
+            'worker-state': '',
+            'task-revision': '',
+          },
+          target: 'done',
+        },
+        {
+          id: 'failed-143',
+          number: 143,
+          title: '[Stage Engine JS] support flag on card add/remove API to pick which animation to play',
+          body: 'Preserve the open task requirements.',
+          state: 'OPEN',
+          stateReason: null,
+          fields: {
+            Status: '',
+            'next-action': '',
+            owner: '',
+            'next-action-date': '2026-09-20',
+            'worker-state': '',
+            'task-revision': '',
+          },
+          target: 'ready-for-human',
+        },
+      ];
+      for (const entry of failures) {
+        addItem({
+          ...entry,
+          comments: [`Existing history for #${entry.number}.`],
+        });
+      }
+
+      const foreignStartIndex = 87;
+      const foreignItems = Array.from({ length: 4 }, (_, index) => {
+        const number = 9001 + index;
+        const repo = `example/foreign-${index + 1}`;
+        const closed = index >= 2;
+        return {
+          id: `foreign-${index + 1}`,
+          updatedAt: `2026-09-01T00:0${index}:00Z`,
+          issue: {
+            repo,
+            number,
+            title: `Sanitized foreign task ${index + 1}`,
+            body: `Sanitized foreign Issue content ${index + 1}.`,
+            html_url: `https://github.com/${repo}/issues/${number}`,
+            url: `https://github.com/${repo}/issues/${number}`,
+            state: closed ? 'CLOSED' : 'OPEN',
+            stateReason: closed ? (index === 2 ? 'COMPLETED' : 'NOT_PLANNED') : null,
+            createdAt: `2026-08-0${index + 1}T00:00:00Z`,
+            updatedAt: `2026-08-1${index + 1}T00:00:00Z`,
+            closedAt: closed ? `2026-08-2${index + 1}T00:00:00Z` : null,
+          },
+          fields: {
+            Status: closed ? (index === 2 ? 'done' : 'rejected') : 'ready',
+            'next-action': '',
+            owner: index % 2 === 0 ? 'human' : 'agent',
+            priority: index % 2 === 0 ? 'low' : 'high',
+            'next-action-date': index === 0 ? '2026-10-01' : '',
+            deadline: index === 1 ? '2026-10-15' : '',
+            workstream: `foreign/workstream-${index + 1}`,
+            playbook: index === 1 ? 'foreign-playbook' : '',
+            dependencies: index === 1 ? 'Foreign dependency.' : '',
+            'execution-authorized': 'no',
+            'worker-state': closed ? 'stopped' : 'idle',
+            'needs-human-since': '',
+            'claimed-by': '',
+            'lease-until': '',
+            machine: '',
+            'session-id': '',
+            'claim-generation': '',
+            'resource-semantics': '',
+            'task-revision': '',
+          },
+        };
+      });
+      state.items.splice(foreignStartIndex, 0, ...foreignItems);
+      const foreignBefore = foreignItems.map((item) => structuredClone(item));
+      const projectOrderBefore = state.items.map((item) => item.id);
+      const foreignIds = new Set(foreignItems.map((item) => item.id));
+      const assertForeignPreserved = () => {
+        assert.deepEqual(state.items.map((item) => item.id), projectOrderBefore);
+        assert.deepEqual(
+          state.items.slice(foreignStartIndex, foreignStartIndex + foreignItems.length),
+          foreignBefore,
+        );
+      };
+
+      const { store } = await fakeStore(state);
+      const beforeIssues = new Map(failures.map((entry) => {
+        const issue = state.issues.find((candidate) => candidate.number === entry.number);
+        return [entry.number, {
+          title: issue.title,
+          body: issue.body,
+          state: issue.state,
+          stateReason: issue.stateReason,
+          comments: state.commentsByIssue.get(entry.number).map((comment) => comment.body),
+        }];
+      }));
+      const heldBefore = state.items.slice(0, 6).map((item) => structuredClone(item.fields));
+
+      const plan = planLifecycleMigration((await store.list()).tasks);
+      assert.deepEqual(plan.counts, {
+        'already-current': 133,
+        migrate: 4,
+      });
+      assert.equal(plan.actions.length, 137);
+      assert.equal(plan.actions.some((action) => foreignIds.has(action.itemId)), false);
+      assertForeignPreserved();
+      for (const entry of failures) {
+        const action = plan.actions.find((candidate) => candidate.itemId === entry.id);
+        assert.equal(action.action, 'migrate', entry.title);
+        assert.equal(action.target.status, entry.target, entry.title);
+      }
+      assert.equal(
+        plan.actions.find((action) => action.itemId === 'failed-143').expected.projection,
+        (await store.detail('failed-143')).projection,
+      );
+
+      const report = await applyLifecycleMigration(plan, store);
+      assert.equal(report.partial, false, JSON.stringify(report.results));
+      assert.equal(report.results.length, 137);
+      assert.equal(
+        report.results.filter((result) => result.outcome === 'migrated').length,
+        4,
+      );
+      assert.equal(state.writes.includes('issue:close'), false);
+      assertForeignPreserved();
+
+      for (const entry of failures) {
+        const before = beforeIssues.get(entry.number);
+        const issue = state.issues.find((candidate) => candidate.number === entry.number);
+        const block = parseCurrentActionBlock(issue.body);
+        const preservedBody = block
+          ? `${issue.body.slice(0, block.start)}${issue.body.slice(block.end)}`.trim()
+          : issue.body.trim();
+        assert.equal(issue.title, before.title, entry.title);
+        assert.equal(preservedBody, before.body.trim(), entry.title);
+        assert.equal(issue.state, before.state, entry.title);
+        assert.equal(issue.stateReason, before.stateReason, entry.title);
+        assert.deepEqual(
+          state.commentsByIssue.get(entry.number)
+            .slice(0, before.comments.length)
+            .map((comment) => comment.body),
+          before.comments,
+          entry.title,
+        );
+      }
+      for (let index = 0; index < 6; index += 1) {
+        assert.deepEqual(state.items[index].fields, heldBefore[index]);
+        assert.equal(state.items[index].fields['execution-authorized'], 'no');
+      }
+
+      const converged = planLifecycleMigration((await store.list()).tasks);
+      assert.deepEqual(converged.counts, { 'already-current': 137 });
+      assert.equal(converged.actions.length, 137);
+      assert.equal(converged.actions.some((action) => foreignIds.has(action.itemId)), false);
+      assertForeignPreserved();
+      const beforeReapply = state.writes.length;
+      const reapplied = await applyLifecycleMigration(converged, store);
+      assert.equal(reapplied.partial, false);
+      assert.equal(reapplied.results.length, 137);
+      assert.equal(state.writes.length, beforeReapply);
+      assertForeignPreserved();
+});
+
+test('terminal migration rejects projection drift after clearing the legacy date', async () => {
+      const state = fakeGitHubState();
+      state.item.fields.Status = 'done';
+      state.item.fields['next-action'] = '';
+      state.item.fields['worker-state'] = '';
+      state.item.fields['task-revision'] = '';
+      state.item.fields['next-action-date'] = '2026-09-02';
+      const liveGh = state.gh;
+      let driftInjected = false;
+      state.gh = async (args) => {
+        const result = await liveGh(args);
+        if (
+          !driftInjected
+          && state.writes.at(-1) === 'project:next-action-date'
+        ) {
+          driftInjected = true;
+          state.item.updatedAt = '2026-09-09T12:01:00Z';
+          state.item.fields.Status = 'blocked';
+        }
+        return result;
+      };
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleMigration((await store.list()).tasks);
+      assert.equal(plan.actions[0].target.status, 'done');
+      const before = state.writes.length;
+
+      await assert.rejects(
+        store.migrateLegacyItem(plan.actions[0]),
+        /changed during terminal migration date cleanup/,
+      );
+      assert.equal(driftInjected, true);
+      assert.deepEqual(
+        state.writes.slice(before),
+        ['project:next-action-date'],
+      );
+      assert.equal(state.item.fields.Status, 'blocked');
+      assert.equal(state.issue.state, 'OPEN');
+});
+
+test('terminal migration validates closed reason before clearing any field', async () => {
+      const state = fakeGitHubState();
+      state.issue.state = 'CLOSED';
+      state.issue.stateReason = 'COMPLETED';
+      state.issue.closedAt = '2026-09-02T00:00:00Z';
+      state.item.fields.Status = 'rejected';
+      state.item.fields['next-action'] = '';
+      state.item.fields['worker-state'] = '';
+      state.item.fields['task-revision'] = '';
+      state.item.fields['next-action-date'] = '2026-09-02';
+      const { store } = await fakeStore(state);
+      const plan = planLifecycleMigration((await store.list()).tasks);
+      assert.equal(plan.actions[0].target.status, 'done');
+      const incompatible = structuredClone(plan.actions[0]);
+      incompatible.target.status = 'rejected';
+      incompatible.target.detail = 'Outcome rejected.';
+      const before = state.writes.length;
+
+      await assert.rejects(
+        store.migrateLegacyItem(incompatible),
+        /closed Issue reason is incompatible/,
+      );
+      assert.equal(state.writes.length, before);
+      assert.equal(state.item.fields['next-action-date'], '2026-09-02');
+      assert.equal(state.issue.state, 'CLOSED');
+      assert.equal(state.issue.stateReason, 'COMPLETED');
 });
 
 test('verified cutover apply refuses stale claim changes before clearing ownership', async () => {
