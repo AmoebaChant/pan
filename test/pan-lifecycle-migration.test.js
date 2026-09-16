@@ -339,8 +339,26 @@ test('legacy agent work is not authorized without exact item, playbook, and depe
       executionAuthorized: true,
     }],
   });
+
   assert.equal(plan.actions[0].action, 'requires-authorization');
   assert.equal(plan.actions[0].target.executionAuthorized, 'no');
+});
+
+test('legacy ready agent work without a playbook becomes non-executable clarification', () => {
+  const action = planLifecycleMigration([
+    legacy({
+      itemId: 'missing-playbook',
+      playbook: '',
+      status: 'ready',
+      legacyOwner: 'agent',
+    }),
+  ]).actions[0];
+
+  assert.equal(action.action, 'migrate');
+  assert.equal(action.target.status, 'ready-for-human');
+  assert.equal(action.target.nextAction, 'clarify');
+  assert.equal(action.target.executionAuthorized, 'no');
+  assert.equal(action.target.requiresAuthorization, undefined);
 });
 
 test('migration authorization files reject incomplete or duplicate approvals', () => {

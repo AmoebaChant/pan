@@ -93,7 +93,11 @@ function passiveWorkerState(task, fallback) {
   return hasCompleteResourceTuple(task) ? fallback : 'idle';
 }
 
-function safeTerminalProvenance(task, status = task.status) {
+function safeTerminalProvenance(
+  task,
+  status = task.status,
+  { allowLegacyAttention = false } = {},
+) {
   if (!['done', 'rejected'].includes(status)) return false;
   if (!hasLegacyResourcePair(task)) return false;
   if (!['', 'historical-provenance'].includes(task.resourceSemantics || '')) return false;
@@ -101,7 +105,7 @@ function safeTerminalProvenance(task, status = task.status) {
     task.issueState === 'CLOSED'
     && task.issueStateReason === (status === 'done' ? 'COMPLETED' : 'NOT_PLANNED')
     && !hasActiveOrUncertainEvidence(task)
-    && !task.needsHumanSince
+    && (allowLegacyAttention || !task.needsHumanSince)
     && ['', 'idle', 'stopped'].includes(task.workerState || '')
   );
 }
@@ -546,6 +550,14 @@ export function translateLegacyTask(task, {
       detail: 'Review the durable artifact or result recorded on the Issue.',
     };
   }
+  if (owner === 'agent' && status === 'ready' && !task.playbook) {
+    return {
+      ...base,
+      status: 'ready-for-human',
+      nextAction: 'clarify',
+      detail: 'Choose the playbook that should own this task before authorizing execution.',
+    };
+  }
   if (owner === 'agent' && ['ready', 'in-progress', 'paused'].includes(status)) {
     const executing = status !== 'ready';
     const explicitlyAuthorized = authorizationMatches(task, authorization);
@@ -670,9 +682,17 @@ function invalidRuntimeReason(
   const passiveLegacyTuple = (
     hasLegacyResourcePair(task)
     && (
-      safeTerminalProvenance(task, status)
+      safeTerminalProvenance(task, status, {
+        allowLegacyAttention: !canonical && !resourceSemantics,
+      })
       || safeHeldAffinity(task, status)
     )
+  );
+  const clearableLegacyTerminalAttention = !!(
+    task.needsHumanSince
+    && !canonical
+    && !resourceSemantics
+    && safeTerminalProvenance(task, status, { allowLegacyAttention: true })
   );
   if (
     (canonical || ['done', 'rejected'].includes(status))
@@ -687,7 +707,7 @@ function invalidRuntimeReason(
     && (
       task.claimedBy
       || task.leaseUntil
-      || task.needsHumanSince
+      || (task.needsHumanSince && !clearableLegacyTerminalAttention)
       || !['', 'idle', 'stopped'].includes(task.workerState || '')
     )
   ) {
@@ -851,7 +871,10 @@ export function planLifecycleMigration(tasks, options = {}) {
       || cutoverMismatch
       || invalidRuntimeReason(task)
       || invalidMigrationIssueStateReason(task, target);
-    const passiveProvenance = safeTerminalProvenance(task, target.status)
+    const terminalProvenance = safeTerminalProvenance(task, target.status, {
+      allowLegacyAttention: !alreadyCurrent && !task.resourceSemantics,
+    });
+    const passiveProvenance = terminalProvenance
       || safeDeliberateHold(task, target)
       || safeHeldAffinity(task, target.status)
       || verifiedCutover;
@@ -905,8 +928,10 @@ export function planLifecycleMigration(tasks, options = {}) {
         machine: task.machine,
         sessionId: task.sessionId,
         claimGeneration: task.claimGeneration,
-        needsHumanSince: task.needsHumanSince,
-        resourceSemantics: safeTerminalProvenance(task, target.status)
+        needsHumanSince: ['done', 'rejected'].includes(target.status)
+          ? ''
+          : task.needsHumanSince,
+        resourceSemantics: terminalProvenance
           ? 'historical-provenance'
           : (
             ['ready-for-human', 'deliberate-hold'].includes(target.status)

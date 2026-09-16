@@ -232,6 +232,13 @@ Lifecycle schema migration is a separate, writer-exclusive cutover:
 5. Run another plan against current live state. Do not restart writers until it
    reports no authorization, cutover-hold, or repair actions.
 
+Legacy agent-owned ready work with no playbook cannot be authorized for
+execution; migration turns it into non-executable clarification so a playbook
+can be chosen explicitly. A closed legacy terminal item may carry a stale
+human-attention timestamp alongside its pre-generation machine/session
+provenance. Migration clears only that obsolete attention signal while
+preserving the terminal outcome and historical affinity.
+
 For rollback, keep writers stopped, generate
 `pan-todoist-migrate recovery-plan` (or `pan-lifecycle-migrate rollback-plan`)
 from current live state, review it, then run `recovery-apply` (or

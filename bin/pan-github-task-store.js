@@ -2481,7 +2481,7 @@ export class GitHubTaskStore {
       ['worker-state', target.workerState],
       ['claimed-by', ''],
       ['lease-until', ''],
-      ['needs-human-since', item.fields['needs-human-since'] || ''],
+      ['needs-human-since', action.preserve.needsHumanSince || ''],
       ['machine', item.fields.machine || ''],
       ['session-id', item.fields['session-id'] || ''],
       ['claim-generation', item.fields['claim-generation'] || ''],
@@ -2550,7 +2550,7 @@ export class GitHubTaskStore {
       || confirmed.fields['worker-state'] !== target.workerState
       || confirmed.fields['claimed-by']
       || confirmed.fields['lease-until']
-      || (confirmed.fields['needs-human-since'] || '') !== (item.fields['needs-human-since'] || '')
+      || (confirmed.fields['needs-human-since'] || '') !== (action.preserve.needsHumanSince || '')
       || (confirmed.fields.machine || '') !== (item.fields.machine || '')
       || (confirmed.fields['session-id'] || '') !== (item.fields['session-id'] || '')
       || (confirmed.fields['claim-generation'] || '') !== (item.fields['claim-generation'] || '')

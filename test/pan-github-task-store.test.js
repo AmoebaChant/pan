@@ -1702,7 +1702,7 @@ test('terminal lifecycle migration closes the Issue and preserves historical pro
       const { store } = await fakeStore(state);
       const task = (await store.list()).tasks[0];
       const plan = planLifecycleMigration([task]);
-      assert.equal(plan.actions[0].action, 'migrate');
+      assert.equal(plan.actions[0].action, 'migrate', plan.actions[0].reason);
 
       const result = await store.migrateLegacyItem(plan.actions[0]);
 
@@ -1723,6 +1723,40 @@ test('terminal lifecycle migration closes the Issue and preserves historical pro
       const reapplied = await applyLifecycleMigration(converged, store);
       assert.equal(reapplied.partial, false);
       assert.equal(state.writes.length, before);
+});
+
+test('terminal legacy migration clears stale human attention while preserving provenance', async () => {
+      const state = fakeGitHubState();
+      state.issue.state = 'CLOSED';
+      state.issue.stateReason = 'COMPLETED';
+      state.item.fields.Status = 'done';
+      state.item.fields['next-action'] = '';
+      state.item.fields['next-action-date'] = '2026-09-01';
+      state.item.fields['worker-state'] = '';
+      state.item.fields['claimed-by'] = '';
+      state.item.fields['lease-until'] = '';
+      state.item.fields['needs-human-since'] = '2026-09-01T12:00:00.000Z';
+      state.item.fields.machine = 'machine-a';
+      state.item.fields['session-id'] = 'session-a';
+      state.item.fields['claim-generation'] = '';
+      state.item.fields['task-revision'] = '';
+      const { store } = await fakeStore(state);
+
+      const plan = planLifecycleMigration((await store.list()).tasks);
+      assert.equal(plan.actions[0].action, 'migrate', plan.actions[0].reason);
+      assert.equal(plan.actions[0].preserve.needsHumanSince, '');
+      assert.equal(plan.actions[0].preserve.resourceSemantics, 'historical-provenance');
+
+      const report = await applyLifecycleMigration(plan, store);
+      assert.equal(report.partial, false);
+      assert.equal(state.item.fields['needs-human-since'], '');
+      assert.equal(state.item.fields.machine, 'machine-a');
+      assert.equal(state.item.fields['session-id'], 'session-a');
+      assert.equal(state.item.fields['resource-semantics'], 'historical-provenance');
+      assert.equal(
+        planLifecycleMigration((await store.list()).tasks).actions[0].action,
+        'already-current',
+      );
 });
 
 test('verified legacy checkpoint and deliberate hold migrations clear only stale claims and converge', async () => {
