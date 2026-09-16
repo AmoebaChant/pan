@@ -714,59 +714,63 @@ test('retained migration authorizations preserve exact non-executable categories
   const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'pan-retained-migration-'));
   try {
     const checkpoint = legacy({
-      itemId: 'item-104',
-      number: 104,
-      url: 'https://github.com/example/domain/issues/104',
-      projection: 'projection-104',
+      itemId: 'fixture-checkpoint-item',
+      number: 3101,
+      url: 'https://github.com/example/domain/issues/3101',
+      projection: 'fixture-checkpoint-projection',
       status: 'in-progress',
       claimedBy: 'runner-a',
       leaseUntil: '2026-09-10T01:00:00Z',
       machine: 'machine-a::slot-a',
-      sessionId: 'session-104',
+      sessionId: 'fixture-checkpoint-session',
       needsHumanSince: '2026-09-10T01:30:00Z',
     });
-    const reviews = [75, 129, 142].map((number) => legacy({
-      itemId: `item-${number}`,
+    const reviews = [
+      { number: 4201, key: 'amber' },
+      { number: 4303, key: 'cobalt' },
+      { number: 4409, key: 'violet' },
+    ].map(({ number, key }) => legacy({
+      itemId: `fixture-review-${key}-item`,
       number,
       url: `https://github.com/example/domain/issues/${number}`,
-      projection: `projection-${number}`,
+      projection: `fixture-review-${key}-projection`,
       status: 'in-review',
       machine: 'machine-a::slot-a',
-      sessionId: `session-${number}`,
+      sessionId: `fixture-review-${key}-session`,
     }));
     const hold = legacy({
-      itemId: 'item-84',
-      number: 84,
-      url: 'https://github.com/example/domain/issues/84',
-      projection: 'projection-84',
+      itemId: 'fixture-hold-item',
+      number: 5501,
+      url: 'https://github.com/example/domain/issues/5501',
+      projection: 'fixture-hold-projection',
       legacyOwner: 'human',
       status: 'blocked',
       machine: 'machine-a::slot-a',
-      sessionId: 'session-84',
+      sessionId: 'fixture-hold-session',
     });
     const releasePending = legacy({
-      itemId: 'item-125',
-      number: 125,
-      url: 'https://github.com/example/domain/issues/125',
-      projection: 'projection-125',
+      itemId: 'fixture-release-pending-item',
+      number: 6601,
+      url: 'https://github.com/example/domain/issues/6601',
+      projection: 'fixture-release-pending-projection',
       status: 'in-review',
       claimedBy: 'runner-a',
       leaseUntil: '2026-09-10T01:00:00Z',
       machine: 'machine-a::slot-b',
-      sessionId: 'session-125',
+      sessionId: 'fixture-release-pending-session',
     });
     await writeRetainedAttempt(stateRoot, checkpoint, {
-      launchId: 'launch-104',
+      launchId: 'fixture-checkpoint-launch',
       needsHuman: true,
     });
-    for (const review of reviews) {
+    for (const [index, review] of reviews.entries()) {
       await writeRetainedAttempt(stateRoot, review, {
-        launchId: `launch-${review.number}`,
+        launchId: `fixture-review-${index + 1}-launch`,
         result: true,
       });
     }
     await writeRetainedAttempt(stateRoot, releasePending, {
-      launchId: 'launch-125',
+      launchId: 'fixture-release-pending-launch',
       result: true,
       release: true,
     });
@@ -849,7 +853,7 @@ test('retained migration authorizations preserve exact non-executable categories
     assert.equal(plan.actions[1].cutoverAuthorization.runtimeEvidence.releaseSha256, '');
     assert.deepEqual(
       authorization.items.map((item) => item.number),
-      [104, 75, 129, 142, 84, 125],
+      [3101, 4201, 4303, 4409, 5501, 6601],
     );
   } finally {
     await rm(stateRoot, { recursive: true, force: true });
