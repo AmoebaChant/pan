@@ -12,6 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
 import {
@@ -21,6 +22,7 @@ import {
 
 const RELEASE_FILE = 'worker-release.json';
 const RUN_FILE = 'run.json';
+const SYSTEM_DIR = fileURLToPath(new URL('../system', import.meta.url));
 const RUNNER_MANAGED_LONG_OPTIONS = new Set([
   '--session-id',
   '--resume',
@@ -302,6 +304,7 @@ export async function launchTask({
     cwd,
     env: {
       ...process.env,
+      PAN_SYSTEM_DIR: SYSTEM_DIR,
       PAN_STATE_DIR: dir,
       PAN_TASK_BACKEND_CONFIG: config.backendConfig,
       PAN_TASK_ID: current.id,

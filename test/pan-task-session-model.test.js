@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { GitHubTaskBackend } from '../bin/pan-github-task-backend.js';
 import {
   pollRunner,
@@ -282,6 +283,7 @@ test('default runner launch opens the saved session interactively', async () => 
     sessionId: savedSessionId,
   });
   const root = await mkdtemp(path.join(process.cwd(), '.pan-default-launch-'));
+  const expectedSystemDir = fileURLToPath(new URL('../system', import.meta.url));
   const workingDirectory = path.join(root, 'work');
   await mkdir(workingDirectory);
   const configuredArgs = ['--model', 'gpt-5.6-sol', '--agent', 'pan-worker'];
@@ -309,6 +311,8 @@ test('default runner launch opens the saved session interactively', async () => 
   child.unref = () => {
     unrefCalled = true;
   };
+  const inheritedSystemDir = process.env.PAN_SYSTEM_DIR;
+  process.env.PAN_SYSTEM_DIR = path.join(root, 'incorrect-system');
 
   try {
     const result = await pollRunner({
@@ -340,6 +344,7 @@ test('default runner launch opens the saved session interactively', async () => 
       new RegExp(`Work on Pan task ${task.id}: ${task.title}`),
     );
     assert.equal(launches[0].options.cwd, workingDirectory);
+    assert.equal(launches[0].options.env.PAN_SYSTEM_DIR, expectedSystemDir);
     assert.equal(launches[0].options.env.PAN_SESSION_ID, savedSessionId);
     assert.equal(launches[0].options.env.PAN_TASK_ID, task.id);
     assert.deepEqual(
@@ -360,6 +365,11 @@ test('default runner launch opens the saved session interactively', async () => 
     ));
     assert.equal(run.sessionId, savedSessionId);
   } finally {
+    if (inheritedSystemDir === undefined) {
+      delete process.env.PAN_SYSTEM_DIR;
+    } else {
+      process.env.PAN_SYSTEM_DIR = inheritedSystemDir;
+    }
     await rm(root, { recursive: true, force: true });
   }
 });
