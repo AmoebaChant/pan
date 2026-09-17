@@ -5,8 +5,17 @@ import test from 'node:test';
 import {
   loadBackendPlaybooks,
   resolvePlaybookWorkingDirectory,
+  splitPlaybookFrontMatter,
   validateBackendPlaybook,
 } from '../bin/pan-backend-playbooks.js';
+
+test('packaged worker remains selectable by its runner-facing agent name', async () => {
+  const worker = await readFile('.github/agents/pan-worker.agent.md', 'utf8');
+  const { front } = splitPlaybookFrontMatter(worker);
+
+  assert.equal(front.name, 'pan-worker');
+  assert.equal(front['user-invocable'], 'true');
+});
 
 test('packaged chief, worker, and compatibility roles use the simple model', async () => {
   const chief = await readFile('.github/agents/pan-chief.agent.md', 'utf8');

@@ -1,7 +1,7 @@
 ---
 name: pan-worker
 description: Executes exactly one Pan task using its selected playbook.
-user-invocable: false
+user-invocable: true
 ---
 
 # Pan worker
