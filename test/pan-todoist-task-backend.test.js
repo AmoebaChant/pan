@@ -13,6 +13,66 @@ function response(body, status = 200) {
   });
 }
 
+function monthsBefore(value, count) {
+  const result = new Date(value);
+  const day = result.getUTCDate();
+  result.setUTCDate(1);
+  result.setUTCMonth(result.getUTCMonth() - count);
+  const lastDay = new Date(Date.UTC(
+    result.getUTCFullYear(),
+    result.getUTCMonth() + 1,
+    0,
+  )).getUTCDate();
+  result.setUTCDate(Math.min(day, lastDay));
+  return result;
+}
+
+function strictTodoistTransport({
+  now,
+  completedPages,
+  activeTasks = [],
+}) {
+  const completedRequests = [];
+  const fetchImpl = async (rawUrl, options = {}) => {
+    const url = new URL(rawUrl);
+    if (url.pathname.endsWith('/user')) return response({ id: 'self' });
+    if (url.pathname.endsWith('/tasks') && options.method === 'GET') {
+      return response({ results: activeTasks, next_cursor: null });
+    }
+    if (url.pathname.endsWith('/tasks/completed/by_completion_date')) {
+      const sinceText = url.searchParams.get('since');
+      const untilText = url.searchParams.get('until');
+      if (!sinceText || !untilText) {
+        return response({ error: 'since and until are required' }, 422);
+      }
+      const since = new Date(sinceText);
+      const until = new Date(untilText);
+      if (
+        Number.isNaN(since.getTime())
+        || Number.isNaN(until.getTime())
+        || since >= until
+        || since < monthsBefore(until, 3)
+      ) {
+        return response({ error: 'completion range must not exceed three months' }, 422);
+      }
+      completedRequests.push(url);
+      const cursor = url.searchParams.get('cursor') ?? '';
+      return response(completedPages[cursor] ?? {
+        items: [],
+        next_cursor: null,
+      });
+    }
+    if (
+      url.pathname.includes('/tasks/')
+      && options.method === 'GET'
+    ) {
+      return response({ error: 'active task not found' }, 404);
+    }
+    throw new Error(`unexpected request: ${options.method} ${url}`);
+  };
+  return { completedRequests, fetchImpl, now };
+}
+
 test('Todoist uses the same small contract without legacy workflow metadata', async () => {
   let task = {
     id: '1',
@@ -86,7 +146,8 @@ test('Todoist uses the same small contract without legacy workflow metadata', as
   assert.equal((await backend.get('1')).status, 'open');
 });
 
-test('Todoist pagination includes completed tasks so Done sessions can be requested', async () => {
+test('Todoist completed history uses strict three-month bounds and cursor pagination', async () => {
+  const now = new Date('2026-09-16T12:34:56.000Z');
   const completed = {
     task_id: 'done-1',
     content: 'Done task',
@@ -99,24 +160,101 @@ test('Todoist pagination includes completed tasks so Done sessions can be reques
     responsible_uid: null,
     completed_at: '2026-09-15T00:00:00Z',
   };
+  const secondCompleted = {
+    ...completed,
+    task_id: 'done-2',
+    content: 'Second done task',
+    completed_at: '2026-06-16T13:00:00Z',
+  };
+  const transport = strictTodoistTransport({
+    now,
+    completedPages: {
+      '': { items: [completed], next_cursor: 'next.page' },
+      'next.page': { items: [secondCompleted], next_cursor: null },
+    },
+  });
+  const endpoint = 'https://api.todoist.com/api/v1/tasks/completed/by_completion_date';
+  assert.equal((await transport.fetchImpl(endpoint, { method: 'GET' })).status, 422);
+  assert.equal(
+    (await transport.fetchImpl(
+      `${endpoint}?since=2026-06-15T12%3A34%3A56.000Z&until=2026-09-16T12%3A34%3A56.000Z`,
+      { method: 'GET' },
+    )).status,
+    422,
+  );
+
   const backend = await new TodoistTaskBackend({ backend: 'todoist' }, {
     readFileImpl: async () => 'TODOIST_API_TOKEN=secret',
-    fetchImpl: async (url) => {
-      if (url.endsWith('/user')) return response({ id: 'self' });
-      if (url.endsWith('/tasks?limit=200')) {
-        return response({ results: [], next_cursor: null });
-      }
-      if (url.endsWith('/tasks/completed/by_completion_date?limit=200')) {
-        return response({ items: [completed], next_cursor: null });
-      }
-      throw new Error(`unexpected request: ${url}`);
-    },
+    fetchImpl: transport.fetchImpl,
+    nowImpl: () => now,
   }).initialize();
   const tasks = await backend.list();
-  assert.equal(tasks.length, 1);
+  assert.equal(tasks.length, 2);
   assert.equal(tasks[0].status, 'done');
   assert.equal(tasks[0].agentStatus, 'requested');
   assert.equal(tasks[0].sessionId, 'saved-session');
+  assert.deepEqual(
+    transport.completedRequests.map((url) => ({
+      since: url.searchParams.get('since'),
+      until: url.searchParams.get('until'),
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+    })),
+    [
+      {
+        since: '2026-06-16T12:34:56.000Z',
+        until: '2026-09-16T12:34:56.000Z',
+        limit: '200',
+        cursor: null,
+      },
+      {
+        since: '2026-06-16T12:34:56.000Z',
+        until: '2026-09-16T12:34:56.000Z',
+        limit: '200',
+        cursor: 'next.page',
+      },
+    ],
+  );
+});
+
+test('Todoist closed-task fallback shares the bounded history window', async () => {
+  const now = new Date('2026-09-16T12:34:56.000Z');
+  const completed = {
+    task_id: 'done-1',
+    content: 'Done task',
+    description: '',
+    priority: 1,
+    project_id: 'p',
+    responsible_uid: null,
+    completed_at: '2026-09-15T00:00:00Z',
+  };
+  const transport = strictTodoistTransport({
+    now,
+    completedPages: {
+      '': { items: [completed], next_cursor: null },
+    },
+  });
+  const backend = await new TodoistTaskBackend({ backend: 'todoist' }, {
+    readFileImpl: async () => 'TODOIST_API_TOKEN=secret',
+    fetchImpl: transport.fetchImpl,
+    nowImpl: () => now,
+  }).initialize();
+
+  assert.equal((await backend.get('done-1')).status, 'done');
+  await assert.rejects(
+    backend.get('older-done-task'),
+    (error) => {
+      assert.equal(error.code, 'todoist-task-outside-history-window');
+      assert.equal(error.status, 404);
+      assert.match(error.message, /not active or is outside Pan's three-month/i);
+      assert.deepEqual(error.details, {
+        since: '2026-06-16T12:34:56.000Z',
+        until: '2026-09-16T12:34:56.000Z',
+      });
+      return true;
+    },
+  );
+  assert.equal(transport.completedRequests.length, 2);
 });
 
 test('Todoist metadata block contains only backend-unsupported small-contract fields', () => {

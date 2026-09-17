@@ -9,6 +9,7 @@ const PRIORITY_TO_NATIVE = { low: 1, normal: 2, high: 3, urgent: 4 };
 const NATIVE_TO_PRIORITY = { 1: 'low', 2: 'normal', 3: 'high', 4: 'urgent' };
 const WORK_STATUSES = new Set(['open', 'done', 'rejected']);
 const AGENT_STATUSES = new Set(['', 'requested', 'running']);
+const COMPLETED_HISTORY_MONTHS = 3;
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -88,12 +89,34 @@ function taskCompleted(task) {
     || Boolean(task.completed_at);
 }
 
+function monthsBefore(value, count) {
+  const result = new Date(value);
+  const day = result.getUTCDate();
+  result.setUTCDate(1);
+  result.setUTCMonth(result.getUTCMonth() - count);
+  const lastDay = new Date(Date.UTC(
+    result.getUTCFullYear(),
+    result.getUTCMonth() + 1,
+    0,
+  )).getUTCDate();
+  result.setUTCDate(Math.min(day, lastDay));
+  return result;
+}
+
 export class TodoistTaskBackend {
-  constructor(config, { fetchImpl = globalThis.fetch, readFileImpl = readFile } = {}) {
+  constructor(
+    config,
+    {
+      fetchImpl = globalThis.fetch,
+      readFileImpl = readFile,
+      nowImpl = () => new Date(),
+    } = {},
+  ) {
     assertObject(config, 'backend config');
     this.config = config;
     this.fetch = fetchImpl;
     this.readFile = readFileImpl;
+    this.now = nowImpl;
     this.baseUrl = String(config.baseUrl || 'https://api.todoist.com/api/v1').replace(/\/$/, '');
     this.user = null;
     this.token = null;
@@ -201,13 +224,16 @@ export class TodoistTaskBackend {
     };
   }
 
-  async paged(pathname, resultKeys = ['results']) {
+  async paged(pathname, resultKeys = ['results'], parameters = {}) {
     const values = [];
     let cursor = null;
     do {
-      const query = new URLSearchParams({ limit: '200' });
+      const query = new URLSearchParams({
+        ...parameters,
+        limit: '200',
+      });
       if (cursor) query.set('cursor', cursor);
-      const separator = pathname.includes('?') ? '' : '?';
+      const separator = pathname.includes('?') ? '&' : '?';
       const page = await this.request('GET', `${pathname}${separator}${query}`);
       const results = Array.isArray(page)
         ? page
@@ -218,11 +244,33 @@ export class TodoistTaskBackend {
     return values;
   }
 
+  async completedHistory() {
+    const until = new Date(this.now());
+    if (Number.isNaN(until.getTime())) {
+      throw new TaskBackendError('Todoist completed-history clock is invalid', {
+        code: 'invalid-clock',
+      });
+    }
+    const since = monthsBefore(until, COMPLETED_HISTORY_MONTHS);
+    const range = {
+      since: since.toISOString(),
+      until: until.toISOString(),
+    };
+    return {
+      range,
+      tasks: await this.paged(
+        '/tasks/completed/by_completion_date',
+        ['items', 'results'],
+        range,
+      ),
+    };
+  }
+
   async list() {
     const active = await this.paged('/tasks');
     const completed = this.config.includeCompleted === false
       ? []
-      : await this.paged('/tasks/completed/by_completion_date', ['items', 'results']);
+      : (await this.completedHistory()).tasks;
     const merged = new Map();
     for (const task of [...active, ...completed]) {
       if (this.inScope(task)) merged.set(taskId(task), task);
@@ -242,9 +290,24 @@ export class TodoistTaskBackend {
       return task;
     } catch (error) {
       if (error.status !== 404 || this.config.includeCompleted === false) throw error;
-      const completed = await this.paged('/tasks/completed/by_completion_date', ['items', 'results']);
-      const task = completed.find((candidate) => taskId(candidate) === String(id));
-      if (!task || !this.inScope(task)) throw error;
+      const completed = await this.completedHistory();
+      const task = completed.tasks.find((candidate) => taskId(candidate) === String(id));
+      if (!task) {
+        throw new TaskBackendError(
+          `Todoist task ${id} is not active or is outside Pan's three-month completed-task history window`,
+          {
+            code: 'todoist-task-outside-history-window',
+            status: 404,
+            details: completed.range,
+          },
+        );
+      }
+      if (!this.inScope(task)) {
+        throw new TaskBackendError(`task ${id} is outside the configured scope`, {
+          code: 'out-of-scope',
+          status: 403,
+        });
+      }
       return task;
     }
   }

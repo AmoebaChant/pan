@@ -52,9 +52,12 @@ end of the description stores only fields Todoist does not natively provide:
 playbook, workstream, session ID, Agent status, and the rejected close meaning.
 It is not a workflow or worker-state store.
 
-The adapter fully paginates both active and completed tasks so a Done task can
-still request or resume its saved session. Native assignee and project scope
-remain backend configuration, not Pan ownership.
+The adapter fully paginates active tasks. Completed tasks use Todoist's required
+completion-date bounds and cursor pagination within one rolling three-month
+window, so a recently Done task can still request or resume its saved session.
+Older completed tasks remain in Todoist but are outside Pan's normal Todoist
+listing and lookup. Native assignee and project scope remain backend
+configuration, not Pan ownership.
 
 For source intake, Todoist create supports an optional UUID `idempotencyKey`
 sent as `X-Request-Id`.
