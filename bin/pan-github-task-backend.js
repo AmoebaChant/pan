@@ -127,11 +127,10 @@ class GitHubProjectTransport {
           id
           nameWithOwner
         }
-        user(login: $projectOwner) {
-          projectV2(number: $projectNumber) { ...ProjectContract }
-        }
-        organization(login: $projectOwner) {
-          projectV2(number: $projectNumber) { ...ProjectContract }
+        repositoryOwner(login: $projectOwner) {
+          ... on ProjectV2Owner {
+            projectV2(number: $projectNumber) { ...ProjectContract }
+          }
         }
       }
       fragment ProjectContract on ProjectV2 {
@@ -160,7 +159,7 @@ class GitHubProjectTransport {
         { code: 'not-found', status: 404 },
       );
     }
-    this.project = data.data.user?.projectV2 ?? data.data.organization?.projectV2 ?? null;
+    this.project = data.data.repositoryOwner?.projectV2 ?? null;
     if (!this.project) {
       throw new TaskBackendError(
         `Project ${this.projectOwner}/${this.projectNumber} was not found or is inaccessible`,
