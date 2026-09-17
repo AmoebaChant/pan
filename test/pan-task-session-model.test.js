@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -269,6 +270,145 @@ test('runner creates, resumes, and closes the same session independently of work
   assert.equal(launches[1].sessionId, launches[0].sessionId);
 
   await rm(root, { recursive: true, force: true });
+});
+
+test('default runner launch opens the saved session interactively', async () => {
+  const { backend } = await createBackend();
+  const savedSessionId = '11111111-2222-4333-8444-555555555555';
+  const task = await backend.create({
+    title: 'Keep the worker open',
+    playbook: 'pan',
+    agentStatus: 'requested',
+    sessionId: savedSessionId,
+  });
+  const root = await mkdtemp(path.join(process.cwd(), '.pan-default-launch-'));
+  const workingDirectory = path.join(root, 'work');
+  await mkdir(workingDirectory);
+  const configuredArgs = ['--model', 'gpt-5.6-sol', '--agent', 'pan-worker'];
+  const config = validateRunnerConfig({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory,
+    machine: 'test-machine',
+    launchCommand: ['copilot', ...configuredArgs],
+  });
+  const loadedDomain = {
+    playbooks: new Map([['pan', {
+      name: 'pan',
+      description: 'Test',
+      workingDirectory,
+      text: '# Pan',
+    }]]),
+    domainInstructions: '# Domain',
+    domainRevision: 'reviewed-sha',
+  };
+  const launches = [];
+  let unrefCalled = false;
+  const child = new EventEmitter();
+  child.pid = 8000;
+  child.unref = () => {
+    unrefCalled = true;
+  };
+
+  try {
+    const result = await pollRunner({
+      backend,
+      config,
+      loadedDomain,
+      dependencies: {
+        spawn: (command, args, options) => {
+          launches.push({ command, args, options });
+          queueMicrotask(() => child.emit('spawn'));
+          return child;
+        },
+      },
+    });
+
+    assert.deepEqual(result.launched, [task.id]);
+    assert.equal(launches.length, 1);
+    assert.equal(launches[0].command, 'copilot');
+    assert.deepEqual(launches[0].args.slice(0, configuredArgs.length), configuredArgs);
+    assert.deepEqual(
+      launches[0].args.slice(configuredArgs.length, configuredArgs.length + 2),
+      ['--session-id', savedSessionId],
+    );
+    assert.equal(launches[0].args.includes('--prompt'), false);
+    const interactiveIndex = launches[0].args.indexOf('--interactive');
+    assert.equal(interactiveIndex, configuredArgs.length + 2);
+    assert.match(
+      launches[0].args[interactiveIndex + 1],
+      new RegExp(`Work on Pan task ${task.id}: ${task.title}`),
+    );
+    assert.equal(launches[0].options.cwd, workingDirectory);
+    assert.equal(launches[0].options.env.PAN_SESSION_ID, savedSessionId);
+    assert.equal(launches[0].options.env.PAN_TASK_ID, task.id);
+    assert.deepEqual(
+      {
+        detached: launches[0].options.detached,
+        stdio: launches[0].options.stdio,
+        windowsHide: launches[0].options.windowsHide,
+      },
+      { detached: true, stdio: 'ignore', windowsHide: false },
+    );
+    assert.equal(unrefCalled, true);
+
+    const savedTask = await backend.get(task.id);
+    assert.equal(savedTask.sessionId, savedSessionId);
+    const run = JSON.parse(await readFile(
+      path.join(config.stateRoot, 'tasks', encodeURIComponent(task.id), 'run.json'),
+      'utf8',
+    ));
+    assert.equal(run.sessionId, savedSessionId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runner config reserves runner-managed session and prompt options', () => {
+  const base = {
+    backendConfig: path.resolve('backend.json'),
+    stateRoot: path.resolve('state'),
+    machine: 'test-machine',
+  };
+  const conflicts = [
+    ['--session-id', 'session-id'],
+    ['--session-id=session-id'],
+    ['--resume', 'session-id'],
+    ['--resume=session-id'],
+    ['-r', 'session-id'],
+    ['-rsession-id'],
+    ['--continue'],
+    ['--continue=true'],
+    ['--prompt', 'custom prompt'],
+    ['--prompt=custom prompt'],
+    ['-p', 'custom prompt'],
+    ['-pcustom prompt'],
+    ['--interactive', 'custom prompt'],
+    ['--interactive=custom prompt'],
+    ['-i', 'custom prompt'],
+    ['-icustom prompt'],
+  ];
+  for (const args of conflicts) {
+    assert.throws(
+      () => validateRunnerConfig({
+        ...base,
+        launchCommand: ['copilot', ...args],
+      }),
+      /must not override the runner-managed session or prompt/,
+    );
+  }
+
+  const launchCommand = [
+    'copilot',
+    '--model=gpt-5.6-sol',
+    '-xattached',
+    '--agent',
+    'pan-worker',
+  ];
+  assert.deepEqual(
+    validateRunnerConfig({ ...base, launchCommand }).launchCommand,
+    launchCommand,
+  );
 });
 
 test('blank Agent metadata does not close a live managed process', async () => {

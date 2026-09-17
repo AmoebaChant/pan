@@ -21,10 +21,26 @@ import {
 
 const RELEASE_FILE = 'worker-release.json';
 const RUN_FILE = 'run.json';
+const RUNNER_MANAGED_LONG_OPTIONS = new Set([
+  '--session-id',
+  '--resume',
+  '--continue',
+  '--prompt',
+  '--interactive',
+]);
+const RUNNER_MANAGED_SHORT_OPTIONS = new Set(['-r', '-p', '-i']);
 
 function assertAbsolute(value, name) {
   if (!value || !path.isAbsolute(value)) throw new Error(`${name} must be absolute`);
   return path.resolve(value);
+}
+
+function isRunnerManagedOption(argument) {
+  if (argument.startsWith('--')) {
+    return RUNNER_MANAGED_LONG_OPTIONS.has(argument.split('=', 1)[0]);
+  }
+  return argument.length >= 2
+    && RUNNER_MANAGED_SHORT_OPTIONS.has(argument.slice(0, 2));
 }
 
 export function validateRunnerConfig(config) {
@@ -39,11 +55,10 @@ export function validateRunnerConfig(config) {
   ) {
     throw new Error('launchCommand must be a non-empty string array');
   }
-  if (
-    launchCommand.some((part) =>
-      ['--session-id', '--resume', '--continue'].includes(part))
-  ) {
-    throw new Error('launchCommand must not override the runner-managed session');
+  if (launchCommand.some(isRunnerManagedOption)) {
+    throw new Error(
+      'launchCommand must not override the runner-managed session or prompt',
+    );
   }
   const pollIntervalSeconds = Number(config.pollIntervalSeconds ?? 10);
   if (!Number.isFinite(pollIntervalSeconds) || pollIntervalSeconds < 1) {
@@ -164,16 +179,20 @@ async function defaultStopProcess(pid, dependencies) {
   }
 }
 
-async function defaultLaunchProcess({ command, cwd, env, prompt, sessionId }) {
+async function defaultLaunchProcess(
+  { command, cwd, env, prompt, sessionId },
+  dependencies = {},
+) {
   const args = [
     ...command.slice(1),
     '--session-id',
     sessionId,
-    '--prompt',
+    '--interactive',
     prompt,
   ];
   return new Promise((resolve, reject) => {
-    const child = spawn(command[0], args, {
+    const launch = dependencies.spawn ?? spawn;
+    const child = launch(command[0], args, {
       cwd,
       env,
       detached: true,
@@ -276,7 +295,8 @@ export async function launchTask({
   await writeFile(files.playbook, playbook.text, { encoding: 'utf8', mode: 0o600 });
   await writeFile(files.domain, domainInstructions, { encoding: 'utf8', mode: 0o600 });
   const cwd = resolvePlaybookWorkingDirectory(playbook, config);
-  const launch = dependencies.launchProcess ?? defaultLaunchProcess;
+  const launch = dependencies.launchProcess
+    ?? ((options) => defaultLaunchProcess(options, dependencies));
   const started = await launch({
     command: config.launchCommand,
     cwd,
