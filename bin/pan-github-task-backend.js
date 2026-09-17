@@ -208,11 +208,10 @@ class GitHubProjectTransport {
           $projectNumber: Int!,
           $after: String
         ) {
-          user(login: $projectOwner) {
-            projectV2(number: $projectNumber) { ...ProjectItems }
-          }
-          organization(login: $projectOwner) {
-            projectV2(number: $projectNumber) { ...ProjectItems }
+          repositoryOwner(login: $projectOwner) {
+            ... on ProjectV2Owner {
+              projectV2(number: $projectNumber) { ...ProjectItems }
+            }
           }
         }
         fragment ProjectItems on ProjectV2 {
@@ -260,7 +259,7 @@ class GitHubProjectTransport {
         projectNumber: this.projectNumber,
         after: cursor,
       });
-      const project = data?.data?.user?.projectV2 ?? data?.data?.organization?.projectV2;
+      const project = data?.data?.repositoryOwner?.projectV2;
       const page = project?.items;
       if (!page) throw new TaskBackendError('GitHub Project item query returned no data');
       items.push(...page.nodes);

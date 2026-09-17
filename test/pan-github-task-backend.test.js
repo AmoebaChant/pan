@@ -59,6 +59,21 @@ function strictOwnerTransport(ownerType) {
       assert.match(query, /\.\.\. on ProjectV2Owner/);
       assert.ok(args.includes('projectOwner=example'));
       assert.ok(args.includes('projectNumber=1'));
+      if (query.includes('query ProjectItems')) {
+        return {
+          data: {
+            repositoryOwner: {
+              __typename: ownerType,
+              projectV2: {
+                items: {
+                  nodes: [],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        };
+      }
       return {
         data: {
           repository: {
@@ -84,7 +99,7 @@ for (const [ownerType, ownerLabel] of [
   ['User', 'a user'],
   ['Organization', 'an organization'],
 ]) {
-  test(`GitHub Project initialization resolves ${ownerLabel} owner without invalid owner queries`, async () => {
+  test(`GitHub Project initialization and listing resolve ${ownerLabel} owner without invalid owner queries`, async () => {
     const transport = strictOwnerTransport(ownerType);
     const backend = new GitHubTaskBackend({
       backend: 'github',
@@ -94,6 +109,7 @@ for (const [ownerType, ownerLabel] of [
     }, { runGh: transport.runGh });
 
     assert.equal(await backend.initialize(), backend);
-    assert.equal(transport.calls, 1);
+    assert.deepEqual(await backend.list(), []);
+    assert.equal(transport.calls, 2);
   });
 }
