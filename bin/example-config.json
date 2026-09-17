@@ -1,21 +1,15 @@
 {
-  "domainRepo": "example/pan-domain",
-  "project": "example/1",
+  "backendConfig": "C:\\absolute\\pan-task-backend.json",
+  "domainPath": "C:\\absolute\\reviewed-domain",
   "machine": "example-machine",
-  "identity": "example-machine-runner-1",
-  "panCheckout": "/absolute/path/to/pan",
-  "terminal": { "kind": "macos-terminal" },
-  "copilotBin": "copilot",
-  "workerPermissions": "yolo",
-  "copilotArgs": [],
-  "pollIntervalSeconds": 30,
-  "leaseMinutes": 15,
-  "maxConcurrent": null,
-  "humanAttentionBackpressure": {
-    "softLimit": 5,
-    "mode": "prefer-autonomous"
-  },
-  "taskBacklogRepos": [],
-  "stateRoot": "/absolute/path/to/pan-state",
-  "workspaceRoot": "/absolute/path/to/pan-workspaces"
+  "stateRoot": "C:\\absolute\\pan-runner-state",
+  "workingDirectory": "C:\\Repos",
+  "pollIntervalSeconds": 10,
+  "launchCommand": [
+    "copilot",
+    "--model",
+    "gpt-5.6-sol",
+    "--agent",
+    "pan-worker"
+  ]
 }

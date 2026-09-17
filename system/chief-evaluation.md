@@ -9,15 +9,15 @@ a production planner, benchmark service, scheduler, or alternate task backend.
 The reusable fixture covers complete-backlog opportunity discovery, playbook
 reads before classification, standing versus approval-required authority,
 future and undated agent candidates, imported work, missing required
-identifiers, saved-session resume, active and waiting workers, full capacity,
-human-only work, holds, external waits, unsupported recurrence, completed
-activity, and out-of-scope assignments.
+identifiers, saved-session resume, active and waiting workers, human-only work,
+holds, external waits, unsupported recurrence, completed activity, and
+out-of-scope assignments.
 
 The chief must submit one structured assessment through the fixture MCP. Hard
 assertions check complete task accounting, concrete omission reasons,
 candidate coverage, checked backend writes, exact new/resume consistency for
-every candidate, valid non-duplicated human-attention membership, queued
-capacity, worker-terminal routing, and forbidden mutations. Task lists omit
+every candidate, valid non-duplicated human-attention membership,
+worker-terminal routing, and forbidden mutations. Task lists omit
 native reports as the production adapter does; the chief must read reports
 through the separate operation.
 

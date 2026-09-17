@@ -610,7 +610,7 @@ test('demo mode revises and completes without an MCP client', async () => {
   assert.equal(broker.snapshot.completion.mode, 'demo');
 });
 
-test('agent momentum remains chief-owned, complete, optional, and backend-neutral', async () => {
+test('agent momentum remains chief-owned, complete, and separate from the runner', async () => {
   const [momentum, runner, briefing] = await Promise.all([
     readFile(new URL('../system/agent-momentum.md', import.meta.url), 'utf8'),
     readFile(new URL('../system/runner.md', import.meta.url), 'utf8'),
@@ -619,8 +619,8 @@ test('agent momentum remains chief-owned, complete, optional, and backend-neutra
 
   assert.match(momentum, /every\s+eligible nonterminal task/i);
   assert.match(momentum, /future-dated, undated, unlabeled, and\s+sessionless/i);
-  assert.match(momentum, /Disabled or absent\s+configuration means no autonomous schedule/i);
-  assert.match(momentum, /Workers and runners never create or\s+own recurring momentum scans/i);
-  assert.match(runner, /runner never schedules,\s*prioritizes, or owns a recurring momentum scan/i);
-  assert.match(briefing, /conditional backend mappings, not universal\s+labels/i);
+  assert.match(momentum, /setting `agentStatus=requested`/i);
+  assert.match(momentum, /runner and\s+workers never own momentum schedules/i);
+  assert.match(runner, /does not inspect unrelated sessions, choose tasks/i);
+  assert.match(briefing, /consider every eligible task/i);
 });

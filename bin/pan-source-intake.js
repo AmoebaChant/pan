@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
-import { runGh } from './pan-github-task-store.js';
+import { runGh } from './pan-github-task-backend.js';
 import {
   applySourceIntake,
   discoverGitHubIssues,
@@ -59,7 +59,7 @@ function contentsEndpoint(repo, filename) {
 }
 
 async function defaultGhJson(args, options = {}) {
-  return JSON.parse(await runGh(args, options));
+  return runGh(args, options);
 }
 
 export class GitHubIntakeClient {

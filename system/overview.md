@@ -1,124 +1,57 @@
 # Pan overview
 
-Pan is a personal chief of staff. It keeps track of everything you and your
-agents owe, decides what should happen next, keeps always-on machines supplied
-with work, and gets blocked agents back in front of you fast.
+Pan is a Markdown-defined chief of staff for one configured Domain. The Domain
+contains workstream knowledge, playbooks, instructions, and one authoritative
+task backend. The public Pan repository contains reusable contracts, agents,
+the backend adapters, and one small runner.
 
-Pan is defined almost entirely in Markdown. The behavior, conventions, and
-contracts in [`system/`](.) *are* the system: an agent that reads and follows
-them is Pan. The code is a small [runner](runner.md) that polls for work and
-launches Pan worker sessions plus an optional local
-[Daily Briefing review service](briefing-ui.md), with focused automated
-coverage for critical behavior. If something is ambiguous, the fix is to make
-these documents clearer.
+## Components
 
-## The pieces
+- **Tasks** record work in GitHub Issues + Project or Todoist. See
+  [Task and session model](task-lifecycle.md).
+- **Task Manager** performs backend-neutral CRUD, comments, and explicit
+  session requests. It does not make business decisions.
+- **Chief** reads the complete live portfolio, recommends or applies authorized
+  task edits, and records business judgment in Markdown and comments.
+- **Runner** opens or resumes only explicitly requested task sessions and
+  supervises only its own local processes. See [Runner](runner.md).
+- **Workers** execute one task according to its playbook and interact directly
+  with the user when needed. See
+  [Worker base instructions](worker-base-instructions.md).
+- **Workstreams** hold durable narrative context.
+- **Daily Briefing** considers the complete eligible portfolio, regardless of
+  dates, before proposing human focus and agent requests.
 
-- **The Pan tool repository** (`AmoebaChant/pan`, this repo) — public, reusable,
-  user-agnostic. It holds the system contracts, agents, skills, and the runner.
-  It contains no user data.
-- **The Pan Domain** — a private GitHub repository for knowledge, playbooks,
-  configuration, and domain-specific instructions, plus one selected task
-  backend. GitHub Issues and a Project remain the default backend; a Domain may
-  instead select Todoist. See [domain](domain.md) and
-  [task backends](task-backends.md).
-- **The runner** — one mechanical process per machine. It polls the selected
-  backend for explicitly requested AI attention within local capacity and
-  launches a Pan worker session. It does not prioritize or reinterpret holds.
-  See
-  [runner](runner.md).
-- **Pan worker sessions** — headed `copilot` sessions the runner launches to
-  perform a claimed task, following that task's playbook. See
-  [worker base instructions](worker-base-instructions.md).
-- **Daily Briefing** — an interactive review that turns complete live Domain
-  state into an agreed, realistically sized human plan and agent-throughput
-  plan. See
-  [Daily Briefing](daily-briefing.md).
-- **Agent momentum** — a complete chief-owned portfolio scan that keeps
-  authorized agent work moving between briefings and prepares approvals when
-  authority is absent. See [agent momentum](agent-momentum.md).
-- **Source intake** — chief-owned registration of explicitly scoped GitHub
-  Issues into a non-GitHub authoritative backend. It runs before briefing and
-  triage, preserves durable receipts, and never authorizes imported work. See
-  [source intake](source-intake.md).
-- **Daily Briefing review UI** — an optional local, responsive review surface
-  for marking up a complete proposal before sending one batch of feedback back
-  to the Pan session. See [Daily Briefing review UI](briefing-ui.md).
-- **Everyday task UI** — an optional local GitHub-backed surface for Today,
-  Needs me, In motion, Recent activity, and All tasks. Browser code holds no
-  credentials; the loopback service enforces the configured Domain boundary.
-  See [Daily Briefing review UI](briefing-ui.md).
+## Core separation
 
-Pan works with exactly **one** Domain at a time. The Domain selects exactly one
-canonical task backend. A task is a stable outcome and has no owner in the
-canonical lifecycle; person assignment remains native backend data, while
-human and AI turns are expressed by its exact next-action state.
-See [Outcome task lifecycle](task-lifecycle.md).
+Work Status is `open`, `done`, or `rejected`. Agent status is empty,
+`requested`, or `running`. The saved session ID is independent and persists
+after closure.
 
-## The loop
-
-1. Tasks arrive in the selected backend. For a GitHub-backed Domain, external
-   backlog Issues may be referenced by its Project. For a Todoist-backed
-   Domain, GitHub source links are reference history rather than another queue.
-2. **Triage** reads live machine playbooks and performs the
-   [agent-opportunity pass](agent-momentum.md#agent-opportunity-pass) across
-   every eligible task before preparing next actions, authorization, and
-   priority. Each task has an internal agent disposition; plausible omissions
-   require a concrete reason. Scheduled triage may apply only standing
-   permissions and objective reconciliations; scope expansion and
-   consequential decisions remain human. See [triage](triage.md).
-3. **Daily Briefing** reviews the complete live portfolio and workstream
-   context, recommends human attention plus agent starts/resumes, and, after
-   agreement, applies exactly the selected date and attention effects. Between
-   briefings, optional chief-owned [agent momentum](agent-momentum.md) scans
-   use the same explicit capability assessment. Neither dates, priority,
-   labels, sessions, nor import state filter agent discovery; full runner
-   capacity delays launch rather than hiding useful candidates.
-4. **Runners** poll the selected backend. The opt-in Todoist attention pilot
-   launches `AI Attention Requested`; the compatibility lifecycle launches
-   checked `ready-for-ai/execute`. Dates never gate or order AI work. See
-   [attention lifecycle](attention-lifecycle.md) and [runner](runner.md).
-5. The **worker** does the task using the playbook's instructions, the full Pan
-   system context, and the task contents. If it needs the user, it signals the
-   runner, which records a durable backend report. See
-   [worker base instructions](worker-base-instructions.md).
-6. Findings and decisions are written back to **workstreams**; task lifecycle
-   and recurring occurrence state stay in the selected backend. See
-   [workstreams](workstreams.md).
-
-## Reading these documents
-
-Load only what the current job needs; skip the rest until you need it.
-
-| When you are… | Read |
-| --- | --- |
-| Learning the system | this file |
-| Working with the user's Domain | [domain](domain.md) |
-| Reading or writing Project fields | [project schema](project-schema.md) |
-| Changing task state or next action | [outcome task lifecycle](task-lifecycle.md) |
-| Triaging the backlog | [triage](triage.md) + [playbooks](playbooks.md) |
-| Importing declared GitHub Issues | [source intake](source-intake.md) |
-| Planning the user's day | [Daily Briefing](daily-briefing.md) |
-| Keeping agent work moving | [agent momentum](agent-momentum.md) |
-| Reviewing a briefing in the local web UI | [Daily Briefing review UI](briefing-ui.md) |
-| Creating or completing recurring tasks | [recurrence](recurrence.md) |
-| Recording knowledge / routing info | [workstreams](workstreams.md) |
-| Defining or choosing a playbook | [playbooks](playbooks.md) |
-| Building or debugging the runner | [runner](runner.md) |
-| Executing a claimed task | [worker base instructions](worker-base-instructions.md) |
-| Improving Pan itself | [self-improvement](self-improvement.md) |
+There is no permanent Pan owner and no next-action/state pair engine.
+Authorization, dependencies, holds, review gates, delivery decisions, and
+completion evidence remain in task text, comments, workstreams, Domain
+instructions, and playbooks. The runner never infers them.
 
 ## State rules
 
-The selected backend is the only durable task state. Local runner
-state proves process/session/workspace ownership only. Workstream Markdown is
-the only durable narrative. Conversation history and browser memory are not
-records. Never build an undeclared second queue, cache the backlog, or treat a
-prior read as current: read live in the turn you act, require the expected task
-revision and worker generation where applicable, and verify writes afterward.
+The selected backend is the only task state. Local runner files describe only
+processes it launched. Conversation history, browser memory, and local runner
+files are not a second queue.
 
-Approval-free task-state writes are limited to the objective reconciliations
-and standing permissions defined by [triage](triage.md). Runner writes are
-limited to mechanical claim, liveness, checkpoint, and result relay under a
-matching revision and claim generation. A process exit changes liveness, not
-the outcome state; a deliberate hold is never treated as a crash pause.
+Read live state before acting, edit only intended fields, surface errors, and
+verify writes. Use the Project's order as user precedence within equal
+priority. Never infer task completion or session release from a comment.
+
+## Reading guide
+
+| Need | Contract |
+| --- | --- |
+| Backend record and commands | [Task backends](task-backends.md) |
+| GitHub fields | [Project schema](project-schema.md) |
+| Work/session meanings | [Task and session model](task-lifecycle.md) |
+| Portfolio classification | [Triage](triage.md) |
+| Daily planning | [Daily Briefing](daily-briefing.md) |
+| Worker routing | [Playbooks](playbooks.md) |
+| Process supervision | [Runner](runner.md) |
+| Task execution | [Worker base instructions](worker-base-instructions.md) |
