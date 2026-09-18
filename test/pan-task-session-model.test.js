@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { GitHubTaskBackend } from '../bin/pan-github-task-backend.js';
+import { runTaskCli } from '../bin/pan-task.js';
 import {
   pollRunner,
   validateRunnerConfig,
@@ -156,6 +157,7 @@ test('GitHub CRUD uses only the small task and session contract', async () => {
   );
   assert.equal(created.status, 'open');
   assert.equal(created.agentStatus, '');
+  assert.equal(created.nextStep, '');
 
   const requested = await backend.update(created.id, { agentStatus: 'requested' });
   assert.equal(requested.agentStatus, 'requested');
@@ -179,6 +181,51 @@ test('GitHub CRUD uses only the small task and session contract', async () => {
   assert.deepEqual(
     (await backend.comments(created.id)).map((comment) => comment.content),
     ['Progress is descriptive, not a transition.'],
+  );
+});
+
+test('pan-task CLI forwards nextStep through update, get, and list', async () => {
+  const transport = new MemoryGitHubTransport();
+  const config = {
+    backend: 'github',
+    repository: 'example/domain',
+    projectOwner: 'example',
+    projectNumber: 1,
+  };
+  const backend = await new GitHubTaskBackend(config, { transport }).initialize();
+  const created = await backend.create({
+    title: 'Publish the reviewed change',
+  });
+  const dependencies = { backendConfig: config, transport };
+
+  const updated = await runTaskCli([
+    '--config',
+    'unused.json',
+    'update',
+    created.id,
+    '--input',
+    '{"nextStep":"PR published - ready for review"}',
+  ], dependencies);
+  assert.equal(updated.nextStep, 'PR published - ready for review');
+  assert.equal(updated.id, created.id);
+  assert.equal(updated.sessionId, '');
+
+  const fetched = await runTaskCli([
+    '--config',
+    'unused.json',
+    'get',
+    created.itemId,
+  ], dependencies);
+  assert.equal(fetched.nextStep, 'PR published - ready for review');
+
+  const listed = await runTaskCli([
+    '--config',
+    'unused.json',
+    'list',
+  ], dependencies);
+  assert.deepEqual(
+    listed.map((task) => ({ id: task.id, nextStep: task.nextStep })),
+    [{ id: created.id, nextStep: 'PR published - ready for review' }],
   );
 });
 
@@ -512,6 +559,11 @@ test('runner launches every requested task without duplicating managed tasks', a
     playbook: 'pan',
     agentStatus: 'requested',
   });
+  const descriptiveOnly = await backend.create({
+    title: 'Descriptive next step only',
+    playbook: 'pan',
+    nextStep: 'Awaiting a user decision',
+  });
   const root = await mkdtemp(path.join(os.tmpdir(), 'pan-simple-parallel-'));
   await mkdir(path.join(root, 'work'));
   const config = validateRunnerConfig({
@@ -549,6 +601,7 @@ test('runner launches every requested task without duplicating managed tasks', a
     dependencies,
   });
   assert.deepEqual(launched.launched, [first.id, second.id]);
+  assert.equal((await backend.get(descriptiveOnly.id)).agentStatus, '');
 
   const repeated = await pollRunner({
     backend,

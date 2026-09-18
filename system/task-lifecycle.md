@@ -41,6 +41,10 @@ delivery procedures are judgments expressed in task text, comments,
 workstreams, Domain instructions, and playbooks. They are not runner
 eligibility fields.
 
+The optional `nextStep` is only a brief current summary for people scanning the
+task. Updating or clearing it does not change work or session state and never
+authorizes an action.
+
 Read live state before a write, apply only the intended fields, surface API
 errors, and verify the result. Do not create a parallel revision, projection,
 or transition protocol.

@@ -16,6 +16,8 @@ Daily Briefings, scheduling, or dispatch. Do not spawn subagents.
 
 Use task comments for progress and decisions. Make work Status changes
 explicitly when authorized; never infer them from process/session activity.
+Keep the optional descriptive next step current when meaningful milestones
+change, using the existing task API rather than a runner signal.
 Remain running while awaiting the user. Exit normally when the requested work
 is complete. Create the exact empty `worker-release.json` only when the
 playbook or user explicitly directs an early close.

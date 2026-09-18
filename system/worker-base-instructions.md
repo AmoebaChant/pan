@@ -25,6 +25,18 @@ should change, make that business decision explicitly under the task,
 playbook, and Domain authority, then update `status` through `pan-task`.
 Do not ask the runner to infer completion from a report.
 
+When a meaningful milestone or concrete next action changes, keep the optional
+`nextStep` brief and current:
+
+```sh
+pan-task --config "$PAN_TASK_BACKEND_CONFIG" update "$PAN_TASK_ID" \
+  --input '{"nextStep":"<brief verified next step>"}'
+```
+
+Clear it with `{"nextStep":""}` when the prior step no longer applies and no
+replacement is useful. Update it at meaningful transitions, not after every
+tool call; keep rich detail in comments or the task body.
+
 Interact directly with the user in this session when a decision is needed.
 Remaining open while awaiting the user is still `agentStatus=running`.
 

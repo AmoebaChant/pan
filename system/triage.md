@@ -10,14 +10,15 @@ configured scope. Preserve backend order as precedence within equal priority.
 Read live playbooks and relevant workstream context. For each task, decide:
 
 - whether its work Status remains open, is done, or is rejected;
-- priority, planned date, deadline, playbook, and workstream;
+- priority, planned date, brief current next step, deadline, playbook, and
+  workstream;
 - what dependency, approval, hold, review, or delivery context belongs in task
   text or comments; and
 - whether opening or resuming its saved agent session would be useful.
 
-These are explicit business decisions. Do not derive a permanent owner, create
-a next-action field, encode dependencies or authorization as runner gates, or
-turn a comment into a state transition.
+These are explicit business decisions. Keep `nextStep` descriptive; do not
+derive a permanent owner, create a next-action state pair, encode dependencies
+or authorization as runner gates, or turn a comment into a state transition.
 
 Request agent help by setting `agentStatus=requested`. This is valid for every
 task, including done and rejected tasks. If `sessionId` is empty, the runner

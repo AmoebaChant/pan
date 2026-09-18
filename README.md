@@ -13,13 +13,16 @@ Start at [`system/overview.md`](system/overview.md).
 node bin/pan-task.js --config <backend.json> list
 node bin/pan-task.js --config <backend.json> update <id> \
   --input '{"agentStatus":"requested"}'
+node bin/pan-task.js --config <backend.json> update <id> \
+  --input '{"nextStep":"PR published - ready for review"}'
 node bin/pan-task.js --config <backend.json> comment <id> \
   --input '{"content":"Progress update"}'
 ```
 
 GitHub and Todoist expose the same work and session contract. Work Status is
 `open|done|rejected`; Agent status is empty, `requested`, or `running`; session
-IDs persist independently. Start from
+IDs persist independently; and optional `nextStep` text is descriptive only.
+Start from
 [`bin/example-task-backend.json`](bin/example-task-backend.json).
 
 ## Runner

@@ -19,7 +19,8 @@ The common task record contains:
 - backend and native task identifiers;
 - title, description, URL, comments, and native open/closed reason;
 - work `status`: `open`, `done`, or `rejected`;
-- priority, planned date (`nextActionDate`), deadline, playbook, and workstream;
+- priority, planned date (`nextActionDate`), optional brief `nextStep`,
+  deadline, playbook, and workstream;
 - persistent `sessionId`; and
 - `agentStatus`: empty, `requested`, or `running`.
 
@@ -31,6 +32,10 @@ Adapters validate basic types, configured scope, backend identifiers, and
 authentication. They return explicit API and partial-write errors. They do not
 decide whether work is ready, infer an owner, validate business transitions,
 route next-action pairs, or interpret comments as state changes.
+
+`nextStep` is plain descriptive text for a current milestone or concrete next
+action. Empty or missing values read as an empty string. It never affects
+dispatch, permissions, work status, Agent status, or completion.
 
 ## GitHub
 
@@ -49,8 +54,8 @@ preserved unless the caller explicitly changes work status.
 Todoist native content, description, priority, due date, deadline, comments,
 completion, and reopening remain native. One visible `pan-task:v2` block at the
 end of the description stores only fields Todoist does not natively provide:
-playbook, workstream, session ID, Agent status, and the rejected close meaning.
-It is not a workflow or worker-state store.
+next step, playbook, workstream, session ID, Agent status, and the rejected
+close meaning. It is not a workflow or worker-state store.
 
 The adapter fully paginates active tasks. Completed tasks use Todoist's required
 completion-date bounds and cursor pagination within one rolling three-month

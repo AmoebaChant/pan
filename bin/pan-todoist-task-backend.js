@@ -201,6 +201,7 @@ export class TodoistTaskBackend {
       status,
       priority: NATIVE_TO_PRIORITY[task.priority] || 'normal',
       nextActionDate: task.due?.date || '',
+      nextStep: String(metadata.nextStep ?? ''),
       deadline: task.deadline?.date || '',
       playbook: String(metadata.playbook ?? ''),
       workstream: String(metadata.workstream ?? ''),
@@ -330,6 +331,7 @@ export class TodoistTaskBackend {
     }
     const projectId = input.projectId || this.config.createProjectId;
     const metadata = {
+      nextStep: String(input.nextStep ?? ''),
       playbook: String(input.playbook ?? ''),
       workstream: String(input.workstream ?? ''),
       sessionId: String(input.sessionId ?? ''),
@@ -436,6 +438,7 @@ export class TodoistTaskBackend {
     const parsed = metadataFrom(native.description || '');
     const metadata = {
       ...parsed.metadata,
+      ...(input.nextStep === undefined ? {} : { nextStep: String(input.nextStep) }),
       ...(input.playbook === undefined ? {} : { playbook: String(input.playbook) }),
       ...(input.workstream === undefined ? {} : { workstream: String(input.workstream) }),
       ...(input.sessionId === undefined ? {} : { sessionId: String(input.sessionId) }),

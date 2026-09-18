@@ -144,6 +144,118 @@ test('Todoist uses the same small contract without legacy workflow metadata', as
   await backend.comment('1', { content: 'A plain progress comment.' });
   assert.equal(comments[0].content, 'A plain progress comment.');
   assert.equal((await backend.get('1')).status, 'open');
+  assert.equal((await backend.get('1')).nextStep, '');
+});
+
+test('Todoist metadata creates, reads, updates, and clears nextStep', async () => {
+  let task = null;
+  const requests = [];
+  const backend = await new TodoistTaskBackend({
+    backend: 'todoist',
+    createProjectId: 'p',
+    includeCompleted: false,
+  }, {
+    readFileImpl: async () => 'TODOIST_API_KEY=secret',
+    fetchImpl: async (url, options = {}) => {
+      const requestUrl = new URL(url);
+      requests.push({
+        method: options.method,
+        pathname: requestUrl.pathname,
+        search: requestUrl.search,
+        body: options.body ? JSON.parse(options.body) : undefined,
+      });
+      if (requestUrl.pathname.endsWith('/user')) return response({ id: 'self' });
+      if (requestUrl.pathname.endsWith('/tasks') && options.method === 'POST') {
+        const input = JSON.parse(options.body);
+        task = {
+          id: 'created-1',
+          ...input,
+          project_id: input.project_id,
+          responsible_uid: null,
+          updated_at: 'r1',
+        };
+        return response(task);
+      }
+      if (requestUrl.pathname.endsWith('/tasks') && options.method === 'GET') {
+        return response({ results: task ? [task] : [], next_cursor: null });
+      }
+      if (requestUrl.pathname.endsWith('/tasks/created-1') && options.method === 'GET') {
+        return response(task);
+      }
+      if (requestUrl.pathname.endsWith('/tasks/created-1') && options.method === 'POST') {
+        task = { ...task, ...JSON.parse(options.body), updated_at: 'r2' };
+        return response(task);
+      }
+      throw new Error(`unexpected request: ${options.method} ${url}`);
+    },
+  }).initialize();
+
+  const created = await backend.create({
+    title: 'Publish the reviewed change',
+    description: 'Keep native details.',
+    priority: 'high',
+    nextStep: 'PR published - ready for review',
+    playbook: 'pan',
+    workstream: 'pan',
+    sessionId: 'saved-session',
+    agentStatus: 'running',
+  });
+  assert.equal(created.nextStep, 'PR published - ready for review');
+  assert.equal(created.title, 'Publish the reviewed change');
+  assert.equal(created.description, 'Keep native details.');
+  assert.equal(created.projectId, 'p');
+  assert.deepEqual(metadataFrom(task.description).metadata, {
+    nextStep: 'PR published - ready for review',
+    playbook: 'pan',
+    workstream: 'pan',
+    sessionId: 'saved-session',
+    agentStatus: 'running',
+  });
+
+  assert.equal((await backend.list())[0].nextStep, 'PR published - ready for review');
+  assert.equal((await backend.get(created.id)).nextStep, 'PR published - ready for review');
+
+  const updated = await backend.update(created.id, {
+    nextStep: 'Awaiting reviewer decision',
+  });
+  assert.equal(updated.nextStep, 'Awaiting reviewer decision');
+  assert.equal(updated.title, created.title);
+  assert.equal(updated.description, created.description);
+  assert.equal(updated.priority, created.priority);
+  assert.equal(updated.playbook, 'pan');
+  assert.equal(updated.workstream, 'pan');
+  assert.equal(updated.sessionId, 'saved-session');
+  assert.equal(updated.agentStatus, 'running');
+
+  const cleared = await backend.update(created.id, { nextStep: '' });
+  assert.equal(cleared.nextStep, '');
+  assert.deepEqual(metadataFrom(task.description), {
+    description: 'Keep native details.',
+    metadata: {
+      playbook: 'pan',
+      workstream: 'pan',
+      sessionId: 'saved-session',
+      agentStatus: 'running',
+    },
+  });
+  const updateBodies = requests
+    .filter((request) =>
+      request.method === 'POST'
+      && request.pathname.endsWith('/tasks/created-1'))
+    .map((request) => request.body);
+  assert.equal(updateBodies.length, 2);
+  assert.equal(
+    metadataFrom(updateBodies[0].description).metadata.nextStep,
+    'Awaiting reviewer decision',
+  );
+  assert.deepEqual(metadataFrom(updateBodies[1].description).metadata, {
+    playbook: 'pan',
+    workstream: 'pan',
+    sessionId: 'saved-session',
+    agentStatus: 'running',
+  });
+  assert.equal(updateBodies[0].content, undefined);
+  assert.equal(updateBodies[0].priority, undefined);
 });
 
 test('Todoist completed history uses strict three-month bounds and cursor pagination', async () => {
@@ -259,6 +371,7 @@ test('Todoist closed-task fallback shares the bounded history window', async () 
 
 test('Todoist metadata block contains only backend-unsupported small-contract fields', () => {
   const description = descriptionWithMetadata('Visible details', {
+    nextStep: 'Awaiting review',
     playbook: 'pan',
     workstream: 'pan',
     sessionId: 'session',
@@ -267,6 +380,7 @@ test('Todoist metadata block contains only backend-unsupported small-contract fi
   assert.deepEqual(metadataFrom(description), {
     description: 'Visible details',
     metadata: {
+      nextStep: 'Awaiting review',
       playbook: 'pan',
       workstream: 'pan',
       sessionId: 'session',
