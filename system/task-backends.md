@@ -45,6 +45,11 @@ comments, state, and state reason remain native. Project fields store the
 portable planning and session fields described in
 [Project schema](project-schema.md).
 
+A successful create has persisted and read back the requested initial work
+status and planning fields from the configured Issue and Project item. Failure
+after either record exists is reported as a partial write with their known
+identities rather than as a successful task.
+
 Closing `done` uses GitHub's completed reason. Closing `rejected` uses not
 planned. A pre-existing duplicate close reason is read as rejected and is
 preserved unless the caller explicitly changes work status.

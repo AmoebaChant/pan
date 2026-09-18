@@ -25,6 +25,10 @@ class MemoryGitHubTransport {
     return this.items;
   }
 
+  async getItem(itemId) {
+    return this.items.find((item) => item.id === itemId) ?? null;
+  }
+
   async createIssue({ title, body }) {
     const number = this.nextIssue++;
     return {
