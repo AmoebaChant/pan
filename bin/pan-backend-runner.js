@@ -138,20 +138,16 @@ export function resolveRequestedPlaybook(assignment, loadedDomain, config) {
       : 'default';
   const playbook = assigned || loadedDomain.defaultPlaybook;
   try {
+    resolvePlaybookWorkingDirectory(playbook, config);
     return {
       available: true,
-      description: playbook.description,
-      name: playbook.name,
       playbook,
       requestedName,
       source,
-      workingDirectory: resolvePlaybookWorkingDirectory(playbook, config),
     };
   } catch (error) {
     return {
       available: false,
-      description: playbook.description,
-      name: playbook.name,
       requestedName,
       reason: error.message,
       source,
@@ -165,8 +161,8 @@ function availablePlaybookChoices(loadedDomain, config) {
     .map((name) => resolveRequestedPlaybook(name, loadedDomain, config))
     .filter((resolved) => resolved.available)
     .map((resolved) => ({
-      description: resolved.description,
-      name: resolved.name,
+      description: resolved.playbook.description,
+      name: resolved.playbook.name,
     }));
 }
 

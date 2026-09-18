@@ -644,12 +644,9 @@ test('runner resolver uses the default for blank and absent named assignments', 
     resolveRequestedPlaybook('', loadedDomain, config),
     {
       available: true,
-      description: 'General task work',
-      name: 'default-playbook',
       playbook: defaultPlaybook,
       requestedName: '',
       source: 'default',
-      workingDirectory: root,
     },
   );
   assert.equal(
@@ -660,12 +657,9 @@ test('runner resolver uses the default for blank and absent named assignments', 
     resolveRequestedPlaybook('missing', loadedDomain, config),
     {
       available: true,
-      description: 'General task work',
-      name: 'default-playbook',
       playbook: defaultPlaybook,
       requestedName: 'missing',
       source: 'missing-default',
-      workingDirectory: root,
     },
   );
   const invalid = {
@@ -681,8 +675,6 @@ test('runner resolver uses the default for blank and absent named assignments', 
     }, { workingDirectory: '' }),
     {
       available: false,
-      description: 'Broken specialist',
-      name: 'broken',
       requestedName: 'broken',
       reason: 'playbook broken needs workingDirectory or runner workingDirectory',
       source: 'assigned',
