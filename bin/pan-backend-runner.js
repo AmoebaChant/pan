@@ -17,6 +17,7 @@ import { parseArgs } from 'node:util';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
 import {
   loadBackendPlaybooks,
+  loadBackendWorkstream,
   resolvePlaybookWorkingDirectory,
 } from './pan-backend-playbooks.js';
 
@@ -123,6 +124,58 @@ async function fileExists(filename) {
 
 export function selectRequestedTasks(tasks) {
   return tasks.filter((task) => task.agentStatus === 'requested');
+}
+
+export function resolveRequestedPlaybook(assignment, loadedDomain, config) {
+  const requestedName = String(assignment || '').trim();
+  const source = requestedName ? 'assigned' : 'default';
+  const playbook = requestedName
+    ? loadedDomain.playbooks.get(requestedName)
+    : loadedDomain.defaultPlaybook;
+  if (!playbook) {
+    return {
+      available: false,
+      name: requestedName,
+      reason: `playbook ${JSON.stringify(requestedName)} is missing`,
+      source,
+    };
+  }
+  try {
+    return {
+      available: true,
+      description: playbook.description,
+      name: playbook.name,
+      playbook,
+      source,
+      workingDirectory: resolvePlaybookWorkingDirectory(playbook, config),
+    };
+  } catch (error) {
+    return {
+      available: false,
+      description: playbook.description,
+      name: playbook.name,
+      reason: error.message,
+      source,
+    };
+  }
+}
+
+export function inspectConfiguredPlaybooks(loadedDomain, config) {
+  const describe = (assignment) => {
+    const resolved = resolveRequestedPlaybook(assignment, loadedDomain, config);
+    return {
+      available: resolved.available,
+      description: resolved.description || '',
+      name: resolved.name,
+      reason: resolved.reason || '',
+    };
+  };
+  return {
+    defaultPlaybook: describe(''),
+    playbooks: [...loadedDomain.playbooks.keys()]
+      .sort()
+      .map((name) => describe(name)),
+  };
 }
 
 export async function inspectManagedRuns(stateRoot) {
@@ -261,6 +314,7 @@ function launchPrompt(task, files) {
     `Work on Pan task ${task.id}: ${task.title}`,
     `Read the task snapshot at ${files.task}, the playbook at ${files.playbook},`,
     `the Domain instructions at ${files.domain}, and comments at ${files.comments}.`,
+    `Read workstream guidance at ${files.workstream} when that snapshot is non-empty.`,
     'Use task comments for progress and business decisions.',
     'Exit normally when the requested work is complete.',
     `Create an empty ${files.release} file only when the playbook or user explicitly directs an early close.`,
@@ -275,6 +329,7 @@ export async function launchTask({
   playbook,
   domainInstructions,
   domainRevision,
+  workstreamInstructions = '',
   dependencies = {},
 }) {
   let current = task;
@@ -289,6 +344,7 @@ export async function launchTask({
     playbook: path.join(dir, 'playbook.md'),
     domain: path.join(dir, 'pan.md'),
     comments: path.join(dir, 'comments.json'),
+    workstream: path.join(dir, 'workstream.md'),
     release: path.join(dir, RELEASE_FILE),
   };
   const comments = await backend.comments(current.id);
@@ -296,6 +352,10 @@ export async function launchTask({
   await atomicWriteJson(files.comments, comments);
   await writeFile(files.playbook, playbook.text, { encoding: 'utf8', mode: 0o600 });
   await writeFile(files.domain, domainInstructions, { encoding: 'utf8', mode: 0o600 });
+  await writeFile(files.workstream, workstreamInstructions, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
   const cwd = resolvePlaybookWorkingDirectory(playbook, config);
   const launch = dependencies.launchProcess
     ?? ((options) => defaultLaunchProcess(options, dependencies));
@@ -352,25 +412,31 @@ export async function pollRunner({
   const skipped = [];
   for (const task of requested) {
     if (liveTaskIds.has(task.id)) continue;
-    const playbook = loadedDomain.playbooks.get(task.playbook);
-    if (!playbook) {
-      skipped.push({ id: task.id, reason: `playbook ${JSON.stringify(task.playbook)} is missing` });
-      continue;
-    }
-    try {
-      resolvePlaybookWorkingDirectory(playbook, config);
-    } catch (error) {
-      skipped.push({ id: task.id, reason: error.message });
+    const resolved = resolveRequestedPlaybook(task.playbook, loadedDomain, config);
+    if (!resolved.available) {
+      skipped.push({ id: task.id, reason: resolved.reason });
       continue;
     }
     if (!dryRun) {
+      let workstreamInstructions = '';
+      if (resolved.source === 'default' && task.workstream) {
+        try {
+          workstreamInstructions = (
+            await loadBackendWorkstream(config, task.workstream, dependencies)
+          ).text;
+        } catch (error) {
+          skipped.push({ id: task.id, reason: error.message });
+          continue;
+        }
+      }
       const run = await launchTask({
         task,
         backend,
         config,
-        playbook,
+        playbook: resolved.playbook,
         domainInstructions: loadedDomain.domainInstructions,
         domainRevision: loadedDomain.domainRevision,
+        workstreamInstructions,
         dependencies,
       });
       launched.push(run.taskId);
@@ -394,6 +460,7 @@ export async function runRunner(argv, dependencies = {}) {
       config: { type: 'string' },
       once: { type: 'boolean' },
       'dry-run': { type: 'boolean' },
+      'inspect-playbooks': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
     strict: true,
@@ -402,6 +469,7 @@ export async function runRunner(argv, dependencies = {}) {
     return {
       help: [
         'Usage: pan-runner --config <runner.json> [--once] [--dry-run]',
+        '       pan-runner --config <runner.json> --inspect-playbooks',
         '',
         'The runner opens or resumes tasks whose agentStatus is requested.',
       ].join('\n'),
@@ -409,6 +477,16 @@ export async function runRunner(argv, dependencies = {}) {
   }
   if (!values.config) throw new Error('--config is required');
   const config = await loadConfig(values.config, dependencies);
+  if (values['inspect-playbooks']) {
+    if (values.once || values['dry-run']) {
+      throw new Error('--inspect-playbooks cannot be combined with polling options');
+    }
+    const loadDomain = dependencies.loadBackendPlaybooks ?? loadBackendPlaybooks;
+    return inspectConfiguredPlaybooks(
+      await loadDomain(config, dependencies),
+      config,
+    );
+  }
   const backend = dependencies.backend
     ?? await loadTaskBackend(config.backendConfig, dependencies);
   if (typeof backend.initialize === 'function') await backend.initialize();

@@ -4,6 +4,13 @@ A playbook is a named set of worker instructions. Domain files live at
 `playbooks/<machine>/<name>.md`; the task's `playbook` field selects the file
 with the same name.
 
+An empty task assignment selects Pan's portable general default playbook. The
+default reads the task, comments, Domain and available workstream guidance, then
+follows applicable repository instructions without inventing a repository or
+workstream. A missing named playbook never falls back automatically: the request
+remains visible until the user restores that playbook or explicitly chooses the
+default by clearing the assignment.
+
 ```markdown
 ---
 name: tool-development

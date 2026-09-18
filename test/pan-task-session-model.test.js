@@ -8,9 +8,16 @@ import { fileURLToPath } from 'node:url';
 import { GitHubTaskBackend } from '../bin/pan-github-task-backend.js';
 import { runTaskCli } from '../bin/pan-task.js';
 import {
+  inspectConfiguredPlaybooks,
   pollRunner,
+  resolveRequestedPlaybook,
+  runRunner,
   validateRunnerConfig,
 } from '../bin/pan-backend-runner.js';
+import {
+  loadBackendPlaybooks,
+  loadBackendWorkstream,
+} from '../bin/pan-backend-playbooks.js';
 
 class MemoryGitHubTransport {
   constructor() {
@@ -611,5 +618,269 @@ test('runner launches every requested task without duplicating managed tasks', a
   });
   assert.deepEqual(repeated.launched, []);
   assert.equal(live.size, 2);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('runner resolver uses the default only for a blank assignment', () => {
+  const root = path.resolve('configured-work');
+  const defaultPlaybook = {
+    name: 'default-playbook',
+    description: 'General task work',
+    workingDirectory: null,
+    text: '# General',
+  };
+  const specialist = {
+    name: 'delivery',
+    description: 'Specialist delivery',
+    workingDirectory: root,
+    text: '# Delivery',
+  };
+  const loadedDomain = {
+    defaultPlaybook,
+    playbooks: new Map([['delivery', specialist]]),
+  };
+  const config = { workingDirectory: root };
+
+  assert.deepEqual(
+    resolveRequestedPlaybook('', loadedDomain, config),
+    {
+      available: true,
+      description: 'General task work',
+      name: 'default-playbook',
+      playbook: defaultPlaybook,
+      source: 'default',
+      workingDirectory: root,
+    },
+  );
+  assert.equal(
+    resolveRequestedPlaybook('delivery', loadedDomain, config).playbook,
+    specialist,
+  );
+  assert.deepEqual(
+    resolveRequestedPlaybook('missing', loadedDomain, config),
+    {
+      available: false,
+      name: 'missing',
+      reason: 'playbook "missing" is missing',
+      source: 'assigned',
+    },
+  );
+});
+
+test('playbook inspection uses the runner resolver without loading tasks', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-playbook-inspect-'));
+  const config = {
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory: root,
+    machine: 'test-machine',
+    launchCommand: ['copilot'],
+  };
+  let backendLoaded = false;
+  const result = await runRunner([
+    '--config',
+    path.join(root, 'runner.json'),
+    '--inspect-playbooks',
+  ], {
+    readFile: async () => JSON.stringify(config),
+    loadTaskBackend: async () => {
+      backendLoaded = true;
+      throw new Error('task backend must not load');
+    },
+    loadBackendPlaybooks: async () => ({
+      defaultPlaybook: {
+        name: 'default-playbook',
+        description: 'General task work',
+        workingDirectory: null,
+        text: '# General',
+      },
+      playbooks: new Map([
+        ['delivery', {
+          name: 'delivery',
+          description: 'Specialist delivery',
+          workingDirectory: root,
+          text: '# Delivery',
+        }],
+      ]),
+    }),
+  });
+
+  assert.equal(backendLoaded, false);
+  assert.deepEqual(result, {
+    defaultPlaybook: {
+      available: true,
+      description: 'General task work',
+      name: 'default-playbook',
+      reason: '',
+    },
+    playbooks: [{
+      available: true,
+      description: 'Specialist delivery',
+      name: 'delivery',
+      reason: '',
+    }],
+  });
+  assert.deepEqual(
+    inspectConfiguredPlaybooks({
+      defaultPlaybook: {
+        name: 'default-playbook',
+        description: 'General task work',
+        workingDirectory: null,
+      },
+      playbooks: new Map(),
+    }, { workingDirectory: '' }).defaultPlaybook,
+    {
+      available: false,
+      description: 'General task work',
+      name: 'default-playbook',
+      reason: 'playbook default-playbook needs workingDirectory or runner workingDirectory',
+    },
+  );
+  await rm(root, { recursive: true, force: true });
+});
+
+test('missing named requests wait until the user explicitly selects default', async () => {
+  const { backend } = await createBackend();
+  const savedSessionId = '99999999-2222-4333-8444-555555555555';
+  const task = await backend.create({
+    title: 'Use a missing specialist',
+    playbook: 'missing-specialist',
+    agentStatus: 'requested',
+    sessionId: savedSessionId,
+  });
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-missing-default-'));
+  const config = validateRunnerConfig({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory: root,
+    machine: 'test-machine',
+    launchCommand: ['copilot'],
+  });
+  const loadedDomain = {
+    defaultPlaybook: {
+      name: 'default-playbook',
+      description: 'General task work',
+      workingDirectory: null,
+      text: '# General',
+    },
+    playbooks: new Map(),
+    domainInstructions: '# Domain',
+    domainRevision: 'reviewed-sha',
+  };
+  const launches = [];
+  const dependencies = {
+    launchProcess: async (options) => {
+      launches.push(options);
+      return { pid: 9100, processStart: 'start' };
+    },
+    processIsAlive: () => false,
+  };
+
+  const blocked = await pollRunner({
+    backend,
+    config,
+    loadedDomain,
+    dependencies,
+  });
+  assert.deepEqual(blocked.launched, []);
+  assert.deepEqual(blocked.skipped, [{
+    id: task.id,
+    reason: 'playbook "missing-specialist" is missing',
+  }]);
+  assert.equal((await backend.get(task.id)).playbook, 'missing-specialist');
+  assert.equal((await backend.get(task.id)).agentStatus, 'requested');
+
+  await backend.update(task.id, { playbook: '' });
+  const launched = await pollRunner({
+    backend,
+    config,
+    loadedDomain,
+    dependencies,
+  });
+  assert.deepEqual(launched.launched, [task.id]);
+  assert.equal(launches[0].sessionId, savedSessionId);
+  assert.equal((await backend.get(task.id)).playbook, '');
+  await rm(root, { recursive: true, force: true });
+});
+
+test('default playbook snapshots task context, workstream guidance, and configured cwd', async () => {
+  const { backend } = await createBackend();
+  const task = await backend.create({
+    title: 'Discuss completed work',
+    status: 'done',
+    workstream: 'planning',
+    agentStatus: 'requested',
+  });
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-default-context-'));
+  const domain = path.join(root, 'domain');
+  const work = path.join(root, 'work');
+  await mkdir(path.join(domain, 'playbooks', 'test-machine'), { recursive: true });
+  await mkdir(path.join(domain, 'workstreams', 'planning'), { recursive: true });
+  await mkdir(work);
+  await writeFile(
+    path.join(domain, 'playbooks', 'test-machine', 'delivery.md'),
+    '---\nname: delivery\ndescription: Delivery\n---\n# Delivery\n',
+  );
+  await writeFile(path.join(domain, 'pan.md'), '# Domain instructions\n');
+  await writeFile(
+    path.join(domain, 'workstreams', 'planning', 'README.md'),
+    '# Planning guidance\n',
+  );
+  const config = validateRunnerConfig({
+    backendConfig: path.join(root, 'backend.json'),
+    domainPath: domain,
+    stateRoot: path.join(root, 'state'),
+    workingDirectory: work,
+    machine: 'test-machine',
+    launchCommand: ['copilot'],
+  });
+  const loadedDomain = await loadBackendPlaybooks(config);
+  const launches = [];
+
+  const result = await pollRunner({
+    backend,
+    config,
+    loadedDomain,
+    dependencies: {
+      launchProcess: async (options) => {
+        launches.push(options);
+        return { pid: 9200, processStart: 'start' };
+      },
+      processIsAlive: () => false,
+    },
+  });
+
+  assert.deepEqual(result.launched, [task.id]);
+  assert.equal(launches[0].cwd, work);
+  const taskRoot = path.join(
+    config.stateRoot,
+    'tasks',
+    encodeURIComponent(task.id),
+  );
+  const defaultText = await readFile(path.join(taskRoot, 'playbook.md'), 'utf8');
+  assert.match(
+    defaultText,
+    /opening a done or rejected task may be for\s+discussion or follow-up/i,
+  );
+  assert.match(
+    defaultText,
+    /pan-task --config \$env:PAN_TASK_BACKEND_CONFIG update \$env:PAN_TASK_ID --input/,
+  );
+  assert.match(
+    defaultText,
+    /pan-task --config "\$PAN_TASK_BACKEND_CONFIG" update "\$PAN_TASK_ID" --input/,
+  );
+  assert.equal(
+    await readFile(path.join(taskRoot, 'workstream.md'), 'utf8'),
+    '# Planning guidance\n',
+  );
+  assert.match(
+    launches[0].prompt,
+    /Read workstream guidance .* when that snapshot is non-empty/,
+  );
+  assert.deepEqual(
+    await loadBackendWorkstream(config, '', {}),
+    { path: '', text: '', revision: null },
+  );
   await rm(root, { recursive: true, force: true });
 });

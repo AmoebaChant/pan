@@ -2,8 +2,12 @@ import { execFile } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_PLAYBOOK_FILE = fileURLToPath(
+  new URL('../system/default-playbook.md', import.meta.url),
+);
 
 function stripInlineComment(raw) {
   let quote = null;
@@ -86,22 +90,31 @@ async function readRemoteDomainFile(config, repoPath, dependencies) {
   };
 }
 
-async function loadLocalDomain(config) {
+async function loadDefaultPlaybook(dependencies) {
+  const text = dependencies.readFile
+    ? await dependencies.readFile(DEFAULT_PLAYBOOK_FILE, 'utf8')
+    : await readFile(DEFAULT_PLAYBOOK_FILE, 'utf8');
+  return validateBackendPlaybook('default-playbook.md', text);
+}
+
+async function loadLocalDomain(config, dependencies) {
   const root = path.resolve(config.domainPath);
   const directory = path.join(root, 'playbooks', config.machine);
-  const names = (await readdir(directory, { withFileTypes: true }))
+  const readDirectory = dependencies.readdir ?? readdir;
+  const readText = dependencies.readFile ?? readFile;
+  const names = (await readDirectory(directory, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
     .map((entry) => entry.name)
     .sort();
   if (!names.length) throw new Error(`${directory} contains no playbooks`);
   const playbooks = new Map();
   for (const name of names) {
-    const text = await readFile(path.join(directory, name), 'utf8');
+    const text = await readText(path.join(directory, name), 'utf8');
     playbooks.set(path.basename(name, '.md'), validateBackendPlaybook(name, text));
   }
   return {
     playbooks,
-    domainInstructions: await readFile(
+    domainInstructions: await readText(
       path.join(root, config.domainInstructionsFile || 'pan.md'),
       'utf8',
     ),
@@ -152,12 +165,16 @@ export async function loadBackendPlaybooks(config, dependencies = {}) {
   if (!String(config.machine || '').trim()) throw new Error('machine is required');
   if (config.domainPath) {
     if (!path.isAbsolute(config.domainPath)) throw new Error('domainPath must be absolute');
-    return loadLocalDomain(config);
-  }
-  if (!/^[^/\s]+\/[^/\s]+$/.test(String(config.domainRepo || ''))) {
+  } else if (!/^[^/\s]+\/[^/\s]+$/.test(String(config.domainRepo || ''))) {
     throw new Error('domainRepo must be owner/repo when domainPath is not set');
   }
-  return loadRemoteDomain(config, dependencies);
+  const loaded = config.domainPath
+    ? await loadLocalDomain(config, dependencies)
+    : await loadRemoteDomain(config, dependencies);
+  return {
+    ...loaded,
+    defaultPlaybook: await loadDefaultPlaybook(dependencies),
+  };
 }
 
 export function resolvePlaybookWorkingDirectory(playbook, config) {
@@ -168,4 +185,37 @@ export function resolvePlaybookWorkingDirectory(playbook, config) {
     );
   }
   return path.resolve(value);
+}
+
+function normalizeWorkstreamPath(value) {
+  const normalized = String(value || '').trim().replaceAll('\\', '/');
+  if (!normalized) return '';
+  if (
+    path.posix.isAbsolute(normalized)
+    || normalized.split('/').some((part) => !part || part === '.' || part === '..')
+  ) {
+    throw new Error(`invalid workstream path: ${JSON.stringify(value)}`);
+  }
+  return normalized;
+}
+
+export async function loadBackendWorkstream(
+  config,
+  workstream,
+  dependencies = {},
+) {
+  const normalized = normalizeWorkstreamPath(workstream);
+  if (!normalized) return { path: '', text: '', revision: null };
+  const repoPath = `workstreams/${normalized}/README.md`;
+  if (config.domainPath) {
+    const filename = path.join(path.resolve(config.domainPath), ...repoPath.split('/'));
+    const readText = dependencies.readFile ?? readFile;
+    return {
+      path: repoPath,
+      text: await readText(filename, 'utf8'),
+      revision: config.domainRevision || 'local',
+    };
+  }
+  const loaded = await readRemoteDomainFile(config, repoPath, dependencies);
+  return { path: repoPath, ...loaded };
 }

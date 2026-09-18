@@ -7,7 +7,8 @@ It performs one loop:
 
 1. load the selected backend;
 2. load the named machine's playbooks and `pan.md` from an explicit local
-   Domain path or an explicitly pinned remote revision;
+   Domain path or an explicitly pinned remote revision, plus Pan's portable
+   general default playbook;
 3. reconcile only processes recorded under its own state root;
 4. close a managed process when its empty `worker-release.json` exists;
 5. clear Agent status after an observed process closure; and
@@ -18,6 +19,11 @@ The runner does not read work Status as an eligibility or stop condition. It
 does not inspect unrelated sessions, choose tasks, interpret results, enforce
 dependencies or approvals, plan dates, allocate workspaces, claim Project
 leases, reserve machines, or change business state.
+
+An empty task playbook assignment selects the general default. A non-empty
+assignment must match the configured machine's loaded Domain playbooks exactly.
+Missing named playbooks remain requested and are reported as skipped; the
+runner never substitutes the default without an explicit task edit.
 
 ## Session launch
 
@@ -73,3 +79,7 @@ Playbook instructions own setup and delivery decisions.
 ```
 
 Use `--once` for one real poll and `--dry-run` for read-only selection.
+`--inspect-playbooks` loads the same configuration and resolver without loading
+the task backend or changing task or runner state. It reports the configured
+named playbooks and whether the default and each named playbook has a usable
+working directory.
