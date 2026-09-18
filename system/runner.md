@@ -20,10 +20,18 @@ does not inspect unrelated sessions, choose tasks, interpret results, enforce
 dependencies or approvals, plan dates, allocate workspaces, claim Project
 leases, reserve machines, or change business state.
 
-An empty task playbook assignment selects the general default. A non-empty
-assignment must match the configured machine's loaded Domain playbooks exactly.
-Missing named playbooks remain requested and are reported as skipped; the
-runner never substitutes the default without an explicit task edit.
+An empty task playbook assignment selects the general default. A valid
+non-empty assignment selects the exact configured machine playbook. When a
+non-empty name is absent on this runner, the runner preserves the task field and
+session ID, then opens the general default with repair instructions naming the
+missing assignment, the configured Domain source and revision, and the usable
+named alternatives. The worker asks the user whether to correct the assignment
+or help create the requested playbook and waits before specialist-dependent
+work. It does not infer global absence or mutate the assignment automatically.
+
+A loaded named playbook with an invalid working directory is an explicit error,
+as are malformed playbooks and Domain loading or trust failures. Those
+conditions do not use the missing-name fallback.
 
 ## Session launch
 
@@ -79,7 +87,3 @@ Playbook instructions own setup and delivery decisions.
 ```
 
 Use `--once` for one real poll and `--dry-run` for read-only selection.
-`--inspect-playbooks` loads the same configuration and resolver without loading
-the task backend or changing task or runner state. It reports the configured
-named playbooks and whether the default and each named playbook has a usable
-working directory.

@@ -8,10 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { GitHubTaskBackend } from '../bin/pan-github-task-backend.js';
 import { runTaskCli } from '../bin/pan-task.js';
 import {
-  inspectConfiguredPlaybooks,
+  missingPlaybookRepairInstructions,
   pollRunner,
   resolveRequestedPlaybook,
-  runRunner,
   validateRunnerConfig,
 } from '../bin/pan-backend-runner.js';
 import {
@@ -621,7 +620,7 @@ test('runner launches every requested task without duplicating managed tasks', a
   await rm(root, { recursive: true, force: true });
 });
 
-test('runner resolver uses the default only for a blank assignment', () => {
+test('runner resolver uses the default for blank and absent named assignments', () => {
   const root = path.resolve('configured-work');
   const defaultPlaybook = {
     name: 'default-playbook',
@@ -648,6 +647,7 @@ test('runner resolver uses the default only for a blank assignment', () => {
       description: 'General task work',
       name: 'default-playbook',
       playbook: defaultPlaybook,
+      requestedName: '',
       source: 'default',
       workingDirectory: root,
     },
@@ -659,35 +659,42 @@ test('runner resolver uses the default only for a blank assignment', () => {
   assert.deepEqual(
     resolveRequestedPlaybook('missing', loadedDomain, config),
     {
+      available: true,
+      description: 'General task work',
+      name: 'default-playbook',
+      playbook: defaultPlaybook,
+      requestedName: 'missing',
+      source: 'missing-default',
+      workingDirectory: root,
+    },
+  );
+  const invalid = {
+    name: 'broken',
+    description: 'Broken specialist',
+    workingDirectory: null,
+    text: '# Broken',
+  };
+  assert.deepEqual(
+    resolveRequestedPlaybook('broken', {
+      defaultPlaybook,
+      playbooks: new Map([['broken', invalid]]),
+    }, { workingDirectory: '' }),
+    {
       available: false,
-      name: 'missing',
-      reason: 'playbook "missing" is missing',
+      description: 'Broken specialist',
+      name: 'broken',
+      requestedName: 'broken',
+      reason: 'playbook broken needs workingDirectory or runner workingDirectory',
       source: 'assigned',
     },
   );
 });
 
-test('playbook inspection uses the runner resolver without loading tasks', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-playbook-inspect-'));
-  const config = {
-    backendConfig: path.join(root, 'backend.json'),
-    stateRoot: path.join(root, 'state'),
-    workingDirectory: root,
-    machine: 'test-machine',
-    launchCommand: ['copilot'],
-  };
-  let backendLoaded = false;
-  const result = await runRunner([
-    '--config',
-    path.join(root, 'runner.json'),
-    '--inspect-playbooks',
-  ], {
-    readFile: async () => JSON.stringify(config),
-    loadTaskBackend: async () => {
-      backendLoaded = true;
-      throw new Error('task backend must not load');
-    },
-    loadBackendPlaybooks: async () => ({
+test('missing-playbook repair instructions identify remote Domain provenance and usable choices', () => {
+  const root = path.resolve('configured-work');
+  const text = missingPlaybookRepairInstructions({
+    requestedName: 'missing-specialist',
+    loadedDomain: {
       defaultPlaybook: {
         name: 'default-playbook',
         description: 'General task work',
@@ -697,49 +704,30 @@ test('playbook inspection uses the runner resolver without loading tasks', async
       playbooks: new Map([
         ['delivery', {
           name: 'delivery',
-          description: 'Specialist delivery',
+          description: 'Deliver a reviewed change',
           workingDirectory: root,
           text: '# Delivery',
         }],
       ]),
-    }),
+      domainRevision: 'loaded-sha',
+    },
+    config: {
+      domainRepo: 'example/domain',
+      domainRevision: 'configured-sha',
+      workingDirectory: root,
+    },
   });
 
-  assert.equal(backendLoaded, false);
-  assert.deepEqual(result, {
-    defaultPlaybook: {
-      available: true,
-      description: 'General task work',
-      name: 'default-playbook',
-      reason: '',
-    },
-    playbooks: [{
-      available: true,
-      description: 'Specialist delivery',
-      name: 'delivery',
-      reason: '',
-    }],
-  });
-  assert.deepEqual(
-    inspectConfiguredPlaybooks({
-      defaultPlaybook: {
-        name: 'default-playbook',
-        description: 'General task work',
-        workingDirectory: null,
-      },
-      playbooks: new Map(),
-    }, { workingDirectory: '' }).defaultPlaybook,
-    {
-      available: false,
-      description: 'General task work',
-      name: 'default-playbook',
-      reason: 'playbook default-playbook needs workingDirectory or runner workingDirectory',
-    },
-  );
-  await rm(root, { recursive: true, force: true });
+  assert.match(text, /"missing-specialist" is unavailable on this runner/);
+  assert.match(text, /Clear the assignment to use the general default: General task work/);
+  assert.match(text, /delivery: Deliver a reviewed change/);
+  assert.match(text, /Domain source: example\/domain/);
+  assert.match(text, /Pinned Domain revision: configured-sha/);
+  assert.match(text, /Loaded Domain instructions revision: loaded-sha/);
+  assert.match(text, /Make this repair conversation the first task interaction/);
 });
 
-test('missing named requests wait until the user explicitly selects default', async () => {
+test('missing named requests open one repair-oriented default session without rewriting the task', async () => {
   const { backend } = await createBackend();
   const savedSessionId = '99999999-2222-4333-8444-555555555555';
   const task = await backend.create({
@@ -753,6 +741,7 @@ test('missing named requests wait until the user explicitly selects default', as
     backendConfig: path.join(root, 'backend.json'),
     stateRoot: path.join(root, 'state'),
     workingDirectory: root,
+    domainPath: path.join(root, 'reviewed-domain'),
     machine: 'test-machine',
     launchCommand: ['copilot'],
   });
@@ -763,7 +752,20 @@ test('missing named requests wait until the user explicitly selects default', as
       workingDirectory: null,
       text: '# General',
     },
-    playbooks: new Map(),
+    playbooks: new Map([
+      ['delivery', {
+        name: 'delivery',
+        description: 'Deliver a reviewed change',
+        workingDirectory: root,
+        text: '# Delivery',
+      }],
+      ['broken', {
+        name: 'broken',
+        description: 'Invalid local playbook',
+        workingDirectory: 'relative',
+        text: '# Broken',
+      }],
+    ]),
     domainInstructions: '# Domain',
     domainRevision: 'reviewed-sha',
   };
@@ -776,21 +778,6 @@ test('missing named requests wait until the user explicitly selects default', as
     processIsAlive: () => false,
   };
 
-  const blocked = await pollRunner({
-    backend,
-    config,
-    loadedDomain,
-    dependencies,
-  });
-  assert.deepEqual(blocked.launched, []);
-  assert.deepEqual(blocked.skipped, [{
-    id: task.id,
-    reason: 'playbook "missing-specialist" is missing',
-  }]);
-  assert.equal((await backend.get(task.id)).playbook, 'missing-specialist');
-  assert.equal((await backend.get(task.id)).agentStatus, 'requested');
-
-  await backend.update(task.id, { playbook: '' });
   const launched = await pollRunner({
     backend,
     config,
@@ -798,8 +785,47 @@ test('missing named requests wait until the user explicitly selects default', as
     dependencies,
   });
   assert.deepEqual(launched.launched, [task.id]);
+  assert.deepEqual(launched.skipped, []);
+  assert.equal(launches.length, 1);
   assert.equal(launches[0].sessionId, savedSessionId);
-  assert.equal((await backend.get(task.id)).playbook, '');
+  const running = await backend.get(task.id);
+  assert.equal(running.playbook, 'missing-specialist');
+  assert.equal(running.sessionId, savedSessionId);
+  assert.equal(running.agentStatus, 'running');
+
+  const taskRoot = path.join(
+    config.stateRoot,
+    'tasks',
+    encodeURIComponent(task.id),
+  );
+  const snapshotTask = JSON.parse(
+    await readFile(path.join(taskRoot, 'task.json'), 'utf8'),
+  );
+  const playbookSnapshot = await readFile(
+    path.join(taskRoot, 'playbook.md'),
+    'utf8',
+  );
+  assert.equal(snapshotTask.playbook, 'missing-specialist');
+  assert.match(playbookSnapshot, /Requested playbook unavailable on this runner/);
+  assert.match(playbookSnapshot, /"missing-specialist" is unavailable on this runner/);
+  assert.match(playbookSnapshot, /delivery: Deliver a reviewed change/);
+  assert.doesNotMatch(playbookSnapshot, /broken: Invalid local playbook/);
+  assert.match(playbookSnapshot, /Domain source: local path .*reviewed-domain/);
+  assert.match(playbookSnapshot, /Domain revision: reviewed-sha/);
+  assert.match(playbookSnapshot, /Clear the assignment to use the general default/);
+  assert.match(playbookSnapshot, /Ask whether to clear or correct/);
+  assert.match(playbookSnapshot, /Wait in this open session/);
+  assert.match(playbookSnapshot, /Do not rewrite the task playbook/);
+  assert.match(launches[0].prompt, /requested playbook "missing-specialist" is unavailable/);
+
+  const repeated = await pollRunner({
+    backend,
+    config,
+    loadedDomain,
+    dependencies,
+  });
+  assert.deepEqual(repeated.launched, []);
+  assert.equal(launches.length, 1);
   await rm(root, { recursive: true, force: true });
 });
 
@@ -869,6 +895,10 @@ test('default playbook snapshots task context, workstream guidance, and configur
   assert.match(
     defaultText,
     /pan-task --config "\$PAN_TASK_BACKEND_CONFIG" update "\$PAN_TASK_ID" --input/,
+  );
+  assert.doesNotMatch(
+    defaultText,
+    /Requested playbook unavailable on this runner/,
   );
   assert.equal(
     await readFile(path.join(taskRoot, 'workstream.md'), 'utf8'),

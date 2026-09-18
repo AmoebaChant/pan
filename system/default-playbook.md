@@ -7,6 +7,14 @@ description: General task work guided by the task, Domain, workstream, and appli
 
 Use this playbook when the task has no named specialist playbook.
 
+The runner may also prepend a task-specific repair section when the task names
+a playbook that is absent from this configured runner. In that case, follow the
+prepended instructions first: explain the exact unavailable name, offer the
+actual configured alternatives or help creating the requested playbook, update
+the descriptive next step, and wait for the user's choice before work that
+depends on missing specialist instructions. Do not rewrite the assignment or
+infer that the name is unavailable on other runners.
+
 Read the task, comments, Domain instructions, and any non-empty workstream
 snapshot provided by the runner. Determine which repositories or other
 resources are relevant from that evidence. Before changing a repository, read

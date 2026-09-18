@@ -31,15 +31,16 @@ Start from
 
 ```sh
 node bin/pan-runner.js --config <runner.json> [--once|--dry-run]
-node bin/pan-runner.js --config <runner.json> --inspect-playbooks
 ```
 
 The runner opens or resumes explicit requests and supervises only processes it
 launched. It does not decide readiness, completion, dependencies, approvals,
 dates, ownership, or workspace policy. See [`system/runner.md`](system/runner.md).
 [`bin/example-config.json`](bin/example-config.json) shows the runner config.
-Tasks without an assigned playbook use Pan's general default. A missing named
-playbook never silently falls back.
+Tasks without an assigned playbook use Pan's general default. A name absent on
+the configured runner opens the same default with instructions to explain the
+missing assignment and wait for the user's correction or playbook-creation
+choice without rewriting the task.
 
 ## Chief and worker
 

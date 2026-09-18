@@ -128,24 +128,22 @@ export function selectRequestedTasks(tasks) {
 
 export function resolveRequestedPlaybook(assignment, loadedDomain, config) {
   const requestedName = String(assignment || '').trim();
-  const source = requestedName ? 'assigned' : 'default';
-  const playbook = requestedName
+  const assigned = requestedName
     ? loadedDomain.playbooks.get(requestedName)
-    : loadedDomain.defaultPlaybook;
-  if (!playbook) {
-    return {
-      available: false,
-      name: requestedName,
-      reason: `playbook ${JSON.stringify(requestedName)} is missing`,
-      source,
-    };
-  }
+    : null;
+  const source = assigned
+    ? 'assigned'
+    : requestedName
+      ? 'missing-default'
+      : 'default';
+  const playbook = assigned || loadedDomain.defaultPlaybook;
   try {
     return {
       available: true,
       description: playbook.description,
       name: playbook.name,
       playbook,
+      requestedName,
       source,
       workingDirectory: resolvePlaybookWorkingDirectory(playbook, config),
     };
@@ -154,28 +152,68 @@ export function resolveRequestedPlaybook(assignment, loadedDomain, config) {
       available: false,
       description: playbook.description,
       name: playbook.name,
+      requestedName,
       reason: error.message,
       source,
     };
   }
 }
 
-export function inspectConfiguredPlaybooks(loadedDomain, config) {
-  const describe = (assignment) => {
-    const resolved = resolveRequestedPlaybook(assignment, loadedDomain, config);
-    return {
-      available: resolved.available,
-      description: resolved.description || '',
+function availablePlaybookChoices(loadedDomain, config) {
+  return [...loadedDomain.playbooks.keys()]
+    .sort()
+    .map((name) => resolveRequestedPlaybook(name, loadedDomain, config))
+    .filter((resolved) => resolved.available)
+    .map((resolved) => ({
+      description: resolved.description,
       name: resolved.name,
-      reason: resolved.reason || '',
-    };
-  };
-  return {
-    defaultPlaybook: describe(''),
-    playbooks: [...loadedDomain.playbooks.keys()]
-      .sort()
-      .map((name) => describe(name)),
-  };
+    }));
+}
+
+function domainSourceDescription(config, domainRevision) {
+  if (config.domainPath) {
+    return [
+      `Domain source: local path ${config.domainPath}`,
+      `Domain revision: ${domainRevision}`,
+    ];
+  }
+  return [
+    `Domain source: ${config.domainRepo}`,
+    `Pinned Domain revision: ${config.domainRevision}`,
+    `Loaded Domain instructions revision: ${domainRevision}`,
+  ];
+}
+
+export function missingPlaybookRepairInstructions({
+  requestedName,
+  loadedDomain,
+  config,
+}) {
+  const choices = availablePlaybookChoices(loadedDomain, config);
+  const available = [
+    `- Clear the assignment to use the general default: ${loadedDomain.defaultPlaybook.description}`,
+    ...(choices.length
+      ? choices.map(({ name, description }) => `- ${name}: ${description}`)
+      : ['- No named playbooks on this runner currently have a usable working directory.']),
+  ].join('\n');
+  return [
+    '# Requested playbook unavailable on this runner',
+    '',
+    `The task still requests the named playbook ${JSON.stringify(requestedName)}.`,
+    'That name is absent from this configured runner. This does not prove the playbook is absent from other machines or Domain revisions.',
+    ...domainSourceDescription(config, loadedDomain.domainRevision),
+    '',
+    'Configured choices currently usable on this runner:',
+    available,
+    '',
+    'Before doing work that depends on the missing specialist instructions:',
+    `1. Tell the user that ${JSON.stringify(requestedName)} is unavailable on this runner.`,
+    '2. Make this repair conversation the first task interaction. Ask whether to clear or correct the assignment to one of the available choices, or help create the requested playbook through the normal Domain workflow.',
+    `3. Set nextStep to a brief waiting state such as "Choose playbook: ${requestedName} unavailable on this runner".`,
+    '4. Wait in this open session for the user choice.',
+    '',
+    'Do not rewrite the task playbook, guess a mapping, create a playbook, reopen or complete the task, or begin specialist-dependent work before the user decides. After approval, use the normal task API and Domain guidance for the selected correction or creation.',
+  ].join('\n');
 }
 
 export async function inspectManagedRuns(stateRoot) {
@@ -330,6 +368,8 @@ export async function launchTask({
   domainInstructions,
   domainRevision,
   workstreamInstructions = '',
+  playbookText = playbook.text,
+  missingRequestedPlaybook = '',
   dependencies = {},
 }) {
   let current = task;
@@ -350,7 +390,7 @@ export async function launchTask({
   const comments = await backend.comments(current.id);
   await atomicWriteJson(files.task, current);
   await atomicWriteJson(files.comments, comments);
-  await writeFile(files.playbook, playbook.text, { encoding: 'utf8', mode: 0o600 });
+  await writeFile(files.playbook, playbookText, { encoding: 'utf8', mode: 0o600 });
   await writeFile(files.domain, domainInstructions, { encoding: 'utf8', mode: 0o600 });
   await writeFile(files.workstream, workstreamInstructions, {
     encoding: 'utf8',
@@ -370,7 +410,16 @@ export async function launchTask({
       PAN_TASK_ID: current.id,
       PAN_SESSION_ID: sessionId,
     },
-    prompt: launchPrompt(current, files),
+    prompt: [
+      launchPrompt(current, files),
+      ...(missingRequestedPlaybook
+        ? [
+            '',
+            `The task's requested playbook ${JSON.stringify(missingRequestedPlaybook)} is unavailable on this configured runner.`,
+            'Follow the repair instructions at the start of the playbook snapshot before specialist-dependent work.',
+          ]
+        : []),
+    ].join('\n'),
     sessionId,
   });
   if (!Number.isInteger(started?.pid) || started.pid < 1) {
@@ -419,7 +468,7 @@ export async function pollRunner({
     }
     if (!dryRun) {
       let workstreamInstructions = '';
-      if (resolved.source === 'default' && task.workstream) {
+      if (resolved.source !== 'assigned' && task.workstream) {
         try {
           workstreamInstructions = (
             await loadBackendWorkstream(config, task.workstream, dependencies)
@@ -429,6 +478,16 @@ export async function pollRunner({
           continue;
         }
       }
+      const missingRequestedPlaybook = resolved.source === 'missing-default'
+        ? resolved.requestedName
+        : '';
+      const playbookText = missingRequestedPlaybook
+        ? `${missingPlaybookRepairInstructions({
+            requestedName: missingRequestedPlaybook,
+            loadedDomain,
+            config,
+          })}\n\n---\n\n${resolved.playbook.text}`
+        : resolved.playbook.text;
       const run = await launchTask({
         task,
         backend,
@@ -437,6 +496,8 @@ export async function pollRunner({
         domainInstructions: loadedDomain.domainInstructions,
         domainRevision: loadedDomain.domainRevision,
         workstreamInstructions,
+        playbookText,
+        missingRequestedPlaybook,
         dependencies,
       });
       launched.push(run.taskId);
@@ -460,7 +521,6 @@ export async function runRunner(argv, dependencies = {}) {
       config: { type: 'string' },
       once: { type: 'boolean' },
       'dry-run': { type: 'boolean' },
-      'inspect-playbooks': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
     strict: true,
@@ -469,24 +529,12 @@ export async function runRunner(argv, dependencies = {}) {
     return {
       help: [
         'Usage: pan-runner --config <runner.json> [--once] [--dry-run]',
-        '       pan-runner --config <runner.json> --inspect-playbooks',
-        '',
         'The runner opens or resumes tasks whose agentStatus is requested.',
       ].join('\n'),
     };
   }
   if (!values.config) throw new Error('--config is required');
   const config = await loadConfig(values.config, dependencies);
-  if (values['inspect-playbooks']) {
-    if (values.once || values['dry-run']) {
-      throw new Error('--inspect-playbooks cannot be combined with polling options');
-    }
-    const loadDomain = dependencies.loadBackendPlaybooks ?? loadBackendPlaybooks;
-    return inspectConfiguredPlaybooks(
-      await loadDomain(config, dependencies),
-      config,
-    );
-  }
   const backend = dependencies.backend
     ?? await loadTaskBackend(config.backendConfig, dependencies);
   if (typeof backend.initialize === 'function') await backend.initialize();
