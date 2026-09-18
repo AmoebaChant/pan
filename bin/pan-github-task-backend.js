@@ -272,6 +272,58 @@ class GitHubProjectTransport {
     );
   }
 
+  async getItem(itemId) {
+    const data = await this.graphql(`
+      query ProjectItem($itemId: ID!) {
+        node(id: $itemId) {
+          ... on ProjectV2Item {
+            id
+            project { id }
+            fieldValues(first: 50) {
+              nodes {
+                __typename
+                ... on ProjectV2ItemFieldTextValue {
+                  text
+                  field { ... on ProjectV2FieldCommon { name } }
+                }
+                ... on ProjectV2ItemFieldDateValue {
+                  date
+                  field { ... on ProjectV2FieldCommon { name } }
+                }
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  name
+                  field { ... on ProjectV2FieldCommon { name } }
+                }
+              }
+            }
+            content {
+              ... on Issue {
+                id
+                number
+                title
+                body
+                url
+                state
+                stateReason
+                createdAt
+                updatedAt
+                closedAt
+                repository { nameWithOwner }
+              }
+            }
+          }
+        }
+      }
+    `, { itemId });
+    const item = data?.data?.node;
+    if (item?.project?.id !== this.project.id) return null;
+    if (item.content?.repository?.nameWithOwner?.toLowerCase()
+      !== this.repository.nameWithOwner.toLowerCase()) {
+      return null;
+    }
+    return item;
+  }
+
   async createIssue({ title, body }) {
     return this.runGh([
       'api',
@@ -473,24 +525,34 @@ export class GitHubTaskBackend {
       });
       item = await this.transport.addProjectItem(issue.node_id);
       if (!item?.id) throw new Error('GitHub did not return a Project item id');
-      const created = {
-        id: issue.node_id,
-        itemId: item.id,
-        number: issue.number,
-        url: issue.html_url,
-      };
-      const task = await this.get(item.id);
-      return this.update(task.id, {
-        status,
-        priority: input.priority ?? 'normal',
-        nextActionDate: input.nextActionDate ?? '',
-        nextStep: input.nextStep ?? '',
-        deadline: input.deadline ?? '',
-        playbook: input.playbook ?? '',
-        workstream: input.workstream ?? '',
-        sessionId: input.sessionId ?? '',
-        agentStatus: input.agentStatus ?? '',
-      });
+      if (status !== 'open') {
+        await this.transport.updateIssue(issue.number, {
+          state: 'closed',
+          state_reason: status === 'done' ? 'completed' : 'not_planned',
+        });
+      }
+      await this.transport.updateField(item.id, 'Status', status);
+      await this.transport.updateField(item.id, 'priority', String(input.priority ?? 'normal'));
+      for (const [inputName, fieldName] of [
+        ['nextActionDate', 'next-action-date'],
+        ['nextStep', 'next-step'],
+        ['deadline', 'deadline'],
+        ['playbook', 'playbook'],
+        ['workstream', 'workstream'],
+        ['sessionId', 'session-id'],
+        ['agentStatus', 'agent-status'],
+      ]) {
+        const value = String(input[inputName] ?? '');
+        if (value) await this.transport.updateField(item.id, fieldName, value);
+      }
+      const createdItem = await this.transport.getItem(item.id);
+      if (!createdItem || createdItem.content?.id !== issue.node_id) {
+        throw new TaskBackendError(`task ${item.id} was not found in the configured Project`, {
+          code: 'not-found',
+          status: 404,
+        });
+      }
+      return canonical(createdItem, null);
     } catch (error) {
       if (!issue) throw backendError(error);
       throw new TaskBackendError(

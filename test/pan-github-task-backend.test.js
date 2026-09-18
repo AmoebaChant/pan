@@ -50,10 +50,20 @@ function graphqlVariables(args) {
   return variables;
 }
 
-function strictProjectTransport() {
+function strictProjectTransport({
+  visibleInList = true,
+  failFieldId = null,
+  directProjectId = 'project',
+  directRepository = 'example/domain',
+} = {}) {
   let issue = null;
   let item = null;
+  let issuePostCount = 0;
+  let projectItemAddCount = 0;
+  let listCalls = 0;
+  let directItemReads = 0;
   const fieldWrites = [];
+  const issueWrites = [];
 
   function project() {
     return {
@@ -66,6 +76,19 @@ function strictProjectTransport() {
 
   return {
     fieldWrites,
+    issueWrites,
+    get issuePostCount() {
+      return issuePostCount;
+    },
+    get projectItemAddCount() {
+      return projectItemAddCount;
+    },
+    get listCalls() {
+      return listCalls;
+    },
+    get directItemReads() {
+      return directItemReads;
+    },
     async runGh(args, options = {}) {
       if (args[0] === 'api' && args[1] === 'graphql') {
         const query = args.find((arg) => arg.startsWith('query='))?.slice('query='.length) ?? '';
@@ -83,12 +106,13 @@ function strictProjectTransport() {
         }
         if (query.includes('query ProjectItems')) {
           assert.match(query, /ProjectV2ItemFieldTextValue/);
+          listCalls += 1;
           return {
             data: {
               repositoryOwner: {
                 projectV2: {
                   items: {
-                    nodes: item ? [item] : [],
+                    nodes: item && visibleInList ? [item] : [],
                     pageInfo: { hasNextPage: false, endCursor: null },
                   },
                 },
@@ -96,9 +120,26 @@ function strictProjectTransport() {
             },
           };
         }
+        if (query.includes('query ProjectItem(')) {
+          assert.equal(variables.itemId, item?.id);
+          directItemReads += 1;
+          return {
+            data: {
+              node: item ? {
+                ...item,
+                project: { id: directProjectId },
+                content: {
+                  ...item.content,
+                  repository: { nameWithOwner: directRepository },
+                },
+              } : null,
+            },
+          };
+        }
         if (query.includes('mutation AddProjectItem')) {
           assert.equal(variables.projectId, 'project');
           assert.equal(variables.contentId, issue.id);
+          projectItemAddCount += 1;
           item = {
             id: 'item-1',
             fieldValues: { nodes: [] },
@@ -109,6 +150,9 @@ function strictProjectTransport() {
         if (query.includes('mutation UpdateField')) {
           const field = PROJECT_FIELDS.find((candidate) => candidate.id === variables.fieldId);
           assert.ok(field);
+          if (field.id === failFieldId) {
+            throw new Error(`simulated ${field.name} write failure`);
+          }
           let value;
           if (query.includes('singleSelectOptionId:')) {
             const optionId = JSON.parse(
@@ -157,6 +201,7 @@ function strictProjectTransport() {
 
       const route = args[1];
       if (route === 'repos/example/domain/issues' && args.includes('POST')) {
+        issuePostCount += 1;
         const input = JSON.parse(options.input);
         issue = {
           id: 'issue-1',
@@ -179,6 +224,14 @@ function strictProjectTransport() {
         const input = JSON.parse(options.input);
         if (input.title !== undefined) issue.title = input.title;
         if (input.body !== undefined) issue.body = input.body;
+        if (input.state !== undefined) {
+          issue.state = input.state === 'closed' ? 'CLOSED' : 'OPEN';
+          issue.stateReason = input.state === 'closed'
+            ? input.state_reason === 'completed' ? 'COMPLETED' : 'NOT_PLANNED'
+            : null;
+          issue.closedAt = input.state === 'closed' ? '2026-09-18T00:01:00Z' : null;
+        }
+        issueWrites.push(input);
         return issue;
       }
       throw new Error(`unexpected gh request: ${args.join(' ')}`);
@@ -335,3 +388,188 @@ test('GitHub Project text field creates, reads, updates, and clears nextStep', a
   );
   assert.match(nextStepClear.query, /clearProjectV2ItemFieldValue/);
 });
+
+test('GitHub create persists and directly reads initial fields while collection visibility is delayed', async () => {
+  const transport = strictProjectTransport({ visibleInList: false });
+  const backend = await new GitHubTaskBackend({
+    backend: 'github',
+    repository: 'example/domain',
+    projectOwner: 'example',
+    projectNumber: 1,
+  }, { runGh: transport.runGh }).initialize();
+
+  const created = await backend.create({
+    title: 'Review animation tuning',
+    description: 'Publish the PR when the tuning is ready.',
+    status: 'open',
+    priority: 'normal',
+    nextActionDate: '2026-09-19',
+    nextStep: 'Review the latest tuning',
+    deadline: '2026-09-26',
+    playbook: 'review-and-publish',
+    workstream: 'animation',
+    sessionId: 'session-1',
+    agentStatus: 'running',
+  });
+
+  assert.deepEqual(
+    {
+      id: created.id,
+      itemId: created.itemId,
+      title: created.title,
+      description: created.description,
+      status: created.status,
+      priority: created.priority,
+      nextActionDate: created.nextActionDate,
+      nextStep: created.nextStep,
+      deadline: created.deadline,
+      playbook: created.playbook,
+      workstream: created.workstream,
+      sessionId: created.sessionId,
+      agentStatus: created.agentStatus,
+      issueState: created.issueState,
+    },
+    {
+      id: 'issue-1',
+      itemId: 'item-1',
+      title: 'Review animation tuning',
+      description: 'Publish the PR when the tuning is ready.',
+      status: 'open',
+      priority: 'normal',
+      nextActionDate: '2026-09-19',
+      nextStep: 'Review the latest tuning',
+      deadline: '2026-09-26',
+      playbook: 'review-and-publish',
+      workstream: 'animation',
+      sessionId: 'session-1',
+      agentStatus: 'running',
+      issueState: 'OPEN',
+    },
+  );
+  assert.equal(transport.issuePostCount, 1);
+  assert.equal(transport.projectItemAddCount, 1);
+  assert.equal(transport.listCalls, 0);
+  assert.equal(transport.directItemReads, 1);
+  assert.deepEqual(
+    transport.fieldWrites.map(({ fieldId, value }) => [fieldId, value]),
+    [
+      ['status', 'open'],
+      ['priority', 'normal'],
+      ['next-action-date', '2026-09-19'],
+      ['next-step', 'Review the latest tuning'],
+      ['deadline', '2026-09-26'],
+      ['playbook', 'review-and-publish'],
+      ['workstream', 'animation'],
+      ['session-id', 'session-1'],
+      ['agent-status', 'running'],
+    ],
+  );
+});
+
+for (const [status, issueStateReason] of [
+  ['done', 'COMPLETED'],
+  ['rejected', 'NOT_PLANNED'],
+]) {
+  test(`GitHub create persists ${status} native and Project work status before direct readback`, async () => {
+    const transport = strictProjectTransport({ visibleInList: false });
+    const backend = await new GitHubTaskBackend({
+      backend: 'github',
+      repository: 'example/domain',
+      projectOwner: 'example',
+      projectNumber: 1,
+    }, { runGh: transport.runGh }).initialize();
+
+    const created = await backend.create({
+      title: `${status} task`,
+      status,
+    });
+
+    assert.equal(created.status, status);
+    assert.equal(created.issueState, 'CLOSED');
+    assert.equal(created.issueStateReason, issueStateReason);
+    assert.deepEqual(transport.issueWrites, [{
+      state: 'closed',
+      state_reason: status === 'done' ? 'completed' : 'not_planned',
+    }]);
+    assert.deepEqual(
+      transport.fieldWrites.slice(0, 2).map(({ fieldId, value }) => [fieldId, value]),
+      [
+        ['status', status],
+        ['priority', 'normal'],
+      ],
+    );
+    assert.equal(transport.issuePostCount, 1);
+    assert.equal(transport.projectItemAddCount, 1);
+    assert.equal(transport.listCalls, 0);
+    assert.equal(transport.directItemReads, 1);
+  });
+}
+
+test('GitHub create reports field API failures as partial writes without repeating creation', async () => {
+  const transport = strictProjectTransport({
+    visibleInList: false,
+    failFieldId: 'priority',
+  });
+  const backend = await new GitHubTaskBackend({
+    backend: 'github',
+    repository: 'example/domain',
+    projectOwner: 'example',
+    projectNumber: 1,
+  }, { runGh: transport.runGh }).initialize();
+
+  await assert.rejects(
+    backend.create({
+      title: 'Task with failed metadata',
+      priority: 'high',
+    }),
+    (error) => {
+      assert.equal(error.code, 'partial-write');
+      assert.match(error.message, /simulated priority write failure/);
+      assert.deepEqual(error.details, {
+        taskId: 'issue-1',
+        issueNumber: 1,
+        issueUrl: 'https://github.com/example/domain/issues/1',
+        projectItemId: 'item-1',
+        projectItemCreated: true,
+      });
+      return true;
+    },
+  );
+  assert.equal(transport.issuePostCount, 1);
+  assert.equal(transport.projectItemAddCount, 1);
+  assert.equal(transport.listCalls, 0);
+  assert.equal(transport.directItemReads, 0);
+});
+
+for (const [scope, transportOptions] of [
+  ['another Project', { directProjectId: 'other-project' }],
+  ['another repository', { directRepository: 'example/other' }],
+]) {
+  test(`GitHub create rejects direct readback from ${scope}`, async () => {
+    const transport = strictProjectTransport({
+      visibleInList: false,
+      ...transportOptions,
+    });
+    const backend = await new GitHubTaskBackend({
+      backend: 'github',
+      repository: 'example/domain',
+      projectOwner: 'example',
+      projectNumber: 1,
+    }, { runGh: transport.runGh }).initialize();
+
+    await assert.rejects(
+      backend.create({ title: 'Scoped task' }),
+      (error) => {
+        assert.equal(error.code, 'partial-write');
+        assert.match(error.message, /not found in the configured Project/);
+        assert.equal(error.details.taskId, 'issue-1');
+        assert.equal(error.details.projectItemId, 'item-1');
+        return true;
+      },
+    );
+    assert.equal(transport.issuePostCount, 1);
+    assert.equal(transport.projectItemAddCount, 1);
+    assert.equal(transport.listCalls, 0);
+    assert.equal(transport.directItemReads, 1);
+  });
+}
