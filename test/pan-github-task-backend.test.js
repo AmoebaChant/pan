@@ -55,6 +55,7 @@ function strictProjectTransport({
   failFieldId = null,
   directProjectId = 'project',
   directRepository = 'example/domain',
+  directFieldValues,
 } = {}) {
   let issue = null;
   let item = null;
@@ -123,11 +124,15 @@ function strictProjectTransport({
         if (query.includes('query ProjectItem(')) {
           assert.equal(variables.itemId, item?.id);
           directItemReads += 1;
+          const readbackNodes = typeof directFieldValues === 'function'
+            ? directFieldValues(item.fieldValues.nodes)
+            : directFieldValues ?? item.fieldValues.nodes;
           return {
             data: {
               node: item ? {
                 ...item,
                 project: { id: directProjectId },
+                fieldValues: { nodes: readbackNodes },
                 content: {
                   ...item.content,
                   repository: { nameWithOwner: directRepository },
@@ -465,6 +470,76 @@ test('GitHub create persists and directly reads initial fields while collection 
     ],
   );
 });
+
+for (const {
+  name,
+  input,
+  directFieldValues,
+} of [
+  {
+    name: 'missing explicit open and normal Project fields',
+    input: {
+      title: 'Task with missing defaults',
+      status: 'open',
+      priority: 'normal',
+    },
+    directFieldValues: [],
+  },
+  {
+    name: 'mismatched non-empty Project metadata',
+    input: {
+      title: 'Task with mismatched metadata',
+      priority: 'high',
+      nextStep: 'Review the tuning',
+    },
+    directFieldValues: (nodes) => nodes.map((node) => (
+      node.field.name === 'next-step'
+        ? { ...node, text: 'Different next step' }
+        : node
+    )),
+  },
+  {
+    name: 'missing done Project Status',
+    input: {
+      title: 'Task with missing done status',
+      status: 'done',
+    },
+    directFieldValues: (nodes) => nodes.filter((node) => node.field.name !== 'Status'),
+  },
+]) {
+  test(`GitHub create reports partial write for ${name}`, async () => {
+    const transport = strictProjectTransport({
+      visibleInList: false,
+      directFieldValues,
+    });
+    const backend = await new GitHubTaskBackend({
+      backend: 'github',
+      repository: 'example/domain',
+      projectOwner: 'example',
+      projectNumber: 1,
+    }, { runGh: transport.runGh }).initialize();
+
+    await assert.rejects(
+      backend.create(input),
+      (error) => {
+        assert.equal(error.code, 'partial-write');
+        assert.match(error.message, /initial fields could not be confirmed/);
+        assert.deepEqual(error.details, {
+          taskId: 'issue-1',
+          issueNumber: 1,
+          issueUrl: 'https://github.com/example/domain/issues/1',
+          projectItemId: 'item-1',
+          projectItemCreated: true,
+        });
+        return true;
+      },
+    );
+    assert.equal(transport.issuePostCount, 1);
+    assert.equal(transport.projectItemAddCount, 1);
+    assert.equal(transport.listCalls, 0);
+    assert.equal(transport.directItemReads, 1);
+  });
+}
 
 for (const [status, issueStateReason] of [
   ['done', 'COMPLETED'],
