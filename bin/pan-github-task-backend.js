@@ -516,6 +516,17 @@ export class GitHubTaskBackend {
     if (!WORK_STATUSES.has(status)) {
       throw new TaskBackendError(`unsupported status: ${status}`, { code: 'invalid-input' });
     }
+    const initialFields = [
+      ['Status', status, true],
+      ['priority', String(input.priority ?? 'normal'), true],
+      ['next-action-date', String(input.nextActionDate ?? ''), false],
+      ['next-step', String(input.nextStep ?? ''), false],
+      ['deadline', String(input.deadline ?? ''), false],
+      ['playbook', String(input.playbook ?? ''), false],
+      ['workstream', String(input.workstream ?? ''), false],
+      ['session-id', String(input.sessionId ?? ''), false],
+      ['agent-status', String(input.agentStatus ?? ''), false],
+    ];
     let issue;
     let item;
     try {
@@ -531,19 +542,10 @@ export class GitHubTaskBackend {
           state_reason: status === 'done' ? 'completed' : 'not_planned',
         });
       }
-      await this.transport.updateField(item.id, 'Status', status);
-      await this.transport.updateField(item.id, 'priority', String(input.priority ?? 'normal'));
-      for (const [inputName, fieldName] of [
-        ['nextActionDate', 'next-action-date'],
-        ['nextStep', 'next-step'],
-        ['deadline', 'deadline'],
-        ['playbook', 'playbook'],
-        ['workstream', 'workstream'],
-        ['sessionId', 'session-id'],
-        ['agentStatus', 'agent-status'],
-      ]) {
-        const value = String(input[inputName] ?? '');
-        if (value) await this.transport.updateField(item.id, fieldName, value);
+      for (const [fieldName, value, mustBePresent] of initialFields) {
+        if (mustBePresent || value) {
+          await this.transport.updateField(item.id, fieldName, value);
+        }
       }
       const createdItem = await this.transport.getItem(item.id);
       if (!createdItem || createdItem.content?.id !== issue.node_id) {
@@ -551,6 +553,25 @@ export class GitHubTaskBackend {
           code: 'not-found',
           status: 404,
         });
+      }
+      const values = fieldValues(createdItem);
+      const unconfirmed = initialFields
+        .filter(([fieldName, expected, mustBePresent]) => (
+          mustBePresent
+            ? values.get(fieldName) !== expected
+            : (values.get(fieldName) ?? '') !== expected
+        ))
+        .map(([fieldName]) => fieldName);
+      const expectedStateReason = status === 'done'
+        ? 'COMPLETED'
+        : status === 'rejected' ? 'NOT_PLANNED' : null;
+      const nativeStatusConfirmed = status === 'open'
+        ? createdItem.content.state === 'OPEN'
+        : createdItem.content.state === 'CLOSED'
+          && createdItem.content.stateReason === expectedStateReason;
+      if (!nativeStatusConfirmed) unconfirmed.unshift('native work status');
+      if (unconfirmed.length) {
+        throw new Error(`initial fields could not be confirmed: ${unconfirmed.join(', ')}`);
       }
       return canonical(createdItem, null);
     } catch (error) {
