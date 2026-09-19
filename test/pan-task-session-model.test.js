@@ -682,7 +682,7 @@ test('runner resolver uses the default for blank and absent named assignments', 
   );
 });
 
-test('missing-playbook repair instructions identify remote Domain provenance and usable choices', () => {
+test('missing-playbook repair instructions identify remote Domain provenance and configured alternatives', () => {
   const root = path.resolve('configured-work');
   const text = missingPlaybookRepairInstructions({
     requestedName: 'missing-specialist',
@@ -711,8 +711,11 @@ test('missing-playbook repair instructions identify remote Domain provenance and
   });
 
   assert.match(text, /"missing-specialist" is unavailable on this runner/);
-  assert.match(text, /Clear the assignment to use the general default: General task work/);
-  assert.match(text, /delivery: Deliver a reviewed change/);
+  assert.match(text, /Configured playbook definitions in this runner profile/);
+  assert.match(text, /Clear the assignment to use the general default \(configured launch directory:/);
+  assert.match(text, /delivery \(configured launch directory:.*configured-work\): Deliver a reviewed change/);
+  assert.match(text, /report profile configuration, not runtime readiness/);
+  assert.doesNotMatch(text, /currently usable|ready to run/i);
   assert.match(text, /Domain source: example\/domain/);
   assert.match(text, /Pinned Domain revision: configured-sha/);
   assert.match(text, /Loaded Domain instructions revision: loaded-sha/);
@@ -757,6 +760,12 @@ test('missing named requests open one repair-oriented default session without re
         workingDirectory: 'relative',
         text: '# Broken',
       }],
+      ['ghost', {
+        name: 'ghost',
+        description: 'Missing cwd definition',
+        workingDirectory: path.join(root, 'does-not-exist'),
+        text: '# Ghost',
+      }],
     ]),
     domainInstructions: '# Domain',
     domainRevision: 'reviewed-sha',
@@ -800,11 +809,16 @@ test('missing named requests open one repair-oriented default session without re
   assert.equal(snapshotTask.playbook, 'missing-specialist');
   assert.match(playbookSnapshot, /Requested playbook unavailable on this runner/);
   assert.match(playbookSnapshot, /"missing-specialist" is unavailable on this runner/);
-  assert.match(playbookSnapshot, /delivery: Deliver a reviewed change/);
+  assert.match(playbookSnapshot, /delivery \(configured launch directory:/);
   assert.doesNotMatch(playbookSnapshot, /broken: Invalid local playbook/);
+  assert.ok(playbookSnapshot.includes(
+    `- ghost (configured launch directory: ${path.join(root, 'does-not-exist')}): Missing cwd definition`,
+  ));
+  assert.match(playbookSnapshot, /profile configuration, not runtime readiness/);
+  assert.doesNotMatch(playbookSnapshot, /currently usable|ready to run/i);
   assert.match(playbookSnapshot, /Domain source: local path .*reviewed-domain/);
   assert.match(playbookSnapshot, /Domain revision: reviewed-sha/);
-  assert.match(playbookSnapshot, /Clear the assignment to use the general default/);
+  assert.match(playbookSnapshot, /Clear the assignment to use the general default \(configured launch directory:/);
   assert.match(playbookSnapshot, /Ask whether to clear or correct/);
   assert.match(playbookSnapshot, /Wait in this open session/);
   assert.match(playbookSnapshot, /Do not rewrite the task playbook/);

@@ -10,9 +10,11 @@ Use this playbook when the task has no named specialist playbook.
 The runner may also prepend a task-specific repair section when the task names
 a playbook that is absent from this configured runner. In that case, follow the
 prepended instructions first: explain the exact unavailable name, offer the
-actual configured alternatives or help creating the requested playbook, update
-the descriptive next step, and wait for the user's choice before work that
-depends on missing specialist instructions. Do not rewrite the assignment or
+configured alternatives and their launch directories or help creating the
+requested playbook, update the descriptive next step, and wait for the user's
+choice before work that depends on missing specialist instructions. Treat those
+paths as profile configuration rather than proof of runtime readiness, and
+verify the chosen setup before dependent work. Do not rewrite the assignment or
 infer that the name is unavailable on other runners.
 
 Read the task, comments, Domain instructions, and any non-empty workstream

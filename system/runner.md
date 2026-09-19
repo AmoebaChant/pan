@@ -24,10 +24,13 @@ An empty task playbook assignment selects the general default. A valid
 non-empty assignment selects the exact configured machine playbook. When a
 non-empty name is absent on this runner, the runner preserves the task field and
 session ID, then opens the general default with repair instructions naming the
-missing assignment, the configured Domain source and revision, and the usable
-named alternatives. The worker asks the user whether to correct the assignment
-or help create the requested playbook and waits before specialist-dependent
-work. It does not infer global absence or mutate the assignment automatically.
+missing assignment, the configured Domain source and revision, and the
+configured playbook definitions and launch directories in the runner profile.
+Those paths are configuration metadata, not claims of runtime readiness. The
+worker asks the user whether to correct the assignment or help create the
+requested playbook, verifies the chosen setup, and waits before
+specialist-dependent work. It does not infer global absence or mutate the
+assignment automatically.
 
 A loaded named playbook with an invalid working directory is an explicit error,
 as are malformed playbooks and Domain loading or trust failures. Those

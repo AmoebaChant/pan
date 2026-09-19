@@ -155,7 +155,7 @@ export function resolveRequestedPlaybook(assignment, loadedDomain, config) {
   }
 }
 
-function availablePlaybookChoices(loadedDomain, config) {
+function configuredPlaybookAlternatives(loadedDomain, config) {
   return [...loadedDomain.playbooks.keys()]
     .sort()
     .map((name) => resolveRequestedPlaybook(name, loadedDomain, config))
@@ -163,6 +163,7 @@ function availablePlaybookChoices(loadedDomain, config) {
     .map((resolved) => ({
       description: resolved.playbook.description,
       name: resolved.playbook.name,
+      workingDirectory: resolvePlaybookWorkingDirectory(resolved.playbook, config),
     }));
 }
 
@@ -185,12 +186,13 @@ export function missingPlaybookRepairInstructions({
   loadedDomain,
   config,
 }) {
-  const choices = availablePlaybookChoices(loadedDomain, config);
-  const available = [
-    `- Clear the assignment to use the general default: ${loadedDomain.defaultPlaybook.description}`,
-    ...(choices.length
-      ? choices.map(({ name, description }) => `- ${name}: ${description}`)
-      : ['- No named playbooks on this runner currently have a usable working directory.']),
+  const alternatives = configuredPlaybookAlternatives(loadedDomain, config);
+  const configured = [
+    `- Clear the assignment to use the general default (configured launch directory: ${resolvePlaybookWorkingDirectory(loadedDomain.defaultPlaybook, config)}): ${loadedDomain.defaultPlaybook.description}`,
+    ...(alternatives.length
+      ? alternatives.map(({ name, description, workingDirectory }) =>
+          `- ${name} (configured launch directory: ${workingDirectory}): ${description}`)
+      : ['- No named playbook definitions in this runner profile have a valid configured launch directory.']),
   ].join('\n');
   return [
     '# Requested playbook unavailable on this runner',
@@ -199,12 +201,14 @@ export function missingPlaybookRepairInstructions({
     'That name is absent from this configured runner. This does not prove the playbook is absent from other machines or Domain revisions.',
     ...domainSourceDescription(config, loadedDomain.domainRevision),
     '',
-    'Configured choices currently usable on this runner:',
-    available,
+    'Configured playbook definitions in this runner profile:',
+    configured,
+    '',
+    'These entries report profile configuration, not runtime readiness. If the user chooses one, verify any required checkout, dependencies, tools, or access before dependent work.',
     '',
     'Before doing work that depends on the missing specialist instructions:',
     `1. Tell the user that ${JSON.stringify(requestedName)} is unavailable on this runner.`,
-    '2. Make this repair conversation the first task interaction. Ask whether to clear or correct the assignment to one of the available choices, or help create the requested playbook through the normal Domain workflow.',
+    '2. Make this repair conversation the first task interaction. Ask whether to clear or correct the assignment to one of the configured alternatives, or help create the requested playbook through the normal Domain workflow.',
     `3. Set nextStep to a brief waiting state such as "Choose playbook: ${requestedName} unavailable on this runner".`,
     '4. Wait in this open session for the user choice.',
     '',

@@ -12,10 +12,13 @@ workstream.
 When a task explicitly names a playbook that is absent from this configured
 runner, the runner preserves that assignment and opens the general default with
 a prepended repair prompt. The worker explains the exact unavailable name,
-offers the named playbooks actually usable on this runner, and asks whether to
-correct the assignment or help create the requested playbook. It waits before
-specialist-dependent work and never guesses a mapping or edits the assignment
-without approval. Absence on one runner is not evidence of global absence.
+offers the configured playbook definitions and launch directories in this
+runner profile, and asks whether to correct the assignment or help create the
+requested playbook. The listed paths describe configuration rather than
+runtime readiness; the worker verifies the chosen setup before dependent work.
+It waits before specialist-dependent work and never guesses a mapping or edits
+the assignment without approval. Absence on one runner is not evidence of
+global absence.
 Malformed playbooks, invalid working directories, and Domain loading or trust
 errors remain explicit failures rather than default fallbacks.
 
