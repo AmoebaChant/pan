@@ -20,6 +20,9 @@ does not inspect unrelated sessions, choose tasks, interpret results, enforce
 dependencies or approvals, plan dates, allocate workspaces, claim Project
 leases, reserve machines, or change business state.
 
+Only one runner may supervise a state root at a time. A second runner must fail
+clearly rather than race the first and launch a duplicate session.
+
 An empty task playbook assignment selects the general default. A valid
 non-empty assignment selects the exact configured machine playbook. When a
 non-empty name is absent on this runner, the runner preserves the task field and
@@ -47,6 +50,23 @@ After the process starts, the runner writes `agentStatus=running`. Launch
 failure leaves the durable request and session ID visible for an ordinary
 retry. When the process closes, the runner clears Agent status and removes only
 that task's local run directory.
+
+Worker sessions are interactive and visible. Their standard input and output
+must remain connected to a terminal rather than being discarded by the runner.
+On Windows, each worker opens in its own Windows Terminal window so the user can
+observe and interact with that task independently of the runner console.
+Every worker launch includes `--allow-all-paths` and
+`--add-dir <workingDirectory>`. Filesystem access is preapproved and the
+working directory is available to the session. Copilot's separate persistent
+folder-trust setting must also include that working directory for unattended
+startup; `--allow-all-paths`, `--allow-all`, and `--yolo` do not bypass that
+trust prompt.
+
+The runner console reports startup, each backend poll, worker launches and
+closures, skipped requests, restored task state, and a concise poll summary.
+These messages are operational diagnostics only and are not durable task state.
+Normal backend polls start five minutes apart. Pressing Enter in the runner
+console polls immediately and starts a new five-minute interval.
 
 Each task run directory contains a small `run.json`, snapshots of the task,
 comments, playbook, and Domain instructions, plus the optional empty release
@@ -78,7 +98,7 @@ Playbook instructions own setup and delivery decisions.
   "machine": "machine-name",
   "stateRoot": "C:\\absolute\\runner-state",
   "workingDirectory": "C:\\Repos",
-  "pollIntervalSeconds": 10,
+  "pollIntervalSeconds": 300,
   "launchCommand": [
     "copilot",
     "--model",

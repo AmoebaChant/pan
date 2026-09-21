@@ -4,7 +4,7 @@
   "machine": "example-machine",
   "stateRoot": "C:\\absolute\\pan-runner-state",
   "workingDirectory": "C:\\Repos",
-  "pollIntervalSeconds": 10,
+  "pollIntervalSeconds": 300,
   "launchCommand": [
     "copilot",
     "--model",

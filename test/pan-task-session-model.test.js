@@ -8,10 +8,13 @@ import { fileURLToPath } from 'node:url';
 import { GitHubTaskBackend } from '../bin/pan-github-task-backend.js';
 import { runTaskCli } from '../bin/pan-task.js';
 import {
+  acquireRunnerLock,
   missingPlaybookRepairInstructions,
   pollRunner,
   resolveRequestedPlaybook,
+  runRunner,
   validateRunnerConfig,
+  waitForPollTrigger,
 } from '../bin/pan-backend-runner.js';
 import {
   loadBackendPlaybooks,
@@ -377,6 +380,13 @@ test('default runner launch opens the saved session interactively', async () => 
       config,
       loadedDomain,
       dependencies: {
+        platform: 'win32',
+        execFile: async (command, args, options) => {
+          assert.equal(command, 'powershell.exe');
+          assert.equal(args.includes('-NonInteractive'), true);
+          assert.equal(options.env.PAN_WORKER_SESSION_ID, savedSessionId);
+          return { stdout: '8100' };
+        },
         spawn: (command, args, options) => {
           launches.push({ command, args, options });
           queueMicrotask(() => child.emit('spawn'));
@@ -387,15 +397,23 @@ test('default runner launch opens the saved session interactively', async () => 
 
     assert.deepEqual(result.launched, [task.id]);
     assert.equal(launches.length, 1);
-    assert.equal(launches[0].command, 'copilot');
-    assert.deepEqual(launches[0].args.slice(0, configuredArgs.length), configuredArgs);
+    assert.equal(launches[0].command, 'wt.exe');
+    assert.deepEqual(launches[0].args.slice(0, 4), ['-w', 'new', 'nt', '--title']);
+    assert.match(launches[0].args[4], /^Pan worker #1 "Task 1"$/);
+    assert.deepEqual(launches[0].args.slice(5, 8), ['-d', workingDirectory, 'copilot']);
+    assert.deepEqual(launches[0].args.slice(8, 8 + configuredArgs.length), configuredArgs);
+    assert.equal(launches[0].args[8 + configuredArgs.length], '--allow-all-paths');
     assert.deepEqual(
-      launches[0].args.slice(configuredArgs.length, configuredArgs.length + 2),
+      launches[0].args.slice(9 + configuredArgs.length, 11 + configuredArgs.length),
+      ['--add-dir', workingDirectory],
+    );
+    assert.deepEqual(
+      launches[0].args.slice(11 + configuredArgs.length, 13 + configuredArgs.length),
       ['--session-id', savedSessionId],
     );
     assert.equal(launches[0].args.includes('--prompt'), false);
     const interactiveIndex = launches[0].args.indexOf('--interactive');
-    assert.equal(interactiveIndex, configuredArgs.length + 2);
+    assert.equal(interactiveIndex, 13 + configuredArgs.length);
     assert.match(
       launches[0].args[interactiveIndex + 1],
       new RegExp(`Work on Pan task ${task.id}: ${task.title}`),
@@ -421,12 +439,236 @@ test('default runner launch opens the saved session interactively', async () => 
       'utf8',
     ));
     assert.equal(run.sessionId, savedSessionId);
+    assert.equal(run.pid, 8100);
   } finally {
     if (inheritedSystemDir === undefined) {
       delete process.env.PAN_SYSTEM_DIR;
     } else {
       process.env.PAN_SYSTEM_DIR = inheritedSystemDir;
     }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runner console reports startup and each poll summary', async () => {
+  const { backend } = await createBackend();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-runner-log-'));
+  const configPath = path.join(root, 'runner.json');
+  await writeFile(configPath, JSON.stringify({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory: root,
+    machine: 'test-machine',
+    launchCommand: ['copilot'],
+  }));
+  const logs = [];
+  try {
+    const result = await runRunner(['--config', configPath, '--once'], {
+      backend,
+      loadBackendPlaybooks: async () => ({
+        defaultPlaybook: {
+          name: 'default',
+          description: 'Test',
+          workingDirectory: root,
+          text: '# Default',
+        },
+        playbooks: new Map(),
+        domainInstructions: '# Domain',
+        domainRevision: 'reviewed-sha',
+      }),
+      log: (message) => logs.push(message),
+    });
+    assert.equal(result.observed, 0);
+    assert.match(logs[0], /^runner started: machine=test-machine /);
+    assert.equal(logs[1], 'press Enter to poll now');
+    assert.equal(logs[2], 'polling task backend');
+    assert.equal(
+      logs[3],
+      'poll complete: observed=0 requested=0 live=0 launched=0 closed=0 skipped=0',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runner waits for its interval or an Enter-triggered poll', async () => {
+  const input = new EventEmitter();
+  let timerCallback;
+  let cleared;
+  const manual = waitForPollTrigger(300000, {
+    input,
+    setTimer: (callback) => {
+      timerCallback = callback;
+      return 42;
+    },
+    clearTimer: (timer) => {
+      cleared = timer;
+    },
+  });
+  input.emit('data', '\r');
+  assert.equal(await manual, 'manual');
+  assert.equal(cleared, 42);
+
+  const timer = waitForPollTrigger(300000, {
+    input,
+    setTimer: (callback) => {
+      queueMicrotask(callback);
+      return 43;
+    },
+    clearTimer: () => {},
+  });
+  assert.equal(await timer, 'timer');
+  assert.equal(input.listenerCount('data'), 0);
+  assert.equal(typeof timerCallback, 'function');
+});
+
+test('runner defaults to a five-minute polling interval', () => {
+  const root = path.resolve('runner-defaults');
+  const config = validateRunnerConfig({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    machine: 'test-machine',
+    launchCommand: ['copilot'],
+  });
+  assert.equal(config.pollIntervalSeconds, 300);
+});
+
+test('manual polling starts a new five-minute interval', async () => {
+  const { backend } = await createBackend();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-runner-manual-poll-'));
+  const configPath = path.join(root, 'runner.json');
+  await writeFile(configPath, JSON.stringify({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory: root,
+    machine: 'test-machine',
+    pollIntervalSeconds: 300,
+    launchCommand: ['copilot'],
+  }));
+  const logs = [];
+  const waits = [];
+  let now = 1000;
+  let waitCount = 0;
+  try {
+    await assert.rejects(
+      runRunner(['--config', configPath], {
+        backend,
+        loadBackendPlaybooks: async () => ({
+          defaultPlaybook: {
+            name: 'default',
+            description: 'Test',
+            workingDirectory: root,
+            text: '# Default',
+          },
+          playbooks: new Map(),
+          domainInstructions: '# Domain',
+          domainRevision: 'reviewed-sha',
+        }),
+        log: (message) => logs.push(message),
+        now: () => now,
+        waitForPollTrigger: async (milliseconds) => {
+          waits.push(milliseconds);
+          waitCount += 1;
+          if (waitCount === 1) {
+            now = 2000;
+            return 'manual';
+          }
+          throw new Error('stop test runner');
+        },
+      }),
+      /stop test runner/,
+    );
+    assert.deepEqual(waits, [300000, 300000]);
+    assert.equal(logs.includes('manual poll requested'), true);
+    assert.equal(
+      logs.filter((message) => message === 'polling task backend').length,
+      2,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('non-Windows runner launch inherits its interactive terminal', async () => {
+  const { backend } = await createBackend();
+  const task = await backend.create({
+    title: 'Use the current terminal',
+    agentStatus: 'requested',
+  });
+  const root = await mkdtemp(path.join(process.cwd(), '.pan-posix-launch-'));
+  const workingDirectory = path.join(root, 'work');
+  await mkdir(workingDirectory);
+  const config = validateRunnerConfig({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory,
+    machine: 'test-machine',
+    launchCommand: ['copilot'],
+  });
+  const child = new EventEmitter();
+  child.pid = 8200;
+  child.unref = () => {};
+  let launch;
+  try {
+    await pollRunner({
+      backend,
+      config,
+      loadedDomain: {
+        defaultPlaybook: {
+          name: 'default',
+          description: 'Test',
+          workingDirectory,
+          text: '# Default',
+        },
+        playbooks: new Map(),
+        domainInstructions: '# Domain',
+        domainRevision: 'reviewed-sha',
+      },
+      dependencies: {
+        platform: 'linux',
+        spawn: (command, args, options) => {
+          launch = { command, args, options };
+          queueMicrotask(() => child.emit('spawn'));
+          return child;
+        },
+      },
+    });
+    assert.equal(launch.command, 'copilot');
+    assert.equal(launch.args.includes('--allow-all-paths'), true);
+    assert.deepEqual(
+      launch.args.slice(launch.args.indexOf('--add-dir'), launch.args.indexOf('--add-dir') + 2),
+      ['--add-dir', workingDirectory],
+    );
+    assert.equal(launch.options.stdio, 'inherit');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runner lock excludes a second live runner and replaces a stale lock', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-runner-lock-'));
+  try {
+    const release = await acquireRunnerLock(root, {
+      processIsAlive: (pid) => pid === process.pid,
+    });
+    await assert.rejects(
+      acquireRunnerLock(root, {
+        processIsAlive: (pid) => pid === process.pid,
+      }),
+      /another runner is already active/,
+    );
+    await release();
+
+    await writeFile(
+      path.join(root, 'runner.lock'),
+      `${JSON.stringify({ pid: 999999 })}\n`,
+    );
+    const releaseAfterStale = await acquireRunnerLock(root, {
+      processIsAlive: () => false,
+    });
+    await releaseAfterStale();
+    await assert.rejects(readFile(path.join(root, 'runner.lock')), { code: 'ENOENT' });
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -438,6 +680,10 @@ test('runner config reserves runner-managed session and prompt options', () => {
     machine: 'test-machine',
   };
   const conflicts = [
+    ['--add-dir', path.resolve('other-work')],
+    [`--add-dir=${path.resolve('other-work')}`],
+    ['--allow-all-paths'],
+    ['--allow-all-paths=true'],
     ['--session-id', 'session-id'],
     ['--session-id=session-id'],
     ['--resume', 'session-id'],
@@ -461,7 +707,7 @@ test('runner config reserves runner-managed session and prompt options', () => {
         ...base,
         launchCommand: ['copilot', ...args],
       }),
-      /must not override the runner-managed session or prompt/,
+      /must not override runner-managed launch options/,
     );
   }
 

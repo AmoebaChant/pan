@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import {
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -13,7 +14,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
 import {
   loadBackendPlaybooks,
@@ -23,13 +24,17 @@ import {
 
 const RELEASE_FILE = 'worker-release.json';
 const RUN_FILE = 'run.json';
+const RUNNER_LOCK_FILE = 'runner.lock';
 const SYSTEM_DIR = fileURLToPath(new URL('../system', import.meta.url));
+const execFileAsync = promisify(execFile);
 const RUNNER_MANAGED_LONG_OPTIONS = new Set([
   '--session-id',
   '--resume',
   '--continue',
   '--prompt',
   '--interactive',
+  '--allow-all-paths',
+  '--add-dir',
 ]);
 const RUNNER_MANAGED_SHORT_OPTIONS = new Set(['-r', '-p', '-i']);
 
@@ -60,10 +65,10 @@ export function validateRunnerConfig(config) {
   }
   if (launchCommand.some(isRunnerManagedOption)) {
     throw new Error(
-      'launchCommand must not override the runner-managed session or prompt',
+      'launchCommand must not override runner-managed launch options',
     );
   }
-  const pollIntervalSeconds = Number(config.pollIntervalSeconds ?? 10);
+  const pollIntervalSeconds = Number(config.pollIntervalSeconds ?? 300);
   if (!Number.isFinite(pollIntervalSeconds) || pollIntervalSeconds < 1) {
     throw new Error('pollIntervalSeconds must be at least 1');
   }
@@ -91,6 +96,40 @@ export async function loadConfig(configPath, dependencies = {}) {
 
 function taskDirectory(stateRoot, taskId) {
   return path.join(stateRoot, 'tasks', encodeURIComponent(taskId));
+}
+
+function taskLabel(task) {
+  const reference = Number.isInteger(task.number) ? `#${task.number}` : task.id;
+  return `${reference} ${JSON.stringify(task.title)}`;
+}
+
+function workerWindowTitle(task) {
+  return `Pan worker ${taskLabel(task)}`.replaceAll(/[\r\n]/g, ' ').slice(0, 120);
+}
+
+function defaultRunnerLog(message) {
+  process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
+}
+
+export function waitForPollTrigger(
+  timeoutMs,
+  {
+    input = process.stdin,
+    setTimer = setTimeout,
+    clearTimer = clearTimeout,
+  } = {},
+) {
+  return new Promise((resolve) => {
+    let timer;
+    const finish = (trigger) => {
+      if (timer !== undefined) clearTimer(timer);
+      input?.removeListener?.('data', onData);
+      resolve(trigger);
+    };
+    const onData = () => finish('manual');
+    input?.once?.('data', onData);
+    timer = setTimer(() => finish('timer'), timeoutMs);
+  });
 }
 
 async function readOptionalJson(filename) {
@@ -256,6 +295,39 @@ export function processIsAlive(pid) {
   }
 }
 
+export async function acquireRunnerLock(stateRoot, dependencies = {}) {
+  await mkdir(stateRoot, { recursive: true });
+  const lockPath = path.join(stateRoot, RUNNER_LOCK_FILE);
+  const inspectProcess = dependencies.processIsAlive ?? processIsAlive;
+  const openFile = dependencies.open ?? open;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await openFile(lockPath, 'wx', 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify({ pid: process.pid })}\n`, 'utf8');
+      } catch (error) {
+        await handle.close();
+        await rm(lockPath, { force: true });
+        throw error;
+      }
+      return async () => {
+        await handle.close();
+        await rm(lockPath, { force: true });
+      };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const existing = await readOptionalJson(lockPath);
+      if (Number.isInteger(existing?.pid) && inspectProcess(existing.pid)) {
+        throw new Error(
+          `another runner is already active for this state root (pid ${existing.pid})`,
+        );
+      }
+      await rm(lockPath, { force: true });
+    }
+  }
+  throw new Error(`could not acquire runner lock: ${lockPath}`);
+}
+
 async function waitForExit(pid, inspectProcess, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (inspectProcess(pid)) {
@@ -273,23 +345,58 @@ async function defaultStopProcess(pid, dependencies) {
 }
 
 async function defaultLaunchProcess(
-  { command, cwd, env, prompt, sessionId },
+  { command, cwd, env, prompt, sessionId, terminalTitle },
   dependencies = {},
 ) {
   const args = [
     ...command.slice(1),
+    '--allow-all-paths',
+    '--add-dir',
+    cwd,
     '--session-id',
     sessionId,
     '--interactive',
     prompt,
   ];
+  const platform = dependencies.platform ?? process.platform;
+  if (platform === 'win32') {
+    const launch = dependencies.spawn ?? spawn;
+    const terminal = launch('wt.exe', [
+      '-w',
+      'new',
+      'nt',
+      '--title',
+      terminalTitle,
+      '-d',
+      cwd,
+      command[0],
+      ...args,
+    ], {
+      cwd,
+      env,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+    await new Promise((resolve, reject) => {
+      terminal.once('error', reject);
+      terminal.once('spawn', resolve);
+    });
+    terminal.unref();
+    const pid = await findWindowsWorkerPid(sessionId, dependencies);
+    return {
+      pid,
+      processStart: new Date().toISOString(),
+      command: [command[0], ...args],
+    };
+  }
   return new Promise((resolve, reject) => {
     const launch = dependencies.spawn ?? spawn;
     const child = launch(command[0], args, {
       cwd,
       env,
       detached: true,
-      stdio: 'ignore',
+      stdio: 'inherit',
       windowsHide: false,
     });
     child.once('error', reject);
@@ -304,6 +411,39 @@ async function defaultLaunchProcess(
   });
 }
 
+async function findWindowsWorkerPid(sessionId, dependencies = {}) {
+  const run = dependencies.execFile ?? execFileAsync;
+  const inspectDelay = dependencies.inspectDelay
+    ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const script = [
+    '$sessionId = $env:PAN_WORKER_SESSION_ID',
+    '$process = Get-CimInstance Win32_Process |',
+    "  Where-Object { $_.CommandLine -and $_.CommandLine.Contains('--session-id') -and $_.CommandLine.Contains($sessionId) } |",
+    '  Sort-Object CreationDate -Descending |',
+    '  Select-Object -First 1',
+    'if ($process) { [Console]::Out.Write($process.ProcessId) }',
+  ].join('\n');
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const { stdout } = await run('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PAN_WORKER_SESSION_ID: sessionId,
+      },
+      windowsHide: true,
+    });
+    const pid = Number.parseInt(String(stdout).trim(), 10);
+    if (Number.isInteger(pid) && pid > 0) return pid;
+    await inspectDelay(100);
+  }
+  throw new Error(`worker window opened but session process was not found: ${sessionId}`);
+}
+
 async function clearClosedRun(run, task, backend) {
   if (task.agentStatus !== '') {
     await backend.update(task.id, { agentStatus: '' });
@@ -316,6 +456,7 @@ export async function reconcileManagedRuns({
   stateRoot,
   dependencies = {},
 }) {
+  const log = dependencies.log ?? (() => {});
   const inspectProcess = dependencies.processIsAlive ?? processIsAlive;
   const stopProcess = dependencies.stopProcess
     ?? ((pid) => defaultStopProcess(pid, { processIsAlive: inspectProcess }));
@@ -325,12 +466,14 @@ export async function reconcileManagedRuns({
   for (const run of runs) {
     const task = await backend.get(run.taskId);
     if (!inspectProcess(run.pid)) {
+      log(`worker exited: ${taskLabel(task)} (pid ${run.pid})`);
       await clearClosedRun(run, task, backend);
       closed.push(run.taskId);
       continue;
     }
     const released = await fileExists(path.join(run.dir, RELEASE_FILE));
     if (released) {
+      log(`closing released worker: ${taskLabel(task)} (pid ${run.pid})`);
       await stopProcess(run.pid, run);
       if (inspectProcess(run.pid)) {
         throw new Error(`managed process ${run.pid} is still running after release`);
@@ -340,6 +483,7 @@ export async function reconcileManagedRuns({
       continue;
     }
     if (task.agentStatus !== 'running') {
+      log(`restoring running status: ${taskLabel(task)} (pid ${run.pid})`);
       await backend.update(task.id, { agentStatus: 'running' });
     }
     live.push(run);
@@ -397,8 +541,10 @@ export async function launchTask({
     mode: 0o600,
   });
   const cwd = resolvePlaybookWorkingDirectory(playbook, config);
+  const log = dependencies.log ?? (() => {});
   const launch = dependencies.launchProcess
     ?? ((options) => defaultLaunchProcess(options, dependencies));
+  log(`opening worker window: ${taskLabel(current)} (session ${sessionId})`);
   const started = await launch({
     command: config.launchCommand,
     cwd,
@@ -421,6 +567,7 @@ export async function launchTask({
         : []),
     ].join('\n'),
     sessionId,
+    terminalTitle: workerWindowTitle(current),
   });
   if (!Number.isInteger(started?.pid) || started.pid < 1) {
     throw new Error('launcher did not return a process id');
@@ -438,6 +585,7 @@ export async function launchTask({
   };
   await atomicWriteJson(path.join(dir, RUN_FILE), run);
   await backend.update(current.id, { agentStatus: 'running' });
+  log(`worker running: ${taskLabel(current)} (pid ${started.pid})`);
   return { ...run, dir };
 }
 
@@ -448,6 +596,7 @@ export async function pollRunner({
   dryRun = false,
   dependencies = {},
 }) {
+  const log = dependencies.log ?? (() => {});
   await mkdir(config.stateRoot, { recursive: true });
   const reconciled = await reconcileManagedRuns({
     backend,
@@ -463,6 +612,7 @@ export async function pollRunner({
     if (liveTaskIds.has(task.id)) continue;
     const resolved = resolveRequestedPlaybook(task.playbook, loadedDomain, config);
     if (!resolved.available) {
+      log(`skipping ${taskLabel(task)}: ${resolved.reason}`);
       skipped.push({ id: task.id, reason: resolved.reason });
       continue;
     }
@@ -474,6 +624,7 @@ export async function pollRunner({
             await loadBackendWorkstream(config, task.workstream, dependencies)
           ).text;
         } catch (error) {
+          log(`skipping ${taskLabel(task)}: ${error.message}`);
           skipped.push({ id: task.id, reason: error.message });
           continue;
         }
@@ -535,26 +686,53 @@ export async function runRunner(argv, dependencies = {}) {
   }
   if (!values.config) throw new Error('--config is required');
   const config = await loadConfig(values.config, dependencies);
-  const backend = dependencies.backend
-    ?? await loadTaskBackend(config.backendConfig, dependencies);
-  if (typeof backend.initialize === 'function') await backend.initialize();
-  const loadDomain = dependencies.loadBackendPlaybooks ?? loadBackendPlaybooks;
-  const poll = async () => {
-    const loadedDomain = await loadDomain(config, dependencies);
-    return pollRunner({
-      backend,
-      config,
-      loadedDomain,
-      dryRun: values['dry-run'] === true,
-      dependencies,
-    });
-  };
-  const first = await poll();
-  if (values.once || values['dry-run']) return first;
-  for (;;) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, config.pollIntervalSeconds * 1000));
-    await poll();
+  const releaseRunnerLock = await acquireRunnerLock(config.stateRoot, dependencies);
+  try {
+    const log = dependencies.log ?? defaultRunnerLog;
+    const runnerDependencies = { ...dependencies, log };
+    log(
+      `runner started: machine=${config.machine} stateRoot=${config.stateRoot} `
+      + `poll=${config.pollIntervalSeconds}s`,
+    );
+    log('press Enter to poll now');
+    const backend = dependencies.backend
+      ?? await loadTaskBackend(config.backendConfig, dependencies);
+    if (typeof backend.initialize === 'function') await backend.initialize();
+    const loadDomain = dependencies.loadBackendPlaybooks ?? loadBackendPlaybooks;
+    const poll = async () => {
+      log('polling task backend');
+      const loadedDomain = await loadDomain(config, dependencies);
+      const result = await pollRunner({
+        backend,
+        config,
+        loadedDomain,
+        dryRun: values['dry-run'] === true,
+        dependencies: runnerDependencies,
+      });
+      log(
+        `poll complete: observed=${result.observed} requested=${result.requested.length} `
+        + `live=${result.live.length + result.launched.length} launched=${result.launched.length} `
+        + `closed=${result.closed.length} skipped=${result.skipped.length}`,
+      );
+      return result;
+    };
+    const now = dependencies.now ?? Date.now;
+    let pollStartedAt = now();
+    const first = await poll();
+    if (values.once || values['dry-run']) return first;
+    for (;;) {
+      const nextPollAt = pollStartedAt + config.pollIntervalSeconds * 1000;
+      const waitMs = Math.max(0, nextPollAt - now());
+      log(`waiting for next poll at ${new Date(nextPollAt).toISOString()}`);
+      const wait = dependencies.waitForPollTrigger
+        ?? ((milliseconds) => waitForPollTrigger(milliseconds, dependencies));
+      const trigger = await wait(waitMs);
+      if (trigger === 'manual') log('manual poll requested');
+      pollStartedAt = now();
+      await poll();
+    }
+  } finally {
+    await releaseRunnerLock();
   }
 }
 
