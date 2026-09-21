@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile as execFileCallback } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { GitHubTaskBackend } from '../bin/pan-github-task-backend.js';
 import { runTaskCli } from '../bin/pan-task.js';
 import {
@@ -20,6 +22,8 @@ import {
   loadBackendPlaybooks,
   loadBackendWorkstream,
 } from '../bin/pan-backend-playbooks.js';
+
+const execFileAsync = promisify(execFileCallback);
 
 class MemoryGitHubTransport {
   constructor() {
@@ -409,27 +413,49 @@ test('default runner launch opens the saved session interactively', async () => 
       launches[0].args[4],
       /^Pan worker #1 "Change \\"start\/request\/resume etc\\" agent button to blue"$/,
     );
-    assert.deepEqual(launches[0].args.slice(5, 8), ['-d', workingDirectory, 'copilot']);
-    assert.deepEqual(launches[0].args.slice(8, 8 + configuredArgs.length), configuredArgs);
-    assert.equal(launches[0].args[8 + configuredArgs.length], '--allow-all-paths');
+    const launcherPath = path.join(
+      config.stateRoot,
+      'tasks',
+      task.id,
+      'worker-launch.ps1',
+    );
     assert.deepEqual(
-      launches[0].args.slice(9 + configuredArgs.length, 11 + configuredArgs.length),
+      launches[0].args.slice(5),
+      [
+        '-d',
+        path.dirname(launcherPath),
+        'pwsh.exe',
+        '-NoLogo',
+        '-NoProfile',
+        '-File',
+        path.basename(launcherPath),
+      ],
+    );
+    const launcherScript = await readFile(launcherPath, 'utf8');
+    const payloadMatch = launcherScript.match(/FromBase64String\('([^']+)'\)/);
+    assert.notEqual(payloadMatch, null);
+    const launchSpec = JSON.parse(
+      Buffer.from(payloadMatch[1], 'base64').toString('utf8'),
+    );
+    assert.equal(launchSpec.command, 'copilot');
+    assert.deepEqual(launchSpec.args.slice(0, configuredArgs.length), configuredArgs);
+    assert.equal(launchSpec.args[configuredArgs.length], '--allow-all-paths');
+    assert.deepEqual(
+      launchSpec.args.slice(1 + configuredArgs.length, 3 + configuredArgs.length),
       ['--add-dir', workingDirectory],
     );
     assert.deepEqual(
-      launches[0].args.slice(11 + configuredArgs.length, 13 + configuredArgs.length),
+      launchSpec.args.slice(3 + configuredArgs.length, 5 + configuredArgs.length),
       ['--session-id', savedSessionId],
     );
-    assert.equal(launches[0].args.includes('--prompt'), false);
-    const interactiveIndex = launches[0].args.indexOf('--interactive');
-    assert.equal(interactiveIndex, 13 + configuredArgs.length);
-    const prompt = launches[0].args[interactiveIndex + 1];
-    assert.equal(prompt.startsWith('"'), true);
-    assert.equal(prompt.endsWith('"'), true);
-    assert.match(prompt, /\\"start\/request\/resume etc\\"/);
+    assert.equal(launchSpec.args.includes('--prompt'), false);
+    const interactiveIndex = launchSpec.args.indexOf('--interactive');
+    assert.equal(interactiveIndex, 5 + configuredArgs.length);
+    const prompt = launchSpec.args[interactiveIndex + 1];
+    assert.match(prompt, /"start\/request\/resume etc"/);
     assert.match(
       prompt,
-      new RegExp(`Work on Pan task ${task.id}: Change`),
+      new RegExp(`Work on Pan task ${task.id}: ${task.title}`),
     );
     assert.match(prompt, /persist the final task comment/i);
     assert.match(prompt, /set the justified work status to done or rejected/i);
@@ -438,6 +464,62 @@ test('default runner launch opens the saved session interactively', async () => 
     assert.match(prompt, /Do not create the release file while waiting for the user/i);
     assert.match(prompt, /Changing the task work status alone does not close this session/i);
     assert.doesNotMatch(prompt, /only when .*early close/i);
+    assert.equal(launchSpec.cwd, workingDirectory);
+    assert.equal(launchSpec.env.PAN_SYSTEM_DIR, expectedSystemDir);
+    assert.equal(launchSpec.env.PAN_SESSION_ID, savedSessionId);
+    assert.equal(launchSpec.env.PAN_TASK_ID, task.id);
+    assert.equal(launchSpec.env.PATH, undefined);
+    if (process.platform === 'win32') {
+      const probePath = path.join(root, 'launch-probe.cjs');
+      const probeOutput = path.join(root, 'launch probe output.json');
+      await writeFile(probePath, [
+        "const fs = require('node:fs');",
+        'fs.writeFileSync(process.argv[2], JSON.stringify({',
+        '  args: process.argv.slice(3),',
+        '  cwd: process.cwd(),',
+        '  panValue: process.env.PAN_TEST_VALUE,',
+        '}));',
+        '',
+      ].join('\n'));
+      const probeSpec = {
+        command: process.execPath,
+        args: [
+          probePath,
+          probeOutput,
+          '--interactive',
+          'line one with spaces\nline two with "quotes"',
+        ],
+        cwd: workingDirectory,
+        env: { PAN_TEST_VALUE: 'preserved' },
+      };
+      const probePayload = Buffer.from(
+        JSON.stringify(probeSpec),
+        'utf8',
+      ).toString('base64');
+      const probeLauncher = path.join(root, 'probe-launcher.ps1');
+      await writeFile(
+        probeLauncher,
+        launcherScript.replace(payloadMatch[1], probePayload),
+        'utf8',
+      );
+      await execFileAsync('pwsh.exe', [
+        '-NoLogo',
+        '-NoProfile',
+        '-File',
+        probeLauncher,
+      ]);
+      assert.deepEqual(
+        JSON.parse(await readFile(probeOutput, 'utf8')),
+        {
+          args: [
+            '--interactive',
+            'line one with spaces\nline two with "quotes"',
+          ],
+          cwd: workingDirectory,
+          panValue: 'preserved',
+        },
+      );
+    }
     assert.equal(launches[0].options.cwd, workingDirectory);
     assert.equal(launches[0].options.env.PAN_SYSTEM_DIR, expectedSystemDir);
     assert.equal(launches[0].options.env.PAN_SESSION_ID, savedSessionId);
