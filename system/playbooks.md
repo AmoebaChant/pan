@@ -1,155 +1,54 @@
 # Playbooks
 
-A **playbook** is a named kind of work plus the instructions for doing it. In
-this design playbooks are identified by **name only** — they are not tied to a
-repository. Triage picks a playbook by name for each agent task; a runner runs a
-task only if the machine it is on has a playbook file with that name.
+A playbook is a named set of worker instructions. Domain files live at
+`playbooks/<machine>/<name>.md`; the task's `playbook` field selects the file
+with the same name.
 
-That task-side selection is compatibility behavior. Under
-`attention-labels-v1`, a session may remain conversational with no playbook.
-When needed, the worker records the selected existing playbook and workspace
-in session-side `task-session.json`; changing playbooks never creates a new
-session.
+An empty task assignment selects Pan's portable general default playbook. The
+default reads the task, comments, Domain and available workstream guidance, then
+follows applicable repository instructions without inventing a repository or
+workstream.
 
-## Where playbooks live
-
-Playbook definitions live in the **Domain** repository at
-`playbooks/<machine>/<name>.md`. Definitions are **per machine**: `<machine>`
-is the machine name and `<name>` (the file's basename without `.md`) is the
-playbook name written into the Project `playbook` field. A machine runs
-**exactly** the playbooks present in its `playbooks/<machine>/` folder — the
-folder is the list. The same playbook name may be defined differently on
-different machines, so each machine that runs a playbook has its own file for it
-— there is no shared default and no fallback. Whichever machine claims a task
-runs its own definition of that playbook name. The Pan tool repository defines
-only the *format* below and the base instructions every worker gets; it ships no
-concrete playbooks.
-
-## Playbook definition format
-
-`playbooks/<machine>/<name>.md` is Markdown with a small YAML front matter and a
-free-form instructions body:
+When a task explicitly names a playbook that is absent from this configured
+runner, the runner preserves that assignment and opens the general default with
+a prepended repair prompt. The worker explains the exact unavailable name,
+offers the configured playbook definitions and launch directories in this
+runner profile, and asks whether to correct the assignment or help create the
+requested playbook. The listed paths describe configuration rather than
+runtime readiness; the worker verifies the chosen setup before dependent work.
+It waits before specialist-dependent work and never guesses a mapping or edits
+the assignment without approval. Absence on one runner is not evidence of
+global absence.
+Malformed playbooks, invalid working directories, and Domain loading or trust
+errors remain explicit failures rather than default fallbacks.
 
 ```markdown
 ---
 name: tool-development
-description: Open a pull request against a repo that fixes the Issue.
-capacity: 1                   # concurrent tasks on this machine; 0 disables
-humanAttention: may-request   # autonomous | may-request (default)
-checkpointRelease: forbidden # allowed | forbidden (default)
-workingDirectory: null        # optional; see below
+description: Implement and publish a reviewed tool change.
+workingDirectory: C:\Repos
 ---
 
 # tool-development
 
-<Everything below the front matter is the agent instructions for this kind of
-work. Say plainly how to set up the workspace, how to build and test, and how
-to deliver the result (open a PR, commit to a branch, write an investigation,
-etc.). These instructions plus the Issue text are the only things guiding the
-worker, so be explicit and complete.>
+<setup, implementation, validation, delivery, and decision instructions>
+
+Keep `nextStep` current at meaningful milestones with the existing task API:
+`pan-task --config "$PAN_TASK_BACKEND_CONFIG" update "$PAN_TASK_ID" --input
+'{"nextStep":"<brief verified next step>"}'`. Clear it when that text no longer
+applies; keep detailed progress in comments.
 ```
 
-Front matter fields:
+`name` and `description` are required. `workingDirectory` is optional when the
+runner config provides one, and otherwise must be absolute.
 
-- `name` (required) — must equal the filename basename.
-- `description` (required) — one line, shown during triage to help pick.
-- `capacity` (required) — a non-negative integer: the number of concurrent
-  tasks this machine will run for this playbook. `0` disables the playbook on
-  this machine without removing its file.
-- `humanAttention` (optional) — `autonomous` or `may-request` (default).
-  `autonomous` means the currently authorized scope can complete without a
-  human checkpoint, allowing it to continue when the runner's Needs me
-  backpressure soft limit is reached. It never authorizes skipping an actual
-  approval, discussion, review, rollout, or live-validation gate; use
-  `may-request` when the current scope may reach one.
-- `checkpointRelease` (optional) — `allowed` or `forbidden` (default).
-  `allowed` permits a worker to set `safeToRelease=true` only after the
-  playbook's durable checkpoint steps are complete. It releases execution
-  capacity, not session/workspace affinity. Use `forbidden` when live
-  validation, local-only state, or an interactive operation requires the worker
-  to remain through explicit finish.
-- `workingDirectory` (optional) — an absolute path that becomes the worker's
-  **in-place working directory** (its terminal CWD) when this playbook operates
-  on a real checkout. It selects only where work happens; Pan's own control and
-  signal files never live inside it — they go in a per-session state directory
-  under the runner's `workspaceRoot` (see [runner](runner.md)). The runner does
-  not create a Git worktree for this path. When omitted, the task is isolated and
-  the runner prepares a session directory the worker also uses as its workspace,
-  as its instructions require. Because playbook files are per machine, this path
-  is naturally machine-specific.
-- `workspaceSlots` (optional) — a mapping of named slot ids to absolute paths,
-  **mutually exclusive** with `workingDirectory`. Like `workingDirectory`, each
-  slot selects an in-place working directory and never the Pan state location. It
-  lets one playbook pool work across a fixed set of reusable directories instead
-  of a single one:
+The runner does not interpret playbook prose as fields or policy. It does not
+derive capabilities, authorization, dependencies, concurrency limits,
+workspace slots, completion, or release from front matter. The instructions
+themselves own repository selection, task-local setup, delivery gates, and when
+to edit descriptive task fields or work Status, and when to explicitly close
+the session early.
 
-  ```yaml
-  workspaceSlots:
-    primary: 'C:\Product'
-    secondary: 'C:\Product.2'
-  ```
-
-  Each running task occupies exactly one slot, so `capacity` **cannot exceed**
-  the slot count (`capacity: 0` still disables the playbook). Slot ids must be
-  non-empty and simple (letters, digits, `_`, `-`) and never contain the
-  reserved `::`; every path must be absolute; duplicate ids or paths in one
-  playbook, and a declared-but-empty mapping, are hard errors. New work takes
-  the first free slot; a task that has already run in a slot resumes in that
-  exact slot (see [runner](runner.md)).
-
-The instructions body carries everything else — how to isolate work, build,
-test, deliver, and decide when the whole outcome is complete. State every real
-human, merge, rollout, restart, or live-validation gate. A worker remains
-through an explicit finish/live-validation gate when the playbook requires it;
-creating or merging a PR is not generic completion. There are no capability
-tokens and no `repo:` selector; the target repository, if any, is described in
-the instructions and the Issue.
-
-## Which machines run which playbooks
-
-A machine runs the playbooks in its `playbooks/<machine>/` folder. There is no
-separate machine list: the presence of a `playbooks/<machine>/<name>.md` file
-means that machine runs playbook `<name>`, with the concurrency and working
-directory declared in that file's front matter. A playbook name that exists in
-no machine's folder is unrunnable, and triage should not assign it unless a
-machine will be given a file for it. Set `capacity: 0` to keep a playbook
-defined but temporarily disabled on a machine.
-
-## How triage uses playbooks
-
-All Daily Briefings, triage/portfolio passes, and momentum scans first read the
-live machine playbook inventory and definitions, then assess every eligible
-task for a useful match under the
-[agent-opportunity pass](agent-momentum.md#agent-opportunity-pass). Do not wait
-for a task to be labeled or classified as AI work before inspecting playbooks.
-Use their actual scope, required inputs, constraints, and authority, not just
-their names. Matching a playbook does not supply missing facts or consent.
-Full capacity may queue otherwise eligible work; a disabled playbook is a
-different constraint that must be surfaced.
-
-This capability assessment does not add a task-side playbook field to the
-attention lifecycle. It informs the proposed work mode and expected outcome;
-the same persistent worker session selects and records its playbook when
-needed. Conversation or useful bounded investigation remains an option where
-the selected lifecycle permits it, even without an implementation playbook.
-
-In the compatibility lifecycle, the task-side playbook name is selected as
-follows. In `attention-labels-v1`, use the session-side selection described
-above instead.
-
-During [triage](triage.md), for each task whose next step may be AI, Pan reads the available
-`playbooks/*/*.md` across every machine, picks the one whose `description` and
-instructions fit the task, and writes its **name** into the Project `playbook`
-field. The name is the routing key; the same name may be defined differently per
-machine, and whichever machine claims the task runs its own definition. If no
-playbook fits, the task is not `ready-for-ai`: prepare an exact human action or
-dependency instead, or propose creating a new playbook.
-
-## How the runner uses playbooks
-
-In the compatibility lifecycle, a [runner](runner.md) claims a task only when it is
-`ready-for-ai/execute`, authorized, dependency-clear, non-recurring, and its
-`playbook` names a playbook present in this machine's
-`playbooks/<machine>/` folder with spare capacity and safe resources. It then
-launches a worker with the playbook's instructions, the full Pan system
-context, and the Issue contents.
+Chief sessions read live playbooks when deciding whether agent help is useful.
+Choosing a playbook and setting `agentStatus=requested` are separate explicit
+task edits.

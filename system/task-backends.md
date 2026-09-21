@@ -1,111 +1,73 @@
 # Task backends
 
-Each Domain selects one authoritative task backend. Pan defines task meanings;
-the backend stores them. Changing the next actor never moves the task.
-
-Agents use `pan-task`, not backend-specific commands:
+Each Domain selects one authoritative task backend. GitHub and Todoist expose
+the same small task record through `pan-task`:
 
 ```sh
-pan-task --config /absolute/path/backend.json list
-pan-task --config /absolute/path/backend.json get <id>
-pan-task --config /absolute/path/backend.json create --input @request.json
-pan-task --config /absolute/path/backend.json update <id> --input @request.json
-pan-task --config /absolute/path/backend.json report <id> --input @request.json
-pan-task --config /absolute/path/backend.json reports <id>
-pan-task --config /absolute/path/backend.json complete <id> --input @request.json
+pan-task --config <backend.json> list
+pan-task --config <backend.json> get <id>
+pan-task --config <backend.json> create --input @request.json
+pan-task --config <backend.json> update <id> --input @request.json
+pan-task --config <backend.json> comment <id> --input @request.json
+pan-task --config <backend.json> comments <id>
+pan-task --config <backend.json> complete <id> --input '{"outcome":"done"}'
+pan-task --config <backend.json> reopen <id>
 ```
 
-The interface validates input and configured scope, paginates native
-collections, preserves unmapped description text, and returns explicit errors.
-It does not decide whether a business transition is appropriate. Pan makes
-that decision from the live task and these Markdown contracts.
+The common task record contains:
 
-For [source intake](source-intake.md), an adapter must advertise and honor
-idempotent create requests. `create` accepts an optional UUID
-`idempotencyKey`; the Todoist adapter sends it as `X-Request-Id`. Intake refuses
-apply through an adapter that cannot guarantee retrying the same key will not
-create a second task.
+- backend and native task identifiers;
+- title, description, URL, comments, and native open/closed reason;
+- work `status`: `open`, `done`, or `rejected`;
+- priority, planned date (`nextActionDate`), optional brief `nextStep`,
+  deadline, playbook, and workstream;
+- persistent `sessionId`; and
+- `agentStatus`: empty, `requested`, or `running`.
 
-## Canonical concepts
+Work status and Agent status are independent. Completing or reopening a task
+does not request, stop, release, or detach a session. Requesting a session is
+an ordinary update to `agentStatus=requested`, valid for every task.
 
-The Todoist adapter also supports `pan-task move <id> --input ...` with
-`projectId` and `expectedRevision`. It validates destination scope, moves the
-native task, and re-reads the result without rewriting lifecycle metadata or
-dates. Source intake uses this operation to apply declared project mappings
-to previously imported tasks.
+Adapters validate basic types, configured scope, backend identifiers, and
+authentication. They return explicit API and partial-write errors. They do not
+decide whether work is ready, infer an owner, validate business transitions,
+route next-action pairs, or interpret comments as state changes.
 
-The compatibility common record exposes `id`, `url`, `title`, `description`, `status`,
-`nextAction`, `nextActionDetail`, `priority`, `nextActionDate`, `deadline`,
-`playbook`, `workstream`, `executionAuthorized`, `dependencies`, worker
-observation, responsible person, recurrence, and a backend revision.
+`nextStep` is plain descriptive text for a current milestone or concrete next
+action. Empty or missing values read as an empty string. It never affects
+dispatch, permissions, work status, Agent status, or completion.
 
-An update may provide `expectedRevision`. The Todoist adapter detects a stale
-read before writing, but Todoist does not provide an atomic conditional update;
-a concurrent edit after that check remains possible and must be reconciled from
-another live read.
+## GitHub
 
-## Todoist mapping
+The GitHub adapter talks directly to the configured repository and Project. It
+does not use a second task store or lifecycle policy layer. Issue title/body,
+comments, state, and state reason remain native. Project fields store the
+portable planning and session fields described in
+[Project schema](project-schema.md).
 
-Todoist is the first non-GitHub adapter:
+A successful create has persisted and read back the requested initial work
+status and planning fields from the configured Issue and Project item. Failure
+after either record exists is reported as a partial write with their known
+identities rather than as a successful task.
 
-| Compatibility lifecycle concept | Todoist representation |
-| --- | --- |
-| title, description | native content and human-readable description |
-| priority | native priorities 1–4 map to low, normal, high, urgent |
-| next-action-date | native due date; recurring occurrence dates move through a recurrence-preserving native update |
-| deadline | native deadline when supported |
-| recurrence | native recurring due semantics; never rewritten by an attention-date update |
-| person responsibility | native `responsible_uid`; only the authenticated user and configured unassigned tasks are in scope |
-| lifecycle, next action, authorization, dependencies, playbook, workstream, worker observation | one visible, versioned `pan-task:v1` JSON block at the end of the description |
-| durable worker report | native task comment |
+Closing `done` uses GitHub's completed reason. Closing `rejected` uses not
+planned. A pre-existing duplicate close reason is read as rejected and is
+preserved unless the caller explicitly changes work status.
 
-The low/normal/high/urgent names are transport-neutral values. A Domain may
-define native P1–P4 as daily commitments; planning must honor that Domain
-meaning instead of treating the generic names as automatic urgency.
+## Todoist
 
-For a recurring task, changing `nextActionDate` changes only the current native
-occurrence date while preserving the recurrence expression, language, timezone,
-and recurring marker. Clearing that date is unsupported because it would also
-remove the native recurrence. Pan must report a partial write if another
-metadata change succeeds but the native occurrence-date update fails.
+Todoist native content, description, priority, due date, deadline, comments,
+completion, and reopening remain native. One visible `pan-task:v2` block at the
+end of the description stores only fields Todoist does not natively provide:
+next step, playbook, workstream, session ID, Agent status, and the rejected
+close meaning. It is not a workflow or worker-state store.
 
-`reports <id>` fully paginates native comments after verifying that the task is
-inside configured scope. Reports therefore remain recoverable without using
-Todoist-specific commands.
+The adapter fully paginates active tasks. Completed tasks use Todoist's required
+completion-date bounds and cursor pagination within one rolling three-month
+window, so a recently Done task can still request or resume its saved session.
+Older completed tasks remain in Todoist but are outside Pan's normal Todoist
+listing and lookup. Native assignee and project scope remain backend
+configuration, not Pan ownership.
 
-Worker observation is operational metadata, not business lifecycle. A report,
-question, status change, or task completion does not imply that a worker
-process or workspace may be released. The thin backend runner records
-`starting`, `running`, `released`, or `unexpected-stop` observations without
-changing lifecycle fields. Pan may update lifecycle independently.
-
-Automatic recurring-task dispatch is intentionally unsupported by the small
-pilot runner. Recurring tasks remain visible and editable through the common
-API, but the runner excludes them so a persistent readiness marker cannot
-launch each newly advanced occurrence. This is a temporary capability limit,
-not a task-policy rule or permission to create a GitHub fallback.
-
-The adapter never manages tasks assigned to another user. A Domain can further
-restrict project ids. Credentials are read from a local file and are never
-printed or stored in the Domain.
-
-The Todoist adapter is built into the pinned Pan checkout. A future
-Domain-supplied executable adapter must be installed explicitly from a trusted,
-pinned revision; polling must never download and execute changing code.
-
-GitHub Issues and Projects remain the built-in compatibility backend. The
-existing GitHub runner and Project contracts continue to apply to Domains that
-select it; they are not a shadow queue for a Todoist-backed Domain.
-
-Todoist may explicitly opt into
-[`attention-labels-v1`](attention-lifecycle.md). In that mode native labels and
-completion replace the lifecycle JSON mapping. Normal reads ignore legacy
-lifecycle metadata; only the explicit preview/apply migration interprets and
-removes it. The task association is limited to `sessionId` plus `machineId`.
-Session reports require matching `expectedSessionId` and `expectedMachineId`.
-Non-worker notes require an explicit `actor` of `chief` or `migration`.
-
-Live Domain `task-backend.json` may enable GitHub Issue source intake and name
-its repository scope and receipt path. The machine-local backend config still
-holds operational scope such as Todoist `createProjectId` and the credential
-file. The two backend names must match.
+For source intake, Todoist create supports an optional UUID `idempotencyKey`
+sent as `X-Request-Id`.

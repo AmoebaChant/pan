@@ -1,203 +1,41 @@
 # Triage
 
-Triage turns live Domain tasks into clear next actions. It prepares work and
-applies narrow standing permissions; the persistent chief coordinates
-portfolio selection through [agent momentum](agent-momentum.md), while the
-runner remains mechanical. Read [project schema](project-schema.md),
-[outcome task lifecycle](task-lifecycle.md), [playbooks](playbooks.md), and,
-when applicable, [recurrence](recurrence.md).
+Triage reads the complete live task set and decides what the work record should
+say. The runner has no role in this judgment.
 
-For a Domain using `attention-labels-v1`, read
-[attention lifecycle](attention-lifecycle.md) instead of preparing legacy
-status, authorization, dependency, or task-side playbook fields. Triage first
-places Inbox tasks into an unambiguous named project. It requests AI attention
-only when engagement is intended; conversation does not require an execution
-authorization or playbook.
+For GitHub, join every Domain Issue to the Project by URL and register missing
+Issues without editing or reopening them. For Todoist, fully paginate the
+configured scope. Preserve backend order as precedence within equal priority.
 
-Always read the complete live task set through the selected backend. For the
-GitHub compatibility backend, read the complete live Issue and Project sets. Use cursor pagination or
-`gh api --paginate`; a command limit that returns exactly its cap is not proof
-of completeness. Re-read a target immediately before mutation, require its
-expected backend revision, and verify afterward.
+Read live playbooks and relevant workstream context. For each task, decide:
 
-Before establishing the queue, run the configured [source
-intake](source-intake.md) preview and deliberate apply. An incomplete source
-read stops intake before writes. Imported records are then part of the live
-authoritative queue: compatibility imports are untriaged, while attention-mode
-imports are unlabeled and unassociated. Registration does not accept, schedule,
-or authorize them, but every new import participates in the same pass's agent
-assessment.
+- whether its work Status remains open, is done, or is rejected;
+- priority, planned date, brief current next step, deadline, playbook, and
+  workstream;
+- what dependency, approval, hold, review, or delivery context belongs in task
+  text or comments; and
+- whether opening or resuming its saved agent session would be useful.
 
-## 1. Establish the authoritative queue
+These are explicit business decisions. Keep `nextStep` descriptive; do not
+derive a permanent owner, create a next-action state pair, encode dependencies
+or authorization as runner gates, or turn a comment into a state transition.
 
-For a Todoist-backed Domain, the fully paginated in-scope Todoist set after any
-explicitly configured source intake is the queue. Do not register undeclared
-linked GitHub records, dispatch from source Issues, or build a fallback
-Project.
+Request agent help by setting `agentStatus=requested`. This is valid for every
+task, including done and rejected tasks. If `sessionId` is empty, the runner
+creates one. If it exists, the runner resumes it. Do not manually invent a
+session ID merely to satisfy a gate.
 
-An Issue labeled `migrated-to-todoist` was retired as a tracking source, not
-completed, shipped, or rejected. Use its authoritative Todoist task and
-migration receipt. Exclude migration closure from rejection/resolution email
-triggers and completion inference.
+Changing work Status never releases a session, and blank Agent metadata is not
+a close command. When the user wants an active session closed, direct that
+session explicitly; the worker follows its playbook's early-close procedure or
+the user closes the process. A worker awaiting the user remains running and
+should be surfaced from its comments and live session, not through a separate
+attention field.
 
-For the GitHub compatibility backend, join the complete configured Domain Issue
-set and declared external backlog Issue sets to the Project by Issue URL and
-register missing Issues without editing or reopening them.
+Read and recommend freely. An explicit user request authorizes that exact
+change; otherwise show the proposed task edits and obtain approval. Re-read
+immediately before writing and verify afterward.
 
-New tasks start non-runnable until their bounded next step and authority are
-established. This is not a reason to exclude them from agent discovery.
-
-## Agent-opportunity assessment
-
-Every triage/portfolio pass, interactive or scheduled, performs the shared
-[agent-opportunity pass](agent-momentum.md#agent-opportunity-pass). Read live
-machine playbooks before classifying tasks, then assess every eligible task
-against their contents and useful investigation/conversation modes. Do not
-limit assessment to already prepared, dated, high-priority, labeled, or
-session-associated tasks.
-
-Assign every task an internal agent disposition and a concrete reason,
-including why a plausible playbook-matched candidate is omitted. Existing
-AI-ready markers do not prove prerequisites or permission. Request useful
-standing-authorized work and propose other ready engagements for approval;
-surface all candidates rather than only those fitting today's free capacity.
-
-Missing information blocks the step that requires it. Consider a bounded
-discovery step that can obtain it without guessing or exceeding authority.
-If no useful agent step is possible, name the blocker and the human input
-needed; do not hide the task or present it as implementation-ready. In
-compatibility mode, prepare `ready-for-human/clarify` for that unresolved
-human input. In attention mode, preserve the native state and propose or
-write factual task guidance under the applicable approval policy; do not
-fabricate an `AI Needs Help` worker checkpoint when no worker asked a question.
-
-## 2. Reconcile objective lifecycle facts
-
-After complete reads, scheduled or interactive triage may apply these
-approval-free repairs:
-
-- verify and finish a partial terminal transition whose matching Issue closure
-  and revision/generation evidence already prove the intended state;
-- reconcile a completed recurring occurrence under the selected backend's
-  recurrence contract, creating a linked successor only when that backend
-  requires one;
-- add an unambiguous missing recurrence occurrence marker while preserving the
-  attention date;
-- clear a stale `next-action-date` only from a settled terminal item;
-- finish runner lease/resource cleanup only when terminal state and generation
-  match; and
-- surface expired or uncertain worker liveness without turning it into a
-  deliberate hold or an automatically runnable task.
-
-A runner crash changes `worker-state` to `paused` while preserving the outcome
-state, session, machine/slot, result, and current next action. Triage never
-converts a `ready-for-human` checkpoint or `deliberate-hold` into
-`ready-for-ai`.
-
-Read native worker reports during each pass. A reported question or real
-review gate becomes the corresponding `ready-for-human` checkpoint while
-preserving the worker session/resource attachment. Tell the user to answer or
-review in the worker's headed terminal; the chief does not relay an interactive
-worker conversation through itself. A verified whole-outcome completion is
-informational history after completion, not a Needs me item.
-
-For recorded pull requests, read live provider state. A merge completes a task
-only when the playbook says merge is the final gate and the task's current
-state/revision still expects that gate. Never infer completion merely because
-AI acted or a PR merged; rollout, restart, live validation, discussion, and
-other real playbook gates remain open.
-
-## 3. Prepare the next action
-
-After the opportunity assessment, map the chosen next step to the selected
-lifecycle. The checked pairs and task-side metadata below apply only to the
-compatibility lifecycle; attention mode follows
-[attention lifecycle](attention-lifecycle.md) without writing these fields.
-For each nonterminal compatibility task, recommend one valid checked pair:
-
-- `ready-for-human/clarify` — one focused missing fact;
-- `ready-for-human/discuss` — an interactive choice or tradeoff;
-- `ready-for-human/approve` — a consequential prepared action awaits consent;
-- `ready-for-human/review` — a real artifact or result requires review;
-- `ready-for-human/act` — the next physical/manual action is clear;
-- `ready-for-ai/execute` — a bounded AI step is clear and authorized;
-- `external-waiting/wait` — progress depends on an external event; or
-- `deliberate-hold/hold` — the user explicitly chose not to advance it.
-
-Also prepare:
-
-- `priority`, considering impact, urgency, deadlines, dependencies, and
-  workstream context;
-- `playbook` for AI execution, read from live `playbooks/*/*.md`;
-- `execution-authorized=yes` only when the user request, task, playbook, or
-  standing Domain permission authorizes that bounded next step;
-- `dependencies`, empty only when the next step can start;
-- `workstream`, after verifying its README;
-- optional `deadline`, preserving its meaning as a deadline; and
-- a concise durable Current next action detail in the task description.
-
-Do not set or move `next-action-date` merely because the next actor changes.
-Existing schedules survive handoffs. A newly prepared human checkpoint appears
-in Needs me but is not automatically committed to Today.
-
-Recurring occurrence availability is managed only by the recurrence lifecycle.
-Never prepare a recurring task as autonomously runnable AI work, and never
-create repeated successors in a scheduled catch-up loop.
-
-Preserve canonical backend order as precedence within equal priority.
-
-## 4. Approval and writes
-
-Read and recommend freely. An explicit request authorizes that specific change.
-Otherwise preview current and proposed values, task link, exact next-action
-detail, authorization/dependencies, and any date/deadline effect, then obtain
-approval.
-
-Use the selected backend's revision protocol and common task tool. Preserve
-unmapped description text, add durable reports through the backend, re-read,
-and report only confirmed effects. A stale revision, worker generation
-mismatch, incomplete read, or failed verification stops the operation; never
-return a success-shaped fallback.
-
-Scope expansion, destructive actions, spending, publication, production
-changes, and other consequential decisions remain human unless a standing
-Domain policy explicitly covers the exact action.
-
-## 5. Holds, handoffs, and recovery
-
-- **Hold:** only an explicit human decision creates
-  `deliberate-hold/hold`. It does not mean a runner crashed.
-- **Worker interruption:** keep the outcome state and set
-  `worker-state=paused`; preserve the session/workspace affinity.
-- **Resume:** only an explicit `ready-for-ai/execute` state is runnable. A
-  reusable session resumes on its owning machine/generation after live checks.
-- **Human checkpoint:** keep `ready-for-human/<exact action>`. A live worker may
-  continue waiting with its lease; a verified safe checkpoint may release
-  execution capacity but not workspace ownership.
-- **Cross-machine handoff:** preserve all results/checkpoints, prove no possible
-  launcher can still write, then explicitly clear machine/session/generation.
-  Never use a handoff to discard an inconvenient result.
-- **Finish discussion/review:** the checkpoint remains open until the user
-  explicitly finishes, rejects, or authorizes the next AI step.
-
-## Scheduled triage
-
-A scheduled TRIAGE pass performs the same complete live reads and explicit
-agent-opportunity assessment. It may:
-
-- register missing records only when the selected backend contract requires it;
-- prepare research, summaries, dependencies, proposed next actions, and
-  playbook recommendations;
-- apply the objective reconciliations above; and
-- perform an authorized transition covered by an explicit standing permission.
-
-It does not manufacture approval, expand scope, make consequential decisions,
-date human work, resume holds/human checkpoints, or run task logic. The runner
-remains mechanical.
-
-## Daily planning
-
-Triage prepares the portfolio. Daily commitment follows
-[Daily Briefing](daily-briefing.md): recommend human attention and agent
-throughput from complete live state, obtain explicit agreement, and then apply
-only the agreed date and attention transitions.
+Scheduled triage may perform documented standing-authorized reconciliations
+and missing-Issue registration. It must not manufacture approval, task
+completion, rejection, session requests, or session release.

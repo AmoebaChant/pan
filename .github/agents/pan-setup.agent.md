@@ -39,14 +39,10 @@ Ask whether to **create a new** private Domain or **connect an existing** one.
 
 ## 3. Ensure the Project fields exist
 
-Run the canonical **[reconcile Project schema](../../system/project-schema.md#reconciling-the-project-schema)**
-action against the Project. It creates any missing custom fields with their
-exact types and options and adds any missing canonical select options — for a
-new Project that provisions the whole schema, and for a connected Project it
-adds only what is absent without changing existing options or assigned values,
-and never renames the built-in `Status`. It previews the exact mutations for
-confirmation and verifies the Project afterward. Do not re-list the fields here;
-that action reads them from [`project-schema.md`](../../system/project-schema.md).
+Read the small field table in `system/project-schema.md`, compare it with the
+live Project, preview the exact missing fields/options, obtain confirmation,
+then create only what is missing and verify. Do not create legacy lifecycle,
+owner, attention, worker, claim, lease, or revision fields.
 
 ## 4. Scaffold the Domain repository
 
@@ -55,34 +51,19 @@ absent:
 
 - `workstreams/README.md` explaining the workstream convention;
 - `playbooks/<machine>/` with at least one starter playbook the user wants (see
-  [`playbooks.md`](../../system/playbooks.md) for the format), each declaring
-  its own `capacity` and optional `workingDirectory` in front matter;
+  [`playbooks.md`](../../system/playbooks.md) for the format);
 - optionally `pan.md` for domain-specific instructions.
 
 Ask one focused question at a time to gather the first playbook and its
-capacity. Do not invent playbooks the user does not want.
+working directory. Do not invent playbooks the user does not want.
 
 ## 5. Record local machine config
 
-Write this machine's local Pan config (outside the Domain and outside this repo,
-in the user's config directory): the Domain repository, the Project
-`<owner>/<number>`, this machine's name (matching the `playbooks/<machine>/`
-folder), a stable runner identity for `claimed-by`, and terminal settings for
-launching headed workers (Windows Terminal on Windows, Terminal.app on macOS).
-
-Ask which **default worker permissions** the runner should launch agents with,
-and record it as `workerPermissions`:
-
-- `yolo` — launch workers with `--allow-all`, auto-approving every tool, path,
-  and URL so runner-launched workers run fully unattended. This is the default,
-  because a runner's workers start in fresh directories with no human present;
-  the trade-off is that a worker can take any action without asking.
-- `standard` — no auto-approve flags; the worker prompts for each tool, so a
-  human must be at the terminal.
-
-State this trade-off plainly and default to `yolo` unless the user chooses
-`standard`. Either way the runner pre-trusts each worker's workspace folder
-(via copilot's `trustedFolders`) so no interactive folder-trust prompt appears.
+Write separate backend and runner JSON files in the user's Pan config
+directory. The backend config names GitHub or Todoist scope. The runner config
+names that backend file, this machine, one state root, launch command, and
+either an explicit local Domain path or an explicitly pinned remote Domain
+revision. Never default silently to remote main.
 
 ## 6. Offer desktop shortcuts
 

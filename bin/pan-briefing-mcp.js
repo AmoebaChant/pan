@@ -61,7 +61,7 @@ const TOOLS = [
                   agentAuthorization: {
                     type: 'string',
                     enum: ['none', 'standing', 'approval-required', 'already-requested'],
-                    description: 'Whether the request is standing-authorized, discretionary, or already queued.',
+                    description: 'Whether the request is standing-authorized, discretionary, or already requested.',
                   },
                   playbook: { type: ['string', 'null'] },
                   workMode: { type: ['string', 'null'] },

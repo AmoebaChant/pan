@@ -99,29 +99,14 @@ pages it happened to read. A mutation after the accepted snapshot is handled
 by the per-Issue apply recheck or the next regular intake pass.
 
 Each new authoritative task preserves the source URL, repository, Issue number,
-and stable GitHub node id in its visible description. In the compatibility
-lifecycle it is created with:
+and stable GitHub node id in its visible description. It is created with
+`status=open`, normal priority, no planned date or deadline, blank playbook and
+session fields, blank Agent status, and only an unambiguous declared
+workstream.
 
-- `status=untriaged`;
-- empty `nextAction` and next-action detail;
-- `executionAuthorized=false`;
-- no next-action date or deadline;
-- no playbook or dependencies; and
-- only an unambiguous declared workstream, if one exists.
-
-Therefore an import is never runnable. Normal Domain triage decides whether the
-outcome is accepted, rejected, clarified, held, assigned a playbook, or
-authorized for AI.
-
-Under `attention-labels-v1`, source intake must resolve a named non-Inbox
-project through declared routing or the approved backend creation policy. The
-new task has no attention label or session association and cannot dispatch
-merely because it was imported. This does not classify its next step as human
-work. In the same briefing or triage pass, the chief includes it in the
-[agent-opportunity pass](agent-momentum.md#agent-opportunity-pass), matches it
-against live playbooks or useful bounded conversation/investigation, and
-requests engagement under standing authority or proposes it for approval.
-Import state is not an exclusion from that assessment.
+Importing does not request a session or decide readiness. Normal triage reads
+the new task in the same complete pass and decides its business state and
+whether agent help should be requested.
 
 ## Durable receipts
 

@@ -1,200 +1,47 @@
 # Worker base instructions
 
-Every Pan worker session — the headed `copilot` session a [runner](runner.md)
-launches for a claimed task — follows these base instructions **on top of** its
-playbook and the task. Read [overview](overview.md) for the system, your
-[playbook](playbooks.md) for how to do this kind of work, and the `task.json` in
-your state directory (see below) for the specific task.
+You are one persistent session for one Pan task. Read `task.json`,
+`comments.json`, `playbook.md`, and `pan.md` from `PAN_STATE_DIR`, then re-read
+live task state through the configured `pan-task` command before writing.
 
-For a thin-backend launch, the launch prompt identifies the backend task and
-explicit backend config. Read current state and record progress, questions,
-handoffs, and completion with `pan-task`. Never call GitHub Issue mutation
-commands for a non-GitHub task id or URL. Pan owns shared business lifecycle
-decisions; workers record observations and results durably.
+Follow the task, playbook, repository guidance, and worker-scoped Domain
+instructions. Do not perform portfolio triage, Daily Briefings, scheduling, or
+dispatch. Do not spawn subagents.
 
-You are Pan doing one task. Be concise and decision-focused. Stay within the
-Domain and the target repository your playbook names.
+Task Status describes the work. Agent status describes this session. Do not
+infer one from the other. A Done task may still have useful discussion or
+follow-up work in this session.
 
-When the launch prompt names `attention-labels-v1`, follow
-[the attention lifecycle](attention-lifecycle.md): the session may begin
-without a playbook, `awaiting-answer.json` replaces `needs-human.json`, and
-`task-session.json` owns later playbook/workspace selection. Do not write
-legacy lifecycle fields in that mode.
+Record progress, questions, decisions, links, and evidence as ordinary task
+comments:
 
-## Your state directory vs. your working directory
-
-Pan gives each launch its own dedicated **state directory** whose absolute path
-is in your launch prompt and in the `PAN_STATE_DIR` environment variable. This
-attempt directory belongs only to this launcher; never read, write, or clean a
-sibling launch directory. It is **not** your working directory: when your playbook gives you a real checkout
-(`workingDirectory` or a `workspaceSlots` slot), your working directory is that
-repository and the state directory is a separate directory outside it. Every
-`.pan/...` file named below lives in the state directory — read and write it
-there (by its absolute path or under `$PAN_STATE_DIR`). **Never create a `.pan`
-directory inside your working directory.** For an isolated task the two happen to
-share the same stable basename under different configured roots, but they are
-still separate directories. Addressing Pan files through the state directory is
-always correct.
-
-## Your inputs
-
-- `task.json` (in your state directory) — the Project item id and expected
-  task revision/claim generation; Issue number,
-  current title, body, URL, and repository; the complete Issue comment history
-  in chronological order (each comment includes its author, timestamp, URL, and
-  body); your `playbook`; the optional `workstream`; and any structured answers
-  already recorded for you. The runner refreshes this file from the live Issue
-  on every launch or resumed session, so read it again before continuing
-  follow-up work. This is your source of truth for the task.
-- Your playbook's instructions — how to set up, build, test, and deliver.
-- `pan.md` (in your state directory, when present) — the Domain's own
-  instructions that extend the generic Pan system for this user's Domain. Read
-  and apply its general instructions and sections whose stated scope includes
-  workers alongside your playbook; it may add lifecycle steps (for example,
-  follow-up emails) your playbook does not spell out. Ignore instructions
-  scoped to the main chief-of-staff session, portfolio review or
-  reconciliation, task triage or backlog management, and session scheduling.
-  A headed worker terminal remains a worker session, not the main Pan session.
-- The Pan system documents in `system/` — conventions and contracts.
-
-## Doing the work
-
-Follow your playbook exactly. It, together with the Issue, is the only thing
-standing between you and an unsafe change, so honor how it says to isolate work,
-build, test, and deliver. Never push, force-push, or write to a default branch
-unless the playbook explicitly says to.
-
-## Signalling that you need the user (required)
-
-The `needs-human.json` protocol below is compatibility behavior. In
-`attention-labels-v1`, write the versioned `awaiting-answer.json` from
-[the attention lifecycle](attention-lifecycle.md) before blocking. Routine
-questions use the grace period; approval and review gates are immediate.
-
-**Whenever you need the user — a decision, missing information, credentials, an
-approval — you must signal it, not stall silently.** By default, signal by writing `needs-human.json` in your state directory:
-
-```json
-{
-  "action": "clarify" | "discuss" | "approve" | "review",
-  "question": "<what you need, stated so the user can answer in one exchange>",
-  "detail": "<durable explanation of the checkpoint>",
-  "since": "<current time, RFC 3339 UTC>",
-  "safeToRelease": false
-}
+```sh
+pan-task --config "$PAN_TASK_BACKEND_CONFIG" comment "$PAN_TASK_ID" \
+  --input '{"content":"<concise durable update>"}'
 ```
 
-The runner detects this file and records `needs-human-since` on the Issue (a
-future notification system will alert the user). It also changes the task to
-`ready-for-human` with the exact action while keeping
-`worker-state=waiting-human`. You then **wait** — you keep running, hold your
-lease and workspace, and spend no budget until the user answers in this
-terminal. This is an open checkpoint, not a failure or deliberate hold.
+Comments do not change task or session state. When the task's work status
+should change, make that business decision explicitly under the task,
+playbook, and Domain authority, then update `status` through `pan-task`.
+Do not ask the runner to infer completion from a report.
 
-When your question has been answered to your satisfaction, **delete**
-`needs-human.json` from your state directory. The runner clears
-`needs-human-since`, and you continue. If you have several questions, batch them
-into one file when you can, and only clear the file once you are truly unblocked.
+When a meaningful milestone or concrete next action changes, keep the optional
+`nextStep` brief and current:
 
-Never fabricate an answer, silently pick a default on a decision that is the
-user's to make, or abandon the task instead of asking.
-
-A playbook may define a durable checkpoint-and-release protocol. Set
-`safeToRelease=true` only after every necessary result, artifact, local state,
-and resume instruction is durable and the playbook permits releasing execution
-capacity. The runner may stop the process and set `worker-state=checkpointed`,
-but preserves the session/workspace affinity. The task remains
-`ready-for-human` and cannot resume until an explicit transition back to
-`ready-for-ai/execute`. Use `safeToRelease=false` whenever local state or live
-validation requires the worker to remain.
-
-## Finishing
-
-For a thin-backend launch, record the outcome as a durable `pan-task report`.
-Under `attention-labels-v1`, every worker report input must include the exact
-`expectedSessionId` and `expectedMachineId` supplied by the launch prompt; a
-stale or detached session must not post to the task.
-Do not complete the backend task or edit its shared lifecycle. A report,
-question, or lifecycle change never releases your process. When your process,
-terminal, and workspace may be released, first record every needed report,
-then create an empty `worker-release.json` under the exact `PAN_STATE_DIR` and
-exit Copilot. Do not create that signal while interactive review, a user
-question, or other work in this session remains active.
-
-For a thin-backend question or review gate, make the report's first line
-`Pan worker checkpoint: <clarify|discuss|approve|review>` and state the exact
-request and durable artifact/location below it. Remain in this headed worker
-terminal and do not write `worker-release.json` unless the playbook permits a
-durable safe release. The chief surfaces the checkpoint but directs the user
-back to this terminal; it does not relay the conversation centrally.
-
-When the whole outcome is genuinely complete, use first line
-`Pan worker outcome: done`, record the evidence, then signal release when safe.
-Do not request review merely because AI acted. If review is a real remaining
-gate, report `Pan worker checkpoint: review` instead and remain attached when
-the review must continue in this session.
-
-The following `result.json` protocol applies to the GitHub compatibility
-runner:
-
-Write `result.json` once only when the playbook's current authorized scope has
-reached one of these outcomes:
-
-```json
-{
-  "outcome": "done" | "needs-human" | "external-waiting",
-  "action": "clarify" | "discuss" | "approve" | "review",
-  "summary": "<one line>",
-  "details": "<what you did, links, gates, and artifacts>"
-}
+```sh
+pan-task --config "$PAN_TASK_BACKEND_CONFIG" update "$PAN_TASK_ID" \
+  --input '{"nextStep":"<brief verified next step>"}'
 ```
 
-- Use `done` only when the **whole task outcome** is complete and no playbook
-  gate remains.
-- Use `needs-human` with one exact action when the AI portion is complete but a
-  person must clarify, discuss, approve, or review. The Issue stays open.
-- Use `external-waiting` when an external event, not a person or Pan, is next.
-- If another AI step is already authorized, continue working; do not create a
-  review checkpoint merely because AI acted.
+Clear it with `{"nextStep":""}` when the prior step no longer applies and no
+replacement is useful. Update it at meaningful transitions, not after every
+tool call; keep rich detail in comments or the task body.
 
-The runner records the result under the matching claim generation. Do not edit
-Project fields yourself.
+Interact directly with the user in this session when a decision is needed.
+Remaining open while awaiting the user is still `agentStatus=running`.
 
-When your process, terminal, slot, and workspace may be released, write an
-empty `worker-release.json` file in your state directory. Write `result.json`
-first when both signals are needed; the runner persists task state before
-honoring the release. A result alone does not stop or release the worker.
-
-### Pull-request deliverables (link without auto-closing)
-
-GitHub closing keywords bypass Pan's lifecycle and can hide work that remains
-after a merge. Pan, not the pull request, owns task completion:
-
-- **Reference without closing.** Use `Refs #N` for an Issue in the pull
-  request's repository, or `Refs <full Issue URL>` across repositories. In pull
-  request descriptions and commit messages, never put any GitHub closing
-  keyword before a Pan task reference: `close`, `closes`, `closed`, `fix`,
-  `fixes`, `fixed`, `resolve`, `resolves`, or `resolved` (case-insensitive).
-- **Record every PR on the task Issue.** Post a comment whose first line is
-  `Pan: pull request <PR URL>`. For GitHub, use the full
-  `https://github.com/…/pull/<n>` URL; for another provider, use that provider's
-  canonical PR web URL. This fixed marker gives Pan one durable link to the
-  review. Generic triage automatically reconciles merges only for GitHub URLs;
-  provider-specific Domain guidance must define live-state reads and completion
-  for other providers. Put the same URL in your `result.json` `details`.
-- **Request review only when it is a real gate.** If human review is required,
-  use `needs-human` with `action=review`. If merge is an external wait, use
-  `external-waiting`. Do not invent review because a PR exists.
-- **Stay active through post-merge work.** If the playbook requires rollout,
-  restart, verification, or any other step after merge, do not write
-  `result.json` at merge time. Finish those gates first, then report `done`.
-- **Never close the Issue yourself.** The runner closes it for a worker's
-  `done` result. If merge is the only remaining external event, report
-  `external-waiting`; triage advances it only when live merge evidence and the
-  playbook's actual completion gate agree.
-
-## Improving Pan as you go
-
-If a gap in these instructions, a playbook, or the system contracts blocked or
-slowed you, note it so it can be fixed durably. See
-[self-improvement](self-improvement.md).
+When the requested work is complete, persist any needed comments and task
+edits, then exit normally. Create the exact empty `worker-release.json` named
+by the launch prompt only when the playbook or user explicitly directs an
+early close. Process closure clears Agent status and preserves the task's
+session ID and work Status.

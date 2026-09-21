@@ -421,55 +421,31 @@ function createInput(source, requestId, projectId) {
   return {
     title: source.title,
     description: sourceDescription(source),
-    status: 'untriaged',
-    nextAction: '',
-    nextActionDetail: '',
+    status: 'open',
     priority: 'normal',
     nextActionDate: '',
     deadline: '',
     playbook: '',
     workstream: source.workstream || '',
-    executionAuthorized: false,
-    dependencies: [],
+    sessionId: '',
+    agentStatus: '',
     idempotencyKey: requestId,
     ...(projectId ? { projectId } : {}),
   };
 }
 
 function assertSafeCreatedTask(task, input) {
-  if (task?.lifecycleMode === 'attention-labels-v1') {
-    if (
-      !String(task.id ?? '').trim()
-      || task.title !== input.title
-      || task.description !== input.description.trimEnd()
-      || task.attentionState !== 'human'
-      || task.priority !== 'normal'
-      || task.nextActionDate !== ''
-      || task.deadline !== ''
-      || task.sessionId !== ''
-      || task.machineId !== ''
-      || (input.projectId && task.projectId !== input.projectId)
-    ) {
-      throw new Error(
-        `created task ${task.id ?? '(unknown)'} does not match the required safe intake record`,
-      );
-    }
-    return;
-  }
   if (
     !String(task?.id ?? '').trim()
     || task.title !== input.title
     || task.description !== input.description.trimEnd()
-    || task.status !== 'untriaged'
-    || task.nextAction !== ''
-    || task.nextActionDetail !== ''
-    || task.executionAuthorized !== false
+    || task.status !== 'open'
     || task.nextActionDate !== ''
     || task.deadline !== ''
     || task.playbook !== ''
     || task.workstream !== input.workstream
-    || !Array.isArray(task.dependencies)
-    || task.dependencies.length > 0
+    || task.sessionId !== ''
+    || task.agentStatus !== ''
     || (input.projectId && task.projectId !== input.projectId)
   ) {
     throw new Error(
@@ -579,7 +555,7 @@ async function finishImport(plan, source, receipt, { backend, github, receiptSto
     throw new Error('target task does not preserve the expected source provenance');
   }
   if (projectId && task.projectId !== projectId) {
-    await backend.move(task.id, { expectedRevision: task.revision, projectId });
+    await backend.move(task.id, { projectId });
     task = await backend.get(task.id);
     if (task.projectId !== projectId || !task.description.includes(source.url)) {
       throw new Error('target project move did not verify');

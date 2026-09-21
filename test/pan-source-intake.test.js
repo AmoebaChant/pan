@@ -48,14 +48,12 @@ function createdTask(input, id) {
     title: input.title,
     description: input.description,
     status: input.status,
-    nextAction: input.nextAction,
-    nextActionDetail: input.nextActionDetail,
-    executionAuthorized: input.executionAuthorized,
     nextActionDate: input.nextActionDate,
     deadline: input.deadline,
     playbook: input.playbook,
     workstream: input.workstream,
-    dependencies: input.dependencies,
+    sessionId: input.sessionId,
+    agentStatus: input.agentStatus,
   };
 }
 
@@ -118,7 +116,7 @@ test('existing imports move without resetting human edits and retry failed closu
   plan.closeMigratedIssues = true;
   let task = {
     id: 'task-1', title: 'Edited by user', description: source.url,
-    projectId: 'inbox', revision: 'r1', status: 'ready-for-human',
+    projectId: 'inbox', status: 'open',
     nextActionDate: '2026-09-15',
   };
   let moves = 0;
@@ -129,8 +127,7 @@ test('existing imports move without resetting human edits and retry failed closu
     async get() { return { ...task }; },
     async create() { assert.fail('must not duplicate'); },
     async move(id, input) {
-      assert.equal(input.expectedRevision, 'r1');
-      task = { ...task, projectId: input.projectId, revision: 'r2' };
+      task = { ...task, projectId: input.projectId };
       moves++;
     },
   };
@@ -140,7 +137,7 @@ test('existing imports move without resetting human edits and retry failed closu
   const recovered = await applySourceIntake(plan, { backend, github, receiptStore: store });
   assert.equal(recovered.partial, false);
   assert.equal(moves, 1);
-  assert.equal(task.status, 'ready-for-human');
+  assert.equal(task.status, 'open');
   assert.equal(task.nextActionDate, '2026-09-15');
 });
 
@@ -660,9 +657,9 @@ test('apply is checked, idempotent, and never auto-authorizes or dates imported 
   assert.equal(first.partial, false);
   assert.equal(first.results[0].action, 'created');
   assert.equal(createdInputs.length, 1);
-  assert.equal(createdInputs[0].status, 'untriaged');
-  assert.equal(createdInputs[0].nextAction, '');
-  assert.equal(createdInputs[0].executionAuthorized, false);
+  assert.equal(createdInputs[0].status, 'open');
+  assert.equal(createdInputs[0].agentStatus, '');
+  assert.equal(createdInputs[0].sessionId, '');
   assert.equal(createdInputs[0].nextActionDate, '');
   assert.equal(createdInputs[0].deadline, '');
   assert.equal(createdInputs[0].playbook, '');
@@ -680,7 +677,7 @@ test('apply is checked, idempotent, and never auto-authorizes or dates imported 
   assert.equal(createdInputs.length, 1);
 });
 
-test('attention lifecycle intake stays unlabeled and unassociated in its routed project', async () => {
+test('small-contract intake stays unrequested and unassociated in its routed project', async () => {
   const native = issue(1);
   const discovery = await discoverGitHubIssues({
     ...githubDiscovery([native]),
@@ -695,17 +692,17 @@ test('attention lifecycle intake stays unlabeled and unassociated in its routed 
     async create(input) {
       task = {
         id: 'task-1',
-        lifecycleMode: 'attention-labels-v1',
         title: input.title,
         description: input.description,
-        attentionState: 'human',
+        status: 'open',
         priority: 'normal',
         nextActionDate: '',
         deadline: '',
+        playbook: '',
+        workstream: input.workstream,
         sessionId: '',
-        machineId: '',
+        agentStatus: '',
         projectId: input.projectId,
-        revision: 'r1',
       };
       return structuredClone(task);
     },
@@ -720,7 +717,7 @@ test('attention lifecycle intake stays unlabeled and unassociated in its routed 
   });
   assert.equal(result.partial, false);
   assert.equal(task.projectId, 'project');
-  assert.equal(task.attentionState, 'human');
+  assert.equal(task.status, 'open');
   assert.equal(task.sessionId, '');
 });
 
@@ -738,7 +735,7 @@ test('apply leaves a reservation when the backend does not confirm safe defaults
         async create(input) {
           return {
             ...createdTask(input, 'unsafe-task'),
-            executionAuthorized: true,
+            agentStatus: 'requested',
           };
         },
       },
