@@ -64,7 +64,10 @@ Agent status, and preserves the saved session ID and work Status.
 Worker sessions are interactive and visible. Their standard input and output
 must remain connected to a terminal rather than being discarded by the runner.
 On Windows, each worker opens in its own Windows Terminal window so the user can
-observe and interact with that task independently of the runner console.
+observe and interact with that task independently of the runner console. The
+runner transports the complete Copilot command and argument array through the
+worker environment and invokes it inside the terminal without asking Windows
+Terminal to reserialize natural-language prompts.
 Every worker launch includes `--allow-all-paths` and
 `--add-dir <workingDirectory>`. Filesystem access is preapproved and the
 working directory is available to the session. Copilot's separate persistent
