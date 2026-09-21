@@ -38,10 +38,22 @@ replacement is useful. Update it at meaningful transitions, not after every
 tool call; keep rich detail in comments or the task body.
 
 Interact directly with the user in this session when a decision is needed.
-Remaining open while awaiting the user is still `agentStatus=running`.
+Remaining open while awaiting the user or external work is still
+`agentStatus=running`. Do not create `worker-release.json` while waiting, at an
+ordinary checkpoint, or before final durable task updates are verified.
 
-When the requested work is complete, persist any needed comments and task
-edits, then exit normally. Create the exact empty `worker-release.json` named
-by the launch prompt only when the playbook or user explicitly directs an
-early close. Process closure clears Agent status and preserves the task's
-session ID and work Status.
+When the current request is complete:
+
+1. persist the final task comment and explicitly set the justified work status
+   to `done` or `rejected`;
+2. re-read the live task and comments to verify those durable updates
+   succeeded; and
+3. as the final action, create the exact empty
+   `$PAN_STATE_DIR/worker-release.json` named by the launch prompt.
+
+The release file requests runner-managed process closure. The runner clears
+Agent status while preserving the session ID and verified work status.
+
+An explicitly requested early close uses the same release file after its
+required durable checkpoint or comment is persisted and verified. Early close
+does not by itself justify changing work status.

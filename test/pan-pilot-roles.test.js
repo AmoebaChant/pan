@@ -28,6 +28,26 @@ test('packaged chief, worker, and compatibility roles use the simple model', asy
   assert.match(alias, /exactly as `pan-chief`/);
 });
 
+test('worker instructions release after verified completion and not while waiting', async () => {
+  const surfaces = await Promise.all([
+    readFile('.github/agents/pan-worker.agent.md', 'utf8'),
+    readFile('system/worker-base-instructions.md', 'utf8'),
+    readFile('system/default-playbook.md', 'utf8'),
+    readFile('system/task-lifecycle.md', 'utf8'),
+  ]);
+
+  for (const text of surfaces) {
+    assert.match(text, /worker-release\.json/);
+    assert.match(text, /final action/);
+    assert.match(text, /waiting/);
+    assert.doesNotMatch(text, /only when .*early close/i);
+  }
+  assert.match(surfaces[1], /persist the final task comment/i);
+  assert.match(surfaces[1], /re-read the live task and comments/i);
+  assert.match(surfaces[1], /done.*or.*rejected/i);
+  assert.match(surfaces[3], /Changing work status.*does not stop a running session/i);
+});
+
 test('playbooks select instructions and an explicit working directory only', () => {
   const playbook = validateBackendPlaybook('build.md', [
     '---',

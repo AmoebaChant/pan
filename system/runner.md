@@ -51,6 +51,14 @@ failure leaves the durable request and session ID visible for an ordinary
 retry. When the process closes, the runner clears Agent status and removes only
 that task's local run directory.
 
+After verified normal completion, the worker creates the exact empty
+`worker-release.json` as its final action. An explicitly requested early close
+uses the same file after its required durable checkpoint. Waiting for the user
+or external work and ordinary checkpoints do not create the file. The runner
+does not infer completion from work Status or validate the worker's business
+decision; it observes the release request, closes the managed process, clears
+Agent status, and preserves the saved session ID and work Status.
+
 Worker sessions are interactive and visible. Their standard input and output
 must remain connected to a terminal rather than being discarded by the runner.
 On Windows, each worker opens in its own Windows Terminal window so the user can
