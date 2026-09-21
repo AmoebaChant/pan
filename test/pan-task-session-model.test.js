@@ -9,7 +9,6 @@ import { GitHubTaskBackend } from '../bin/pan-github-task-backend.js';
 import { runTaskCli } from '../bin/pan-task.js';
 import {
   acquireRunnerLock,
-  findNewCopilotSessionId,
   missingPlaybookRepairInstructions,
   pollRunner,
   resolveRequestedPlaybook,
@@ -273,18 +272,13 @@ test('task outcome alone keeps a session open and release preserves outcome and 
   const launches = [];
   const stopped = [];
   let nextPid = 5000;
-  const createdSessionId = '11111111-2222-4333-8444-555555555555';
   const dependencies = {
     processIsAlive: (pid) => livePids.has(pid),
     launchProcess: async ({ sessionId }) => {
       const pid = nextPid++;
       livePids.add(pid);
       launches.push({ pid, sessionId });
-      return {
-        pid,
-        processStart: `start-${pid}`,
-        sessionId: sessionId || createdSessionId,
-      };
+      return { pid, processStart: `start-${pid}` };
     },
     stopProcess: async (pid) => {
       stopped.push(pid);
@@ -302,8 +296,7 @@ test('task outcome alone keeps a session open and release preserves outcome and 
   const running = await backend.get(task.id);
   assert.equal(running.status, 'done');
   assert.equal(running.agentStatus, 'running');
-  assert.equal(running.sessionId, createdSessionId);
-  assert.equal(launches[0].sessionId, '');
+  assert.match(running.sessionId, /^[0-9a-f-]{36}$/);
 
   const second = await pollRunner({
     backend,
@@ -338,161 +331,20 @@ test('task outcome alone keeps a session open and release preserves outcome and 
   await backend.update(task.id, { agentStatus: 'requested' });
   await pollRunner({ backend, config, loadedDomain, dependencies });
   assert.equal(launches.length, 2);
-  assert.equal(launches[1].sessionId, createdSessionId);
+  assert.equal(launches[1].sessionId, launches[0].sessionId);
 
   await rm(root, { recursive: true, force: true });
 });
 
-test('new session discovery polls immediately and stops when workspace metadata appears', async () => {
-  const copilotHome = await mkdtemp(path.join(os.tmpdir(), 'pan-copilot-home-'));
-  const sessionsRoot = path.join(copilotHome, 'session-state');
-  const existingId = '11111111-1111-4111-8111-111111111111';
-  const createdId = '22222222-2222-4222-8222-222222222222';
-  const sessionName = 'pan-worker-issue-1';
-  await mkdir(path.join(sessionsRoot, existingId), { recursive: true });
-  await writeFile(
-    path.join(sessionsRoot, existingId, 'workspace.yaml'),
-    `id: ${existingId}\nname: ${sessionName}\n`,
-  );
-  let delays = 0;
-  try {
-    const found = await findNewCopilotSessionId({
-      env: {},
-      knownSessionIds: new Set([existingId]),
-      sessionName,
-    }, {
-      copilotHome,
-      sessionDiscoveryAttempts: 3,
-      inspectDelay: async () => {
-        delays += 1;
-        await mkdir(path.join(sessionsRoot, createdId));
-        await writeFile(
-          path.join(sessionsRoot, createdId, 'workspace.yaml'),
-          `id: ${createdId}\nname: ${sessionName}\n`,
-        );
-      },
-    });
-    assert.equal(found, createdId);
-    assert.equal(delays, 1);
-  } finally {
-    await rm(copilotHome, { recursive: true, force: true });
-  }
-});
-
-test('default runner launch lets Copilot create and identify a fresh session', async () => {
-  const { backend } = await createBackend();
-  const task = await backend.create({
-    title: 'Start promptly',
-    playbook: 'pan',
-    agentStatus: 'requested',
-  });
-  const root = await mkdtemp(path.join(process.cwd(), '.pan-fresh-launch-'));
-  const copilotHome = path.join(root, 'copilot-home');
-  const sessionsRoot = path.join(copilotHome, 'session-state');
-  const workingDirectory = path.join(root, 'work');
-  const createdSessionId = '33333333-3333-4333-8333-333333333333';
-  await mkdir(sessionsRoot, { recursive: true });
-  await mkdir(workingDirectory);
-  const config = validateRunnerConfig({
-    backendConfig: path.join(root, 'backend.json'),
-    stateRoot: path.join(root, 'state'),
-    workingDirectory,
-    machine: 'test-machine',
-    launchCommand: ['copilot', '--model', 'gpt-5.6-sol', '--agent', 'pan-worker'],
-  });
-  const loadedDomain = {
-    playbooks: new Map([['pan', {
-      name: 'pan',
-      description: 'Test',
-      workingDirectory,
-      text: '# Pan',
-    }]]),
-    domainInstructions: '# Domain',
-    domainRevision: 'reviewed-sha',
-  };
-  const launches = [];
-  const child = new EventEmitter();
-  child.pid = 8001;
-  child.unref = () => {};
-
-  try {
-    const result = await pollRunner({
-      backend,
-      config,
-      loadedDomain,
-      dependencies: {
-        copilotHome,
-        platform: 'win32',
-        execFile: async (command, args, options) => {
-          assert.equal(command, 'powershell.exe');
-          assert.equal(args.includes('-NonInteractive'), true);
-          assert.equal(options.env.PAN_WORKER_PROCESS_MARKER, 'pan-worker-issue-1');
-          return { stdout: '8101' };
-        },
-        inspectDelay: async () => {
-          throw new Error('fresh launch should not wait after metadata is available');
-        },
-        spawn: (command, args, options) => {
-          launches.push({ command, args, options });
-          queueMicrotask(async () => {
-            const launchSpec = JSON.parse(options.env.PAN_WINDOWS_WORKER_LAUNCH);
-            const sessionName = launchSpec.args[
-              launchSpec.args.indexOf('--name') + 1
-            ];
-            await mkdir(path.join(sessionsRoot, createdSessionId));
-            await writeFile(
-              path.join(sessionsRoot, createdSessionId, 'workspace.yaml'),
-              `id: ${createdSessionId}\nname: ${sessionName}\n`,
-            );
-            child.emit('spawn');
-          });
-          return child;
-        },
-      },
-    });
-
-    assert.deepEqual(result.launched, [task.id]);
-    assert.equal(launches.length, 1);
-    const launchSpec = JSON.parse(
-      launches[0].options.env.PAN_WINDOWS_WORKER_LAUNCH,
-    );
-    assert.equal(launches[0].args.includes('--session-id'), false);
-    assert.equal(launches[0].args.includes('--name'), false);
-    assert.equal(launchSpec.args.includes('--session-id'), false);
-    assert.equal(launchSpec.args.includes('--name'), true);
-    assert.equal(
-      launchSpec.args[launchSpec.args.indexOf('--name') + 1],
-      'pan-worker-issue-1',
-    );
-    assert.equal('PAN_SESSION_ID' in launches[0].options.env, false);
-    const savedTask = await backend.get(task.id);
-    assert.equal(savedTask.sessionId, createdSessionId);
-    const taskRoot = path.join(
-      config.stateRoot,
-      'tasks',
-      encodeURIComponent(task.id),
-    );
-    const snapshot = JSON.parse(await readFile(path.join(taskRoot, 'task.json'), 'utf8'));
-    const run = JSON.parse(await readFile(path.join(taskRoot, 'run.json'), 'utf8'));
-    assert.equal(snapshot.sessionId, createdSessionId);
-    assert.equal(run.sessionId, createdSessionId);
-    assert.equal(run.pid, 8101);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('default runner launch opens the saved session interactively', async () => {
-  const { backend, transport } = await createBackend();
+  const { backend } = await createBackend();
   const savedSessionId = '11111111-2222-4333-8444-555555555555';
-  const created = await backend.create({
-    title: 'Keep the "worker" open',
+  const task = await backend.create({
+    title: 'Keep the worker open',
     playbook: 'pan',
     agentStatus: 'requested',
     sessionId: savedSessionId,
   });
-  transport.items[0].content.title = 'Keep the "worker" open';
-  const task = await backend.get(created.id);
   const root = await mkdtemp(path.join(process.cwd(), '.pan-default-launch-'));
   const expectedSystemDir = fileURLToPath(new URL('../system', import.meta.url));
   const workingDirectory = path.join(root, 'work');
@@ -535,7 +387,7 @@ test('default runner launch opens the saved session interactively', async () => 
         execFile: async (command, args, options) => {
           assert.equal(command, 'powershell.exe');
           assert.equal(args.includes('-NonInteractive'), true);
-          assert.equal(options.env.PAN_WORKER_PROCESS_MARKER, savedSessionId);
+          assert.equal(options.env.PAN_WORKER_SESSION_ID, savedSessionId);
           return { stdout: '8100' };
         },
         spawn: (command, args, options) => {
@@ -550,56 +402,26 @@ test('default runner launch opens the saved session interactively', async () => 
     assert.equal(launches.length, 1);
     assert.equal(launches[0].command, 'wt.exe');
     assert.deepEqual(launches[0].args.slice(0, 4), ['-w', 'new', 'nt', '--title']);
-    assert.match(launches[0].args[4], /^Pan worker #1 /);
+    assert.match(launches[0].args[4], /^Pan worker #1 "Task 1"$/);
+    assert.deepEqual(launches[0].args.slice(5, 8), ['-d', workingDirectory, 'copilot']);
+    assert.deepEqual(launches[0].args.slice(8, 8 + configuredArgs.length), configuredArgs);
+    assert.equal(launches[0].args[8 + configuredArgs.length], '--allow-all-paths');
     assert.deepEqual(
-      launches[0].args.slice(5, 12),
-      [
-        '-d',
-        workingDirectory,
-        'powershell.exe',
-        '-NoLogo',
-        '-NoProfile',
-        '-EncodedCommand',
-        launches[0].args[11],
-      ],
-    );
-    const encodedScript = Buffer.from(
-      launches[0].args[11],
-      'base64',
-    ).toString('utf16le');
-    assert.match(encodedScript, /PAN_WINDOWS_WORKER_LAUNCH/);
-    const launchSpec = JSON.parse(
-      launches[0].options.env.PAN_WINDOWS_WORKER_LAUNCH,
-    );
-    assert.equal(launchSpec.command, 'copilot');
-    assert.deepEqual(launchSpec.args.slice(0, configuredArgs.length), configuredArgs);
-    assert.equal(launchSpec.args[configuredArgs.length], '--allow-all-paths');
-    assert.deepEqual(
-      launchSpec.args.slice(
-        configuredArgs.length + 1,
-        configuredArgs.length + 3,
-      ),
+      launches[0].args.slice(9 + configuredArgs.length, 11 + configuredArgs.length),
       ['--add-dir', workingDirectory],
     );
     assert.deepEqual(
-      launchSpec.args.slice(
-        configuredArgs.length + 3,
-        configuredArgs.length + 5,
-      ),
+      launches[0].args.slice(11 + configuredArgs.length, 13 + configuredArgs.length),
       ['--session-id', savedSessionId],
     );
-    assert.equal(launchSpec.args.includes('--name'), false);
-    assert.equal(launchSpec.args.includes('--prompt'), false);
-    const interactiveIndex = launchSpec.args.indexOf('--interactive');
-    assert.equal(interactiveIndex, configuredArgs.length + 5);
-    const prompt = launchSpec.args[interactiveIndex + 1];
+    assert.equal(launches[0].args.includes('--prompt'), false);
+    const interactiveIndex = launches[0].args.indexOf('--interactive');
+    assert.equal(interactiveIndex, 13 + configuredArgs.length);
+    const prompt = launches[0].args[interactiveIndex + 1];
     assert.match(
       prompt,
       new RegExp(`Work on Pan task ${task.id}: ${task.title}`),
     );
-    assert.match(prompt, /\n/);
-    assert.match(prompt, /"worker"/);
-    assert.equal(launches[0].args.includes(prompt), false);
     assert.match(prompt, /persist the final task comment/i);
     assert.match(prompt, /set the justified work status to done or rejected/i);
     assert.match(prompt, /Re-read the live task and comments to verify/i);
@@ -815,9 +637,6 @@ test('non-Windows runner launch inherits its interactive terminal', async () => 
       },
       dependencies: {
         platform: 'linux',
-        listCopilotSessionIds: async () => new Set(),
-        findNewCopilotSessionId: async () =>
-          '77777777-7777-4777-8777-777777777777',
         spawn: (command, args, options) => {
           launch = { command, args, options };
           queueMicrotask(() => child.emit('spawn'));
@@ -892,10 +711,6 @@ test('runner config reserves runner-managed session and prompt options', () => {
     ['--interactive=custom prompt'],
     ['-i', 'custom prompt'],
     ['-icustom prompt'],
-    ['--name', 'custom name'],
-    ['--name=custom name'],
-    ['-n', 'custom name'],
-    ['-ncustom name'],
   ];
   for (const args of conflicts) {
     assert.throws(
@@ -956,11 +771,7 @@ test('blank Agent metadata does not close a live managed process', async () => {
       processIsAlive: (pid) => live.has(pid),
       launchProcess: async () => {
         live.add(6000);
-        return {
-          pid: 6000,
-          processStart: 'start',
-          sessionId: '44444444-4444-4444-8444-444444444444',
-        };
+        return { pid: 6000, processStart: 'start' };
       },
       stopProcess: async (pid) => {
         stopped.push(pid);
@@ -1046,11 +857,7 @@ test('runner launches every requested task without duplicating managed tasks', a
     launchProcess: async () => {
       const pid = nextPid++;
       live.add(pid);
-      return {
-        pid,
-        processStart: `start-${pid}`,
-        sessionId: `55555555-5555-4555-8555-${String(pid).padStart(12, '0')}`,
-      };
+      return { pid, processStart: `start-${pid}` };
     },
   };
 
@@ -1330,11 +1137,7 @@ test('default playbook snapshots task context, workstream guidance, and configur
     dependencies: {
       launchProcess: async (options) => {
         launches.push(options);
-        return {
-          pid: 9200,
-          processStart: 'start',
-          sessionId: '66666666-6666-4666-8666-666666666666',
-        };
+        return { pid: 9200, processStart: 'start' };
       },
       processIsAlive: () => false,
     },
