@@ -25,6 +25,7 @@ import {
 const RELEASE_FILE = 'worker-release.json';
 const RUN_FILE = 'run.json';
 const RUNNER_LOCK_FILE = 'runner.lock';
+const WINDOWS_LAUNCH_FILE = 'worker-launch.ps1';
 const SYSTEM_DIR = fileURLToPath(new URL('../system', import.meta.url));
 const execFileAsync = promisify(execFile);
 const RUNNER_MANAGED_LONG_OPTIONS = new Set([
@@ -344,15 +345,41 @@ async function defaultStopProcess(pid, dependencies) {
   }
 }
 
-function quoteWindowsCommandArgument(value) {
-  const text = String(value);
-  return `"${text
-    .replace(/(\\*)"/g, '$1$1\\"')
-    .replace(/(\\+)$/g, '$1$1')}"`;
+function windowsLauncherScript({ command, args, cwd, env }) {
+  const payload = Buffer.from(JSON.stringify({
+    command,
+    args,
+    cwd,
+    env: Object.fromEntries(
+      Object.entries(env).filter(([name]) => name.startsWith('PAN_')),
+    ),
+  }), 'utf8').toString('base64');
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$PSNativeCommandArgumentPassing = 'Standard'",
+    `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json`,
+    'foreach ($entry in $payload.env.PSObject.Properties) {',
+    '  Set-Item -Path "Env:$($entry.Name)" -Value ([string]$entry.Value)',
+    '}',
+    'Set-Location -LiteralPath ([string]$payload.cwd)',
+    '$workerCommand = [string]$payload.command',
+    '$workerArgs = @($payload.args | ForEach-Object { [string]$_ })',
+    '& $workerCommand @workerArgs',
+    'exit $LASTEXITCODE',
+    '',
+  ].join('\n');
 }
 
 async function defaultLaunchProcess(
-  { command, cwd, env, prompt, sessionId, terminalTitle },
+  {
+    command,
+    cwd,
+    env,
+    launcherPath,
+    prompt,
+    sessionId,
+    terminalTitle,
+  },
   dependencies = {},
 ) {
   const platform = dependencies.platform ?? process.platform;
@@ -364,9 +391,19 @@ async function defaultLaunchProcess(
     '--session-id',
     sessionId,
     '--interactive',
-    platform === 'win32' ? quoteWindowsCommandArgument(prompt) : prompt,
+    prompt,
   ];
   if (platform === 'win32') {
+    await writeFile(
+      launcherPath,
+      windowsLauncherScript({
+        command: command[0],
+        args,
+        cwd,
+        env,
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
     const launch = dependencies.spawn ?? spawn;
     const terminal = launch('wt.exe', [
       '-w',
@@ -375,9 +412,12 @@ async function defaultLaunchProcess(
       '--title',
       terminalTitle,
       '-d',
-      cwd,
-      command[0],
-      ...args,
+      path.dirname(launcherPath),
+      'pwsh.exe',
+      '-NoLogo',
+      '-NoProfile',
+      '-File',
+      path.basename(launcherPath),
     ], {
       cwd,
       env,
@@ -539,6 +579,7 @@ export async function launchTask({
     domain: path.join(dir, 'pan.md'),
     comments: path.join(dir, 'comments.json'),
     workstream: path.join(dir, 'workstream.md'),
+    launcher: path.join(dir, WINDOWS_LAUNCH_FILE),
     release: path.join(dir, RELEASE_FILE),
   };
   const comments = await backend.comments(current.id);
@@ -566,6 +607,7 @@ export async function launchTask({
       PAN_TASK_ID: current.id,
       PAN_SESSION_ID: sessionId,
     },
+    launcherPath: files.launcher,
     prompt: [
       launchPrompt(current, files),
       ...(missingRequestedPlaybook
