@@ -339,11 +339,14 @@ test('task outcome alone keeps a session open and release preserves outcome and 
 test('default runner launch opens the saved session interactively', async () => {
   const { backend } = await createBackend();
   const savedSessionId = '11111111-2222-4333-8444-555555555555';
-  const task = await backend.create({
+  let task = await backend.create({
     title: 'Keep the worker open',
     playbook: 'pan',
     agentStatus: 'requested',
     sessionId: savedSessionId,
+  });
+  task = await backend.update(task.id, {
+    title: 'Change "start/request/resume etc" agent button to blue',
   });
   const root = await mkdtemp(path.join(process.cwd(), '.pan-default-launch-'));
   const expectedSystemDir = fileURLToPath(new URL('../system', import.meta.url));
@@ -402,7 +405,10 @@ test('default runner launch opens the saved session interactively', async () => 
     assert.equal(launches.length, 1);
     assert.equal(launches[0].command, 'wt.exe');
     assert.deepEqual(launches[0].args.slice(0, 4), ['-w', 'new', 'nt', '--title']);
-    assert.match(launches[0].args[4], /^Pan worker #1 "Task 1"$/);
+    assert.match(
+      launches[0].args[4],
+      /^Pan worker #1 "Change \\"start\/request\/resume etc\\" agent button to blue"$/,
+    );
     assert.deepEqual(launches[0].args.slice(5, 8), ['-d', workingDirectory, 'copilot']);
     assert.deepEqual(launches[0].args.slice(8, 8 + configuredArgs.length), configuredArgs);
     assert.equal(launches[0].args[8 + configuredArgs.length], '--allow-all-paths');
@@ -418,9 +424,12 @@ test('default runner launch opens the saved session interactively', async () => 
     const interactiveIndex = launches[0].args.indexOf('--interactive');
     assert.equal(interactiveIndex, 13 + configuredArgs.length);
     const prompt = launches[0].args[interactiveIndex + 1];
+    assert.equal(prompt.startsWith('"'), true);
+    assert.equal(prompt.endsWith('"'), true);
+    assert.match(prompt, /\\"start\/request\/resume etc\\"/);
     assert.match(
       prompt,
-      new RegExp(`Work on Pan task ${task.id}: ${task.title}`),
+      new RegExp(`Work on Pan task ${task.id}: Change`),
     );
     assert.match(prompt, /persist the final task comment/i);
     assert.match(prompt, /set the justified work status to done or rejected/i);

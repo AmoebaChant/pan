@@ -344,10 +344,18 @@ async function defaultStopProcess(pid, dependencies) {
   }
 }
 
+function quoteWindowsCommandArgument(value) {
+  const text = String(value);
+  return `"${text
+    .replace(/(\\*)"/g, '$1$1\\"')
+    .replace(/(\\+)$/g, '$1$1')}"`;
+}
+
 async function defaultLaunchProcess(
   { command, cwd, env, prompt, sessionId, terminalTitle },
   dependencies = {},
 ) {
+  const platform = dependencies.platform ?? process.platform;
   const args = [
     ...command.slice(1),
     '--allow-all-paths',
@@ -356,9 +364,8 @@ async function defaultLaunchProcess(
     '--session-id',
     sessionId,
     '--interactive',
-    prompt,
+    platform === 'win32' ? quoteWindowsCommandArgument(prompt) : prompt,
   ];
-  const platform = dependencies.platform ?? process.platform;
   if (platform === 'win32') {
     const launch = dependencies.spawn ?? spawn;
     const terminal = launch('wt.exe', [
