@@ -435,7 +435,10 @@ test('default runner launch lets Copilot create and identify a fresh session', a
         spawn: (command, args, options) => {
           launches.push({ command, args, options });
           queueMicrotask(async () => {
-            const sessionName = args[args.indexOf('--name') + 1];
+            const launchSpec = JSON.parse(options.env.PAN_WINDOWS_WORKER_LAUNCH);
+            const sessionName = launchSpec.args[
+              launchSpec.args.indexOf('--name') + 1
+            ];
             await mkdir(path.join(sessionsRoot, createdSessionId));
             await writeFile(
               path.join(sessionsRoot, createdSessionId, 'workspace.yaml'),
@@ -450,10 +453,15 @@ test('default runner launch lets Copilot create and identify a fresh session', a
 
     assert.deepEqual(result.launched, [task.id]);
     assert.equal(launches.length, 1);
+    const launchSpec = JSON.parse(
+      launches[0].options.env.PAN_WINDOWS_WORKER_LAUNCH,
+    );
     assert.equal(launches[0].args.includes('--session-id'), false);
-    assert.equal(launches[0].args.includes('--name'), true);
+    assert.equal(launches[0].args.includes('--name'), false);
+    assert.equal(launchSpec.args.includes('--session-id'), false);
+    assert.equal(launchSpec.args.includes('--name'), true);
     assert.equal(
-      launches[0].args[launches[0].args.indexOf('--name') + 1],
+      launchSpec.args[launchSpec.args.indexOf('--name') + 1],
       'pan-worker-issue-1',
     );
     assert.equal('PAN_SESSION_ID' in launches[0].options.env, false);
@@ -475,14 +483,16 @@ test('default runner launch lets Copilot create and identify a fresh session', a
 });
 
 test('default runner launch opens the saved session interactively', async () => {
-  const { backend } = await createBackend();
+  const { backend, transport } = await createBackend();
   const savedSessionId = '11111111-2222-4333-8444-555555555555';
-  const task = await backend.create({
-    title: 'Keep the worker open',
+  const created = await backend.create({
+    title: 'Keep the "worker" open',
     playbook: 'pan',
     agentStatus: 'requested',
     sessionId: savedSessionId,
   });
+  transport.items[0].content.title = 'Keep the "worker" open';
+  const task = await backend.get(created.id);
   const root = await mkdtemp(path.join(process.cwd(), '.pan-default-launch-'));
   const expectedSystemDir = fileURLToPath(new URL('../system', import.meta.url));
   const workingDirectory = path.join(root, 'work');
@@ -540,27 +550,56 @@ test('default runner launch opens the saved session interactively', async () => 
     assert.equal(launches.length, 1);
     assert.equal(launches[0].command, 'wt.exe');
     assert.deepEqual(launches[0].args.slice(0, 4), ['-w', 'new', 'nt', '--title']);
-    assert.match(launches[0].args[4], /^Pan worker #1 "Task 1"$/);
-    assert.deepEqual(launches[0].args.slice(5, 8), ['-d', workingDirectory, 'copilot']);
-    assert.deepEqual(launches[0].args.slice(8, 8 + configuredArgs.length), configuredArgs);
-    assert.equal(launches[0].args[8 + configuredArgs.length], '--allow-all-paths');
+    assert.match(launches[0].args[4], /^Pan worker #1 /);
     assert.deepEqual(
-      launches[0].args.slice(9 + configuredArgs.length, 11 + configuredArgs.length),
+      launches[0].args.slice(5, 12),
+      [
+        '-d',
+        workingDirectory,
+        'powershell.exe',
+        '-NoLogo',
+        '-NoProfile',
+        '-EncodedCommand',
+        launches[0].args[11],
+      ],
+    );
+    const encodedScript = Buffer.from(
+      launches[0].args[11],
+      'base64',
+    ).toString('utf16le');
+    assert.match(encodedScript, /PAN_WINDOWS_WORKER_LAUNCH/);
+    const launchSpec = JSON.parse(
+      launches[0].options.env.PAN_WINDOWS_WORKER_LAUNCH,
+    );
+    assert.equal(launchSpec.command, 'copilot');
+    assert.deepEqual(launchSpec.args.slice(0, configuredArgs.length), configuredArgs);
+    assert.equal(launchSpec.args[configuredArgs.length], '--allow-all-paths');
+    assert.deepEqual(
+      launchSpec.args.slice(
+        configuredArgs.length + 1,
+        configuredArgs.length + 3,
+      ),
       ['--add-dir', workingDirectory],
     );
     assert.deepEqual(
-      launches[0].args.slice(11 + configuredArgs.length, 13 + configuredArgs.length),
+      launchSpec.args.slice(
+        configuredArgs.length + 3,
+        configuredArgs.length + 5,
+      ),
       ['--session-id', savedSessionId],
     );
-    assert.equal(launches[0].args.includes('--name'), false);
-    assert.equal(launches[0].args.includes('--prompt'), false);
-    const interactiveIndex = launches[0].args.indexOf('--interactive');
-    assert.equal(interactiveIndex, 13 + configuredArgs.length);
-    const prompt = launches[0].args[interactiveIndex + 1];
+    assert.equal(launchSpec.args.includes('--name'), false);
+    assert.equal(launchSpec.args.includes('--prompt'), false);
+    const interactiveIndex = launchSpec.args.indexOf('--interactive');
+    assert.equal(interactiveIndex, configuredArgs.length + 5);
+    const prompt = launchSpec.args[interactiveIndex + 1];
     assert.match(
       prompt,
       new RegExp(`Work on Pan task ${task.id}: ${task.title}`),
     );
+    assert.match(prompt, /\n/);
+    assert.match(prompt, /"worker"/);
+    assert.equal(launches[0].args.includes(prompt), false);
     assert.match(prompt, /persist the final task comment/i);
     assert.match(prompt, /set the justified work status to done or rejected/i);
     assert.match(prompt, /Re-read the live task and comments to verify/i);
