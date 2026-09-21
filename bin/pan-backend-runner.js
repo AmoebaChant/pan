@@ -27,15 +27,6 @@ const RELEASE_FILE = 'worker-release.json';
 const RUN_FILE = 'run.json';
 const RUNNER_LOCK_FILE = 'runner.lock';
 const SYSTEM_DIR = fileURLToPath(new URL('../system', import.meta.url));
-const WINDOWS_WORKER_LAUNCH_ENV = 'PAN_WINDOWS_WORKER_LAUNCH';
-const WINDOWS_WORKER_LAUNCH_SCRIPT = [
-  "$ErrorActionPreference = 'Stop'",
-  `$spec = $env:${WINDOWS_WORKER_LAUNCH_ENV} | ConvertFrom-Json`,
-  '$workerCommand = [string]$spec.command',
-  '$workerArgs = @($spec.args | ForEach-Object { [string]$_ })',
-  '& $workerCommand @workerArgs',
-  'exit $LASTEXITCODE',
-].join('\n');
 const execFileAsync = promisify(execFile);
 const RUNNER_MANAGED_LONG_OPTIONS = new Set([
   '--session-id',
@@ -447,10 +438,6 @@ async function defaultLaunchProcess(
   const platform = dependencies.platform ?? process.platform;
   if (platform === 'win32') {
     const launch = dependencies.spawn ?? spawn;
-    const encodedLaunch = Buffer.from(
-      WINDOWS_WORKER_LAUNCH_SCRIPT,
-      'utf16le',
-    ).toString('base64');
     const terminal = launch('wt.exe', [
       '-w',
       'new',
@@ -459,20 +446,11 @@ async function defaultLaunchProcess(
       terminalTitle,
       '-d',
       cwd,
-      'powershell.exe',
-      '-NoLogo',
-      '-NoProfile',
-      '-EncodedCommand',
-      encodedLaunch,
+      command[0],
+      ...args,
     ], {
       cwd,
-      env: {
-        ...env,
-        [WINDOWS_WORKER_LAUNCH_ENV]: JSON.stringify({
-          command: command[0],
-          args,
-        }),
-      },
+      env,
       detached: true,
       stdio: 'ignore',
       windowsHide: false,
