@@ -12,7 +12,6 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
@@ -34,11 +33,10 @@ const RUNNER_MANAGED_LONG_OPTIONS = new Set([
   '--continue',
   '--prompt',
   '--interactive',
-  '--name',
   '--allow-all-paths',
   '--add-dir',
 ]);
-const RUNNER_MANAGED_SHORT_OPTIONS = new Set(['-r', '-p', '-i', '-n']);
+const RUNNER_MANAGED_SHORT_OPTIONS = new Set(['-r', '-p', '-i']);
 
 function assertAbsolute(value, name) {
   if (!value || !path.isAbsolute(value)) throw new Error(`${name} must be absolute`);
@@ -107,10 +105,6 @@ function taskLabel(task) {
 
 function workerWindowTitle(task) {
   return `Pan worker ${taskLabel(task)}`.replaceAll(/[\r\n]/g, ' ').slice(0, 120);
-}
-
-function workerSessionName(task) {
-  return `pan-worker-${task.id}`;
 }
 
 function defaultRunnerLog(message) {
@@ -350,88 +344,17 @@ async function defaultStopProcess(pid, dependencies) {
   }
 }
 
-function workspaceField(text, field) {
-  const match = new RegExp(`^${field}:\\s*(.+?)\\s*$`, 'm').exec(text);
-  return match?.[1] || null;
-}
-
-function copilotSessionsRoot(env, dependencies) {
-  const copilotHome = dependencies.copilotHome
-    ?? env.COPILOT_HOME
-    ?? path.join(os.homedir(), '.copilot');
-  return path.join(path.resolve(copilotHome), 'session-state');
-}
-
-async function listCopilotSessionIds(env, dependencies = {}) {
-  const list = dependencies.readdir ?? readdir;
-  try {
-    const entries = await list(copilotSessionsRoot(env, dependencies), {
-      withFileTypes: true,
-    });
-    return new Set(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
-  } catch (error) {
-    if (error.code === 'ENOENT') return new Set();
-    throw error;
-  }
-}
-
-export async function findNewCopilotSessionId({
-  env,
-  knownSessionIds,
-  sessionName,
-}, dependencies = {}) {
-  const list = dependencies.readdir ?? readdir;
-  const read = dependencies.readFile ?? readFile;
-  const delay = dependencies.inspectDelay
-    ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-  const attempts = dependencies.sessionDiscoveryAttempts ?? 100;
-  const root = copilotSessionsRoot(env, dependencies);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    let entries;
-    try {
-      entries = await list(root, { withFileTypes: true });
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      entries = [];
-    }
-    const matches = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory() || knownSessionIds.has(entry.name)) continue;
-      try {
-        const workspace = await read(path.join(root, entry.name, 'workspace.yaml'), 'utf8');
-        const id = workspaceField(workspace, 'id');
-        const name = workspaceField(workspace, 'name');
-        if (id && name === sessionName) matches.push(id);
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-    }
-    if (matches.length === 1) return matches[0];
-    if (matches.length > 1) {
-      throw new Error(`multiple new Copilot sessions matched worker name: ${sessionName}`);
-    }
-    if (attempt + 1 < attempts) await delay(50);
-  }
-  throw new Error(`Copilot session metadata was not created for worker: ${sessionName}`);
-}
-
 async function defaultLaunchProcess(
-  { command, cwd, env, prompt, sessionId, sessionName, terminalTitle },
+  { command, cwd, env, prompt, sessionId, terminalTitle },
   dependencies = {},
 ) {
-  const inventorySessions = dependencies.listCopilotSessionIds
-    ?? ((launchEnv) => listCopilotSessionIds(launchEnv, dependencies));
-  const discoverSession = dependencies.findNewCopilotSessionId
-    ?? ((options) => findNewCopilotSessionId(options, dependencies));
-  const knownSessionIds = sessionId
-    ? null
-    : await inventorySessions(env);
   const args = [
     ...command.slice(1),
     '--allow-all-paths',
     '--add-dir',
     cwd,
-    ...(sessionId ? ['--session-id', sessionId] : ['--name', sessionName]),
+    '--session-id',
+    sessionId,
     '--interactive',
     prompt,
   ];
@@ -460,17 +383,11 @@ async function defaultLaunchProcess(
       terminal.once('spawn', resolve);
     });
     terminal.unref();
-    const pid = await findWindowsWorkerPid(sessionId || sessionName, dependencies);
-    const launchedSessionId = sessionId || await discoverSession({
-      env,
-      knownSessionIds,
-      sessionName,
-    });
+    const pid = await findWindowsWorkerPid(sessionId, dependencies);
     return {
       pid,
       processStart: new Date().toISOString(),
       command: [command[0], ...args],
-      sessionId: launchedSessionId,
     };
   }
   return new Promise((resolve, reject) => {
@@ -483,35 +400,25 @@ async function defaultLaunchProcess(
       windowsHide: false,
     });
     child.once('error', reject);
-    child.once('spawn', async () => {
+    child.once('spawn', () => {
       child.unref();
-      try {
-        const launchedSessionId = sessionId || await discoverSession({
-          env,
-          knownSessionIds,
-          sessionName,
-        });
-        resolve({
-          pid: child.pid,
-          processStart: new Date().toISOString(),
-          command: [command[0], ...args],
-          sessionId: launchedSessionId,
-        });
-      } catch (error) {
-        reject(error);
-      }
+      resolve({
+        pid: child.pid,
+        processStart: new Date().toISOString(),
+        command: [command[0], ...args],
+      });
     });
   });
 }
 
-async function findWindowsWorkerPid(processMarker, dependencies = {}) {
+async function findWindowsWorkerPid(sessionId, dependencies = {}) {
   const run = dependencies.execFile ?? execFileAsync;
   const inspectDelay = dependencies.inspectDelay
     ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const script = [
-    '$marker = $env:PAN_WORKER_PROCESS_MARKER',
+    '$sessionId = $env:PAN_WORKER_SESSION_ID',
     '$process = Get-CimInstance Win32_Process |',
-    '  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($marker) } |',
+    "  Where-Object { $_.CommandLine -and $_.CommandLine.Contains('--session-id') -and $_.CommandLine.Contains($sessionId) } |",
     '  Sort-Object CreationDate -Descending |',
     '  Select-Object -First 1',
     'if ($process) { [Console]::Out.Write($process.ProcessId) }',
@@ -526,7 +433,7 @@ async function findWindowsWorkerPid(processMarker, dependencies = {}) {
       encoding: 'utf8',
       env: {
         ...process.env,
-        PAN_WORKER_PROCESS_MARKER: processMarker,
+        PAN_WORKER_SESSION_ID: sessionId,
       },
       windowsHide: true,
     });
@@ -534,7 +441,7 @@ async function findWindowsWorkerPid(processMarker, dependencies = {}) {
     if (Number.isInteger(pid) && pid > 0) return pid;
     await inspectDelay(100);
   }
-  throw new Error(`worker window opened but session process was not found: ${processMarker}`);
+  throw new Error(`worker window opened but session process was not found: ${sessionId}`);
 }
 
 async function clearClosedRun(run, task, backend) {
@@ -557,10 +464,7 @@ export async function reconcileManagedRuns({
   const live = [];
   const closed = [];
   for (const run of runs) {
-    let task = await backend.get(run.taskId);
-    if (!task.sessionId && run.sessionId) {
-      task = await backend.update(task.id, { sessionId: run.sessionId });
-    }
+    const task = await backend.get(run.taskId);
     if (!inspectProcess(run.pid)) {
       log(`worker exited: ${taskLabel(task)} (pid ${run.pid})`);
       await clearClosedRun(run, task, backend);
@@ -616,7 +520,10 @@ export async function launchTask({
   dependencies = {},
 }) {
   let current = task;
-  const savedSessionId = current.sessionId;
+  const sessionId = current.sessionId || randomUUID();
+  if (!current.sessionId) {
+    current = await backend.update(current.id, { sessionId });
+  }
   const dir = taskDirectory(config.stateRoot, current.id);
   await mkdir(dir, { recursive: true });
   const files = {
@@ -640,27 +547,18 @@ export async function launchTask({
   const log = dependencies.log ?? (() => {});
   const launch = dependencies.launchProcess
     ?? ((options) => defaultLaunchProcess(options, dependencies));
-  const sessionName = workerSessionName(current);
-  const workerEnv = {
-    ...process.env,
-    PAN_SYSTEM_DIR: SYSTEM_DIR,
-    PAN_STATE_DIR: dir,
-    PAN_TASK_BACKEND_CONFIG: config.backendConfig,
-    PAN_TASK_ID: current.id,
-  };
-  if (savedSessionId) {
-    workerEnv.PAN_SESSION_ID = savedSessionId;
-  } else {
-    delete workerEnv.PAN_SESSION_ID;
-  }
-  log(
-    `opening worker window: ${taskLabel(current)}`
-    + (savedSessionId ? ` (session ${savedSessionId})` : ' (new session)'),
-  );
+  log(`opening worker window: ${taskLabel(current)} (session ${sessionId})`);
   const started = await launch({
     command: config.launchCommand,
     cwd,
-    env: workerEnv,
+    env: {
+      ...process.env,
+      PAN_SYSTEM_DIR: SYSTEM_DIR,
+      PAN_STATE_DIR: dir,
+      PAN_TASK_BACKEND_CONFIG: config.backendConfig,
+      PAN_TASK_ID: current.id,
+      PAN_SESSION_ID: sessionId,
+    },
     prompt: [
       launchPrompt(current, files),
       ...(missingRequestedPlaybook
@@ -671,16 +569,11 @@ export async function launchTask({
           ]
         : []),
     ].join('\n'),
-    sessionId: savedSessionId,
-    sessionName,
+    sessionId,
     terminalTitle: workerWindowTitle(current),
   });
   if (!Number.isInteger(started?.pid) || started.pid < 1) {
     throw new Error('launcher did not return a process id');
-  }
-  const sessionId = savedSessionId || String(started.sessionId || '').trim();
-  if (!sessionId) {
-    throw new Error('launcher did not return the new Copilot session id');
   }
   const run = {
     version: 1,
@@ -694,10 +587,6 @@ export async function launchTask({
     startedAt: new Date().toISOString(),
   };
   await atomicWriteJson(path.join(dir, RUN_FILE), run);
-  if (!savedSessionId) {
-    current = await backend.update(current.id, { sessionId });
-    await atomicWriteJson(files.task, current);
-  }
   await backend.update(current.id, { agentStatus: 'running' });
   log(`worker running: ${taskLabel(current)} (pid ${started.pid})`);
   return { ...run, dir };
