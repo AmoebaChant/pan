@@ -50,6 +50,16 @@ questions, decisions, and verified results in task comments. `nextStep` never
 dispatches work.
 
 Change work Status only when the requested outcome justifies it. A discussion
-or follow-up on completed work does not automatically reopen the task. Exit
-normally when the current request is complete; create the runner release file
-only when the user or applicable guidance explicitly directs an early close.
+or follow-up on completed work does not automatically reopen the task.
+
+When the current request is complete, persist the final task comment and
+explicitly set the justified outcome to `done` or `rejected`. Re-read the live
+task and comments to verify those durable updates, then create the exact empty
+`$PAN_STATE_DIR/worker-release.json` as the final action. The runner closes the
+managed process and clears Agent status without changing the verified outcome
+or saved session ID.
+
+Do not create the release file while waiting for the user, waiting for external
+work, or at an ordinary checkpoint. An explicitly requested early close uses
+the same release file after its required durable checkpoint is verified; it
+does not by itself justify changing work Status.

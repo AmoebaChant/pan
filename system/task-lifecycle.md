@@ -30,9 +30,21 @@ tasks.
 Changing work status, including to Done, does not stop a running session or
 clear Agent status. A blank Agent field is not a stop request; while its
 managed process remains open, the runner restores the observed `running`
-value. Actual process closure clears Agent status. An explicit user or
-playbook-directed early close uses the runner's release control file. Neither
-closure path deletes the session ID or edits work status.
+value.
+
+After a worker completes the current request, it persists its final task
+comment, explicitly sets the justified outcome to `done` or `rejected`, and
+re-reads the live task and comments to verify those durable updates. It then
+creates the exact empty `$PAN_STATE_DIR/worker-release.json` as its final action.
+The runner observes that file, closes the managed process, and clears Agent
+status without deleting the session ID or changing the verified work status.
+
+An explicit user or playbook-directed early close uses the same release file
+after its required durable checkpoint is verified. A worker never creates the
+file while waiting for the user, waiting for external work, at an ordinary
+checkpoint, or before final durable updates are verified. An independently
+observed process exit also clears Agent status and preserves session and work
+state.
 
 ## Business decisions
 

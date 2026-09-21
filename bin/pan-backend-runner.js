@@ -498,9 +498,12 @@ function launchPrompt(task, files) {
     `the Domain instructions at ${files.domain}, and comments at ${files.comments}.`,
     `Read workstream guidance at ${files.workstream} when that snapshot is non-empty.`,
     'Use task comments for progress and business decisions.',
-    'Exit normally when the requested work is complete.',
-    `Create an empty ${files.release} file only when the playbook or user explicitly directs an early close.`,
-    'Changing the task work status does not close this session.',
+    'When the current request is complete, first persist the final task comment and explicitly set the justified work status to done or rejected.',
+    'Re-read the live task and comments to verify those durable updates succeeded.',
+    `Then, as the final action, create the exact empty ${files.release} file to request runner-managed closure.`,
+    'Do not create the release file while waiting for the user, waiting for external work, at an ordinary checkpoint, or before final durable updates are verified.',
+    'An explicitly requested early close uses the same release file after its required durable checkpoint is verified.',
+    'Changing the task work status alone does not close this session.',
   ].join('\n');
 }
 

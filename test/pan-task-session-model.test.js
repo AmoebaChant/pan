@@ -242,7 +242,7 @@ test('pan-task CLI forwards nextStep through update, get, and list', async () =>
   );
 });
 
-test('runner creates, resumes, and closes the same session independently of work status', async () => {
+test('task outcome alone keeps a session open and release preserves outcome and session', async () => {
   const { backend } = await createBackend();
   const task = await backend.create({
     title: 'Done task can still open',
@@ -270,6 +270,7 @@ test('runner creates, resumes, and closes the same session independently of work
   };
   const livePids = new Set();
   const launches = [];
+  const stopped = [];
   let nextPid = 5000;
   const dependencies = {
     processIsAlive: (pid) => livePids.has(pid),
@@ -280,6 +281,7 @@ test('runner creates, resumes, and closes the same session independently of work
       return { pid, processStart: `start-${pid}` };
     },
     stopProcess: async (pid) => {
+      stopped.push(pid);
       livePids.delete(pid);
     },
   };
@@ -321,6 +323,7 @@ test('runner creates, resumes, and closes the same session independently of work
   );
   await pollRunner({ backend, config, loadedDomain, dependencies });
   const closed = await backend.get(task.id);
+  assert.deepEqual(stopped, [launches[0].pid]);
   assert.equal(closed.status, 'done');
   assert.equal(closed.agentStatus, '');
   assert.equal(closed.sessionId, run.sessionId);
@@ -414,10 +417,18 @@ test('default runner launch opens the saved session interactively', async () => 
     assert.equal(launches[0].args.includes('--prompt'), false);
     const interactiveIndex = launches[0].args.indexOf('--interactive');
     assert.equal(interactiveIndex, 13 + configuredArgs.length);
+    const prompt = launches[0].args[interactiveIndex + 1];
     assert.match(
-      launches[0].args[interactiveIndex + 1],
+      prompt,
       new RegExp(`Work on Pan task ${task.id}: ${task.title}`),
     );
+    assert.match(prompt, /persist the final task comment/i);
+    assert.match(prompt, /set the justified work status to done or rejected/i);
+    assert.match(prompt, /Re-read the live task and comments to verify/i);
+    assert.match(prompt, /as the final action, create the exact empty .*worker-release\.json/i);
+    assert.match(prompt, /Do not create the release file while waiting for the user/i);
+    assert.match(prompt, /Changing the task work status alone does not close this session/i);
+    assert.doesNotMatch(prompt, /only when .*early close/i);
     assert.equal(launches[0].options.cwd, workingDirectory);
     assert.equal(launches[0].options.env.PAN_SYSTEM_DIR, expectedSystemDir);
     assert.equal(launches[0].options.env.PAN_SESSION_ID, savedSessionId);
