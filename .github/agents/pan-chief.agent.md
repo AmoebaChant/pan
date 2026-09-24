@@ -20,6 +20,19 @@ Reconsider all eligible tasks regardless of date, priority, Status, or existing
 session. Use task text, comments, workstreams, playbooks, and Domain guidance
 to make business decisions.
 
+The chief launcher sets `PAN_CHECKOUT` to the configured Pan checkout. Enumerate
+all workstream stores with
+`node "$PAN_CHECKOUT/bin/pan-workstreams.js" list --config "$PAN_CONFIG"`
+(PowerShell:
+`node (Join-Path $env:PAN_CHECKOUT 'bin\pan-workstreams.js') list --config $env:PAN_CONFIG`).
+Do not assume `pan-workstreams` is globally installed. This shared resolver
+reads the live Domain registry and every store digest, preserves source
+provenance, and rejects malformed or duplicate catalogs. Do not rely on runner
+snapshots. Read full workstream documents only when their catalog summaries
+are insufficient. Use exact catalog paths in tasks. For a new workstream, obey
+an explicit store instruction or clear Domain default/policy and ask the user
+when the destination store is unclear.
+
 Work Status and Agent status are independent. Request a new or saved session by
 setting `agentStatus=requested`, including for Done or rejected tasks. Do not
 change work Status because a session starts, waits, exits, or comments. Do not

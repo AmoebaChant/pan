@@ -186,36 +186,3 @@ export function resolvePlaybookWorkingDirectory(playbook, config) {
   }
   return path.resolve(value);
 }
-
-function normalizeWorkstreamPath(value) {
-  const normalized = String(value || '').trim().replaceAll('\\', '/');
-  if (!normalized) return '';
-  if (
-    path.posix.isAbsolute(normalized)
-    || normalized.split('/').some((part) => !part || part === '.' || part === '..')
-  ) {
-    throw new Error(`invalid workstream path: ${JSON.stringify(value)}`);
-  }
-  return normalized;
-}
-
-export async function loadBackendWorkstream(
-  config,
-  workstream,
-  dependencies = {},
-) {
-  const normalized = normalizeWorkstreamPath(workstream);
-  if (!normalized) return { path: '', text: '', revision: null };
-  const repoPath = `workstreams/${normalized}/README.md`;
-  if (config.domainPath) {
-    const filename = path.join(path.resolve(config.domainPath), ...repoPath.split('/'));
-    const readText = dependencies.readFile ?? readFile;
-    return {
-      path: repoPath,
-      text: await readText(filename, 'utf8'),
-      revision: config.domainRevision || 'local',
-    };
-  }
-  const loaded = await readRemoteDomainFile(config, repoPath, dependencies);
-  return { path: repoPath, ...loaded };
-}

@@ -18,9 +18,12 @@ import { parseArgs, promisify } from 'node:util';
 import { isCliEntry, loadTaskBackend, writeJson } from './pan-task-backend.js';
 import {
   loadBackendPlaybooks,
-  loadBackendWorkstream,
   resolvePlaybookWorkingDirectory,
 } from './pan-backend-playbooks.js';
+import {
+  loadCatalogWorkstream,
+  loadWorkstreamCatalog,
+} from './pan-workstreams.js';
 
 const RELEASE_FILE = 'worker-release.json';
 const RUN_FILE = 'run.json';
@@ -543,7 +546,10 @@ function launchPrompt(task, files) {
     `Work on Pan task ${task.id}: ${task.title}`,
     `Read the task snapshot at ${files.task}, the playbook at ${files.playbook},`,
     `the Domain instructions at ${files.domain}, and comments at ${files.comments}.`,
+    `Read the launch-time workstream catalog at ${files.workstreams}.`,
+    `Read selected workstream provenance at ${files.workstreamSource}.`,
     `Read workstream guidance at ${files.workstream} when that snapshot is non-empty.`,
+    'The catalog and snapshots describe launch-time state only. Re-read the live store before any workstream write.',
     'Use task comments for progress and business decisions.',
     'When the current request is complete, first persist the final task comment and explicitly set the justified work status to done or rejected.',
     'Re-read the live task and comments to verify those durable updates succeeded.',
@@ -561,7 +567,8 @@ export async function launchTask({
   playbook,
   domainInstructions,
   domainRevision,
-  workstreamInstructions = '',
+  workstreamCatalog,
+  selectedWorkstream = null,
   playbookText = playbook.text,
   missingRequestedPlaybook = '',
   dependencies = {},
@@ -578,16 +585,33 @@ export async function launchTask({
     playbook: path.join(dir, 'playbook.md'),
     domain: path.join(dir, 'pan.md'),
     comments: path.join(dir, 'comments.json'),
+    workstreams: path.join(dir, 'workstreams.json'),
     workstream: path.join(dir, 'workstream.md'),
+    workstreamSource: path.join(dir, 'workstream-source.json'),
     launcher: path.join(dir, WINDOWS_LAUNCH_FILE),
     release: path.join(dir, RELEASE_FILE),
   };
   const comments = await backend.comments(current.id);
   await atomicWriteJson(files.task, current);
   await atomicWriteJson(files.comments, comments);
+  await atomicWriteJson(files.workstreams, workstreamCatalog);
+  await atomicWriteJson(files.workstreamSource, {
+    version: 1,
+    workstream: selectedWorkstream
+      ? {
+          store: selectedWorkstream.store,
+          repository: selectedWorkstream.repository,
+          name: selectedWorkstream.name,
+          description: selectedWorkstream.description,
+          path: selectedWorkstream.path,
+          documentPath: selectedWorkstream.documentPath,
+          revision: selectedWorkstream.revision,
+        }
+      : null,
+  });
   await writeFile(files.playbook, playbookText, { encoding: 'utf8', mode: 0o600 });
   await writeFile(files.domain, domainInstructions, { encoding: 'utf8', mode: 0o600 });
-  await writeFile(files.workstream, workstreamInstructions, {
+  await writeFile(files.workstream, selectedWorkstream?.text || '', {
     encoding: 'utf8',
     mode: 0o600,
   });
@@ -669,17 +693,24 @@ export async function pollRunner({
       continue;
     }
     if (!dryRun) {
-      let workstreamInstructions = '';
-      if (resolved.source !== 'assigned' && task.workstream) {
-        try {
-          workstreamInstructions = (
-            await loadBackendWorkstream(config, task.workstream, dependencies)
-          ).text;
-        } catch (error) {
-          log(`skipping ${taskLabel(task)}: ${error.message}`);
-          skipped.push({ id: task.id, reason: error.message });
-          continue;
-        }
+      let workstreamCatalog;
+      let selectedWorkstream = null;
+      try {
+        const loadCatalog = dependencies.loadWorkstreamCatalog
+          ?? loadWorkstreamCatalog;
+        const loadSelected = dependencies.loadCatalogWorkstream
+          ?? loadCatalogWorkstream;
+        workstreamCatalog = await loadCatalog(config, dependencies);
+        selectedWorkstream = await loadSelected(
+          config,
+          workstreamCatalog,
+          task.workstream,
+          dependencies,
+        );
+      } catch (error) {
+        log(`skipping ${taskLabel(task)}: ${error.message}`);
+        skipped.push({ id: task.id, reason: error.message });
+        continue;
       }
       const missingRequestedPlaybook = resolved.source === 'missing-default'
         ? resolved.requestedName
@@ -698,7 +729,8 @@ export async function pollRunner({
         playbook: resolved.playbook,
         domainInstructions: loadedDomain.domainInstructions,
         domainRevision: loadedDomain.domainRevision,
-        workstreamInstructions,
+        workstreamCatalog,
+        selectedWorkstream,
         playbookText,
         missingRequestedPlaybook,
         dependencies,

@@ -17,6 +17,9 @@ reviewed Domain source, opens or resumes `agentStatus=requested`, records
 ## Other programs
 
 `pan-chief.js` starts or resumes the persistent chief session.
+`pan-workstreams.js` reads the Domain store registry and authoritative digests,
+returns one provenance-rich catalog, and resolves detailed workstream
+documents without writing them.
 `pan-briefing-mcp.js` hosts the optional local briefing review surface.
 `pan-source-intake.js` performs explicitly configured source registration for a
 non-GitHub backend.

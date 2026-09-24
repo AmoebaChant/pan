@@ -48,6 +48,21 @@ choice without rewriting the task.
 task. Business judgment remains in their Markdown instructions, task comments,
 workstreams, and playbooks.
 
+## Workstream catalog
+
+The Domain is the implicit `domain` workstream store and may configure
+additional writable GitHub stores in `workstream-stores.json`. Every store
+publishes an authoritative `workstreams/README.md` digest, and workstream paths
+must be globally unique.
+
+```sh
+node bin/pan-workstreams.js list --config <domain-or-runner.json>
+node bin/pan-workstreams.js resolve <path> --config <domain-or-runner.json>
+```
+
+The read-only resolver uses the same local or GitHub Domain source conventions
+as the runner. See [`system/workstreams.md`](system/workstreams.md).
+
 ## Requirements
 
 - Node.js 22+

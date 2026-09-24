@@ -18,10 +18,7 @@ import {
   validateRunnerConfig,
   waitForPollTrigger,
 } from '../bin/pan-backend-runner.js';
-import {
-  loadBackendPlaybooks,
-  loadBackendWorkstream,
-} from '../bin/pan-backend-playbooks.js';
+import { loadBackendPlaybooks } from '../bin/pan-backend-playbooks.js';
 
 const execFileAsync = promisify(execFileCallback);
 
@@ -943,8 +940,18 @@ test('runner launches every requested task without duplicating managed tasks', a
   };
   const live = new Set();
   let nextPid = 7000;
+  let catalogLoads = 0;
   const dependencies = {
     processIsAlive: (pid) => live.has(pid),
+    loadWorkstreamCatalog: async () => {
+      catalogLoads += 1;
+      return {
+        version: 1,
+        defaultStore: 'domain',
+        stores: [],
+        workstreams: [],
+      };
+    },
     launchProcess: async () => {
       const pid = nextPid++;
       live.add(pid);
@@ -959,6 +966,7 @@ test('runner launches every requested task without duplicating managed tasks', a
     dependencies,
   });
   assert.deepEqual(launched.launched, [first.id, second.id]);
+  assert.equal(catalogLoads, 2);
   assert.equal((await backend.get(descriptiveOnly.id)).agentStatus, '');
 
   const repeated = await pollRunner({
@@ -1124,6 +1132,12 @@ test('missing named requests open one repair-oriented default session without re
   };
   const launches = [];
   const dependencies = {
+    loadWorkstreamCatalog: async () => ({
+      version: 1,
+      defaultStore: 'domain',
+      stores: [],
+      workstreams: [],
+    }),
     launchProcess: async (options) => {
       launches.push(options);
       return { pid: 9100, processStart: 'start' };
@@ -1207,6 +1221,19 @@ test('default playbook snapshots task context, workstream guidance, and configur
   );
   await writeFile(path.join(domain, 'pan.md'), '# Domain instructions\n');
   await writeFile(
+    path.join(domain, 'workstreams', 'README.md'),
+    [
+      '# Workstreams',
+      '',
+      '<!-- pan-workstream-catalog:v1 -->',
+      '',
+      '| Path | Name | Description |',
+      '| --- | --- | --- |',
+      '| [planning](planning/README.md) | Planning | Planning guidance. |',
+      '',
+    ].join('\n'),
+  );
+  await writeFile(
     path.join(domain, 'workstreams', 'planning', 'README.md'),
     '# Planning guidance\n',
   );
@@ -1262,13 +1289,43 @@ test('default playbook snapshots task context, workstream guidance, and configur
     await readFile(path.join(taskRoot, 'workstream.md'), 'utf8'),
     '# Planning guidance\n',
   );
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(taskRoot, 'workstream-source.json'), 'utf8')),
+    {
+      version: 1,
+      workstream: {
+        store: 'domain',
+        repository: `local:${domain}`,
+        name: 'Planning',
+        description: 'Planning guidance.',
+        path: 'planning',
+        documentPath: 'workstreams/planning/README.md',
+        revision: 'local-working-tree',
+      },
+    },
+  );
+  const catalogSnapshot = JSON.parse(
+    await readFile(path.join(taskRoot, 'workstreams.json'), 'utf8'),
+  );
+  assert.deepEqual(catalogSnapshot.stores, [{
+    id: 'domain',
+    repository: `local:${domain}`,
+    catalogPath: 'workstreams/README.md',
+    catalogRevision: 'local-working-tree',
+  }]);
+  assert.equal(catalogSnapshot.workstreams[0].path, 'planning');
+  assert.equal(catalogSnapshot.workstreams[0].repository, `local:${domain}`);
+  assert.equal(
+    catalogSnapshot.workstreams[0].catalogRevision,
+    'local-working-tree',
+  );
   assert.match(
     launches[0].prompt,
-    /Read workstream guidance .* when that snapshot is non-empty/,
+    /Read the launch-time workstream catalog/,
   );
-  assert.deepEqual(
-    await loadBackendWorkstream(config, '', {}),
-    { path: '', text: '', revision: null },
+  assert.match(
+    launches[0].prompt,
+    /catalog and snapshots describe launch-time state only/,
   );
   await rm(root, { recursive: true, force: true });
 });

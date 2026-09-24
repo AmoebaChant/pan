@@ -170,6 +170,7 @@ export function buildChiefCommand(action, config) {
     env: {
       ...process.env,
       PAN_CONFIG: configPath,
+      PAN_CHECKOUT: checkout,
       ...(config.chiefCopilotHome
         ? { COPILOT_HOME: path.resolve(config.chiefCopilotHome) }
         : {}),

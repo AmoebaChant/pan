@@ -7,7 +7,10 @@ For GitHub, join every Domain Issue to the Project by URL and register missing
 Issues without editing or reopening them. For Todoist, fully paginate the
 configured scope. Preserve backend order as precedence within equal priority.
 
-Read live playbooks and relevant workstream context. For each task, decide:
+Enumerate the complete live workstream catalog through the shared resolver,
+then read detailed workstream documents only as needed. Never use a runner
+snapshot as current chief state. Read live playbooks and relevant workstream
+context. For each task, decide:
 
 - whether its work Status remains open, is done, or is rejected;
 - priority, planned date, brief current next step, deadline, playbook, and
@@ -31,6 +34,12 @@ session explicitly; the worker follows its playbook's early-close procedure or
 the user closes the process. A worker awaiting the user remains running and
 should be surfaced from its comments and live session, not through a separate
 attention field.
+
+When assigning a workstream, use an exact path present in the live catalog.
+Paths are globally unique across configured stores, so the task value remains
+unqualified. If selecting a store for a new workstream is not clearly governed
+by an explicit instruction or the configured default policy, ask rather than
+guess.
 
 Read and recommend freely. An explicit user request authorizes that exact
 change; otherwise show the proposed task edits and obtain approval. Re-read
