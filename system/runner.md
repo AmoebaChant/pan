@@ -78,9 +78,18 @@ These messages are operational diagnostics only and are not durable task state.
 Normal backend polls start five minutes apart. Pressing Enter in the runner
 console polls immediately and starts a new five-minute interval.
 
+Before every worker launch, the runner re-enumerates the complete workstream
+catalog from the Domain registry and every store digest. It rejects malformed,
+unavailable, or duplicate catalogs before launch and resolves the task's exact
+unqualified workstream path. This happens per launch rather than once per poll.
+
 Each task run directory contains a small `run.json`, snapshots of the task,
-comments, playbook, and Domain instructions, plus the optional empty release
-file. This is local process bookkeeping, not a second task store.
+comments, playbook, Domain instructions, launch-time `workstreams.json`, the
+selected detailed `workstream.md`, selected `workstream-source.json`
+provenance, and the optional empty release file. The worker treats catalog and
+document snapshots as launch-time context and re-reads live store state before
+writes. These files are local process bookkeeping, not another task or
+workstream store.
 
 ## Domain source
 

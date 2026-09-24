@@ -35,6 +35,9 @@ human/AI/external next actions rather than owners. Read state completely and
 live, require revisions and worker generations where applicable, and verify
 writes. For a Daily Briefing, enumerate the complete selected backend before
 proposing human attention dates.
+Enumerate workstreams with the shared `pan-workstreams` resolver so every
+configured store and duplicate-path error is included; do not rely on a runner
+snapshot in a chief session.
 
 ## If you were asked to change Pan itself
 

@@ -61,6 +61,7 @@ test('fresh previews neutral startup and does not change the binding', async (t)
   assert.ok(!built.args.includes('Remember the previous conversation.'));
   assert.ok(built.args.includes('--allow-all-tools'));
   assert.equal(built.env.COPILOT_HOME, f.config.chiefCopilotHome);
+  assert.equal(built.env.PAN_CHECKOUT, f.root);
   assert.equal(await readFile(f.filename, 'utf8'), f.source);
   assert.deepEqual(await readdir(f.root), ['binding.json']);
 });
@@ -85,6 +86,7 @@ test('fresh changes the canonical id before spawn and retains old history and se
     },
   });
   assert.equal(launched.options.env.PAN_CONFIG, f.filename);
+  assert.equal(launched.options.env.PAN_CHECKOUT, f.root);
   assert.equal(await readFile(`${f.filename}.before-fresh-${newId}`, 'utf8'), f.source);
   assert.equal(await readFile(path.join(history, 'events.jsonl'), 'utf8'), 'old history\n');
   await assert.rejects(readFile(path.join(f.config.chiefCopilotHome, 'pan-chief-start.lock')),

@@ -18,7 +18,8 @@ the backend adapters, and one small runner.
 - **Workers** execute one task according to its playbook and interact directly
   with the user when needed. See
   [Worker base instructions](worker-base-instructions.md).
-- **Workstreams** hold durable narrative context.
+- **Workstreams** hold durable narrative context in the Domain or additional
+  configured stores while tasks keep one globally unique unqualified path.
 - **Daily Briefing** considers the complete eligible portfolio, regardless of
   dates, before proposing human focus and agent requests.
 

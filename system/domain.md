@@ -9,6 +9,8 @@ operates on exactly one Domain at a time.
 
 ```text
 <domain-repo>/
+  workstream-stores.json         optional additional workstream stores
+  workstreams/README.md          authoritative workstream digest
   workstreams/<path>/README.md   durable narrative per area of work
   playbooks/<machine>/<name>.md  playbook definitions (per machine)
   pan.md                         domain-specific Pan instructions (optional)
@@ -18,8 +20,10 @@ operates on exactly one Domain at a time.
   while its exact next action moves between a person, AI, or an external wait.
 - **The Project**, when GitHub is the selected backend, holds each task's
   lifecycle and fields. See [project schema](project-schema.md).
-- **Workstreams** are the durable narrative for each area of work. See
-  [workstreams](workstreams.md).
+- **Workstreams** are the durable narrative for each area of work. The Domain
+  is the implicit `domain` store and may mount additional writable stores
+  through `workstream-stores.json`; every store has an authoritative digest.
+  See [workstreams](workstreams.md).
 - **Playbooks** define kinds of work and the instructions for doing them. A
   machine runs exactly the playbooks in its `playbooks/<machine>/` folder, and
   each playbook file declares its own concurrency and working directory. See
@@ -45,8 +49,9 @@ operates on exactly one Domain at a time.
 
 Pan uses the GitHub API through `gh` for Domain knowledge. Task access goes
 through the configured thin backend tool. The Domain is **never** required as a
-local checkout: read and write workstreams and playbooks through the GitHub
-Contents API, and read and write tasks through the selected backend.
+local checkout: read and write workstreams, their store registry and digests,
+and playbooks through the GitHub Contents API, and read and write tasks through
+the selected backend.
 
 The runner is the exception that may keep a local checkout, because a worker
 edits code on disk — but that is the *target* repository named by a playbook,

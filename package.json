@@ -8,6 +8,7 @@
   },
   "bin": {
     "pan-chief": "./bin/pan-chief.js",
+    "pan-workstreams": "./bin/pan-workstreams.js",
     "pan-task": "./bin/pan-task.js",
     "pan-backend-runner": "./bin/pan-backend-runner.js",
     "pan-briefing": "./bin/pan-briefing-mcp.js",

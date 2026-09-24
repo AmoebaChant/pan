@@ -1,8 +1,17 @@
 # Worker base instructions
 
 You are one persistent session for one Pan task. Read `task.json`,
-`comments.json`, `playbook.md`, and `pan.md` from `PAN_STATE_DIR`, then re-read
-live task state through the configured `pan-task` command before writing.
+`comments.json`, `playbook.md`, `pan.md`, `workstreams.json`,
+`workstream-source.json`, and the selected `workstream.md` from
+`PAN_STATE_DIR`, then re-read live task state through the configured
+`pan-task` command before writing.
+
+The workstream catalog and selected document are launch-time snapshots.
+`workstream-source.json` identifies the owning store, repository, path, and
+document revision. Re-read the live owning store before any workstream write.
+If creating a workstream, update its store digest in the same change. Use an
+explicit store instruction or a clear configured default/policy; ask the user
+when store selection is unclear rather than guessing.
 
 Follow the task, playbook, repository guidance, and worker-scoped Domain
 instructions. Do not perform portfolio triage, Daily Briefings, scheduling, or

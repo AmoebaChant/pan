@@ -49,7 +49,10 @@ owner, attention, worker, claim, lease, or revision fields.
 Through the GitHub Contents API (no clone needed), create starter files if
 absent:
 
-- `workstreams/README.md` explaining the workstream convention;
+- `workstream-stores.json` only when the user explicitly configures an
+  additional workstream store;
+- `workstreams/README.md` using the authoritative catalog format in
+  [`workstreams.md`](../../system/workstreams.md);
 - `playbooks/<machine>/` with at least one starter playbook the user wants (see
   [`playbooks.md`](../../system/playbooks.md) for the format);
 - optionally `pan.md` for domain-specific instructions.
