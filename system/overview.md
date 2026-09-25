@@ -18,6 +18,9 @@ the backend adapters, and one small runner.
 - **Workers** execute one task according to its playbook and interact directly
   with the user when needed. See
   [Worker base instructions](worker-base-instructions.md).
+- **Hub** is the local web interface and ACP headless session host. It presents
+  the main assistant as Pan and task workers through a shared chat panel.
+  See [Pan Hub](hub.md) for the initial restricted rollout.
 - **Workstreams** hold durable narrative context in the Domain or additional
   configured stores while tasks keep one globally unique unqualified path.
 - **Daily Briefing** considers the complete eligible portfolio, regardless of
@@ -55,4 +58,5 @@ priority. Never infer task completion or session release from a comment.
 | Daily planning | [Daily Briefing](daily-briefing.md) |
 | Worker routing | [Playbooks](playbooks.md) |
 | Process supervision | [Runner](runner.md) |
+| Web UI and headless sessions | [Pan Hub](hub.md) |
 | Task execution | [Worker base instructions](worker-base-instructions.md) |

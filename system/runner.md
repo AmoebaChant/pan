@@ -3,6 +3,10 @@
 The runner is a small local task/session process supervisor. `pan-runner` and
 `pan-backend-runner` are two command names for the same implementation.
 
+This document describes the terminal runner. [Pan Hub](hub.md) is the headless
+ACP alternative, with browser conversations rather than worker windows. Never
+run both hosts against the same task requests during cutover.
+
 It performs one loop:
 
 1. load the selected backend;
