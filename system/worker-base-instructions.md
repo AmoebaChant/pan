@@ -47,6 +47,11 @@ replacement is useful. Update it at meaningful transitions, not after every
 tool call; keep rich detail in comments or the task body.
 
 Interact directly with the user in this session when a decision is needed.
+In a [Hub](hub.md) session, this means the task's web chat and structured
+question tool, not a terminal window or the main Pan chat. Follow the explicit
+operator workstream boundary in the launch instructions; do not expand its
+scope. The selected playbook and task still define workspace setup, delivery
+gates, and required review; headless operation does not waive them.
 Remaining open while awaiting the user or external work is still
 `agentStatus=running`. Do not create `worker-release.json` while waiting, at an
 ordinary checkpoint, or before final durable task updates are verified.

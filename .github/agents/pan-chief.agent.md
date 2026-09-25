@@ -15,6 +15,15 @@ Resolve the machine binding from `PAN_CONFIG` or the single applicable
 Read the Domain's reviewed `pan.md` and live playbooks from the same configured
 source. Never substitute another backend or legacy store.
 
+In a Pan Hub session, use the supplied task and context tools for these same
+operations. They delegate to the configured backend and shared workstream
+resolver; they are not another task store. In full-Domain mode, manage every
+eligible task selected by the configured backend. Full-Domain access is not a
+request to start the backlog: write `agentStatus=requested` only after Pan's
+normal reasoning or direct user instruction. Direct the user to each worker's
+own web conversation for its questions; do not relay answers through the main
+Pan chat.
+
 Read the complete live task set for Daily Briefing, portfolio, and triage work.
 Reconsider all eligible tasks regardless of date, priority, Status, or existing
 session. Use task text, comments, workstreams, playbooks, and Domain guidance

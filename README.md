@@ -7,6 +7,17 @@ adapters, agents, and a small task/session runner.
 
 Start at [`system/overview.md`](system/overview.md).
 
+## Pan Hub
+
+[Pan Hub](system/hub.md) evolves
+[`pan-task-manager`](https://github.com/AmoebaChant/pan-task-manager) into a
+local workstream-centered web app with headless ACP agents. Main Pan and task
+worker conversations share a browser chat panel instead of individual terminal
+windows. The rollout is local-only and can manage the configured Domain's full
+eligible portfolio. Main Pan uses the existing chief/Domain instructions;
+selected machine playbooks guide task workers. The existing terminal runner
+remains available for rollback.
+
 ## Task API
 
 ```sh
