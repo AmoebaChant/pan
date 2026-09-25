@@ -6,13 +6,12 @@ It replaces terminal-window interaction with a workstream portfolio and one
 shared chat panel. The central assistant is named **Pan** in the UI; chief
 remains its internal role.
 
-## First release scope
+## Local operating scope
 
 One user, one computer, one selected task backend, and local browser access.
-The operator explicitly selects workstreams for task writes and worker
-launches. Begin with a test workstream, then enable one real workstream after
-approval. Other workstreams remain readable but cannot be mutated or dispatched
-through Hub tools. Private Tailscale access is deferred.
+Hub may manage the complete eligible portfolio selected by that backend. This
+permission does not request every task or bypass task ownership rules. Private
+Tailscale access is deferred.
 
 Do not add a parallel task backend, audit subsystem, generic authorization
 engine, or distributed scheduler. Use the existing task and workstream
@@ -66,10 +65,9 @@ agent's session creation response and are saved before subsequent reuse.
 Supported resume/load operations reconnect the conversation; never silently
 replace a failed resume with a new conversation.
 
-Hub requests and launches workers only within its configured operator scope.
-Enabling a workstream is not an instruction to request every task in it. The
-main Pan session must receive the same restriction; requests still follow
-explicit user instructions or applicable standing authorization.
+Hub launches workers only for durable backend requests. Full-Domain access is
+not an instruction to request every task. Requests still follow explicit user
+instructions, Pan's normal task reasoning, or applicable standing authorization.
 
 Routine tools may run under the explicitly configured permission policy.
 Questions and permission exceptions remain distinct visible interactions.
@@ -89,18 +87,16 @@ ordinary prose to guess at pending questions or approvals.
 Load the chief role, the relevant `system/` contracts, the configured Domain's
 `pan.md`, and the machine playbook catalog. Retain the existing Markdown
 separation between judgment and mechanics: Pan chooses task edits and requests;
-Hub applies scoped task operations and observes requests.
+Hub applies task operations and observes requests.
 
-Pan may read the complete eligible portfolio for planning and briefing, even
-when only a subset of workstreams is writable. Its proposal must distinguish
-recommendations outside the enabled scope from executable changes inside it.
-Do not silently omit tasks outside the enabled scope or claim to have applied
-their recommendations.
+Pan reads and manages the complete eligible portfolio for planning, briefing,
+and task execution. Backend ownership rules still exclude tasks belonging to
+other people.
 
 Give Pan backend-neutral tools for live task enumeration, individual tasks and
-comments, project destinations, workstream context, and scoped task mutations.
-Read live task state before every mutation, check both old and new workstream
-on moves, and verify writes. When Domain instructions require a named project
+comments, project destinations, workstream context, and task mutations. Read
+live task state before every mutation and verify writes. When Domain
+instructions require a named project
 for creation, obtain and pass an explicit project ID. Do not create in Inbox
 as a success-shaped fallback.
 
@@ -122,15 +118,18 @@ branch. The same source supplies Domain instructions and playbooks.
 Snapshot the selected task and its comments, Domain instructions, selected
 playbook, full workstream catalog, and selected workstream with source
 provenance when opening a worker process. A named playbook selects its configured
-working directory; task workspace setup and delivery decisions remain in its
-Markdown. Blank or missing-name assignments follow the existing general-default
-and repair-conversation rules. Invalid configuration is not a fallback case.
+working directory; a playbook without one starts in the task's private Hub
+session directory so its Markdown can select or clone the correct workspace.
+Task workspace setup and delivery decisions remain in Markdown. A blank
+assignment uses the configured general default. An unavailable named assignment
+remains requested and is not launched until Pan repairs it. Invalid
+configuration is not a fallback case.
 
 The mechanical dispatcher polls the selected backend for explicit requests
-within the enabled workstreams. Hub-originated request writes may trigger an
-immediate poll. A task already managed by Hub is not launched twice.
+across the complete eligible portfolio. Hub-originated request writes may
+trigger an immediate poll. A task already managed by Hub is not launched twice.
 Work status, priority, dates, dependencies, and inferred readiness do not
-filter requests. Tasks outside the operator scope are left untouched.
+filter requests. Backend ownership policy still determines eligibility.
 
 Persist the ACP session ID and observed running status before beginning worker
 execution. Keep task completion and worker closure independent. Requests are
@@ -167,7 +166,7 @@ checks, question responses, and persistence. Do not create a brittle visual
 regression or UI test suite while the product is iterating.
 
 Exercise the built application in a real browser: talk to Pan, have it create a
-task in the enabled workstream and request the selected worker, answer that
+task in the configured Domain and request the selected worker, answer that
 worker's question, and inspect the saved outcome and conversation. Start with
 harmless local file changes; the first real task should be a bounded change with
 an explicitly agreed delivery boundary.
@@ -178,5 +177,5 @@ Do not run the terminal runner and Hub against the same task requests
 simultaneously. Verify the Hub before switching launchers. Preserve launcher
 backups, existing conversations, and any unrelated running sessions.
 
-The enabled workstreams must remain visible after cutover. A working Hub is not
-implicit approval to expand its write or dispatch scope.
+Full-Domain access must remain visible after cutover. A working Hub is not
+implicit approval to request or launch the backlog.

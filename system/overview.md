@@ -20,7 +20,7 @@ the backend adapters, and one small runner.
   [Worker base instructions](worker-base-instructions.md).
 - **Hub** is the local web interface and ACP headless session host. It presents
   the main assistant as Pan and task workers through a shared chat panel.
-  See [Pan Hub](hub.md) for the initial restricted rollout.
+  See [Pan Hub](hub.md) for its local full-Domain operation.
 - **Workstreams** hold durable narrative context in the Domain or additional
   configured stores while tasks keep one globally unique unqualified path.
 - **Daily Briefing** considers the complete eligible portfolio, regardless of
