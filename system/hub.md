@@ -100,6 +100,14 @@ instructions require a named project
 for creation, obtain and pass an explicit project ID. Do not create in Inbox
 as a success-shaped fallback.
 
+Task creation opened from a workstream card preselects that exact workstream
+path and its optional `default-playbook` metadata. General task creation leaves
+the workstream unselected rather than silently choosing the first catalog
+entry. Backend project destination and workstream are distinct: when one
+non-Inbox project name exactly matches the selected workstream title, Hub may
+preselect it, but the destination remains explicit and editable before
+creation. Ambiguous or unmatched destinations require user selection.
+
 Main Pan also receives the normal local operational tool surface and explicit
 Hub session inspection, stop, and message operations. It may diagnose logs,
 processes, builds, and saved conversations and perform bounded Hub recovery.
