@@ -9,9 +9,10 @@ remains its internal role.
 ## First release scope
 
 One user, one computer, one selected task backend, and local browser access.
-The first rollout permits portfolio reads but restricts writes and worker
-launches to an explicitly configured test workstream. Expanding that boundary
-requires the user's approval. Private Tailscale access is deferred.
+The operator explicitly selects workstreams for task writes and worker
+launches. Begin with a test workstream, then enable one real workstream after
+approval. Other workstreams remain readable but cannot be mutated or dispatched
+through Hub tools. Private Tailscale access is deferred.
 
 Do not add a parallel task backend, audit subsystem, generic authorization
 engine, or distributed scheduler. Use the existing task and workstream
@@ -66,17 +67,78 @@ Supported resume/load operations reconnect the conversation; never silently
 replace a failed resume with a new conversation.
 
 Hub requests and launches workers only within its configured operator scope.
-An overnight test boundary is not authority to triage or dispatch the rest of
-the portfolio. The main Pan session must receive the same restriction.
+Enabling a workstream is not an instruction to request every task in it. The
+main Pan session must receive the same restriction; requests still follow
+explicit user instructions or applicable standing authorization.
 
 Routine tools may run under the explicitly configured permission policy.
 Questions and permission exceptions remain distinct visible interactions.
+Select and verify the configured model through ACP after creating or loading
+the session, before sending a prompt. A process launch flag alone may leave a
+different saved model selected. If the required model cannot be confirmed,
+report the failure and do not run the conversation on a substitute.
 Natural-language playbook instructions guide the agent; they are not a
 mechanical sandbox.
 
 If native ACP elicitation is unavailable, a small session-bound question tool
 may bridge structured questions into the same web interaction. Do not parse
 ordinary prose to guess at pending questions or approvals.
+
+## Main Pan and Domain instructions
+
+Load the chief role, the relevant `system/` contracts, the configured Domain's
+`pan.md`, and the machine playbook catalog. Retain the existing Markdown
+separation between judgment and mechanics: Pan chooses task edits and requests;
+Hub applies scoped task operations and observes requests.
+
+Pan may read the complete eligible portfolio for planning and briefing, even
+when only a subset of workstreams is writable. Its proposal must distinguish
+recommendations outside the enabled scope from executable changes inside it.
+Do not silently omit tasks outside the enabled scope or claim to have applied
+their recommendations.
+
+Give Pan backend-neutral tools for live task enumeration, individual tasks and
+comments, project destinations, workstream context, and scoped task mutations.
+Read live task state before every mutation, check both old and new workstream
+on moves, and verify writes. When Domain instructions require a named project
+for creation, obtain and pass an explicit project ID. Do not create in Inbox
+as a success-shaped fallback.
+
+The main session does not implement development tasks itself. It records the
+outcome, task guidance, workstream, and selected playbook, then requests a
+worker with `agentStatus=requested`. It does not invent a session ID.
+
+Existing references to a worker terminal mean that worker's Hub chat. Main
+Pan lists tasks needing attention and directs the user to those conversations;
+it does not collect answers on behalf of another session.
+
+## Playbooks and dispatch
+
+Use the existing [playbook](playbooks.md) loader and assignment semantics.
+Workers use one reviewed Domain source: local `domainPath` or a pinned remote
+`domainRepo` and `domainRevision`. Do not silently substitute the remote default
+branch. The same source supplies Domain instructions and playbooks.
+
+Snapshot the selected task and its comments, Domain instructions, selected
+playbook, full workstream catalog, and selected workstream with source
+provenance when opening a worker process. A named playbook selects its configured
+working directory; task workspace setup and delivery decisions remain in its
+Markdown. Blank or missing-name assignments follow the existing general-default
+and repair-conversation rules. Invalid configuration is not a fallback case.
+
+The mechanical dispatcher polls the selected backend for explicit requests
+within the enabled workstreams. Hub-originated request writes may trigger an
+immediate poll. A task already managed by Hub is not launched twice.
+Work status, priority, dates, dependencies, and inferred readiness do not
+filter requests. Tasks outside the operator scope are left untouched.
+
+Persist the ACP session ID and observed running status before beginning worker
+execution. Keep task completion and worker closure independent. Requests are
+durable backend state, not an in-memory queue. Log failed launches and leave
+the request visible for retry instead of clearing it as if work had started.
+
+Adding request polling does not add recurring autonomous chief scans. Those
+need separate authorization.
 
 ## Completion and interruption
 
@@ -104,9 +166,11 @@ Automated coverage should focus on core backend and session behavior, scope
 checks, question responses, and persistence. Do not create a brittle visual
 regression or UI test suite while the product is iterating.
 
-Exercise the built application in a real browser: talk to Pan, create a task
-in the authorized test workstream, start a worker, answer a question, verify a
-harmless local file change, and inspect the saved outcome and conversation.
+Exercise the built application in a real browser: talk to Pan, have it create a
+task in the enabled workstream and request the selected worker, answer that
+worker's question, and inspect the saved outcome and conversation. Start with
+harmless local file changes; the first real task should be a bounded change with
+an explicitly agreed delivery boundary.
 
 ## Cutover
 
@@ -114,5 +178,5 @@ Do not run the terminal runner and Hub against the same task requests
 simultaneously. Verify the Hub before switching launchers. Preserve launcher
 backups, existing conversations, and any unrelated running sessions.
 
-The first test rollout must remain visibly restricted after cutover. A working
-Hub is not implicit approval to expand its write or dispatch scope.
+The enabled workstreams must remain visible after cutover. A working Hub is not
+implicit approval to expand its write or dispatch scope.
