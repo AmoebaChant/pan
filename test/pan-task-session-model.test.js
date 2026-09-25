@@ -688,6 +688,64 @@ test('manual polling starts a new five-minute interval', async () => {
   }
 });
 
+test('continuous runner survives a transient poll failure', async () => {
+  const { backend } = await createBackend();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-runner-poll-retry-'));
+  const configPath = path.join(root, 'runner.json');
+  await writeFile(configPath, JSON.stringify({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory: root,
+    machine: 'test-machine',
+    pollIntervalSeconds: 300,
+    launchCommand: ['copilot'],
+  }));
+  const logs = [];
+  let domainLoads = 0;
+  let waits = 0;
+  try {
+    await assert.rejects(
+      runRunner(['--config', configPath], {
+        backend,
+        loadBackendPlaybooks: async () => {
+          domainLoads += 1;
+          if (domainLoads === 1) throw new Error('temporary Domain failure');
+          return {
+            defaultPlaybook: {
+              name: 'default',
+              description: 'Test',
+              workingDirectory: root,
+              text: '# Default',
+            },
+            playbooks: new Map(),
+            domainInstructions: '# Domain',
+            domainRevision: 'reviewed-sha',
+          };
+        },
+        log: (message) => logs.push(message),
+        waitForPollTrigger: async () => {
+          waits += 1;
+          if (waits === 1) return 'timer';
+          throw new Error('stop test runner');
+        },
+      }),
+      /stop test runner/,
+    );
+    assert.equal(domainLoads, 2);
+    assert.equal(logs.includes('poll failed: temporary Domain failure'), true);
+    assert.equal(
+      logs.filter((message) => message === 'polling task backend').length,
+      2,
+    );
+    assert.equal(
+      logs.some((message) => message.startsWith('poll complete: observed=0 ')),
+      true,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('non-Windows runner launch inherits its interactive terminal', async () => {
   const { backend } = await createBackend();
   const task = await backend.create({
