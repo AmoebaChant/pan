@@ -100,6 +100,12 @@ instructions require a named project
 for creation, obtain and pass an explicit project ID. Do not create in Inbox
 as a success-shaped fallback.
 
+Main Pan also receives the normal local operational tool surface and explicit
+Hub session inspection, stop, and message operations. It may diagnose logs,
+processes, builds, and saved conversations and perform bounded Hub recovery.
+This operational authority does not make main Pan the implementer of a worker's
+assigned task.
+
 The main session does not implement development tasks itself. It records the
 outcome, task guidance, workstream, and selected playbook, then requests a
 worker with `agentStatus=requested`. It does not invent a session ID.
@@ -107,6 +113,12 @@ worker with `agentStatus=requested`. It does not invent a session ID.
 Existing references to a worker terminal mean that worker's Hub chat. Main
 Pan lists tasks needing attention and directs the user to those conversations;
 it does not collect answers on behalf of another session.
+
+Task chat input is available before the first worker session and while a turn
+is active. Sending to a stopped task creates or resumes its session; sending
+during an active turn queues the follow-up behind that turn. A structured
+question remains a distinct interaction and keeps ordinary message submission
+disabled until answered.
 
 ## Playbooks and dispatch
 
