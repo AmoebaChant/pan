@@ -802,8 +802,16 @@ export async function runRunner(argv, dependencies = {}) {
     };
     const now = dependencies.now ?? Date.now;
     let pollStartedAt = now();
-    const first = await poll();
-    if (values.once || values['dry-run']) return first;
+    if (values.once || values['dry-run']) return poll();
+    const pollSafely = async () => {
+      try {
+        return await poll();
+      } catch (error) {
+        log(`poll failed: ${error.message}`);
+        return null;
+      }
+    };
+    await pollSafely();
     for (;;) {
       const nextPollAt = pollStartedAt + config.pollIntervalSeconds * 1000;
       const waitMs = Math.max(0, nextPollAt - now());
@@ -813,7 +821,7 @@ export async function runRunner(argv, dependencies = {}) {
       const trigger = await wait(waitMs);
       if (trigger === 'manual') log('manual poll requested');
       pollStartedAt = now();
-      await poll();
+      await pollSafely();
     }
   } finally {
     await releaseRunnerLock();

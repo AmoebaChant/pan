@@ -82,7 +82,7 @@ test('remote Domain loading requires and uses an explicit revision', async () =>
   }, {
     ghJson: async (args) => {
       calls.push(args);
-      const endpoint = args[0];
+      const endpoint = args[2];
       if (endpoint.endsWith('/playbooks/machine-a')) {
         return [{ type: 'file', name: 'build.md' }];
       }
@@ -104,4 +104,5 @@ test('remote Domain loading requires and uses an explicit revision', async () =>
   });
   assert.equal(loaded.domainRevision, 'domain-sha');
   assert.ok(calls.every((args) => args.includes('ref=reviewed-sha')));
+  assert.ok(calls.every((args) => args[0] === '--method' && args[1] === 'GET'));
 });

@@ -77,6 +77,8 @@ async function readRemoteDomainFile(config, repoPath, dependencies) {
     throw new Error('domainRevision is required when domainRepo is used');
   }
   const result = await ghJson([
+    '--method',
+    'GET',
     `repos/${config.domainRepo}/contents/${repoPath}`,
     '-f',
     `ref=${config.domainRevision}`,
@@ -128,6 +130,8 @@ async function loadRemoteDomain(config, dependencies) {
   }
   const directory = `playbooks/${config.machine}`;
   const entries = await ghJson([
+    '--method',
+    'GET',
     `repos/${config.domainRepo}/contents/${directory}`,
     '-f',
     `ref=${config.domainRevision}`,
