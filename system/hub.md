@@ -114,8 +114,10 @@ Existing references to a worker terminal mean that worker's Hub chat. Main
 Pan lists tasks needing attention and directs the user to those conversations;
 it does not collect answers on behalf of another session.
 
-Task chat input is available before the first worker session and while a turn
-is active. Sending to a stopped task creates or resumes its session; sending
+Before the first worker session, task chat shows an explicit launch action
+instead of message input. A stopped task with a saved session shows its
+conversation history and an explicit resume action instead of message input.
+Message input is available while the worker process is active, and sending
 during an active turn queues the follow-up behind that turn. A structured
 question remains a distinct interaction and keeps ordinary message submission
 disabled until answered.
