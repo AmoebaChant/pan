@@ -91,6 +91,7 @@ the workstream appears in portfolio views:
 title: Friendly Workstream Name
 state: active
 portfolio-order: 100
+default-playbook: tool-development
 ---
 ```
 
@@ -104,6 +105,10 @@ portfolio-order: 100
   values, such as `100`, `200`, and `300`, so most reorders update only the
   moved workstream. Rebalance all values only when no integer remains between
   adjacent items.
+- **`default-playbook`** is an optional playbook name for new tasks created in
+  this workstream. Creation interfaces prefill it but still allow an explicit
+  task-level choice. Omitting it leaves the task assignment blank and therefore
+  selects Pan's portable general default.
 
 Portfolio metadata is planning and presentation state. It does not change task
 lifecycle, runner eligibility, dispatch, ownership, or leases.
