@@ -55,6 +55,11 @@ Use the Garden visual direction:
   the main Pan conversation.
 - Show questions inline with suggested answers, any provided default, and a
   freeform alternative. The user must explicitly submit their answer.
+- Preserve authored line breaks when rendering conversation Markdown. Allow
+  images pasted from the clipboard to be previewed, removed, and submitted as
+  native ACP image content only when the connected agent advertises image
+  prompt support; enforce bounded payload limits and surface unsupported media
+  or capability failures.
 - Keep unanswered questions visibly attached to their task and workstream.
   Dismissing a question does not answer or approve it.
 
