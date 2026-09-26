@@ -198,7 +198,34 @@ credentials. Expose the log location in operational documentation.
 
 Automated coverage should focus on core backend and session behavior, scope
 checks, question responses, and persistence. Do not create a brittle visual
-regression or UI test suite while the product is iterating.
+regression suite while the product is iterating. Relevant Hub UI, browser API,
+task mutation, and workstream-loading changes must additionally pass the
+rendered browser acceptance suite before being reported complete.
+
+The acceptance environment is a second, explicitly marked local Hub instance.
+It must use a configurable non-production port and a dedicated root containing
+all generated configuration, Domain fixtures, task data, Hub state, logs,
+process identity, and browser profile. Its deterministic local task backend
+must preserve the same create, read, update, status, comment, project,
+workstream, and date contracts used by Hub. Resettable fixtures cover writable
+and non-writable workstreams, recurring and non-recurring dates, comments,
+session states, and rejected writes.
+
+Acceptance startup must fail closed rather than inherit normal configuration:
+reject the production port, remote Domains, trusted origins, wildcard scope,
+production task backends, or any configuration, credential-bearing home,
+state, session, Domain, fixture, or agent path outside the acceptance root.
+Use a deliberately failing fake agent executable; browser portfolio acceptance
+does not launch a real agent. Stop only the process whose live acceptance
+identity matches the generated process record.
+
+Browser automation drives the built application through user-visible controls
+and verifies authoritative fixture persistence after reload. At minimum it
+covers task selection, moving a task between writable workstreams and back,
+Today and Not Today actions, menu appearance and dismissal, task editing, and
+visible mutation errors. A failed run must preserve actionable diagnostics,
+including a screenshot and trace, and must never fall back to mocked handlers
+or a production service.
 
 Exercise the built application in a real browser: talk to Pan, have it create a
 task in the configured Domain and request the selected worker, answer that
