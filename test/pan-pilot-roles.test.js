@@ -48,6 +48,23 @@ test('worker instructions release after verified completion and not while waitin
   assert.match(surfaces[3], /Changing work status.*does not stop a running session/i);
 });
 
+test('worker instructions keep resumed completed conversations open for a new message', async () => {
+  const surfaces = await Promise.all([
+    readFile('.github/agents/pan-worker.agent.md', 'utf8'),
+    readFile('system/worker-base-instructions.md', 'utf8'),
+    readFile('system/default-playbook.md', 'utf8'),
+    readFile('system/task-lifecycle.md', 'utf8'),
+    readFile('system/hub.md', 'utf8'),
+  ]);
+
+  for (const text of surfaces) {
+    assert.match(text, /Done or rejected task/i);
+    assert.match(text, /new operator\s+message/i);
+    assert.match(text, /wait/i);
+    assert.match(text, /worker-release\.json|release request/i);
+  }
+});
+
 test('playbooks select instructions and an explicit working directory only', () => {
   const playbook = validateBackendPlaybook('build.md', [
     '---',
