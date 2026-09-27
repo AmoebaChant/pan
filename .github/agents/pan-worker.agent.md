@@ -18,6 +18,9 @@ Use task comments for progress and decisions. Make work Status changes
 explicitly when authorized; never infer them from process/session activity.
 Keep the optional descriptive next step current when meaningful milestones
 change, using the existing task API rather than a runner signal.
+When a Done or rejected task is resumed without a new operator message, keep
+the conversation open and wait. Do not repeat its prior completion updates or
+recreate `worker-release.json` merely because its saved work is complete.
 Remain running while awaiting the user or external work, and do not create
 `worker-release.json` at a waiting point or ordinary checkpoint.
 

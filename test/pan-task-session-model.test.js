@@ -337,6 +337,55 @@ test('task outcome alone keeps a session open and release preserves outcome and 
   await rm(root, { recursive: true, force: true });
 });
 
+test('resumed completed task prompt waits for a new operator message', async () => {
+  const { backend } = await createBackend();
+  const task = await backend.create({
+    title: 'Discuss completed work',
+    status: 'done',
+    playbook: 'pan',
+    agentStatus: 'requested',
+    sessionId: '11111111-2222-4333-8444-555555555555',
+  });
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-completed-resume-'));
+  const config = validateRunnerConfig({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory: root,
+    machine: 'test-machine',
+    launchCommand: ['copilot'],
+  });
+  let prompt = '';
+
+  try {
+    await pollRunner({
+      backend,
+      config,
+      loadedDomain: {
+        playbooks: new Map([['pan', {
+          name: 'pan',
+          description: 'Test',
+          workingDirectory: root,
+          text: '# Pan',
+        }]]),
+        domainInstructions: '# Domain',
+        domainRevision: 'reviewed-sha',
+      },
+      dependencies: {
+        launchProcess: async (options) => {
+          prompt = options.prompt;
+          return { pid: 5100, processStart: 'start-5100' };
+        },
+      },
+    });
+
+    assert.match(prompt, /resuming its saved conversation without a new operator message/i);
+    assert.match(prompt, /Remain open and wait for that message/i);
+    assert.match(prompt, /Do not repeat prior completion updates/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('default runner launch opens the saved session interactively', async () => {
   const { backend } = await createBackend();
   const savedSessionId = '11111111-2222-4333-8444-555555555555';

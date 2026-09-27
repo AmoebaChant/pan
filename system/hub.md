@@ -130,6 +130,12 @@ during an active turn queues the follow-up behind that turn. A structured
 question remains a distinct interaction and keeps ordinary message submission
 disabled until answered.
 
+Resume only reconnects the saved conversation. In particular, resuming a Done
+or rejected task without a new operator message must leave the worker running
+and ready for discussion; the worker must not replay its prior
+completion updates or recreate `worker-release.json`. The explicit resume
+action itself is not completion of a new request.
+
 ## Playbooks and dispatch
 
 Use the existing [playbook](playbooks.md) loader and assignment semantics.
@@ -167,6 +173,10 @@ Retain the existing `worker-release.json` convention for the first release.
 The worker persists and verifies its final task outcome, then creates the
 empty release file as its final action. Hub observes the file and closes only
 that managed worker process. No custom completion protocol is necessary.
+
+A resumed Done or rejected task remains active while waiting for the operator's
+first new message. The fact that its saved conversation and work status record
+an earlier completion is not a fresh release request.
 
 When a process actually exits, clear its agent status while retaining its
 session ID and work status. An ordinary ACP end-of-turn is not a process exit

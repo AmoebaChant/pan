@@ -27,6 +27,11 @@ with no saved ID creates and records one. Requesting a task with a saved ID
 resumes that same session. Requesting is valid for open, done, and rejected
 tasks.
 
+Resuming a Done or rejected task is a request to reopen its conversation, not
+to repeat the request that previously completed. Without a new operator
+message, the resumed worker waits and remains running. Prior completion
+evidence does not authorize another release request.
+
 Changing work status, including to Done, does not stop a running session or
 clear Agent status. A blank Agent field is not a stop request; while its
 managed process remains open, the runner restores the observed `running`
