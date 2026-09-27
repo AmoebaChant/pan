@@ -51,6 +51,9 @@ dispatches work.
 
 Change work Status only when the requested outcome justifies it. A discussion
 or follow-up on completed work does not automatically reopen the task.
+Resuming a Done or rejected task without a new operator message only reopens
+its saved conversation. Wait for the message; do not repeat prior completion
+updates or recreate `worker-release.json` because the earlier work is complete.
 
 When the current request is complete, persist the final task comment and
 explicitly set the justified outcome to `done` or `rejected`. Re-read the live
