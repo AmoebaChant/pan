@@ -39,7 +39,8 @@ Use the Garden visual direction:
   horizontal page scrolling. Cards can be reordered and moved between status
   groups with a visible insertion gap; write the resulting state and portfolio
   order to the owning workstream store after a live re-read.
-- Tasks show useful next steps and prominent needs-input treatment.
+- Tasks show useful next steps, their next-action date at the bottom right of
+  dated cards, and prominent needs-input treatment.
 - The left pane header contains a clickable Pan character and Today, Needs
   Attention, All, and Archive views, in that order. Today contains open tasks
   whose next-action date is the local date today or earlier. Workstreams remain
