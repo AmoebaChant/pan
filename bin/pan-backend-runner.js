@@ -551,6 +551,12 @@ function launchPrompt(task, files) {
     `Read workstream guidance at ${files.workstream} when that snapshot is non-empty.`,
     'The catalog and snapshots describe launch-time state only. Re-read the live store before any workstream write.',
     'Use task comments for progress and business decisions.',
+    ...(task.sessionId && ['done', 'rejected'].includes(task.status)
+      ? [
+          'This Done or rejected task is resuming its saved conversation without a new operator message.',
+          'Remain open and wait for that message. Do not repeat prior completion updates or recreate the release file merely because the saved work is complete.',
+        ]
+      : []),
     'When the current request is complete, first persist the final task comment and explicitly set the justified work status to done or rejected.',
     'Re-read the live task and comments to verify those durable updates succeeded.',
     `Then, as the final action, create the exact empty ${files.release} file to request runner-managed closure.`,
