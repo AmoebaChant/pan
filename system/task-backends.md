@@ -10,6 +10,8 @@ pan-task --config <backend.json> create --input @request.json
 pan-task --config <backend.json> update <id> --input @request.json
 pan-task --config <backend.json> comment <id> --input @request.json
 pan-task --config <backend.json> comments <id>
+pan-task --config <backend.json> backfill-workstreams
+pan-task --config <backend.json> backfill-workstreams --input '{"apply":true}'
 pan-task --config <backend.json> complete <id> --input '{"outcome":"done"}'
 pan-task --config <backend.json> reopen <id>
 ```
@@ -71,3 +73,20 @@ configuration, not Pan ownership.
 
 For source intake, Todoist create supports an optional UUID `idempotencyKey`
 sent as `X-Request-Id`.
+
+An optional `projectWorkstreams` object in the selected Todoist backend
+configuration explicitly maps native project IDs to Pan workstream paths.
+When task metadata has no non-empty workstream, reads project the configured
+mapping without writing; explicit per-task metadata always wins. Creation in a
+mapped project writes that workstream unless the caller supplies another one,
+and moving a task into a mapped project gives an otherwise unassigned task the
+same read-time projection. Inbox must not be mapped. Project names, similar
+text, and catalog titles are never inferred.
+
+Domains may durably materialize the projection once with
+`backfill-workstreams`. The command previews by default, reporting eligible,
+mapped, explicit, and pending exact counts by project. `{"apply":true}` updates
+only missing `workstream` metadata through Todoist's sync API, including recent
+completed tasks without reopening them, then re-reads and verifies every
+candidate and protected native field. A repeated run reports zero pending
+updates. Ordinary task reads never perform this migration.

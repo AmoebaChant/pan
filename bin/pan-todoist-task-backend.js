@@ -10,6 +10,7 @@ const NATIVE_TO_PRIORITY = { 1: 'low', 2: 'normal', 3: 'high', 4: 'urgent' };
 const WORK_STATUSES = new Set(['open', 'done', 'rejected']);
 const AGENT_STATUSES = new Set(['', 'requested', 'running']);
 const COMPLETED_HISTORY_MONTHS = 3;
+const WORKSTREAM_BACKFILL_BATCH_SIZE = 50;
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -103,6 +104,41 @@ function monthsBefore(value, count) {
   return result;
 }
 
+function projectWorkstreamsFrom(config) {
+  const mappings = config.projectWorkstreams ?? {};
+  assertObject(mappings, 'projectWorkstreams');
+  const normalized = {};
+  for (const [projectId, workstream] of Object.entries(mappings)) {
+    const id = projectId.trim();
+    const path = typeof workstream === 'string' ? workstream.trim() : '';
+    if (!id || !path) {
+      throw new TaskBackendError(
+        'projectWorkstreams keys and values must be non-empty strings',
+        { code: 'invalid-input' },
+      );
+    }
+    if (id === String(config.inboxProjectId ?? '')) {
+      throw new TaskBackendError('Inbox cannot have a projectWorkstreams mapping', {
+        code: 'invalid-input',
+      });
+    }
+    normalized[id] = path;
+  }
+  return normalized;
+}
+
+function protectedTaskState(task) {
+  return JSON.stringify({
+    content: task.content ?? '',
+    completed: taskCompleted(task),
+    due: task.due ?? null,
+    deadline: task.deadline ?? null,
+    priority: task.priority ?? null,
+    projectId: String(task.project_id ?? ''),
+    responsibleUid: task.responsible_uid == null ? null : String(task.responsible_uid),
+  });
+}
+
 export class TodoistTaskBackend {
   constructor(
     config,
@@ -118,6 +154,7 @@ export class TodoistTaskBackend {
     this.readFile = readFileImpl;
     this.now = nowImpl;
     this.baseUrl = String(config.baseUrl || 'https://api.todoist.com/api/v1').replace(/\/$/, '');
+    this.projectWorkstreams = projectWorkstreamsFrom(config);
     this.user = null;
     this.token = null;
     this.supportsIdempotentCreate = true;
@@ -204,7 +241,11 @@ export class TodoistTaskBackend {
       nextStep: String(metadata.nextStep ?? ''),
       deadline: task.deadline?.date || '',
       playbook: String(metadata.playbook ?? ''),
-      workstream: String(metadata.workstream ?? ''),
+      workstream: String(
+        metadata.workstream
+        || this.projectWorkstreams[String(task.project_id ?? '')]
+        || '',
+      ),
       sessionId: String(metadata.sessionId ?? ''),
       agentStatus,
       issueState: completed ? 'CLOSED' : 'OPEN',
@@ -268,6 +309,11 @@ export class TodoistTaskBackend {
   }
 
   async list() {
+    const nativeTasks = await this.nativeTasks();
+    return nativeTasks.map((task) => this.canonical(task));
+  }
+
+  async nativeTasks() {
     const active = await this.paged('/tasks');
     const completed = this.config.includeCompleted === false
       ? []
@@ -276,7 +322,7 @@ export class TodoistTaskBackend {
     for (const task of [...active, ...completed]) {
       if (this.inScope(task)) merged.set(taskId(task), task);
     }
-    return [...merged.values()].map((task) => this.canonical(task));
+    return [...merged.values()];
   }
 
   async nativeTask(id) {
@@ -329,11 +375,13 @@ export class TodoistTaskBackend {
     if (!PRIORITY_TO_NATIVE[priority]) {
       throw new TaskBackendError(`unsupported priority: ${priority}`, { code: 'invalid-input' });
     }
-    const projectId = input.projectId || this.config.createProjectId;
+    const projectId = String(input.projectId || this.config.createProjectId || '');
     const metadata = {
       nextStep: String(input.nextStep ?? ''),
       playbook: String(input.playbook ?? ''),
-      workstream: String(input.workstream ?? ''),
+      workstream: String(
+        input.workstream ?? this.projectWorkstreams[projectId] ?? '',
+      ),
       sessionId: String(input.sessionId ?? ''),
       agentStatus: String(input.agentStatus ?? ''),
       status: status === 'rejected' ? 'rejected' : '',
@@ -355,7 +403,7 @@ export class TodoistTaskBackend {
       content: title,
       description: descriptionWithMetadata(input.description || '', metadata),
       priority: PRIORITY_TO_NATIVE[priority],
-      ...(projectId ? { project_id: String(projectId) } : {}),
+      ...(projectId ? { project_id: projectId } : {}),
       ...(input.nextActionDate ? { due_date: input.nextActionDate } : {}),
       ...(input.deadline ? { deadline_date: input.deadline } : {}),
     }, idempotencyKey ? { 'X-Request-Id': idempotencyKey } : {});
@@ -372,15 +420,24 @@ export class TodoistTaskBackend {
   }
 
   async updateRecurringDate(id, native, date) {
-    const uuid = randomUUID();
+    await this.syncCommands([{
+      type: 'item_update',
+      args: { id: String(id), due: { ...native.due, date } },
+    }], {
+      completedOperation: 'task metadata update',
+      failedOperation: 'recurring native due-date update',
+    });
+  }
+
+  async syncCommands(commands, failureDetails) {
+    const requests = commands.map((command) => ({
+      ...command,
+      uuid: randomUUID(),
+    }));
     const form = new URLSearchParams({
       sync_token: '*',
       resource_types: '[]',
-      commands: JSON.stringify([{
-        type: 'item_update',
-        uuid,
-        args: { id: String(id), due: { ...native.due, date } },
-      }]),
+      commands: JSON.stringify(requests),
     });
     const response = await this.fetch(`${this.baseUrl}/sync`, {
       method: 'POST',
@@ -391,17 +448,157 @@ export class TodoistTaskBackend {
       body: form,
     });
     const result = await response.json().catch(() => null);
-    if (!response.ok || result?.sync_status?.[uuid] !== 'ok') {
-      throw new TaskBackendError('Todoist recurring date update failed', {
+    const failed = requests.filter(
+      (request) => result?.sync_status?.[request.uuid] !== 'ok',
+    );
+    if (!response.ok || failed.length > 0) {
+      throw new TaskBackendError('Todoist sync update failed', {
         code: 'partial-write',
         status: response.ok ? null : response.status,
         details: {
-          completedOperation: 'task metadata update',
-          failedOperation: 'recurring native due-date update',
+          ...failureDetails,
+          failedTaskIds: failed.map((request) => String(request.args.id)),
           response: result,
         },
       });
     }
+  }
+
+  workstreamBackfillPlan(tasks) {
+    const byProject = {};
+    let mapped = 0;
+    let explicit = 0;
+    const candidates = [];
+    for (const task of tasks) {
+      const projectId = String(task.project_id ?? '');
+      const workstream = this.projectWorkstreams[projectId];
+      if (!workstream) continue;
+      mapped += 1;
+      const parsed = metadataFrom(task.description || '');
+      if (String(parsed.metadata.workstream ?? '').trim()) {
+        explicit += 1;
+        continue;
+      }
+      candidates.push({
+        id: taskId(task),
+        projectId,
+        workstream,
+        updatedDescription: descriptionWithMetadata(parsed.description, {
+          ...parsed.metadata,
+          workstream,
+        }),
+        protectedState: protectedTaskState(task),
+      });
+      const current = byProject[projectId] ?? {
+        projectId,
+        workstream,
+        count: 0,
+      };
+      current.count += 1;
+      byProject[projectId] = current;
+    }
+    return {
+      summary: {
+        eligible: tasks.length,
+        mapped,
+        explicit,
+        needsBackfill: candidates.length,
+        byProject: Object.values(byProject),
+      },
+      candidates,
+    };
+  }
+
+  async backfillWorkstreams(input = {}) {
+    assertObject(input, 'backfill input');
+    if (input.apply !== undefined && typeof input.apply !== 'boolean') {
+      throw new TaskBackendError('apply must be a boolean', { code: 'invalid-input' });
+    }
+    const before = await this.nativeTasks();
+    const plan = this.workstreamBackfillPlan(before);
+    if (input.apply !== true || plan.candidates.length === 0) {
+      return {
+        applied: false,
+        ...plan.summary,
+        updated: 0,
+        verified: 0,
+      };
+    }
+
+    for (let index = 0; index < plan.candidates.length; index += WORKSTREAM_BACKFILL_BATCH_SIZE) {
+      const batch = plan.candidates.slice(index, index + WORKSTREAM_BACKFILL_BATCH_SIZE);
+      await this.syncCommands(batch.map((candidate) => ({
+        type: 'item_update',
+        args: {
+          id: candidate.id,
+          description: candidate.updatedDescription,
+        },
+      })), {
+        completedOperation: `workstream backfill through item ${index}`,
+        failedOperation: 'workstream metadata backfill',
+      });
+    }
+
+    const after = new Map(
+      (await this.nativeTasks()).map((task) => [taskId(task), task]),
+    );
+    const failures = [];
+    for (const candidate of plan.candidates) {
+      const task = after.get(candidate.id);
+      const actualWorkstream = task
+        ? String(metadataFrom(task.description || '').metadata.workstream ?? '')
+        : '';
+      if (
+        !task
+        || actualWorkstream !== candidate.workstream
+        || task.description !== candidate.updatedDescription
+        || protectedTaskState(task) !== candidate.protectedState
+      ) {
+        failures.push({
+          id: candidate.id,
+          expectedWorkstream: candidate.workstream,
+          actualWorkstream,
+          taskFound: Boolean(task),
+          descriptionAndMetadataUnchangedExceptWorkstream: Boolean(
+            task && task.description === candidate.updatedDescription,
+          ),
+          protectedFieldsUnchanged: Boolean(
+            task && protectedTaskState(task) === candidate.protectedState,
+          ),
+        });
+      }
+    }
+    if (failures.length > 0) {
+      throw new TaskBackendError('Todoist workstream backfill verification failed', {
+        code: 'partial-write',
+        details: { failures },
+      });
+    }
+    const remaining = this.workstreamBackfillPlan([...after.values()]);
+    if (remaining.candidates.length > 0) {
+      throw new TaskBackendError('Todoist workstream backfill remained incomplete', {
+        code: 'partial-write',
+        details: { remaining: remaining.summary },
+      });
+    }
+    return {
+      applied: true,
+      ...plan.summary,
+      updated: plan.candidates.length,
+      verified: plan.candidates.length,
+      remaining: 0,
+      verifiedFields: [
+        'title',
+        'status',
+        'dates',
+        'priority',
+        'sessionId',
+        'agentStatus',
+        'project',
+        'recurrence',
+      ],
+      untouchedResources: ['comments'],
+    };
   }
 
   async update(id, input) {

@@ -400,3 +400,282 @@ test('Todoist metadata block contains only backend-unsupported small-contract fi
     assert.doesNotMatch(description, new RegExp(rejected, 'i'));
   }
 });
+
+test('Todoist projects configured workstreams while explicit metadata wins', async () => {
+  const tasks = [
+    {
+      id: 'mapped',
+      content: 'Mapped task',
+      description: '',
+      priority: 2,
+      project_id: 'health-project',
+      responsible_uid: null,
+    },
+    {
+      id: 'override',
+      content: 'Override task',
+      description: descriptionWithMetadata('', { workstream: 'personal/override' }),
+      priority: 2,
+      project_id: 'health-project',
+      responsible_uid: null,
+    },
+    {
+      id: 'unmapped',
+      content: 'Unmapped task',
+      description: '',
+      priority: 2,
+      project_id: 'other-project',
+      responsible_uid: null,
+    },
+    {
+      id: 'inbox',
+      content: 'Inbox task',
+      description: '',
+      priority: 2,
+      project_id: 'inbox-project',
+      responsible_uid: null,
+    },
+  ];
+  const backend = await new TodoistTaskBackend({
+    backend: 'todoist',
+    includeCompleted: false,
+    inboxProjectId: 'inbox-project',
+    projectWorkstreams: {
+      'health-project': 'adulting-log/health',
+    },
+  }, {
+    readFileImpl: async () => 'TODOIST_API_TOKEN=secret',
+    fetchImpl: async (url) => {
+      if (url.endsWith('/user')) return response({ id: 'self' });
+      if (url.endsWith('/tasks?limit=200')) {
+        return response({ results: tasks, next_cursor: null });
+      }
+      throw new Error(`unexpected request: GET ${url}`);
+    },
+  }).initialize();
+
+  const projected = await backend.list();
+  assert.equal(projected.find((task) => task.id === 'mapped').workstream, 'adulting-log/health');
+  assert.equal(projected.find((task) => task.id === 'override').workstream, 'personal/override');
+  assert.equal(projected.find((task) => task.id === 'unmapped').workstream, '');
+  assert.equal(projected.find((task) => task.id === 'inbox').workstream, '');
+});
+
+test('Todoist creation persists a mapped project workstream by default', async () => {
+  let created;
+  const backend = await new TodoistTaskBackend({
+    backend: 'todoist',
+    includeCompleted: false,
+    projectWorkstreams: {
+      'health-project': 'adulting-log/health',
+    },
+  }, {
+    readFileImpl: async () => 'TODOIST_API_TOKEN=secret',
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith('/user')) return response({ id: 'self' });
+      if (url.endsWith('/tasks') && options.method === 'POST') {
+        created = {
+          id: 'created',
+          ...JSON.parse(options.body),
+          responsible_uid: null,
+        };
+        return response(created);
+      }
+      throw new Error(`unexpected request: ${options.method} ${url}`);
+    },
+  }).initialize();
+
+  const task = await backend.create({
+    title: 'Schedule checkup',
+    projectId: 'health-project',
+  });
+  assert.equal(task.workstream, 'adulting-log/health');
+  assert.equal(
+    metadataFrom(created.description).metadata.workstream,
+    'adulting-log/health',
+  );
+});
+
+test('Todoist move projects an otherwise unassigned task in a mapped project', async () => {
+  let task = {
+    id: 'moving',
+    content: 'Moving task',
+    description: '',
+    priority: 2,
+    project_id: 'other-project',
+    responsible_uid: null,
+  };
+  const backend = await new TodoistTaskBackend({
+    backend: 'todoist',
+    includeCompleted: false,
+    projectWorkstreams: {
+      'health-project': 'adulting-log/health',
+    },
+  }, {
+    readFileImpl: async () => 'TODOIST_API_TOKEN=secret',
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith('/user')) return response({ id: 'self' });
+      if (url.endsWith('/projects/health-project')) {
+        return response({ id: 'health-project', is_archived: false, is_deleted: false });
+      }
+      if (url.endsWith('/tasks/moving') && options.method === 'GET') return response(task);
+      if (url.endsWith('/tasks/moving/move') && options.method === 'POST') {
+        task = { ...task, project_id: JSON.parse(options.body).project_id };
+        return response(task);
+      }
+      throw new Error(`unexpected request: ${options.method} ${url}`);
+    },
+  }).initialize();
+
+  const moved = await backend.move('moving', { projectId: 'health-project' });
+  assert.equal(moved.projectId, 'health-project');
+  assert.equal(moved.workstream, 'adulting-log/health');
+  assert.equal(metadataFrom(task.description).metadata.workstream, undefined);
+});
+
+test('Todoist workstream backfill previews, preserves task state, and is idempotent', async () => {
+  const active = [{
+    id: 'active',
+    content: 'Active task',
+    description: 'Active details',
+    priority: 4,
+    project_id: 'health-project',
+    responsible_uid: null,
+    due: {
+      date: '2026-09-28',
+      is_recurring: true,
+      string: 'every monday',
+    },
+    deadline: { date: '2026-10-01' },
+  }, {
+    id: 'override',
+    content: 'Explicit override',
+    description: descriptionWithMetadata('', {
+      workstream: 'personal/override',
+      sessionId: 'session-1',
+      agentStatus: 'running',
+    }),
+    priority: 2,
+    project_id: 'health-project',
+    responsible_uid: null,
+  }, {
+    id: 'inbox',
+    content: 'Inbox task',
+    description: '',
+    priority: 1,
+    project_id: 'inbox-project',
+    responsible_uid: null,
+  }];
+  const completed = [{
+    task_id: 'completed',
+    content: 'Completed task',
+    description: descriptionWithMetadata('Completed details', {
+      sessionId: 'session-2',
+      agentStatus: 'requested',
+    }),
+    priority: 3,
+    project_id: 'health-project',
+    responsible_uid: null,
+    completed_at: '2026-09-26T12:00:00Z',
+  }];
+  const syncRequests = [];
+  const fetchImpl = async (rawUrl, options = {}) => {
+    const url = new URL(rawUrl);
+    if (url.pathname.endsWith('/user')) return response({ id: 'self' });
+    if (url.pathname.endsWith('/tasks') && options.method === 'GET') {
+      return response({ results: active, next_cursor: null });
+    }
+    if (url.pathname.endsWith('/tasks/completed/by_completion_date')) {
+      return response({ items: completed, next_cursor: null });
+    }
+    if (url.pathname.endsWith('/sync') && options.method === 'POST') {
+      const form = new URLSearchParams(options.body);
+      const commands = JSON.parse(form.get('commands'));
+      syncRequests.push(...commands);
+      for (const command of commands) {
+        const task = [...active, ...completed].find(
+          (candidate) => taskIdForTest(candidate) === String(command.args.id),
+        );
+        task.description = command.args.description;
+      }
+      return response({
+        sync_status: Object.fromEntries(commands.map(({ uuid }) => [uuid, 'ok'])),
+      });
+    }
+    throw new Error(`unexpected request: ${options.method} ${url}`);
+  };
+  const backend = await new TodoistTaskBackend({
+    backend: 'todoist',
+    inboxProjectId: 'inbox-project',
+    projectWorkstreams: {
+      'health-project': 'adulting-log/health',
+    },
+  }, {
+    readFileImpl: async () => 'TODOIST_API_TOKEN=secret',
+    fetchImpl,
+    nowImpl: () => new Date('2026-09-27T12:00:00Z'),
+  }).initialize();
+
+  const preview = await backend.backfillWorkstreams();
+  assert.deepEqual(preview, {
+    applied: false,
+    eligible: 4,
+    mapped: 3,
+    explicit: 1,
+    needsBackfill: 2,
+    byProject: [{
+      projectId: 'health-project',
+      workstream: 'adulting-log/health',
+      count: 2,
+    }],
+    updated: 0,
+    verified: 0,
+  });
+  assert.equal(syncRequests.length, 0);
+
+  const applied = await backend.backfillWorkstreams({ apply: true });
+  assert.equal(applied.updated, 2);
+  assert.equal(applied.verified, 2);
+  assert.equal(applied.remaining, 0);
+  assert.deepEqual(
+    syncRequests.map(({ type, args }) => ({ type, keys: Object.keys(args).sort() })),
+    [
+      { type: 'item_update', keys: ['description', 'id'] },
+      { type: 'item_update', keys: ['description', 'id'] },
+    ],
+  );
+  assert.deepEqual(metadataFrom(active[0].description), {
+    description: 'Active details',
+    metadata: { workstream: 'adulting-log/health' },
+  });
+  assert.deepEqual(metadataFrom(completed[0].description), {
+    description: 'Completed details',
+    metadata: {
+      sessionId: 'session-2',
+      agentStatus: 'requested',
+      workstream: 'adulting-log/health',
+    },
+  });
+  assert.equal(active[0].due.is_recurring, true);
+  assert.equal(completed[0].completed_at, '2026-09-26T12:00:00Z');
+
+  const repeated = await backend.backfillWorkstreams({ apply: true });
+  assert.equal(repeated.applied, false);
+  assert.equal(repeated.needsBackfill, 0);
+  assert.equal(repeated.updated, 0);
+  assert.equal(syncRequests.length, 2);
+});
+
+test('Todoist rejects Inbox workstream mappings', () => {
+  assert.throws(
+    () => new TodoistTaskBackend({
+      inboxProjectId: 'inbox-project',
+      projectWorkstreams: { 'inbox-project': 'inbox' },
+    }),
+    /Inbox cannot have/,
+  );
+});
+
+function taskIdForTest(task) {
+  return String(task.id ?? task.task_id ?? '');
+}
