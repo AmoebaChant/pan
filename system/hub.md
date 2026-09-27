@@ -48,8 +48,12 @@ Use the Garden visual direction:
 - The left pane header contains a clickable Pan character and Today, Needs
   Attention, All, and Archive views, in that order. Today contains open tasks
   whose next-action date is the local date today or earlier. Workstreams remain
-  visible in every view and use the positive/green treatment when that view has
-  no matching tasks. Avoid redundant headings and summaries.
+  visible by default in every view and use the positive/green treatment when
+  that view has no matching tasks. A portfolio control lets the user show or
+  hide those empty workstreams after the active task filter is applied. Persist
+  that choice independently for each workstream-backed view across navigation,
+  reload, and Hub restart. Never show an empty **Tasks without a workstream**
+  fallback card. Avoid redundant headings and summaries.
 - The right chat pane starts at the same vertical position, with an
   equal-height, differently colored header.
 - A draggable and keyboard-adjustable divider controls pane widths.
