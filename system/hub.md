@@ -71,6 +71,16 @@ Use the Garden visual direction:
   native ACP image content only when the connected agent advertises image
   prompt support; enforce bounded payload limits and surface unsupported media
   or capability failures.
+- Open, select, and reload Main Pan and worker conversations at their newest
+  content on phone and desktop. Returning to a conversation also defaults to
+  the newest content; Hub does not persist incidental scroll offsets. Continue
+  following incoming and streaming content only while the reader is at or near
+  the bottom. Deliberately scrolling into history disables that follow behavior
+  until the reader returns near the bottom or reopens the conversation.
+- Keep the newest message and composer visible through delayed Markdown or
+  media layout, viewport changes, phone safe areas, and software-keyboard
+  resizing. Height changes must not leave a following conversation short of
+  the actual bottom or disturb a reader who is browsing earlier messages.
 - Keep unanswered questions visibly attached to their task and workstream.
   Dismissing a question does not answer or approve it.
 
