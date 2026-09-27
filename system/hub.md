@@ -37,6 +37,10 @@ Use the Garden visual direction:
 
 - Workstream status groups are horizontal rows of workstream cards.
 - Tasks show useful next steps and prominent needs-input treatment.
+- Checking a task completes it in the selected backend immediately in the
+  local projection, keeps the fresh completion in its current portfolio view
+  with a struck-through title, and allows reopening through undo or the same
+  control.
 - The left pane header contains a clickable Pan character and the Workstreams,
   Needs Attention, and Archive views. Avoid redundant headings and summaries.
 - The right chat pane starts at the same vertical position, with an
@@ -52,6 +56,17 @@ Use the Garden visual direction:
 
 Operational attention is separate from task work status. A pending question
 does not change priority, work status, planned date, or task ownership.
+
+Task and workstream mutations use one ordered optimistic queue. Apply each
+change to the visible portfolio immediately, preserve undo and redo history,
+and flush writes to their authoritative backend or store in order. Refresh
+waits for queued writes before reading live state and replays changes made
+while that read is in flight. A failed write remains visible with later intent
+queued for explicit retry; do not silently roll it back or report it as saved.
+The user may instead explicitly discard the blocked unsynced projection and
+return to the last confirmed state.
+The manual refresh control is also the queue activity indicator and spins
+during both refresh reads and write flushes.
 
 ## Headless sessions
 
