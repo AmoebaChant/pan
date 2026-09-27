@@ -88,6 +88,7 @@ test('Todoist uses the same small contract without legacy workflow metadata', as
     backend: 'todoist',
     createProjectId: 'p',
     includeCompleted: false,
+    projectWorkstreams: { p: 'pan' },
   }, {
     readFileImpl: async () => 'TODOIST_API_KEY=secret',
     fetchImpl: async (url, options) => {
@@ -119,7 +120,6 @@ test('Todoist uses the same small contract without legacy workflow metadata', as
 
   const requested = await backend.update('1', {
     playbook: 'pan',
-    workstream: 'pan',
     sessionId: 'session-1',
     agentStatus: 'requested',
   });
@@ -127,7 +127,6 @@ test('Todoist uses the same small contract without legacy workflow metadata', as
   assert.equal(requested.agentStatus, 'requested');
   assert.deepEqual(metadataFrom(task.description).metadata, {
     playbook: 'pan',
-    workstream: 'pan',
     sessionId: 'session-1',
     agentStatus: 'requested',
   });
@@ -154,6 +153,7 @@ test('Todoist metadata creates, reads, updates, and clears nextStep', async () =
     backend: 'todoist',
     createProjectId: 'p',
     includeCompleted: false,
+    projectWorkstreams: { p: 'pan' },
   }, {
     readFileImpl: async () => 'TODOIST_API_KEY=secret',
     fetchImpl: async (url, options = {}) => {
@@ -207,7 +207,6 @@ test('Todoist metadata creates, reads, updates, and clears nextStep', async () =
   assert.deepEqual(metadataFrom(task.description).metadata, {
     nextStep: 'PR published - ready for review',
     playbook: 'pan',
-    workstream: 'pan',
     sessionId: 'saved-session',
     agentStatus: 'running',
   });
@@ -233,7 +232,6 @@ test('Todoist metadata creates, reads, updates, and clears nextStep', async () =
     description: 'Keep native details.',
     metadata: {
       playbook: 'pan',
-      workstream: 'pan',
       sessionId: 'saved-session',
       agentStatus: 'running',
     },
@@ -250,7 +248,6 @@ test('Todoist metadata creates, reads, updates, and clears nextStep', async () =
   );
   assert.deepEqual(metadataFrom(updateBodies[1].description).metadata, {
     playbook: 'pan',
-    workstream: 'pan',
     sessionId: 'saved-session',
     agentStatus: 'running',
   });
@@ -373,7 +370,6 @@ test('Todoist metadata block contains only backend-unsupported small-contract fi
   const description = descriptionWithMetadata('Visible details', {
     nextStep: 'Awaiting review',
     playbook: 'pan',
-    workstream: 'pan',
     sessionId: 'session',
     agentStatus: 'running',
   });
@@ -382,7 +378,6 @@ test('Todoist metadata block contains only backend-unsupported small-contract fi
     metadata: {
       nextStep: 'Awaiting review',
       playbook: 'pan',
-      workstream: 'pan',
       sessionId: 'session',
       agentStatus: 'running',
     },
@@ -401,7 +396,7 @@ test('Todoist metadata block contains only backend-unsupported small-contract fi
   }
 });
 
-test('Todoist projects configured workstreams while explicit metadata wins', async () => {
+test('Todoist derives workstreams solely from configured native projects', async () => {
   const tasks = [
     {
       id: 'mapped',
@@ -412,8 +407,8 @@ test('Todoist projects configured workstreams while explicit metadata wins', asy
       responsible_uid: null,
     },
     {
-      id: 'override',
-      content: 'Override task',
+      id: 'legacy',
+      content: 'Legacy metadata task',
       description: descriptionWithMetadata('', { workstream: 'personal/override' }),
       priority: 2,
       project_id: 'health-project',
@@ -456,12 +451,12 @@ test('Todoist projects configured workstreams while explicit metadata wins', asy
 
   const projected = await backend.list();
   assert.equal(projected.find((task) => task.id === 'mapped').workstream, 'adulting-log/health');
-  assert.equal(projected.find((task) => task.id === 'override').workstream, 'personal/override');
+  assert.equal(projected.find((task) => task.id === 'legacy').workstream, 'adulting-log/health');
   assert.equal(projected.find((task) => task.id === 'unmapped').workstream, '');
   assert.equal(projected.find((task) => task.id === 'inbox').workstream, '');
 });
 
-test('Todoist creation persists a mapped project workstream by default', async () => {
+test('Todoist creation validates workstream and project without serializing workstream', async () => {
   let created;
   const backend = await new TodoistTaskBackend({
     backend: 'todoist',
@@ -488,19 +483,35 @@ test('Todoist creation persists a mapped project workstream by default', async (
   const task = await backend.create({
     title: 'Schedule checkup',
     projectId: 'health-project',
+    workstream: 'adulting-log/health',
   });
   assert.equal(task.workstream, 'adulting-log/health');
-  assert.equal(
-    metadataFrom(created.description).metadata.workstream,
-    'adulting-log/health',
+  assert.equal(metadataFrom(created.description).metadata.workstream, undefined);
+  await assert.rejects(
+    backend.create({
+      title: 'Conflicting destination',
+      projectId: 'other-project',
+      workstream: 'adulting-log/health',
+    }),
+    (error) => error.code === 'conflicting-mapping',
+  );
+  await assert.rejects(
+    backend.create({
+      title: 'Unknown destination',
+      workstream: 'adulting-log/wellness',
+    }),
+    (error) => error.code === 'unsupported-mapping',
   );
 });
 
-test('Todoist move projects an otherwise unassigned task in a mapped project', async () => {
+test('Todoist workstream updates move the native project and remove legacy metadata', async () => {
   let task = {
     id: 'moving',
     content: 'Moving task',
-    description: '',
+    description: descriptionWithMetadata('Details', {
+      workstream: 'legacy/path',
+      sessionId: 'session-1',
+    }),
     priority: 2,
     project_id: 'other-project',
     responsible_uid: null,
@@ -519,25 +530,43 @@ test('Todoist move projects an otherwise unassigned task in a mapped project', a
         return response({ id: 'health-project', is_archived: false, is_deleted: false });
       }
       if (url.endsWith('/tasks/moving') && options.method === 'GET') return response(task);
-      if (url.endsWith('/tasks/moving/move') && options.method === 'POST') {
-        task = { ...task, project_id: JSON.parse(options.body).project_id };
+      if (url.endsWith('/tasks/moving') && options.method === 'POST') {
+        task = { ...task, ...JSON.parse(options.body) };
         return response(task);
+      }
+      if (url.endsWith('/sync') && options.method === 'POST') {
+        const commands = JSON.parse(new URLSearchParams(options.body).get('commands'));
+        task = { ...task, project_id: commands[0].args.project_id };
+        return response({
+          sync_status: Object.fromEntries(commands.map(({ uuid }) => [uuid, 'ok'])),
+        });
       }
       throw new Error(`unexpected request: ${options.method} ${url}`);
     },
   }).initialize();
 
-  const moved = await backend.move('moving', { projectId: 'health-project' });
+  const moved = await backend.update('moving', {
+    workstream: 'adulting-log/health',
+  });
   assert.equal(moved.projectId, 'health-project');
   assert.equal(moved.workstream, 'adulting-log/health');
   assert.equal(metadataFrom(task.description).metadata.workstream, undefined);
+  assert.equal(metadataFrom(task.description).metadata.sessionId, 'session-1');
+  await assert.rejects(
+    backend.update('moving', { workstream: 'adulting-log/wellness' }),
+    (error) => error.code === 'unsupported-mapping',
+  );
 });
 
-test('Todoist workstream backfill previews, preserves task state, and is idempotent', async () => {
+test('Todoist legacy workstream migration previews, reconciles, and is idempotent', async () => {
   const active = [{
-    id: 'active',
-    content: 'Active task',
-    description: 'Active details',
+    id: 'aligned',
+    content: 'Aligned task',
+    description: descriptionWithMetadata('Active details', {
+      workstream: 'adulting-log/health',
+      sessionId: 'session-1',
+      agentStatus: 'running',
+    }),
     priority: 4,
     project_id: 'health-project',
     responsible_uid: null,
@@ -548,20 +577,11 @@ test('Todoist workstream backfill previews, preserves task state, and is idempot
     },
     deadline: { date: '2026-10-01' },
   }, {
-    id: 'override',
-    content: 'Explicit override',
-    description: descriptionWithMetadata('', {
-      workstream: 'personal/override',
-      sessionId: 'session-1',
-      agentStatus: 'running',
+    id: 'conflict',
+    content: 'Unmapped legacy task',
+    description: descriptionWithMetadata('Conflict details', {
+      workstream: 'adulting-log/wellness',
     }),
-    priority: 2,
-    project_id: 'health-project',
-    responsible_uid: null,
-  }, {
-    id: 'inbox',
-    content: 'Inbox task',
-    description: '',
     priority: 1,
     project_id: 'inbox-project',
     responsible_uid: null,
@@ -570,11 +590,12 @@ test('Todoist workstream backfill previews, preserves task state, and is idempot
     task_id: 'completed',
     content: 'Completed task',
     description: descriptionWithMetadata('Completed details', {
+      workstream: 'adulting-log/health',
       sessionId: 'session-2',
       agentStatus: 'requested',
     }),
     priority: 3,
-    project_id: 'health-project',
+    project_id: 'inbox-project',
     responsible_uid: null,
     completed_at: '2026-09-26T12:00:00Z',
   }];
@@ -596,7 +617,11 @@ test('Todoist workstream backfill previews, preserves task state, and is idempot
         const task = [...active, ...completed].find(
           (candidate) => taskIdForTest(candidate) === String(command.args.id),
         );
-        task.description = command.args.description;
+        if (command.type === 'item_move') {
+          task.project_id = command.args.project_id;
+        } else {
+          task.description = command.args.description;
+        }
       }
       return response({
         sync_status: Object.fromEntries(commands.map(({ uuid }) => [uuid, 'ok'])),
@@ -616,63 +641,92 @@ test('Todoist workstream backfill previews, preserves task state, and is idempot
     nowImpl: () => new Date('2026-09-27T12:00:00Z'),
   }).initialize();
 
-  const preview = await backend.backfillWorkstreams();
+  const preview = await backend.migrateWorkstreams();
   assert.deepEqual(preview, {
     applied: false,
-    eligible: 4,
-    mapped: 3,
-    explicit: 1,
-    needsBackfill: 2,
-    byProject: [{
-      projectId: 'health-project',
+    eligible: 3,
+    legacyMetadata: 3,
+    alignedCleanup: 1,
+    projectMoves: 1,
+    conflicts: 1,
+    needsMigration: 2,
+    byWorkstream: [{
       workstream: 'adulting-log/health',
+      targetProjectId: 'health-project',
       count: 2,
+      moves: 1,
+    }],
+    conflictDetails: [{
+      id: 'conflict',
+      title: 'Unmapped legacy task',
+      projectId: 'inbox-project',
+      legacyWorkstream: 'adulting-log/wellness',
+      reason: 'workstream has no configured Todoist project',
     }],
     updated: 0,
     verified: 0,
   });
   assert.equal(syncRequests.length, 0);
 
-  const applied = await backend.backfillWorkstreams({ apply: true });
+  const applied = await backend.migrateWorkstreams({ apply: true });
   assert.equal(applied.updated, 2);
   assert.equal(applied.verified, 2);
-  assert.equal(applied.remaining, 0);
+  assert.equal(applied.remainingActionable, 0);
+  assert.equal(applied.remainingConflicts.length, 1);
   assert.deepEqual(
     syncRequests.map(({ type, args }) => ({ type, keys: Object.keys(args).sort() })),
     [
       { type: 'item_update', keys: ['description', 'id'] },
+      { type: 'item_move', keys: ['id', 'project_id'] },
       { type: 'item_update', keys: ['description', 'id'] },
     ],
   );
   assert.deepEqual(metadataFrom(active[0].description), {
     description: 'Active details',
-    metadata: { workstream: 'adulting-log/health' },
+    metadata: {
+      sessionId: 'session-1',
+      agentStatus: 'running',
+    },
   });
   assert.deepEqual(metadataFrom(completed[0].description), {
     description: 'Completed details',
     metadata: {
       sessionId: 'session-2',
       agentStatus: 'requested',
-      workstream: 'adulting-log/health',
     },
   });
+  assert.equal(completed[0].project_id, 'health-project');
+  assert.equal(
+    metadataFrom(active[1].description).metadata.workstream,
+    'adulting-log/wellness',
+  );
   assert.equal(active[0].due.is_recurring, true);
   assert.equal(completed[0].completed_at, '2026-09-26T12:00:00Z');
 
-  const repeated = await backend.backfillWorkstreams({ apply: true });
+  const repeated = await backend.migrateWorkstreams({ apply: true });
   assert.equal(repeated.applied, false);
-  assert.equal(repeated.needsBackfill, 0);
+  assert.equal(repeated.needsMigration, 0);
+  assert.equal(repeated.conflicts, 1);
   assert.equal(repeated.updated, 0);
-  assert.equal(syncRequests.length, 2);
+  assert.equal(syncRequests.length, 3);
 });
 
-test('Todoist rejects Inbox workstream mappings', () => {
+test('Todoist rejects Inbox and duplicate workstream mappings', () => {
   assert.throws(
     () => new TodoistTaskBackend({
       inboxProjectId: 'inbox-project',
       projectWorkstreams: { 'inbox-project': 'inbox' },
     }),
     /Inbox cannot have/,
+  );
+  assert.throws(
+    () => new TodoistTaskBackend({
+      projectWorkstreams: {
+        'health-project': 'adulting-log/health',
+        'other-project': 'adulting-log/health',
+      },
+    }),
+    /maps to more than one/,
   );
 });
 

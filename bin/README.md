@@ -7,7 +7,7 @@ Node 22+, ESM, built-ins only.
 `pan-task.js` exposes backend-neutral list/get/create/update/comment/comments/
 complete/reopen operations. GitHub access uses authenticated `gh`; Todoist
 credentials come from the configured local credential file. Todoist also
-supports the explicit, preview-first `backfill-workstreams` migration described
+supports the explicit, preview-first `migrate-workstreams` migration described
 in [`system/task-backends.md`](../system/task-backends.md).
 
 ## Runner
