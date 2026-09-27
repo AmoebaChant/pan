@@ -35,22 +35,42 @@ Archiving a finished chat preserves the task's saved session ID.
 
 Use the Garden visual direction:
 
-- Workstream status groups are horizontal rows of workstream cards.
-- Tasks show useful next steps and prominent needs-input treatment.
+- Workstream status groups contain wrapping rows of workstream cards without
+  horizontal page scrolling. Cards can be reordered and moved between status
+  groups with a visible insertion gap; write the resulting state and portfolio
+  order to the owning workstream store after a live re-read.
+- Tasks show useful next steps, their next-action date at the bottom right of
+  dated cards, and prominent needs-input treatment.
 - Checking a task completes it in the selected backend immediately in the
   local projection, keeps the fresh completion in its current portfolio view
   with a struck-through title, and allows reopening through undo or the same
   control.
-- The left pane header contains a clickable Pan character and the Workstreams,
-  Needs Attention, and Archive views. Avoid redundant headings and summaries.
+- The left pane header contains a clickable Pan character and Today, Needs
+  Attention, All, and Archive views, in that order. Today contains open tasks
+  whose next-action date is the local date today or earlier. Workstreams remain
+  visible in every view and use the positive/green treatment when that view has
+  no matching tasks. Avoid redundant headings and summaries.
 - The right chat pane starts at the same vertical position, with an
   equal-height, differently colored header.
 - A draggable and keyboard-adjustable divider controls pane widths.
 - Clicking Pan selects the main conversation. Clicking a task selects its
-  worker conversation. Do not route task-specific decisions through the main
-  Pan conversation.
+  worker conversation, and double-clicking a task opens its edit dialog. Tasks
+  can be reordered within a workstream or moved to another writable workstream
+  with a visible insertion gap. Do not route task-specific decisions through
+  the main Pan conversation.
+- On phone-width screens, replace the two-pane layout with one content area and
+  an iPhone-style bottom bar for Pan, Today, Needs Attention, All, and Archive.
+  Pan opens the main conversation. The other destinations show the same
+  workstream portfolio with their corresponding task filter. Opening a task
+  replaces the portfolio with its worker conversation, whose top-left back
+  control returns to the current filtered portfolio.
 - Show questions inline with suggested answers, any provided default, and a
   freeform alternative. The user must explicitly submit their answer.
+- Preserve authored line breaks when rendering conversation Markdown. Allow
+  images pasted from the clipboard to be previewed, removed, and submitted as
+  native ACP image content only when the connected agent advertises image
+  prompt support; enforce bounded payload limits and surface unsupported media
+  or capability failures.
 - Keep unanswered questions visibly attached to their task and workstream.
   Dismissing a question does not answer or approve it.
 
@@ -145,6 +165,12 @@ during an active turn queues the follow-up behind that turn. A structured
 question remains a distinct interaction and keeps ordinary message submission
 disabled until answered.
 
+Resume only reconnects the saved conversation. In particular, resuming a Done
+or rejected task without a new operator message must leave the worker running
+and ready for discussion; the worker must not replay its prior
+completion updates or recreate `worker-release.json`. The explicit resume
+action itself is not completion of a new request.
+
 ## Playbooks and dispatch
 
 Use the existing [playbook](playbooks.md) loader and assignment semantics.
@@ -182,6 +208,10 @@ Retain the existing `worker-release.json` convention for the first release.
 The worker persists and verifies its final task outcome, then creates the
 empty release file as its final action. Hub observes the file and closes only
 that managed worker process. No custom completion protocol is necessary.
+
+A resumed Done or rejected task remains active while waiting for the operator's
+first new message. The fact that its saved conversation and work status record
+an earlier completion is not a fresh release request.
 
 When a process actually exits, clear its agent status while retaining its
 session ID and work status. An ordinary ACP end-of-turn is not a process exit

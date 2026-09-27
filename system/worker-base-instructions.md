@@ -21,6 +21,12 @@ Task Status describes the work. Agent status describes this session. Do not
 infer one from the other. A Done task may still have useful discussion or
 follow-up work in this session.
 
+Resuming a Done or rejected task opens its saved conversation; it does not make
+the previously completed request current again. When such a task is resumed
+without a new operator message, remain open and wait for that message. Do not
+repeat the prior completion updates or recreate `worker-release.json` merely
+because the saved conversation ended with completed work.
+
 Record progress, questions, decisions, links, and evidence as ordinary task
 comments:
 
