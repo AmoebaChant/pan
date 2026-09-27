@@ -36,7 +36,8 @@ Archiving a finished chat preserves the task's saved session ID.
 Use the Garden visual direction:
 
 - Workstream status groups are horizontal rows of workstream cards.
-- Tasks show useful next steps and prominent needs-input treatment.
+- Tasks show useful next steps, their next-action date at the bottom right of
+  dated cards, and prominent needs-input treatment.
 - The left pane header contains a clickable Pan character and the Workstreams,
   Needs Attention, and Archive views. Avoid redundant headings and summaries.
 - The right chat pane starts at the same vertical position, with an
