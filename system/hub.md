@@ -45,6 +45,12 @@ Use the Garden visual direction:
 - Clicking Pan selects the main conversation. Clicking a task selects its
   worker conversation. Do not route task-specific decisions through the main
   Pan conversation.
+- On phone-width screens, replace the two-pane layout with one content area and
+  an iPhone-style bottom bar for Pan, Today, Needs Attention, All, and Archive.
+  Pan opens the main conversation. The other destinations show the same
+  workstream portfolio with their corresponding task filter. Opening a task
+  replaces the portfolio with its worker conversation, whose top-left back
+  control returns to the current filtered portfolio.
 - Show questions inline with suggested answers, any provided default, and a
   freeform alternative. The user must explicitly submit their answer.
 - Keep unanswered questions visibly attached to their task and workstream.
