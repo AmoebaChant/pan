@@ -10,6 +10,7 @@ const NATIVE_TO_PRIORITY = { 1: 'low', 2: 'normal', 3: 'high', 4: 'urgent' };
 const WORK_STATUSES = new Set(['open', 'done', 'rejected']);
 const AGENT_STATUSES = new Set(['', 'requested', 'running']);
 const COMPLETED_HISTORY_MONTHS = 3;
+const WORKSTREAM_BACKFILL_BATCH_SIZE = 50;
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -103,6 +104,41 @@ function monthsBefore(value, count) {
   return result;
 }
 
+function projectWorkstreamsFrom(config) {
+  const mappings = config.projectWorkstreams ?? {};
+  assertObject(mappings, 'projectWorkstreams');
+  const normalized = {};
+  for (const [projectId, workstream] of Object.entries(mappings)) {
+    const id = projectId.trim();
+    const path = typeof workstream === 'string' ? workstream.trim() : '';
+    if (!id || !path) {
+      throw new TaskBackendError(
+        'projectWorkstreams keys and values must be non-empty strings',
+        { code: 'invalid-input' },
+      );
+    }
+    if (id === String(config.inboxProjectId ?? '')) {
+      throw new TaskBackendError('Inbox cannot have a projectWorkstreams mapping', {
+        code: 'invalid-input',
+      });
+    }
+    normalized[id] = path;
+  }
+  return normalized;
+}
+
+function protectedTaskState(task, includeProject = true) {
+  return JSON.stringify({
+    content: task.content ?? '',
+    completed: taskCompleted(task),
+    due: task.due ?? null,
+    deadline: task.deadline ?? null,
+    priority: task.priority ?? null,
+    ...(includeProject ? { projectId: String(task.project_id ?? '') } : {}),
+    responsibleUid: task.responsible_uid == null ? null : String(task.responsible_uid),
+  });
+}
+
 export class TodoistTaskBackend {
   constructor(
     config,
@@ -118,6 +154,17 @@ export class TodoistTaskBackend {
     this.readFile = readFileImpl;
     this.now = nowImpl;
     this.baseUrl = String(config.baseUrl || 'https://api.todoist.com/api/v1').replace(/\/$/, '');
+    this.projectWorkstreams = projectWorkstreamsFrom(config);
+    this.workstreamProjects = {};
+    for (const [projectId, workstream] of Object.entries(this.projectWorkstreams)) {
+      if (this.workstreamProjects[workstream]) {
+        throw new TaskBackendError(
+          `workstream ${workstream} maps to more than one Todoist project`,
+          { code: 'invalid-input' },
+        );
+      }
+      this.workstreamProjects[workstream] = projectId;
+    }
     this.user = null;
     this.token = null;
     this.supportsIdempotentCreate = true;
@@ -204,7 +251,7 @@ export class TodoistTaskBackend {
       nextStep: String(metadata.nextStep ?? ''),
       deadline: task.deadline?.date || '',
       playbook: String(metadata.playbook ?? ''),
-      workstream: String(metadata.workstream ?? ''),
+      workstream: this.projectWorkstreams[String(task.project_id ?? '')] || '',
       sessionId: String(metadata.sessionId ?? ''),
       agentStatus,
       issueState: completed ? 'CLOSED' : 'OPEN',
@@ -268,6 +315,11 @@ export class TodoistTaskBackend {
   }
 
   async list() {
+    const nativeTasks = await this.nativeTasks();
+    return nativeTasks.map((task) => this.canonical(task));
+  }
+
+  async nativeTasks() {
     const active = await this.paged('/tasks');
     const completed = this.config.includeCompleted === false
       ? []
@@ -276,7 +328,7 @@ export class TodoistTaskBackend {
     for (const task of [...active, ...completed]) {
       if (this.inScope(task)) merged.set(taskId(task), task);
     }
-    return [...merged.values()].map((task) => this.canonical(task));
+    return [...merged.values()];
   }
 
   async nativeTask(id) {
@@ -329,11 +381,30 @@ export class TodoistTaskBackend {
     if (!PRIORITY_TO_NATIVE[priority]) {
       throw new TaskBackendError(`unsupported priority: ${priority}`, { code: 'invalid-input' });
     }
-    const projectId = input.projectId || this.config.createProjectId;
+    const requestedWorkstream = input.workstream === undefined
+      ? ''
+      : String(input.workstream).trim();
+    const mappedProjectId = requestedWorkstream
+      ? this.workstreamProjects[requestedWorkstream]
+      : '';
+    if (requestedWorkstream && !mappedProjectId) {
+      throw new TaskBackendError(
+        `workstream ${requestedWorkstream} has no configured Todoist project`,
+        { code: 'unsupported-mapping' },
+      );
+    }
+    const projectId = String(
+      input.projectId || mappedProjectId || this.config.createProjectId || '',
+    );
+    if (mappedProjectId && projectId !== mappedProjectId) {
+      throw new TaskBackendError(
+        `workstream ${requestedWorkstream} maps to project ${mappedProjectId}, not ${projectId}`,
+        { code: 'conflicting-mapping' },
+      );
+    }
     const metadata = {
       nextStep: String(input.nextStep ?? ''),
       playbook: String(input.playbook ?? ''),
-      workstream: String(input.workstream ?? ''),
       sessionId: String(input.sessionId ?? ''),
       agentStatus: String(input.agentStatus ?? ''),
       status: status === 'rejected' ? 'rejected' : '',
@@ -355,7 +426,7 @@ export class TodoistTaskBackend {
       content: title,
       description: descriptionWithMetadata(input.description || '', metadata),
       priority: PRIORITY_TO_NATIVE[priority],
-      ...(projectId ? { project_id: String(projectId) } : {}),
+      ...(projectId ? { project_id: projectId } : {}),
       ...(input.nextActionDate ? { due_date: input.nextActionDate } : {}),
       ...(input.deadline ? { deadline_date: input.deadline } : {}),
     }, idempotencyKey ? { 'X-Request-Id': idempotencyKey } : {});
@@ -372,15 +443,24 @@ export class TodoistTaskBackend {
   }
 
   async updateRecurringDate(id, native, date) {
-    const uuid = randomUUID();
+    await this.syncCommands([{
+      type: 'item_update',
+      args: { id: String(id), due: { ...native.due, date } },
+    }], {
+      completedOperation: 'task metadata update',
+      failedOperation: 'recurring native due-date update',
+    });
+  }
+
+  async syncCommands(commands, failureDetails) {
+    const requests = commands.map((command) => ({
+      ...command,
+      uuid: randomUUID(),
+    }));
     const form = new URLSearchParams({
       sync_token: '*',
       resource_types: '[]',
-      commands: JSON.stringify([{
-        type: 'item_update',
-        uuid,
-        args: { id: String(id), due: { ...native.due, date } },
-      }]),
+      commands: JSON.stringify(requests),
     });
     const response = await this.fetch(`${this.baseUrl}/sync`, {
       method: 'POST',
@@ -391,23 +471,195 @@ export class TodoistTaskBackend {
       body: form,
     });
     const result = await response.json().catch(() => null);
-    if (!response.ok || result?.sync_status?.[uuid] !== 'ok') {
-      throw new TaskBackendError('Todoist recurring date update failed', {
+    const failed = requests.filter(
+      (request) => result?.sync_status?.[request.uuid] !== 'ok',
+    );
+    if (!response.ok || failed.length > 0) {
+      throw new TaskBackendError('Todoist sync update failed', {
         code: 'partial-write',
         status: response.ok ? null : response.status,
         details: {
-          completedOperation: 'task metadata update',
-          failedOperation: 'recurring native due-date update',
+          ...failureDetails,
+          failedTaskIds: failed.map((request) => String(request.args.id)),
           response: result,
         },
       });
     }
   }
 
+  workstreamMigrationPlan(tasks) {
+    const byWorkstream = {};
+    const conflicts = [];
+    const candidates = [];
+    for (const task of tasks) {
+      const parsed = metadataFrom(task.description || '');
+      const legacyWorkstream = String(parsed.metadata.workstream ?? '').trim();
+      if (!legacyWorkstream) continue;
+      const projectId = String(task.project_id ?? '');
+      const targetProjectId = this.workstreamProjects[legacyWorkstream];
+      if (!targetProjectId) {
+        conflicts.push({
+          id: taskId(task),
+          title: task.content ?? '',
+          projectId,
+          legacyWorkstream,
+          reason: 'workstream has no configured Todoist project',
+        });
+        continue;
+      }
+      const { workstream: _obsolete, ...metadata } = parsed.metadata;
+      candidates.push({
+        id: taskId(task),
+        projectId,
+        targetProjectId,
+        workstream: legacyWorkstream,
+        moveProject: projectId !== targetProjectId,
+        updatedDescription: descriptionWithMetadata(parsed.description, metadata),
+        protectedState: protectedTaskState(task, false),
+      });
+      const current = byWorkstream[legacyWorkstream] ?? {
+        workstream: legacyWorkstream,
+        targetProjectId,
+        count: 0,
+        moves: 0,
+      };
+      current.count += 1;
+      if (projectId !== targetProjectId) current.moves += 1;
+      byWorkstream[legacyWorkstream] = current;
+    }
+    return {
+      summary: {
+        eligible: tasks.length,
+        legacyMetadata: candidates.length + conflicts.length,
+        alignedCleanup: candidates.filter((candidate) => !candidate.moveProject).length,
+        projectMoves: candidates.filter((candidate) => candidate.moveProject).length,
+        conflicts: conflicts.length,
+        needsMigration: candidates.length,
+        byWorkstream: Object.values(byWorkstream),
+        conflictDetails: conflicts,
+      },
+      candidates,
+    };
+  }
+
+  async migrateWorkstreams(input = {}) {
+    assertObject(input, 'migration input');
+    if (input.apply !== undefined && typeof input.apply !== 'boolean') {
+      throw new TaskBackendError('apply must be a boolean', { code: 'invalid-input' });
+    }
+    const before = await this.nativeTasks();
+    const plan = this.workstreamMigrationPlan(before);
+    if (input.apply !== true || plan.candidates.length === 0) {
+      return {
+        applied: false,
+        ...plan.summary,
+        updated: 0,
+        verified: 0,
+      };
+    }
+
+    for (let index = 0; index < plan.candidates.length; index += WORKSTREAM_BACKFILL_BATCH_SIZE) {
+      const batch = plan.candidates.slice(index, index + WORKSTREAM_BACKFILL_BATCH_SIZE);
+      await this.syncCommands(batch.flatMap((candidate) => [
+        ...(candidate.moveProject ? [{
+          type: 'item_move',
+          args: {
+            id: candidate.id,
+            project_id: candidate.targetProjectId,
+          },
+        }] : []),
+        {
+          type: 'item_update',
+          args: {
+            id: candidate.id,
+            description: candidate.updatedDescription,
+          },
+        },
+      ]), {
+        completedOperation: `workstream migration through item ${index}`,
+        failedOperation: 'legacy workstream migration',
+      });
+    }
+
+    const after = new Map(
+      (await this.nativeTasks()).map((task) => [taskId(task), task]),
+    );
+    const failures = [];
+    for (const candidate of plan.candidates) {
+      const task = after.get(candidate.id);
+      const actualMetadata = task ? metadataFrom(task.description || '').metadata : {};
+      if (
+        !task
+        || Object.hasOwn(actualMetadata, 'workstream')
+        || task.description !== candidate.updatedDescription
+        || String(task.project_id ?? '') !== candidate.targetProjectId
+        || protectedTaskState(task, false) !== candidate.protectedState
+      ) {
+        failures.push({
+          id: candidate.id,
+          expectedProjectId: candidate.targetProjectId,
+          actualProjectId: String(task?.project_id ?? ''),
+          legacyMetadataRemoved: !Object.hasOwn(actualMetadata, 'workstream'),
+          taskFound: Boolean(task),
+          descriptionAndMetadataUnchangedExceptWorkstream: Boolean(
+            task && task.description === candidate.updatedDescription,
+          ),
+          protectedFieldsUnchanged: Boolean(
+            task && protectedTaskState(task, false) === candidate.protectedState,
+          ),
+        });
+      }
+    }
+    if (failures.length > 0) {
+      throw new TaskBackendError('Todoist workstream migration verification failed', {
+        code: 'partial-write',
+        details: { failures },
+      });
+    }
+    const remaining = this.workstreamMigrationPlan([...after.values()]);
+    if (remaining.candidates.length > 0) {
+      throw new TaskBackendError('Todoist workstream migration remained incomplete', {
+        code: 'partial-write',
+        details: { remaining: remaining.summary },
+      });
+    }
+    return {
+      applied: true,
+      ...plan.summary,
+      updated: plan.candidates.length,
+      verified: plan.candidates.length,
+      remainingActionable: 0,
+      remainingConflicts: remaining.summary.conflictDetails,
+      verifiedFields: [
+        'title',
+        'status',
+        'dates',
+        'priority',
+        'sessionId',
+        'agentStatus',
+        'project',
+        'recurrence',
+      ],
+      untouchedResources: ['comments'],
+    };
+  }
+
   async update(id, input) {
     assertObject(input, 'update input');
     let native = await this.nativeTask(id);
     let current = this.canonical(native);
+    let targetProjectId = '';
+    if (input.workstream !== undefined) {
+      const workstream = String(input.workstream).trim();
+      targetProjectId = this.workstreamProjects[workstream];
+      if (!targetProjectId) {
+        throw new TaskBackendError(
+          `workstream ${workstream || '(empty)'} has no configured Todoist project`,
+          { code: 'unsupported-mapping' },
+        );
+      }
+      await this.validateProject(targetProjectId);
+    }
     if (input.status !== undefined && !WORK_STATUSES.has(input.status)) {
       throw new TaskBackendError(`unsupported status: ${input.status}`, {
         code: 'invalid-input',
@@ -436,11 +688,11 @@ export class TodoistTaskBackend {
       current = this.canonical(native);
     }
     const parsed = metadataFrom(native.description || '');
+    const { workstream: _obsolete, ...storedMetadata } = parsed.metadata;
     const metadata = {
-      ...parsed.metadata,
+      ...storedMetadata,
       ...(input.nextStep === undefined ? {} : { nextStep: String(input.nextStep) }),
       ...(input.playbook === undefined ? {} : { playbook: String(input.playbook) }),
-      ...(input.workstream === undefined ? {} : { workstream: String(input.workstream) }),
       ...(input.sessionId === undefined ? {} : { sessionId: String(input.sessionId) }),
       ...(input.agentStatus === undefined ? {} : { agentStatus: String(input.agentStatus) }),
       status: requestedStatus === 'rejected' ? 'rejected' : '',
@@ -463,6 +715,16 @@ export class TodoistTaskBackend {
     if (native.due?.is_recurring && input.nextActionDate !== undefined) {
       await this.updateRecurringDate(id, native, input.nextActionDate);
       updated = await this.nativeTask(id);
+    }
+    if (targetProjectId && String(native.project_id ?? '') !== targetProjectId) {
+      await this.moveToProject(id, targetProjectId);
+      updated = await this.nativeTask(id);
+      if (String(updated.project_id ?? '') !== targetProjectId) {
+        throw new TaskBackendError('Todoist workstream project move verification failed', {
+          code: 'partial-write',
+          details: { taskId: String(id), targetProjectId },
+        });
+      }
     }
     if (requestedStatus !== 'open') {
       try {
@@ -502,12 +764,31 @@ export class TodoistTaskBackend {
 
   async move(id, input) {
     assertObject(input, 'move input');
-    await this.validateProject(input.projectId);
+    const projectId = String(input.projectId ?? '');
+    await this.validateProject(projectId);
     await this.nativeTask(id);
-    await this.request('POST', `/tasks/${encodeURIComponent(id)}/move`, {
-      project_id: String(input.projectId),
+    await this.moveToProject(id, projectId);
+    const task = await this.get(id);
+    if (task.projectId !== projectId) {
+      throw new TaskBackendError('Todoist project move verification failed', {
+        code: 'partial-write',
+        details: { taskId: String(id), targetProjectId: projectId },
+      });
+    }
+    return task;
+  }
+
+  async moveToProject(id, projectId) {
+    await this.syncCommands([{
+      type: 'item_move',
+      args: {
+        id: String(id),
+        project_id: String(projectId),
+      },
+    }], {
+      completedOperation: 'none',
+      failedOperation: 'native project move',
     });
-    return this.get(id);
   }
 
   async comment(id, input) {

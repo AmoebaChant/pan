@@ -14,6 +14,7 @@ Usage:
   pan-task --config <path> move <task-id> --input <json-or-@file>
   pan-task --config <path> comment <task-id> --input <json-or-@file>
   pan-task --config <path> comments <task-id>
+  pan-task --config <path> migrate-workstreams [--input '{"apply":true}']
   pan-task --config <path> complete <task-id> [--input <json-or-@file>]
   pan-task --config <path> reopen <task-id>
   pan-task --config <path> delete <task-id>
@@ -48,6 +49,15 @@ export async function runTaskCli(argv, dependencies = {}) {
   if (command === 'move' && id) return backend.move(id, await inputValue(values.input));
   if (command === 'comment' && id) return backend.comment(id, await inputValue(values.input));
   if (command === 'comments' && id) return backend.comments(id);
+  if (command === 'migrate-workstreams' && !id) {
+    if (typeof backend.migrateWorkstreams !== 'function') {
+      throw new TaskBackendError(
+        'the selected backend does not support workstream migration',
+        { code: 'unsupported-operation' },
+      );
+    }
+    return backend.migrateWorkstreams(await inputValue(values.input));
+  }
   if (command === 'report' && id) return backend.report(id, await inputValue(values.input));
   if (command === 'reports' && id) return backend.reports(id);
   if (command === 'complete' && id) return backend.complete(id, await inputValue(values.input));

@@ -10,6 +10,8 @@ pan-task --config <backend.json> create --input @request.json
 pan-task --config <backend.json> update <id> --input @request.json
 pan-task --config <backend.json> comment <id> --input @request.json
 pan-task --config <backend.json> comments <id>
+pan-task --config <backend.json> migrate-workstreams
+pan-task --config <backend.json> migrate-workstreams --input '{"apply":true}'
 pan-task --config <backend.json> complete <id> --input '{"outcome":"done"}'
 pan-task --config <backend.json> reopen <id>
 ```
@@ -59,8 +61,9 @@ preserved unless the caller explicitly changes work status.
 Todoist native content, description, priority, due date, deadline, comments,
 completion, and reopening remain native. One visible `pan-task:v2` block at the
 end of the description stores only fields Todoist does not natively provide:
-next step, playbook, workstream, session ID, Agent status, and the rejected
-close meaning. It is not a workflow or worker-state store.
+next step, playbook, session ID, Agent status, and the rejected close meaning.
+Workstream is represented by native Todoist project membership, not this
+block. It is not a workflow or worker-state store.
 
 The adapter fully paginates active tasks. Completed tasks use Todoist's required
 completion-date bounds and cursor pagination within one rolling three-month
@@ -71,3 +74,25 @@ configuration, not Pan ownership.
 
 For source intake, Todoist create supports an optional UUID `idempotencyKey`
 sent as `X-Request-Id`.
+
+An optional `projectWorkstreams` object in the selected Todoist backend
+configuration explicitly maps native project IDs to Pan workstream paths.
+Each workstream may map to only one project. Reads derive `workstream` solely
+from that map. Inbox and unmapped projects read as unassigned; project names,
+similar text, catalog titles, and legacy description metadata are never
+inferred.
+
+Creation with a non-empty workstream resolves its mapped project and rejects a
+conflicting explicit project. Updating `workstream` moves the task to its
+uniquely mapped native project and rejects empty or unmapped values. Direct
+project moves remain distinct and derive their resulting workstream on re-read.
+No create or update serializes workstream into `pan-task:v2`.
+
+Domains remove old description-level workstreams once with
+`migrate-workstreams`. The command previews by default, reporting exact aligned
+cleanup, native project move, and conflict counts. `{"apply":true}` moves only
+legacy values with a unique configured destination, removes their obsolete
+metadata through Todoist's sync API, and re-reads every candidate to verify the
+destination and protected fields without reopening completed tasks. Unmapped
+legacy values remain unchanged as explicit conflicts for review. A repeated
+run performs no actionable writes. Ordinary reads never run the migration.
