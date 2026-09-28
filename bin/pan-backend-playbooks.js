@@ -53,10 +53,20 @@ export function validateBackendPlaybook(filename, text) {
   if (workingDirectory !== null && !path.isAbsolute(workingDirectory)) {
     throw new Error(`${filename} workingDirectory must be absolute`);
   }
+  const concurrency = front.concurrency == null
+    ? null
+    : Number(front.concurrency);
+  if (
+    concurrency !== null
+    && (!Number.isInteger(concurrency) || concurrency < 1)
+  ) {
+    throw new Error(`${filename} concurrency must be a positive integer`);
+  }
   return {
     name,
     description: String(front.description).trim(),
     workingDirectory,
+    concurrency,
     text,
     body,
   };
