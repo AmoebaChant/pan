@@ -13,6 +13,7 @@ import {
   acquireRunnerLock,
   missingPlaybookRepairInstructions,
   pollRunner,
+  playbookHasCapacity,
   resolveRequestedPlaybook,
   runRunner,
   validateRunnerConfig,
@@ -1016,6 +1017,7 @@ test('runner launches every requested task without duplicating managed tasks', a
     playbook: 'pan',
     agentStatus: 'requested',
   });
+
   const second = await backend.create({
     title: 'Second request',
     playbook: 'pan',
@@ -1084,6 +1086,82 @@ test('runner launches every requested task without duplicating managed tasks', a
   });
   assert.deepEqual(repeated.launched, []);
   assert.equal(live.size, 2);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('runner preserves requested tasks in backend order when playbook capacity is full', async () => {
+  const { backend } = await createBackend();
+  const first = await backend.create({
+    title: 'First request',
+    playbook: 'pan-dev',
+    agentStatus: 'requested',
+  });
+  const second = await backend.create({
+    title: 'Second request',
+    playbook: 'pan-dev',
+    agentStatus: 'requested',
+  });
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-runner-capacity-'));
+  await mkdir(path.join(root, 'work'));
+  const config = validateRunnerConfig({
+    backendConfig: path.join(root, 'backend.json'),
+    stateRoot: path.join(root, 'state'),
+    workingDirectory: path.join(root, 'work'),
+    machine: 'test-machine',
+    launchCommand: ['copilot'],
+  });
+  const playbook = {
+    name: 'pan-dev',
+    description: 'Test',
+    concurrency: 1,
+    workingDirectory: path.join(root, 'work'),
+    text: '# Pan dev',
+  };
+  const loadedDomain = {
+    playbooks: new Map([['pan-dev', playbook]]),
+    domainInstructions: '# Domain',
+    domainRevision: 'reviewed-sha',
+  };
+  const live = new Set();
+  let nextPid = 8000;
+  const dependencies = {
+    processIsAlive: (pid) => live.has(pid),
+    loadWorkstreamCatalog: async () => ({
+      version: 1,
+      defaultStore: 'domain',
+      stores: [],
+      workstreams: [],
+    }),
+    launchProcess: async () => {
+      const pid = nextPid++;
+      live.add(pid);
+      return { pid, processStart: `start-${pid}` };
+    },
+  };
+
+  assert.equal(playbookHasCapacity(playbook, new Map()), true);
+  const result = await pollRunner({
+    backend,
+    config,
+    loadedDomain,
+    dependencies,
+  });
+  assert.deepEqual(result.launched, [first.id]);
+  assert.deepEqual(result.skipped, [{
+    id: second.id,
+    reason: 'playbook pan-dev is at concurrency 1',
+  }]);
+  assert.equal((await backend.get(second.id)).agentStatus, 'requested');
+  assert.equal((await backend.get(second.id)).sessionId, '');
+
+  const repeated = await pollRunner({
+    backend,
+    config,
+    loadedDomain,
+    dependencies,
+  });
+  assert.deepEqual(repeated.launched, []);
+  assert.equal((await backend.get(second.id)).agentStatus, 'requested');
   await rm(root, { recursive: true, force: true });
 });
 
