@@ -17,12 +17,20 @@ It performs one loop:
 4. close a managed process when its empty `worker-release.json` exists;
 5. clear Agent status after an observed process closure; and
 6. open or resume every task whose Agent status is `requested` unless that
-   same task already has a managed process.
+   same task already has a managed process or its selected playbook is at its
+   configured concurrency limit.
 
 The runner does not read work Status as an eligibility or stop condition. It
 does not inspect unrelated sessions, choose tasks, interpret results, enforce
 dependencies or approvals, plan dates, allocate workspaces, claim Project
 leases, reserve machines, or change business state.
+
+An optional positive playbook `concurrency` value limits live managed workers
+using that playbook. Reconciled processes from prior poll cycles and runner
+restarts count before new launches. Requests beyond capacity remain requested
+without changes to work status, dates, or saved session IDs and launch in
+stable backend precedence order after a slot is released. A worker waiting for
+the user remains a live managed process and continues to occupy its slot.
 
 Only one runner may supervise a state root at a time. A second runner must fail
 clearly rather than race the first and launch a duplicate session.

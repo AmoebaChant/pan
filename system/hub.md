@@ -269,6 +269,14 @@ completion. Installed clients regularly check for a waiting service-worker
 version. They present an update-ready action rather than forcing a reload that
 could destroy unsent composer text or interrupt active interaction.
 
+This deployment gate applies when a task delivers a new commit to the
+configured Pan Hub integration branch. A task that does not change that branch
+must still merge, update, and verify every canonical checkout or production
+surface it did change, but must not restart Hub merely as a generic completion
+ritual. The worker remains live, and therefore retains its playbook concurrency
+slot, through every applicable merge, deployment, and production verification
+gate.
+
 When a process actually exits, clear its agent status while retaining its
 session ID and work status. An ordinary ACP end-of-turn is not a process exit
 or release request. Waiting for input does not release the worker.

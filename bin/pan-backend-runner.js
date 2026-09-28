@@ -169,6 +169,18 @@ export function selectRequestedTasks(tasks) {
   return tasks.filter((task) => task.agentStatus === 'requested');
 }
 
+export function playbookHasCapacity(playbook, runningByPlaybook) {
+  return playbook.concurrency == null
+    || (runningByPlaybook.get(playbook.name) ?? 0) < playbook.concurrency;
+}
+
+function addRunningPlaybook(playbook, runningByPlaybook) {
+  runningByPlaybook.set(
+    playbook.name,
+    (runningByPlaybook.get(playbook.name) ?? 0) + 1,
+  );
+}
+
 export function resolveRequestedPlaybook(assignment, loadedDomain, config) {
   const requestedName = String(assignment || '').trim();
   const assigned = requestedName
@@ -687,6 +699,13 @@ export async function pollRunner({
   });
   const tasks = await backend.list();
   const liveTaskIds = new Set(reconciled.live.map((run) => run.taskId));
+  const runningByPlaybook = new Map();
+  for (const run of reconciled.live) {
+    runningByPlaybook.set(
+      run.playbook,
+      (runningByPlaybook.get(run.playbook) ?? 0) + 1,
+    );
+  }
   const requested = selectRequestedTasks(tasks);
   const launched = [];
   const skipped = [];
@@ -696,6 +715,12 @@ export async function pollRunner({
     if (!resolved.available) {
       log(`skipping ${taskLabel(task)}: ${resolved.reason}`);
       skipped.push({ id: task.id, reason: resolved.reason });
+      continue;
+    }
+    if (!playbookHasCapacity(resolved.playbook, runningByPlaybook)) {
+      const reason = `playbook ${resolved.playbook.name} is at concurrency ${resolved.playbook.concurrency}`;
+      log(`skipping ${taskLabel(task)}: ${reason}`);
+      skipped.push({ id: task.id, reason });
       continue;
     }
     if (!dryRun) {
@@ -744,6 +769,7 @@ export async function pollRunner({
       launched.push(run.taskId);
       liveTaskIds.add(run.taskId);
     }
+    addRunningPlaybook(resolved.playbook, runningByPlaybook);
   }
   return {
     observed: tasks.length,
