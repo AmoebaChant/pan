@@ -66,6 +66,13 @@ Use the Garden visual direction:
   control returns to the current filtered portfolio.
 - Show questions inline with suggested answers, any provided default, and a
   freeform alternative. The user must explicitly submit their answer.
+- Treat the Main Pan and worker chat composers as ordinary multiline freeform
+  text fields. Give their scoped forms and textareas stable chat-specific
+  names, IDs, accessible labels, `autocomplete="off"`, and text input-mode,
+  capitalization, correction, and spellcheck semantics. Avoid payment,
+  identity, contact, and one-time-code terminology in composer metadata and
+  placeholders, and add scoped password-manager ignore metadata where
+  supported. Do not disable autofill on unrelated task forms or inputs.
 - Preserve authored line breaks when rendering conversation Markdown. Allow
   images pasted from the clipboard to be previewed, removed, and submitted as
   native ACP image content only when the connected agent advertises image
