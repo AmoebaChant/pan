@@ -219,6 +219,13 @@ trigger an immediate poll. A task already managed by Hub is not launched twice.
 Work status, priority, dates, dependencies, and inferred readiness do not
 filter requests. Backend ownership policy still determines eligibility.
 
+An optional positive `concurrency` value in a playbook limits that playbook's
+simultaneously managed workers on the Hub host. Hub restores previously running
+managed sessions first after restart and counts them against the limit. It then
+launches requested tasks in stable backend precedence order until capacity is
+full. Deferred tasks remain requested without changing work status, dates,
+saved session IDs, or any other task field.
+
 Persist the ACP session ID and observed running status before beginning worker
 execution. Keep task completion and worker closure independent. Requests are
 durable backend state, not an in-memory queue. Log failed launches and leave
@@ -238,14 +245,40 @@ A resumed Done or rejected task remains active while waiting for the operator's
 first new message. The fact that its saved conversation and work status record
 an earlier completion is not a fresh release request.
 
+## Local deployment
+
+The machine's Hub deployment path serializes canonical builds, browser
+acceptance, and service deployment with one host-wide lock shared by every
+worktree. A deployment of the integration branch must:
+
+1. refuse an overlapping operation and a dirty, detached, wrong-branch, or
+   diverged canonical checkout;
+2. fetch the configured remote branch, build its exact commit in an isolated
+   staging checkout, and record that commit as the browser and server build
+   identity before changing the canonical checkout;
+3. fast-forward the canonical checkout only, stop the configured service for
+   artifact promotion, atomically replace the built browser and server
+   directories, and restart that exact service;
+4. verify health and served asset identity through loopback and the configured
+   Tailscale origin; and
+5. restore and restart the prior built artifacts when promotion, restart, or
+   verification fails, while surfacing the failure.
+
+Deployment never changes task work status or treats restart as worker
+completion. Installed clients regularly check for a waiting service-worker
+version. They present an update-ready action rather than forcing a reload that
+could destroy unsent composer text or interrupt active interaction.
+
 When a process actually exits, clear its agent status while retaining its
 session ID and work status. An ordinary ACP end-of-turn is not a process exit
 or release request. Waiting for input does not release the worker.
 
 Stopping or restarting Hub must not present interrupted interactions as
-successful. Saved conversations remain available; connection-bound questions
-must be reissued if their original connection is lost. A browser disconnect
-does not stop workers.
+successful. A graceful service restart preserves running worker intent and
+restores those saved conversations before consuming new capacity; it does not
+clear Agent status or change work status. Connection-bound questions must be
+reissued if their original connection is lost. A browser disconnect does not
+stop workers.
 
 ## Debugging and tests
 

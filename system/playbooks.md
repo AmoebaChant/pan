@@ -26,6 +26,7 @@ errors remain explicit failures rather than default fallbacks.
 ---
 name: tool-development
 description: Implement and publish a reviewed tool change.
+concurrency: 2
 workingDirectory: C:\Repos
 ---
 
@@ -40,14 +41,20 @@ applies; keep detailed progress in comments.
 ```
 
 `name` and `description` are required. `workingDirectory` is optional when the
-runner config provides one, and otherwise must be absolute.
+runner config provides one, and otherwise must be absolute. `concurrency` is an
+optional positive integer limiting simultaneously managed Pan Hub workers that
+select that playbook on one host. A missing value is unlimited.
 
-The runner does not interpret playbook prose as fields or policy. It does not
-derive capabilities, authorization, dependencies, concurrency limits,
-workspace slots, completion, or release from front matter. The instructions
-themselves own repository selection, task-local setup, delivery gates, and when
-to edit descriptive task fields or work Status, and when to explicitly close
-the session early.
+Pan Hub applies an explicit `concurrency` value mechanically. It counts live
+managed workers, including workers restored after a Hub restart, before
+launching more requested tasks. Requests beyond capacity remain requested and
+retain their work status, dates, session IDs, and backend order. They launch in
+backend precedence order as capacity becomes available. The host does not
+derive any other capabilities, authorization, dependencies, workspace slots,
+completion, or release from front matter or prose. The instructions themselves
+own repository selection, task-local setup, delivery gates, and when to edit
+descriptive task fields or work Status, and when to explicitly close the
+session early.
 
 Chief sessions read live playbooks when deciding whether agent help is useful.
 Choosing a playbook and setting `agentStatus=requested` are separate explicit
