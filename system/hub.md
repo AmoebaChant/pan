@@ -44,7 +44,11 @@ Use the Garden visual direction:
 - Checking a task completes it in the selected backend immediately in the
   local projection, keeps the fresh completion in its current portfolio view
   with a struck-through title, and allows reopening through undo or the same
-  control.
+  control. When a recurring backend reuses that task ID for its next
+  occurrence, replace the completed projection with the authoritative open
+  occurrence and reapply the active view predicate. A future occurrence must
+  leave Today immediately; another occurrence still due today remains visible
+  and incomplete.
 - The left pane header contains a clickable Pan character and Today, Needs
   Attention, All, and Archive views, in that order. Today contains open tasks
   whose next-action date is the local date today or earlier. Workstreams remain
