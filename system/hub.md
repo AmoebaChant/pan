@@ -44,7 +44,10 @@ Use the Garden visual direction:
 - Checking a task completes it in the selected backend immediately in the
   local projection, keeps the fresh completion in its current portfolio view
   with a struck-through title, and allows reopening through undo or the same
-  control. When a recurring backend reuses that task ID for its next
+  control. Today and All offer a default-on control to show or hide tasks
+  completed on the current local day, and persist that choice across
+  navigation, reload, and Hub restart. The control does not filter Archive or
+  Needs Attention. When a recurring backend reuses that task ID for its next
   occurrence, replace the completed projection with the authoritative open
   occurrence and reapply the active view predicate. A future occurrence must
   leave Today immediately; another occurrence still due today remains visible
