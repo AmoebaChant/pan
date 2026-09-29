@@ -28,12 +28,20 @@ test('parses the registry and constrained root and nested digest entries', () =>
     parseWorkstreamStoreRegistry(JSON.stringify({
       version: 1,
       defaultStore: 'shared',
-      stores: [{ id: 'shared', repository: 'example/shared' }],
+      stores: [{
+        id: 'shared',
+        repository: 'example/shared',
+        include: ['engineering', 'teams/stage'],
+      }],
     })),
     {
       version: 1,
       defaultStore: 'shared',
-      stores: [{ id: 'shared', repository: 'example/shared' }],
+      stores: [{
+        id: 'shared',
+        repository: 'example/shared',
+        include: ['engineering', 'teams/stage'],
+      }],
     },
   );
   assert.deepEqual(parseWorkstreamDigest(domainDigest), [
@@ -50,6 +58,13 @@ test('parses the registry and constrained root and nested digest entries', () =>
       documentPath: 'workstreams/product/launch/README.md',
     },
   ]);
+  assert.deepEqual(
+    parseWorkstreamDigest(domainDigest.replace(
+      '(product/README.md)',
+      '(./product/README.md)',
+    )).map(({ path: workstreamPath }) => workstreamPath),
+    ['product', 'product/launch'],
+  );
 });
 
 test('rejects malformed registries and digests', () => {
@@ -68,6 +83,121 @@ test('rejects malformed registries and digests', () => {
     )),
     /link must target product\/README\.md/,
   );
+  assert.throws(
+    () => parseWorkstreamStoreRegistry(JSON.stringify({
+      version: 1,
+      defaultStore: 'domain',
+      stores: [{
+        id: 'shared',
+        repository: 'example/shared',
+        include: ['product', 'product'],
+      }],
+    })),
+    /include contains duplicate path: product/,
+  );
+  assert.throws(
+    () => parseWorkstreamStoreRegistry(JSON.stringify({
+      version: 1,
+      defaultStore: 'domain',
+      stores: [{
+        id: 'shared',
+        repository: 'example/shared',
+        include: [42],
+      }],
+    })),
+    /include\[0\] must be a workstream path/,
+  );
+});
+
+test('mounts configured store roots and their descendants only', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-workstream-includes-'));
+  try {
+    await mkdir(path.join(root, 'workstreams'), { recursive: true });
+    await writeFile(
+      path.join(root, 'workstream-stores.json'),
+      `${JSON.stringify({
+        version: 1,
+        defaultStore: 'domain',
+        stores: [{
+          id: 'shared',
+          repository: 'example/shared',
+          include: ['engineering'],
+        }],
+      })}\n`,
+    );
+    await writeFile(path.join(root, 'workstreams', 'README.md'), domainDigest);
+    const sharedDigest = [
+      '# Workstreams',
+      '',
+      '<!-- pan-workstream-catalog:v1 -->',
+      '',
+      '| Path | Name | Description |',
+      '| --- | --- | --- |',
+      '| [engineering](engineering/README.md) | Engineering | Shared engineering. |',
+      '| [engineering/runtime](engineering/runtime/README.md) | Runtime | Runtime work. |',
+      '| [other](other/README.md) | Other | Other work. |',
+      '',
+    ].join('\n');
+    const catalog = await loadWorkstreamCatalog(
+      { domainPath: root, domainRepo: 'example/domain' },
+      {
+        ghJson: async (args) => args[2] === 'repos/example/shared'
+          ? { full_name: 'example/shared' }
+          : {
+            type: 'file',
+            sha: 'shared-catalog',
+            content: Buffer.from(sharedDigest).toString('base64'),
+          },
+      },
+    );
+    assert.deepEqual(
+      catalog.workstreams.map(({ path: workstreamPath }) => workstreamPath),
+      ['engineering', 'engineering/runtime', 'product', 'product/launch'],
+    );
+    assert.deepEqual(
+      catalog.stores.find(({ id }) => id === 'shared').include,
+      ['engineering'],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects include paths missing from the store digest', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pan-workstream-missing-include-'));
+  try {
+    await mkdir(path.join(root, 'workstreams'), { recursive: true });
+    await writeFile(
+      path.join(root, 'workstream-stores.json'),
+      `${JSON.stringify({
+        version: 1,
+        defaultStore: 'domain',
+        stores: [{
+          id: 'shared',
+          repository: 'example/shared',
+          include: ['missing'],
+        }],
+      })}\n`,
+    );
+    await writeFile(path.join(root, 'workstreams', 'README.md'), domainDigest);
+    await assert.rejects(
+      loadWorkstreamCatalog(
+        { domainPath: root, domainRepo: 'example/domain' },
+        {
+          ghJson: async (args) => args[2] === 'repos/example/shared'
+            ? { full_name: 'example/shared' }
+            : {
+              type: 'file',
+              sha: 'shared-catalog',
+              content: Buffer.from(domainDigest).toString('base64'),
+            },
+        },
+      ),
+      /include path is not present in the store digest: missing/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('loads all stores with provenance and resolves the selected document', async () => {

@@ -11,7 +11,9 @@ The workstream catalog and selected document are launch-time snapshots.
 document revision. Re-read the live owning store before any workstream write.
 If creating a workstream, update its store digest in the same change. Use an
 explicit store instruction or a clear configured default/policy; ask the user
-when store selection is unclear rather than guessing.
+when store selection is unclear rather than guessing. If the destination uses
+`include` roots, add a newly created root to the Domain registry when it should
+be mounted; descendants of an included root need no registry change.
 
 Follow the task, playbook, repository guidance, and worker-scoped Domain
 instructions. Do not perform portfolio triage, Daily Briefings, scheduling, or

@@ -63,8 +63,9 @@ workstreams, and playbooks.
 
 The Domain is the implicit `domain` workstream store and may configure
 additional writable GitHub stores in `workstream-stores.json`. Every store
-publishes an authoritative `workstreams/README.md` digest, and workstream paths
-must be globally unique.
+publishes an authoritative `workstreams/README.md` digest. A Domain may mount
+an entire additional store or selected path trees from it; mounted workstream
+paths must be globally unique.
 
 ```sh
 node bin/pan-workstreams.js list --config <domain-or-runner.json>

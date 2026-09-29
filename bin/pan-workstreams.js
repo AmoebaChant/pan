@@ -37,6 +37,39 @@ export function normalizeWorkstreamPath(value) {
   return normalized;
 }
 
+function parseStoreIncludes(value, index) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `workstream store registry stores[${index}].include must be an array`,
+    );
+  }
+  const seen = new Set();
+  return value.map((candidate, includeIndex) => {
+    if (typeof candidate !== 'string') {
+      throw new Error(
+        `workstream store registry stores[${index}].include[${includeIndex}] `
+        + 'must be a workstream path',
+      );
+    }
+    const workstreamPath = normalizeWorkstreamPath(candidate);
+    if (!workstreamPath) {
+      throw new Error(
+        `workstream store registry stores[${index}].include[${includeIndex}] `
+        + 'must be a workstream path',
+      );
+    }
+    if (seen.has(workstreamPath)) {
+      throw new Error(
+        `workstream store registry stores[${index}].include contains duplicate `
+        + `path: ${workstreamPath}`,
+      );
+    }
+    seen.add(workstreamPath);
+    return workstreamPath;
+  });
+}
+
 export function parseWorkstreamStoreRegistry(text) {
   let parsed;
   try {
@@ -59,13 +92,16 @@ export function parseWorkstreamStoreRegistry(text) {
         `workstream store registry stores[${index}].id must be a lowercase id other than domain`,
       );
     }
-    return {
+    const store = {
       id,
       repository: requireRepository(
         entry.repository,
         `workstream store registry stores[${index}].repository`,
       ),
     };
+    const include = parseStoreIncludes(entry.include, index);
+    if (include !== undefined) store.include = include;
+    return store;
   });
   const ids = new Set(['domain']);
   for (const store of stores) {
@@ -110,7 +146,8 @@ export function parseWorkstreamDigest(text, source = CATALOG_PATH) {
     const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(pathCell);
     if (!link) throw new Error(`${source}:${index + 1} has an invalid path link`);
     const workstreamPath = normalizeWorkstreamPath(link[1]);
-    if (link[2] !== `${workstreamPath}/README.md`) {
+    const target = link[2].replace(/^\.\//, '');
+    if (target !== `${workstreamPath}/README.md`) {
       throw new Error(`${source}:${index + 1} link must target ${workstreamPath}/README.md`);
     }
     if (!name) throw new Error(`${source}:${index + 1} name is required`);
@@ -127,6 +164,24 @@ export function parseWorkstreamDigest(text, source = CATALOG_PATH) {
     });
   }
   return entries;
+}
+
+function selectStoreEntries(entries, store) {
+  if (!Object.hasOwn(store, 'include')) return entries;
+  const missing = store.include.filter(
+    (includedPath) => !entries.some((entry) => entry.path === includedPath),
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `include path is not present in the store digest: ${missing.join(', ')}`,
+    );
+  }
+  return entries.filter((entry) => store.include.some(
+    (includedPath) => (
+      entry.path === includedPath
+      || entry.path.startsWith(`${includedPath}/`)
+    ),
+  ));
 }
 
 async function ghJson(args, dependencies) {
@@ -280,12 +335,21 @@ export async function loadWorkstreamCatalog(config, dependencies = {}) {
         `invalid workstream store ${store.id} (${store.repository}): ${error.message}`,
       );
     }
+    try {
+      entries = selectStoreEntries(entries, store);
+    } catch (error) {
+      throw new Error(
+        `invalid workstream store selection ${store.id} (${store.repository}): `
+        + error.message,
+      );
+    }
     return {
       store: {
         id: store.id,
         repository: store.repository,
         catalogPath: CATALOG_PATH,
         catalogRevision: digest.revision,
+        ...(Object.hasOwn(store, 'include') ? { include: store.include } : {}),
       },
       entries,
     };
