@@ -97,11 +97,12 @@ Use the Garden visual direction:
   identity, contact, and one-time-code terminology in composer metadata and
   placeholders, and add scoped password-manager ignore metadata where
   supported. Do not disable autofill on unrelated task forms or inputs.
-- Preserve authored line breaks when rendering conversation Markdown. Allow
-  images pasted from the clipboard to be previewed, removed, and submitted as
-  native ACP image content only when the connected agent advertises image
-  prompt support; enforce bounded payload limits and surface unsupported media
-  or capability failures.
+- Preserve authored line breaks when rendering conversation Markdown. Present
+  streamed internal reasoning as subdued "Thinking" content that is visually
+  distinct from the agent's response. Allow images pasted from the clipboard
+  to be previewed, removed, and submitted as native ACP image content only when
+  the connected agent advertises image prompt support; enforce bounded payload
+  limits and surface unsupported media or capability failures.
 - Open, select, and reload Main Pan and worker conversations at their newest
   content on phone and desktop. Returning to a conversation also defaults to
   the newest content; Hub does not persist incidental scroll offsets. Continue
