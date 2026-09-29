@@ -91,7 +91,9 @@ Use the Garden visual direction:
   solid through the top safe area and browser overscroll; do not fade to the
   browser's default white surface.
 - Show questions inline with suggested answers, any provided default, and a
-  freeform alternative. The user must explicitly submit their answer.
+  freeform alternative. The user must explicitly submit their answer. Waiting
+  for that answer has no user-response deadline; bridge questions must not keep
+  one timeout-bound MCP request open for the duration of the wait.
 - Treat the Main Pan and worker chat composers as ordinary multiline freeform
   text fields. Give their scoped forms and textareas stable chat-specific
   names, IDs, accessible labels, `autocomplete="off"`, and text input-mode,
@@ -159,7 +161,9 @@ mechanical sandbox.
 
 If native ACP elicitation is unavailable, a small session-bound question tool
 may bridge structured questions into the same web interaction. Do not parse
-ordinary prose to guess at pending questions or approvals.
+ordinary prose to guess at pending questions or approvals. The bridge publishes
+the pending question and ends its tool call; Hub delivers the eventual answer
+in a later agent turn.
 
 ## Main Pan and Domain instructions
 
