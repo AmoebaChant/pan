@@ -2,9 +2,9 @@
 
 Pan Hub is the local web application and headless session host in
 [`AmoebaChant/pan-task-manager`](https://github.com/AmoebaChant/pan-task-manager).
-It replaces terminal-window interaction with a workstream portfolio and one
-shared chat panel. The central assistant is named **Pan** in the UI; chief
-remains its internal role.
+It replaces terminal-window interaction with a task area and one shared chat
+area. The central assistant is named **Pan** in the UI; chief remains its
+internal role.
 
 ## Local operating scope
 
@@ -44,16 +44,13 @@ Use the Garden visual direction:
 - Checking a task completes it in the selected backend immediately in the
   local projection, keeps the fresh completion in its current portfolio view
   with a struck-through title, and allows reopening through undo or the same
-  control. Today and All offer a default-on control to show or hide tasks
-  completed on the current local day, and persist that choice across
-  navigation, reload, and Hub restart. The control does not filter Archive or
-  Needs Attention. When a recurring backend reuses that task ID for its next
+  control. When a recurring backend reuses that task ID for its next
   occurrence, replace the completed projection with the authoritative open
   occurrence and reapply the active view predicate. A future occurrence must
   leave Today immediately; another occurrence still due today remains visible
   and incomplete.
-- The left pane header contains a clickable Pan character and Today, Needs
-  Attention, All, and Archive views, in that order. Today contains open tasks
+- The left pane header contains a clickable Pan character followed by Today,
+  All, and Options, in that order. Today contains open tasks
   whose next-action date is the local date today or earlier. Workstreams remain
   visible by default in every view and use the positive/green treatment when
   that view has no matching tasks. A portfolio control lets the user show or
@@ -61,6 +58,22 @@ Use the Garden visual direction:
   that choice independently for each workstream-backed view across navigation,
   reload, and Hub restart. Never show an empty **Tasks without a workstream**
   fallback card. Avoid redundant headings and summaries.
+- Call the left content pane the **Task Area** and the right pane the **Chat
+  Area**. Today and All select task scope; Options selects how that scope is
+  presented and which completion bands are visible. The Task Area offers
+  **Workstreams** and **Task List** presentations. Task List can group tasks by
+  workstream or by status in this order: incomplete, completed today, completed
+  earlier. Do not repeat a task's workstream on each task when its containing
+  group already identifies that workstream. Workstreams retains its
+  empty-workstream option.
+- Both Task Area presentations offer independent visibility for tasks completed
+  today and tasks completed earlier. Persist presentation and Task List
+  grouping globally, and completion visibility independently per top-level
+  scope across navigation, reload, and Hub restart. Today never includes
+  completions from earlier days. All remains the complete open scope plus
+  whichever completion bands are enabled. Needs-input treatment remains inline
+  on matching tasks; completed history is available through All's completion
+  options rather than separate Needs Attention or Archive scopes.
 - The right chat pane starts at the same vertical position, with an
   equal-height, differently colored header.
 - A draggable and keyboard-adjustable divider controls pane widths.
@@ -70,8 +83,8 @@ Use the Garden visual direction:
   with a visible insertion gap. Do not route task-specific decisions through
   the main Pan conversation.
 - On phone-width screens, replace the two-pane layout with one content area and
-  an iPhone-style bottom bar for Pan, Today, Needs Attention, All, and Archive.
-  Pan opens the main conversation. The other destinations show the same
+  an iPhone-style bottom bar for Pan, Today, All, Options, and Create task. Pan
+  opens the main conversation. Today and All show the same
   workstream portfolio with their corresponding task filter. Opening a task
   replaces the portfolio with its worker conversation, whose top-left back
   control returns to the current filtered portfolio.
