@@ -87,7 +87,9 @@ Use the Garden visual direction:
   opens the main conversation. Today and All show the same
   workstream portfolio with their corresponding task filter. Opening a task
   replaces the portfolio with its worker conversation, whose top-left back
-  control returns to the current filtered portfolio.
+  control returns to the current filtered portfolio. Keep the page background
+  solid through the top safe area and browser overscroll; do not fade to the
+  browser's default white surface.
 - Show questions inline with suggested answers, any provided default, and a
   freeform alternative. The user must explicitly submit their answer.
 - Treat the Main Pan and worker chat composers as ordinary multiline freeform
