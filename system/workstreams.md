@@ -21,7 +21,11 @@ may mount more writable GitHub repositories through `workstream-stores.json`:
   "stores": [
     {
       "id": "shared",
-      "repository": "organization/shared-workstreams"
+      "repository": "organization/shared-workstreams",
+      "include": [
+        "product",
+        "team-platform"
+      ]
     }
   ]
 }
@@ -32,11 +36,17 @@ digits, and hyphens, start with a letter, and cannot be `domain`.
 `defaultStore` names `domain` or one configured additional store. Repository
 names use `owner/repository`.
 
-The same workstream path must not appear in more than one configured store.
-Every reader rejects duplicate paths explicitly; store order and
-`defaultStore` never resolve ambiguity. Existing task values therefore remain
-portable, unqualified paths while each catalog entry supplies its owning store
-and repository.
+An optional `include` array mounts selected workstream trees from an additional
+store. Each value must name an exact path in that store's digest and includes
+that path plus every descendant. An empty array mounts no workstreams. Omitting
+`include` preserves the original behavior of mounting the entire store. The
+Domain store is always fully mounted.
+
+The same mounted workstream path must not appear in more than one configured
+store. Every reader rejects duplicate mounted paths explicitly; store order
+and `defaultStore` never resolve ambiguity. Existing task values therefore
+remain portable, unqualified paths while each catalog entry supplies its
+owning store and repository.
 
 There is no read-only store mode, personal overlay, or private metadata layer.
 All workstream content and portfolio metadata belong to the owning store and
@@ -69,6 +79,12 @@ Creating, renaming, moving, or removing a workstream updates its owning
 store's digest in the same change. Workers may create workstreams when the task
 and approval allow it, subject to the same rule.
 
+Readers load each configured store's digest, apply its Domain-owned `include`
+selection, and expose only the mounted catalog to chiefs, workers, and user
+interfaces. A task that names an unmounted path remains task state and must not
+be hidden, but it has no writable workstream metadata until the path is mounted
+or reassigned.
+
 ## Selecting a store
 
 Use an explicit user or Domain instruction when it names the destination
@@ -80,6 +96,9 @@ order, repository visibility, subject matter, or where a related task lives.
 Before creating or moving a workstream, enumerate the live catalogs and verify
 that its path is globally unused. Before any write, re-read the owning
 repository's live digest and affected README with their current revisions.
+When creating a new root in a selectively mounted store, also add that root to
+the Domain registry if the user wants it mounted. Descendants of an already
+included path require no registry change.
 
 ## Portfolio metadata
 
