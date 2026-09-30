@@ -87,9 +87,13 @@ Use the Garden visual direction:
   opens the main conversation. Today and All show the same
   workstream portfolio with their corresponding task filter. Opening a task
   replaces the portfolio with its worker conversation, whose top-left back
-  control returns to the current filtered portfolio.
+  control returns to the current filtered portfolio. Keep the page background
+  solid through the top safe area and browser overscroll; do not fade to the
+  browser's default white surface.
 - Show questions inline with suggested answers, any provided default, and a
-  freeform alternative. The user must explicitly submit their answer.
+  freeform alternative. The user must explicitly submit their answer. Waiting
+  for that answer has no user-response deadline; bridge questions must not keep
+  one timeout-bound MCP request open for the duration of the wait.
 - Treat the Main Pan and worker chat composers as ordinary multiline freeform
   text fields. Give their scoped forms and textareas stable chat-specific
   names, IDs, accessible labels, `autocomplete="off"`, and text input-mode,
@@ -97,11 +101,12 @@ Use the Garden visual direction:
   identity, contact, and one-time-code terminology in composer metadata and
   placeholders, and add scoped password-manager ignore metadata where
   supported. Do not disable autofill on unrelated task forms or inputs.
-- Preserve authored line breaks when rendering conversation Markdown. Allow
-  images pasted from the clipboard to be previewed, removed, and submitted as
-  native ACP image content only when the connected agent advertises image
-  prompt support; enforce bounded payload limits and surface unsupported media
-  or capability failures.
+- Preserve authored line breaks when rendering conversation Markdown. Present
+  streamed internal reasoning as subdued "Thinking" content that is visually
+  distinct from the agent's response. Allow images pasted from the clipboard
+  to be previewed, removed, and submitted as native ACP image content only when
+  the connected agent advertises image prompt support; enforce bounded payload
+  limits and surface unsupported media or capability failures.
 - Open, select, and reload Main Pan and worker conversations at their newest
   content on phone and desktop. Returning to a conversation also defaults to
   the newest content; Hub does not persist incidental scroll offsets. Continue
@@ -156,7 +161,9 @@ mechanical sandbox.
 
 If native ACP elicitation is unavailable, a small session-bound question tool
 may bridge structured questions into the same web interaction. Do not parse
-ordinary prose to guess at pending questions or approvals.
+ordinary prose to guess at pending questions or approvals. The bridge publishes
+the pending question and ends its tool call; Hub delivers the eventual answer
+in a later agent turn.
 
 ## Main Pan and Domain instructions
 
