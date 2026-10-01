@@ -144,6 +144,7 @@ export function buildChiefCommand(action, config) {
     ...(config.additionalDirectories ?? []).map((directory) => path.resolve(directory)),
   ]);
   const args = [
+    ...(config.copilotCommandArgs ?? []),
     '-C', checkout,
     '--model', 'gpt-5.6-sol',
     ...(config.chiefArgs ?? []),

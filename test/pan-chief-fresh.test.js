@@ -19,6 +19,8 @@ async function fixture(t) {
     chiefSessionName: 'pan-chief-owner-domain',
     chiefSessionId: 'old-session-id',
     taskBackendConfig: path.join(root, 'backend.json'),
+    copilotCommand: 'agency.exe',
+    copilotCommandArgs: ['copilot'],
     chiefArgs: [
       '--agent', 'pan-chief', '--interactive', 'Remember the previous conversation.',
       '--allow-all-tools', '--disallow-temp-dir',
@@ -53,6 +55,8 @@ function childProcess(callback = () => {}) {
 test('fresh previews neutral startup and does not change the binding', async (t) => {
   const f = await fixture(t);
   const built = await runChief([...f.argv, '--print-command'], f.dependencies);
+  assert.equal(built.command, 'agency.exe');
+  assert.deepEqual(built.args.slice(0, 3), ['copilot', '-C', f.root]);
   assert.equal(built.args[built.args.indexOf('--session-id') + 1], newId);
   assert.equal(built.args[built.args.indexOf('--model') + 1], 'gpt-5.6-sol');
   assert.equal(built.args[built.args.indexOf('--interactive') + 1],
@@ -80,6 +84,7 @@ test('fresh changes the canonical id before spawn and retains old history and se
         const saved = JSON.parse(await readFile(f.filename, 'utf8'));
         assert.equal(saved.chiefSessionId, newId);
         assert.equal(saved.taskBackendConfig, f.config.taskBackendConfig);
+        assert.deepEqual(saved.copilotCommandArgs, ['copilot']);
         assert.ok(saved.chiefArgs.includes('--disallow-temp-dir'));
         assert.ok(!saved.chiefArgs.includes('Remember the previous conversation.'));
       });

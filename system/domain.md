@@ -72,7 +72,10 @@ the machine (e.g. `~/.config/pan/<machine>.json`), with at least `domainRepo`
 (<owner>/<repo>`) and `project` (`<owner>/<number>`). An experimental thin
 backend binding may additionally name absolute `taskBackendConfig`,
 `panTaskCommand`, `panCheckout`, and `runnerConfig` paths plus a stable
-`chiefSessionName`. These are machine-local locations, never credentials.
+`chiefSessionName`. A non-default chief launcher may set `copilotCommand` and
+`copilotCommandArgs`; prefix arguments such as an Agency `copilot` subcommand
+precede Pan's generated Copilot CLI arguments. These are machine-local
+locations, never credentials.
 
 The chief discovers an explicit `PAN_CONFIG` first. Without it, it uses the
 single applicable JSON binding under `~/.config/pan/`; ambiguity fails closed.
