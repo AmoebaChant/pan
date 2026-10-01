@@ -88,7 +88,8 @@ Chief creation is explicit and one-time. A launcher must inventory the
 configured Copilot session store before `start`, refuse if the stable name or a
 configured session id already exists, and serialize concurrent starts locally.
 Normal use resumes the exact persisted session id; it must not rely on a
-same-name session chooser.
+same-name session chooser. The chief launcher selects GPT-6.1 Sol
+(`gpt-6.1-sol`) for new, resumed, and fresh sessions.
 
 The runner may also configure `stateRoot` and `workspaceRoot`. `stateRoot`
 contains authoritative local session and launch-generation records and defaults

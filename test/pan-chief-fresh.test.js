@@ -58,7 +58,7 @@ test('fresh previews neutral startup and does not change the binding', async (t)
   assert.equal(built.command, 'agency.exe');
   assert.deepEqual(built.args.slice(0, 3), ['copilot', '-C', f.root]);
   assert.equal(built.args[built.args.indexOf('--session-id') + 1], newId);
-  assert.equal(built.args[built.args.indexOf('--model') + 1], 'gpt-5.6-sol');
+  assert.equal(built.args[built.args.indexOf('--model') + 1], 'gpt-6.1-sol');
   assert.equal(built.args[built.args.indexOf('--interactive') + 1],
     'You are the chief-of-staff Pan agent for Domain owner/domain.');
   assert.equal(built.args.filter((arg) => arg === '--agent').length, 1);

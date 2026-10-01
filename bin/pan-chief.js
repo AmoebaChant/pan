@@ -146,7 +146,7 @@ export function buildChiefCommand(action, config) {
   const args = [
     ...(config.copilotCommandArgs ?? []),
     '-C', checkout,
-    '--model', 'gpt-5.6-sol',
+    '--model', 'gpt-6.1-sol',
     ...(config.chiefArgs ?? []),
   ];
   for (const directory of directories) {
