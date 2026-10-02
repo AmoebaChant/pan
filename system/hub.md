@@ -50,17 +50,17 @@ Use the Garden visual direction:
   leave Today immediately; another occurrence still due today remains visible
   and incomplete.
 - The left pane header contains a clickable Pan character followed by Today,
-  All, and Options, in that order. Today contains open tasks
+  All, Agents, and Options, in that order. Today contains open tasks
   whose next-action date is the local date today or earlier. Workstreams remain
-  visible by default in every view and use the positive/green treatment when
+  visible by default in Today and All and use the positive/green treatment when
   that view has no matching tasks. A portfolio control lets the user show or
   hide those empty workstreams after the active task filter is applied. Persist
   that choice independently for each workstream-backed view across navigation,
   reload, and Hub restart. Never show an empty **Tasks without a workstream**
   fallback card. Avoid redundant headings and summaries.
 - Call the left content pane the **Task Area** and the right pane the **Chat
-  Area**. Today and All select task scope; Options selects how that scope is
-  presented and which completion bands are visible. The Task Area offers
+  Area**. Today, All, and Agents select task scope; Options selects how that
+  scope is presented and which completion bands are visible. The Task Area offers
   **Workstreams** and **Task List** presentations. Task List can group tasks by
   workstream or by status in this order: incomplete, completed today, completed
   earlier. Do not repeat a task's workstream on each task when its containing
@@ -74,12 +74,21 @@ Use the Garden visual direction:
   to task titles, descriptions, next steps, and workstream paths, titles, and
   descriptions. Require all terms to match. A matching workstream includes its
   tasks; a matching task retains its containing workstream. Search composes
-  with Today/All, completion visibility, and empty-workstream preferences in
-  both presentations and both Task List groupings, without mutating task or
-  workstream state. Offer a clear control and an explicit no-matches state.
-- Both Task Area presentations offer independent visibility for tasks completed
-  today and tasks completed earlier. Persist presentation and Task List
-  grouping globally, and completion visibility independently per top-level
+  with Today/All and Agents, and the applicable completion visibility and
+  empty-workstream preferences, in both presentations and both Task List
+  groupings, without mutating task or workstream state. Offer a clear control
+  and an explicit no-matches state.
+- Agents contains tasks with running/requested agents, agents waiting for
+  human input or answer delivery, and resumable stopped/interrupted sessions
+  on open tasks. Completed/rejected tasks remain in Agents while their agent
+  is active or waiting, not merely because old history exists. Show readable
+  agent state on each task. This scope is independent of task dates and
+  completion-history visibility; hide empty workstreams. Support search,
+  both presentations, and both Task List groupings without changing backend
+  status or session intent merely by navigating.
+- In Today and All, both Task Area presentations offer independent visibility
+  for tasks completed today and tasks completed earlier. Persist presentation
+  and Task List grouping globally, and completion visibility independently per top-level
   scope across navigation, reload, and Hub restart. Today never includes
   completions from earlier days. All remains the complete open scope plus
   whichever completion bands are enabled. Needs-input treatment remains inline
@@ -94,8 +103,8 @@ Use the Garden visual direction:
   with a visible insertion gap. Do not route task-specific decisions through
   the main Pan conversation.
 - On phone-width screens, replace the two-pane layout with one content area and
-  an iPhone-style bottom bar for Pan, Today, All, Options, and Create task. Pan
-  opens the main conversation. Today and All show the same
+  an iPhone-style bottom bar for Pan, Today, All, Agents, Options, and Create
+  task. Pan opens the main conversation. Today and All show the same
   workstream portfolio with their corresponding task filter. Opening a task
   replaces the portfolio with its worker conversation, whose top-left back
   control returns to the current filtered portfolio. Keep the page background
@@ -134,6 +143,13 @@ Use the Garden visual direction:
 Operational attention is separate from task work status. A pending question
 does not change priority, work status, planned date, or task ownership.
 
+Retain all recorded conversation messages and tool activity through Hub reload
+and restart; do not silently cap saved history. Refresh live state on browser
+reconnect, return from the background, and network recovery, without allowing
+an older snapshot to overwrite newer streamed content. Display failures inline
+in the conversation and show current process/turn state for main Pan as well
+as workers. Tool activity includes readable input, output, title, and status.
+
 Task and workstream mutations use one ordered optimistic queue. Apply each
 change to the visible portfolio immediately, preserve undo and redo history,
 and flush writes to their authoritative backend or store in order. Refresh
@@ -157,6 +173,12 @@ agent's session creation response and are saved before subsequent reuse.
 Supported resume/load operations reconnect the conversation; never silently
 replace a failed resume with a new conversation.
 
+When a saved session cannot be loaded, retain its identity and transcript,
+surface the failure, and clear the failed worker's process request instead of
+retrying indefinitely in background dispatch. An explicit Resume retries that
+same identity. Missing underlying agent state requires an operator recovery
+decision; the rendered transcript is not a substitute ACP conversation.
+
 Hub launches workers only for durable backend requests. Full-Domain access is
 not an instruction to request every task. Requests still follow explicit user
 instructions, Pan's normal task reasoning, or applicable standing authorization.
@@ -175,6 +197,19 @@ may bridge structured questions into the same web interaction. Do not parse
 ordinary prose to guess at pending questions or approvals. The bridge publishes
 the pending question and ends its tool call; Hub delivers the eventual answer
 in a later agent turn.
+
+Prefer that bridge over timeout-bound native elicitation for human questions.
+Persist unanswered questions and submitted answers independently of process
+memory. There is no human response deadline. Accept the browser submission
+after saving it, without holding its HTTP request open until the agent finishes
+the delivery turn. Identify answers by question ID, reject stale submissions,
+and retain failed deliveries with an explicit retry. If restart interrupts
+delivery confirmation, report that uncertainty rather than silently dropping
+the answer or claiming it was received. Reconnecting a waiting worker does not
+send a bootstrap prompt that repeats its question.
+If a preceding turn asks a question, an already-queued ordinary follow-up must
+not bypass it. Keep that message visible, report that it was not delivered,
+and ask the user to answer before resending it.
 
 ## Main Pan and Domain instructions
 
