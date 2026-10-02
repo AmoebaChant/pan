@@ -134,6 +134,13 @@ Use the Garden visual direction:
 Operational attention is separate from task work status. A pending question
 does not change priority, work status, planned date, or task ownership.
 
+Retain all recorded conversation messages and tool activity through Hub reload
+and restart; do not silently cap saved history. Refresh live state on browser
+reconnect, return from the background, and network recovery, without allowing
+an older snapshot to overwrite newer streamed content. Display failures inline
+in the conversation and show current process/turn state for main Pan as well
+as workers. Tool activity includes readable input, output, title, and status.
+
 Task and workstream mutations use one ordered optimistic queue. Apply each
 change to the visible portfolio immediately, preserve undo and redo history,
 and flush writes to their authoritative backend or store in order. Refresh
@@ -157,6 +164,12 @@ agent's session creation response and are saved before subsequent reuse.
 Supported resume/load operations reconnect the conversation; never silently
 replace a failed resume with a new conversation.
 
+When a saved session cannot be loaded, retain its identity and transcript,
+surface the failure, and clear the failed worker's process request instead of
+retrying indefinitely in background dispatch. An explicit Resume retries that
+same identity. Missing underlying agent state requires an operator recovery
+decision; the rendered transcript is not a substitute ACP conversation.
+
 Hub launches workers only for durable backend requests. Full-Domain access is
 not an instruction to request every task. Requests still follow explicit user
 instructions, Pan's normal task reasoning, or applicable standing authorization.
@@ -175,6 +188,16 @@ may bridge structured questions into the same web interaction. Do not parse
 ordinary prose to guess at pending questions or approvals. The bridge publishes
 the pending question and ends its tool call; Hub delivers the eventual answer
 in a later agent turn.
+
+Prefer that bridge over timeout-bound native elicitation for human questions.
+Persist unanswered questions and submitted answers independently of process
+memory. There is no human response deadline. Accept the browser submission
+after saving it, without holding its HTTP request open until the agent finishes
+the delivery turn. Identify answers by question ID, reject stale submissions,
+and retain failed deliveries with an explicit retry. If restart interrupts
+delivery confirmation, report that uncertainty rather than silently dropping
+the answer or claiming it was received. Reconnecting a waiting worker does not
+send a bootstrap prompt that repeats its question.
 
 ## Main Pan and Domain instructions
 
