@@ -66,6 +66,17 @@ Use the Garden visual direction:
   earlier. Do not repeat a task's workstream on each task when its containing
   group already identifies that workstream. Workstreams retains its
   empty-workstream option.
+- Dismiss Options when a pointer is pressed outside it or Escape is pressed.
+  Interacting with controls inside the panel keeps it open; Escape returns
+  focus to Options.
+- Keep a search field at the top of the Task Area, above its scrolling content,
+  on desktop and phone. Apply case-insensitive, space-separated search terms
+  to task titles, descriptions, next steps, and workstream paths, titles, and
+  descriptions. Require all terms to match. A matching workstream includes its
+  tasks; a matching task retains its containing workstream. Search composes
+  with Today/All, completion visibility, and empty-workstream preferences in
+  both presentations and both Task List groupings, without mutating task or
+  workstream state. Offer a clear control and an explicit no-matches state.
 - Both Task Area presentations offer independent visibility for tasks completed
   today and tasks completed earlier. Persist presentation and Task List
   grouping globally, and completion visibility independently per top-level
