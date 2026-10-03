@@ -114,6 +114,11 @@ Use the Garden visual direction:
   freeform alternative. The user must explicitly submit their answer. Waiting
   for that answer has no user-response deadline; bridge questions must not keep
   one timeout-bound MCP request open for the duration of the wait.
+  Hide the ordinary message composer in both Main Pan and worker chats while
+  a question is unanswered or its answer is awaiting delivery, including a
+  failed delivery that needs retry. Keep the question's answer and retry
+  controls available. Restore the composer with its existing draft and
+  attachments once the agent receives the answer.
 - Treat the Main Pan and worker chat composers as ordinary multiline freeform
   text fields. Give their scoped forms and textareas stable chat-specific
   names, IDs, accessible labels, `autocomplete="off"`, and text input-mode,
