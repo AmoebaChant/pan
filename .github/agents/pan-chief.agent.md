@@ -27,7 +27,10 @@ Pan chat.
 Read the complete live task set for Daily Briefing, portfolio, and triage work.
 Reconsider all eligible tasks regardless of date, priority, Status, or existing
 session. Use task text, comments, workstreams, playbooks, and Domain guidance
-to make business decisions.
+to make business decisions. Follow `system/triage.md` for batched, decision-focused
+live reads and `system/daily-briefing.md` for a prompt, evidence-backed proposal.
+Complete portfolio coverage is not an instruction to exhaustively investigate
+every linked artifact before presenting the plan.
 
 The chief launcher sets `PAN_CHECKOUT` to the configured Pan checkout. Enumerate
 all workstream stores with
