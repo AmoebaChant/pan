@@ -35,6 +35,32 @@ the user closes the process. A worker awaiting the user remains running and
 should be surfaced from its comments and live session, not through a separate
 attention field.
 
+## Efficient live review
+
+Start with one complete live task inventory and the complete workstream catalog.
+Use those reads to assess every eligible task; complete coverage does not mean
+fetching every linked document or investigating every adjacent concern.
+
+Batch independent evidence reads. For GitHub, retrieve relevant Issue comments
+with paginated `gh` reads or batched GraphQL rather than serial per-task commands
+that each re-enumerate the entire Project. Keep the configured backend as the
+authority and use its task identities and mutation contract; these reads do not
+create another task store. Run independent read batches concurrently where
+supported rather than hiding serial reads inside one long shell command.
+
+Read enough comment history to establish current approvals, holds, dependencies,
+and review gates. Do not assume the last few comments contain every unresolved
+constraint. Fetch full workstream documents and linked PR, pipeline, or external
+records only when they can change a classification or recommendation. Keep
+returned context focused on the decision rather than dumping large histories.
+
+Reuse evidence already read live during this review for analysis, not as durable
+state. Re-read before mutations and verify afterward. Incorporate changes found
+during the review without restarting unrelated investigation; repeat broader
+reads only when the changed state invalidates their conclusions.
+
+## Applying decisions
+
 When assigning a workstream, use an exact path present in the live catalog.
 Paths are globally unique across configured stores, so the task value remains
 unqualified. If selecting a store for a new workstream is not clearly governed

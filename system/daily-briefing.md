@@ -14,7 +14,22 @@ Dates, priority, current Status, and missing session ID may affect the
 recommendation but never define the candidate set. Future-dated and unscheduled
 tasks must be reconsidered alongside today and overdue work.
 
+Follow [Triage's efficient live review](triage.md#efficient-live-review).
+Complete-backlog consideration must remain thorough, but evidence gathering
+should be limited to what supports the day's human plan and agent recommendations.
+
 ## Proposal
+
+Present the first useful proposal promptly once the complete portfolio has been
+considered and its recommendations are supported. Do not turn a briefing into an
+exhaustive audit, worker implementation, or investigation of every blocker before
+showing the plan. Keep uncertain outcomes explicitly unresolved instead of
+delaying the whole proposal or making unsupported completion claims.
+
+Describe proposed worker requests in terms of the task outcome and scope, not
+just "research." Distinguish investigation, implementation, human review, and
+publication or delivery approval. When the user wants progress or completion,
+explain what the proposed worker would advance and where it must stop.
 
 For each surfaced task, distinguish independent effects:
 
@@ -40,6 +55,10 @@ using blank Agent metadata as a command.
 The first proposal is read-only except standing-authorized objective
 reconciliation. Obtain explicit agreement for discretionary date, status, guidance, and
 session-request effects.
+
+Approval of the human plan is not approval to start agents. If the user excludes
+agent starts, apply only approved planning changes and guidance; do not write
+`agentStatus=requested`, launch workers, or replace an existing session.
 
 After agreement:
 
