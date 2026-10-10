@@ -326,24 +326,21 @@ test('review feedback cannot inject effects beyond the immutable proposal', asyn
   );
 });
 
-test('completion requires approval of the exact current proposal revision', async () => {
+test('completion requires review of the exact current revision, not second approval of feedback', async () => {
   const broker = new BriefingBroker();
   const result = {
     status: 'confirmed',
-    summary: 'The approved plan was applied and verified.',
+    summary: 'The authorized instructions were applied and verified.',
   };
   assert.throws(
     () => broker.complete(result),
-    /must be explicitly approved/,
+    /must be reviewed/,
   );
 
   broker.publish(proposal());
   broker.submitReview(review());
   await broker.waitForReview('2026-09-05', 1);
-  assert.throws(
-    () => broker.complete(result),
-    /must be explicitly approved/,
-  );
+  assert.equal(broker.complete(result).completion.status, 'confirmed');
 
   const revised = proposal(2);
   broker.publish(revised);
@@ -355,7 +352,7 @@ test('completion requires approval of the exact current proposal revision', asyn
   broker.publish(republished);
   assert.throws(
     () => broker.complete(result),
-    /must be explicitly approved/,
+    /must be reviewed/,
   );
 });
 

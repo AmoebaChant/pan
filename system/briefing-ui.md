@@ -16,9 +16,15 @@ planning/guidance changes, and
 `agentStatus=requested`; they never infer a work Status change or claim that a
 process has launched.
 
-Sending feedback is not approval. Only the UI's approval action authorizes the
-discretionary changes in that proposal. After approval, the chief re-reads live
-tasks, applies intended fields through `pan-task`, and verifies them.
+Submitting feedback authorizes the user's clear instructions, including those
+that override a proposal. The chief follows the reviewed Domain's feedback
+policy and the [Daily Briefing review contract](daily-briefing.md#review-feedback),
+re-reads live tasks, persists guidance before effects, applies only intended
+fields through `pan-task`, and verifies them. Unanswered items stay unchanged;
+unclear instructions need clarification and new alternatives need approval.
+Rendered outcomes must distinguish confirmed effects, unprocessed instructions,
+and genuinely unapplied alternatives rather than treating every disagreement
+as unchanged.
 
 The service keeps only the current proposal and pending review in memory. It
 has no task database. Demo mode uses invented fixtures and cannot access live

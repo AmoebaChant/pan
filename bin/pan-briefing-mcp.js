@@ -103,7 +103,7 @@ const TOOLS = [
   },
   {
     name: 'complete_briefing',
-    description: 'Publish the verified final outcome after an approved Daily Briefing is applied.',
+    description: 'Publish the verified final outcome after authorized Daily Briefing feedback is applied under reviewed Domain policy. Clear feedback instructions need no second approval.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -320,6 +320,9 @@ export function runMcpProtocol({
             'Use explicit humanDateAction, agentAction, agentAuthorization, and checkpointPriority effects. Missing agent date action never clears or sets a human date.',
             'Agent starts identify new versus resumed engagement, playbook or work mode, expected outcome, and honest later human checkpoint expectation.',
             'Treat vague deferral feedback as durable situational planning guidance stored in the authoritative task description or body under a Pan planning guidance: marker, not as permission to choose an arbitrary future date.',
+            'Interpret full submitted feedback as direct instructions under reviewed Domain policy. Explicit dates override binary choices; Domain policy defines binary scheduling defaults. Clear instructions need no second approval, while unclear instructions need clarification and genuinely new alternatives need approval.',
+            'Binary scheduling decisions alone do not request workers or close sessions. Explicit work outcomes are independent of Agent status; preserve history and recurrence and never claim discarded work was executed.',
+            'Persist guidance first, re-read live scope before common-task-tool writes, apply only authorized fields, and verify. Report confirmed partial failures truthfully; tool limitations do not remove user authorization.',
             'Use feedbackResponse to state unambiguously how prior feedback changed the recommendation; never say the user accepted a recommendation they disagreed with.',
           ].join(' '),
         };

@@ -290,7 +290,7 @@ export class BriefingBroker {
   #phase = 'empty';
   #queuedReview = null;
   #waiter = null;
-  #approvedProposal = null;
+  #reviewedProposal = null;
 
   get snapshot() {
     return {
@@ -319,7 +319,7 @@ export class BriefingBroker {
     this.#completion = null;
     this.#phase = 'awaiting-review';
     this.#queuedReview = null;
-    this.#approvedProposal = null;
+    this.#reviewedProposal = null;
     this.#emit();
     return this.snapshot;
   }
@@ -351,12 +351,10 @@ export class BriefingBroker {
     if (this.#phase === 'review-submitted') {
       throw new Error('a review has already been submitted for this revision');
     }
-    this.#approvedProposal = submitted.action === 'approve'
-      ? {
-          briefingId: this.#proposal.briefingId,
-          revision: this.#proposal.revision,
-        }
-      : null;
+    this.#reviewedProposal = {
+      briefingId: this.#proposal.briefingId,
+      revision: this.#proposal.revision,
+    };
     this.#phase = 'review-submitted';
     if (this.#waiter) {
       const { resolve } = this.#waiter;
@@ -375,10 +373,10 @@ export class BriefingBroker {
     }
     if (
       !this.#proposal
-      || this.#approvedProposal?.briefingId !== this.#proposal.briefingId
-      || this.#approvedProposal?.revision !== this.#proposal.revision
+      || this.#reviewedProposal?.briefingId !== this.#proposal.briefingId
+      || this.#reviewedProposal?.revision !== this.#proposal.revision
     ) {
-      throw new Error('the current briefing revision must be explicitly approved before completion');
+      throw new Error('the current briefing revision must be reviewed before completion');
     }
     this.#completion = validateCompletion(result);
     this.#phase = 'complete';
