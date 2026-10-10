@@ -70,3 +70,31 @@ After agreement:
 
 If a write fails, stop and report the confirmed partial result. Do not add a
 recovery state or return a success-shaped fallback.
+
+## Review feedback
+
+Submitted feedback is direct user instruction, like chat. Interpret the full
+feedback, not just the binary selection. Clear instructions require no second
+approval; explicit dates take precedence over a binary scheduling choice.
+Resolve relative dates in the briefing's local timezone and review context.
+The reviewed Domain instructions may define binary defaults (for example,
+where to move an occurrence when Today is declined); do not impose a personal
+Domain's defaults on all Domains. Ask for clarification when the intended
+effect is genuinely unclear, not for justification of a clear choice.
+
+Binary scheduling choices alone change only scheduling. They do not authorize
+worker requests or session closure. Explicit work outcomes are independent of
+Agent status. "Mark done" authorizes done; a request to discard unneeded work
+may use a supported history-preserving rejected outcome rather than destructive
+deletion. Record the user's instruction without claiming the work was executed.
+Preserve native recurrence when moving an occurrence; never clear recurring
+dates. Unanswered cards remain unchanged.
+
+Use the dedicated review tool for supported effects. If it cannot express a
+clear authorized effect, persist guidance first, then use normal common task
+tools with live scope checks, intended-field-only writes, and verification.
+Record the actual confirmed result in the review; tool limitations do not
+remove user authorization. Save interpreted effects and confirmed partial
+results for idempotent retry, and stop on failure. Do not replay historical
+reviews automatically. Only genuinely new alternatives require fresh approval
+and remain unapplied.

@@ -127,7 +127,7 @@ function renderCompletion(result) {
   const completion = result && typeof result === 'object' ? result : {};
   elements.completionSummary.textContent = completion.summary
     || completion.message
-    || 'The approved plan has been checked.';
+    || 'The reviewed instructions have been checked.';
   const heading = elements.completion.querySelector('h2');
   heading.textContent = completion.status === 'confirmed'
     ? 'Briefing actions confirmed'
