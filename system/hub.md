@@ -270,6 +270,33 @@ and ready for discussion; the worker must not replay its prior
 completion updates or recreate `worker-release.json`. The explicit resume
 action itself is not completion of a new request.
 
+## Persistent chief schedules
+
+Hub may persist explicitly configured schedules for messages to the same chief
+conversation or requests through the existing structured Daily Briefing flow.
+Expose schedule enumeration, creation, editing, pause/resume, and deletion to
+the chief, and a Schedule tab in the chief conversation. Workers do not receive
+this portfolio scheduling authority.
+
+A schedule specifies exactly one future one-off date/time or recurring cron
+expression and an explicit timezone. Interpret offset-free one-off times in
+that timezone; recurring runs follow its local clock. Verify the saved schedule
+and returned next run before claiming registration. Scheduling never bypasses
+Domain permissions, task approvals, or review of briefing proposals.
+
+Schedules survive Hub restarts. After downtime or sleep, dispatch a missed
+schedule once using the actual current time, then advance recurring schedules
+from now rather than replaying every missed occurrence. Hub cannot wake a
+sleeping or powered-off machine. Pending chief questions or saved answers
+defer scheduled work; an active briefing request also defers another scheduled
+briefing. Message runs queue behind an active turn without bypassing questions.
+
+Persist the running attempt and advance its next run before dispatch. Record
+confirmed dispatch or failure and expose waiting reasons and errors in Log
+and the Schedule tab. A restart during an unconfirmed run records it as failed
+rather than silently replaying potentially delivered instructions. Editing,
+pausing, or deleting a schedule does not cancel work already dispatched.
+
 ## Playbooks and dispatch
 
 Use the existing [playbook](playbooks.md) loader and assignment semantics.
