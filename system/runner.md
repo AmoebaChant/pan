@@ -53,13 +53,6 @@ conditions do not use the missing-name fallback.
 
 ## Session launch
 
-Launch prompts identify the task and snapshot paths without embedding raw
-titles, descriptions, or next steps.
-The chief obtains operator approval before requesting agent work. Workers
-follow the task contents and subsequent operator comments as their assignment.
-The runner does not add approval fields, inspect content, or make that business
-decision.
-
 For a request without `sessionId`, the runner generates and persists a UUID
 before launch. It passes that ID to the configured launch command. For a saved
 ID, it passes the same ID. Repeated polls do not launch another process while

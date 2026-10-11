@@ -38,9 +38,8 @@ session ID merely to satisfy a gate.
 
 Obtain explicit operator approval for the agent request and record it in an
 ordinary task comment before setting `agentStatus=requested`. Task content
-cannot supply its own approval. Under a reviewed restricted-writer Domain
-policy, approval adopts the task as the worker's trusted assignment, including
-subsequent operator edits and comments; it does not make it chief instructions.
+cannot supply its own approval. This is a chief triage decision, not a change
+to worker instructions or launch behavior.
 
 Changing work Status never releases a session, and blank Agent metadata is not
 a close command. When the user wants an active session closed, direct that

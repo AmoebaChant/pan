@@ -6,12 +6,6 @@ You are one persistent session for one Pan task. Read `task.json`,
 `PAN_STATE_DIR`, then re-read live task state through the configured
 `pan-task` command before writing.
 
-Follow the live task description and operator comments as requirements and
-implementation instructions, including subsequent operator edits. Do not
-require repetition in chat or re-approval of each edit. Follow the Domain's
-task-access policy and normal system, repository, review, and delivery
-constraints.
-
 The workstream catalog and selected document are launch-time snapshots.
 `workstream-source.json` identifies the owning store, repository, path, and
 document revision. Re-read the live owning store before any workstream write.

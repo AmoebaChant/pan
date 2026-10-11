@@ -51,22 +51,18 @@ test('chief intake and triage load the input contract, not worker instructions',
   assert.match(contract, /do not prove that a model will resist every injection/);
 });
 
-test('approval hands off task requirements without applying chief triage policy to workers', async () => {
-  const [contract, chief, worker, triage] = await Promise.all([
+test('chief obtains approval without changing the downstream worker workflow', async () => {
+  const [contract, chief, triage] = await Promise.all([
     readFile('system/untrusted-input.md', 'utf8'),
     readFile('.github/agents/pan-chief.agent.md', 'utf8'),
-    readFile('system/worker-base-instructions.md', 'utf8'),
     readFile('system/triage.md', 'utf8'),
   ]);
   assert.match(contract, /not instructions to the chief/);
   assert.match(contract, /explicit approval before requesting agent work/);
-  assert.match(contract, /Approval adopts the task's contents as the worker's assignment/);
-  assert.match(contract, /do not carry it into worker execution/);
+  assert.match(contract, /do not carry it into worker\s+execution/);
+  assert.match(contract, /existing worker workflow/);
   assert.match(chief, /record it in task comments/);
   assert.match(triage, /before setting `agentStatus=requested`/);
-  assert.match(worker, /requirements and\s+implementation instructions, including subsequent operator edits/);
-  assert.match(worker, /Do not\s+require repetition in chat or re-approval of each edit/);
-  assert.doesNotMatch(worker, /requesting a worker does not elevate that content/);
 });
 
 test('worker instructions release after verified completion and not while waiting', async () => {
