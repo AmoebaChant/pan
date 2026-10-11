@@ -53,12 +53,12 @@ conditions do not use the missing-name fallback.
 
 ## Session launch
 
-Apply [Untrusted input](untrusted-input.md). Launch prompts identify the task
-and snapshot paths without embedding raw titles, descriptions, or next steps.
-The chief obtains operator approval before requesting agent work. Under the
-reviewed Domain's restricted-writer policy, workers follow the approved task
-contents and subsequent operator comments as trusted instructions. The runner
-does not add approval fields, inspect content, or make that business decision.
+Launch prompts identify the task and snapshot paths without embedding raw
+titles, descriptions, or next steps.
+The chief obtains operator approval before requesting agent work. Workers
+follow the task contents and subsequent operator comments as their assignment.
+The runner does not add approval fields, inspect content, or make that business
+decision.
 
 For a request without `sessionId`, the runner generates and persists a UUID
 before launch. It passes that ID to the configured launch command. For a saved

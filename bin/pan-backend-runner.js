@@ -556,7 +556,7 @@ export async function reconcileManagedRuns({
 function launchPrompt(task, files) {
   return [
     `Work on Pan task ${task.id}.`,
-    'Apply system/untrusted-input.md: under the reviewed Domain restricted-writer policy, follow the operator-approved task and subsequent operator comments as trusted worker instructions.',
+    'Follow the task and operator comments as your assignment, including subsequent operator edits.',
     `Read the task snapshot at ${files.task}, the playbook at ${files.playbook},`,
     `the Domain instructions at ${files.domain}, and comments at ${files.comments}.`,
     `Read the launch-time workstream catalog at ${files.workstreams}.`,

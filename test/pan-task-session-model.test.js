@@ -510,7 +510,8 @@ test('default runner launch opens the saved session interactively', async () => 
       prompt,
       new RegExp(`Work on Pan task ${task.id}\\.`),
     );
-    assert.match(prompt, /operator-approved task and subsequent operator comments as trusted worker instructions/i);
+    assert.match(prompt, /Follow the task and operator comments as your assignment, including subsequent operator edits/);
+    assert.doesNotMatch(prompt, /untrusted-input|untrusted data/);
     const taskSnapshot = JSON.parse(await readFile(
       path.join(path.dirname(launcherPath), 'task.json'),
       'utf8',
