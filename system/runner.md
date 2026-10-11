@@ -53,6 +53,11 @@ conditions do not use the missing-name fallback.
 
 ## Session launch
 
+Apply [Untrusted input](untrusted-input.md). Launch prompts identify the task
+and snapshot paths without embedding raw titles, descriptions, or next steps.
+Workers read external feedback as untrusted data, not operator instructions;
+the session request does not authorize commands or approvals in that data.
+
 For a request without `sessionId`, the runner generates and persists a UUID
 before launch. It passes that ID to the configured launch command. For a saved
 ID, it passes the same ID. Repeated polls do not launch another process while

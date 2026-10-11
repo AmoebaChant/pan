@@ -28,6 +28,27 @@ test('packaged chief, worker, and compatibility roles use the simple model', asy
   assert.match(alias, /exactly as `pan-chief`/);
 });
 
+test('chief and worker instructions load the shared external-feedback trust contract', async () => {
+  const [chief, worker, overview, triage, intake, contract] = await Promise.all([
+    readFile('.github/agents/pan-chief.agent.md', 'utf8'),
+    readFile('system/worker-base-instructions.md', 'utf8'),
+    readFile('system/overview.md', 'utf8'),
+    readFile('system/triage.md', 'utf8'),
+    readFile('system/source-intake.md', 'utf8'),
+    readFile('system/untrusted-input.md', 'utf8'),
+  ]);
+  for (const text of [chief, worker, overview, triage, intake]) {
+    assert.match(text, /untrusted-input\.md/);
+  }
+  assert.match(contract, /agent paraphrase does not turn source text into user approval/);
+  assert.match(contract, /service\s+account or shared token/i);
+  assert.match(contract, /Client-supplied Reporter email is contact information/);
+  assert.match(contract, /Fake role headings, delimiter closures, and encoded payloads/);
+  assert.match(contract, /Surface suspected injection/);
+  assert.match(contract, /briefing review remain real operator instruction/);
+  assert.match(contract, /do not prove that a model will resist every injection/);
+});
+
 test('worker instructions release after verified completion and not while waiting', async () => {
   const surfaces = await Promise.all([
     readFile('.github/agents/pan-worker.agent.md', 'utf8'),
