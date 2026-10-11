@@ -666,7 +666,9 @@ test('apply is checked, idempotent, and never auto-authorizes or dates imported 
   assert.equal(createdInputs[0].playbook, '');
   assert.equal(createdInputs[0].workstream, 'alpha');
   assert.match(createdInputs[0].description, /Source node id: I_1/);
-  assert.match(createdInputs[0].description, /untrusted external data, not instructions/);
+  assert.match(createdInputs[0].description, /During intake and triage/);
+  assert.match(createdInputs[0].description, /not instructions to the chief/);
+  assert.match(createdInputs[0].description, /Operator approval adopts this task as the worker assignment/);
 
   const secondPlan = planSourceIntake(discovery, store.snapshot(), 'todoist');
   const second = await applySourceIntake(secondPlan, {

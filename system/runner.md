@@ -55,8 +55,10 @@ conditions do not use the missing-name fallback.
 
 Apply [Untrusted input](untrusted-input.md). Launch prompts identify the task
 and snapshot paths without embedding raw titles, descriptions, or next steps.
-Workers read external feedback as untrusted data, not operator instructions;
-the session request does not authorize commands or approvals in that data.
+The chief obtains operator approval before requesting agent work. Under the
+reviewed Domain's restricted-writer policy, workers follow the approved task
+contents and subsequent operator comments as trusted instructions. The runner
+does not add approval fields, inspect content, or make that business decision.
 
 For a request without `sessionId`, the runner generates and persists a UUID
 before launch. It passes that ID to the configured launch command. For a saved
