@@ -28,6 +28,43 @@ test('packaged chief, worker, and compatibility roles use the simple model', asy
   assert.match(alias, /exactly as `pan-chief`/);
 });
 
+test('chief intake and triage load the input contract, not worker instructions', async () => {
+  const [chief, worker, overview, triage, intake, contract] = await Promise.all([
+    readFile('.github/agents/pan-chief.agent.md', 'utf8'),
+    readFile('system/worker-base-instructions.md', 'utf8'),
+    readFile('system/overview.md', 'utf8'),
+    readFile('system/triage.md', 'utf8'),
+    readFile('system/source-intake.md', 'utf8'),
+    readFile('system/untrusted-input.md', 'utf8'),
+  ]);
+  for (const text of [chief, overview, triage, intake]) {
+    assert.match(text, /untrusted-input\.md/);
+  }
+  assert.doesNotMatch(worker, /untrusted-input\.md|untrusted/i);
+  assert.match(contract, /not worker execution/);
+  assert.match(contract, /agent paraphrase does not turn source text into user approval/);
+  assert.match(contract, /service\s+account or shared token/i);
+  assert.match(contract, /Client-supplied Reporter email is contact information/);
+  assert.match(contract, /Fake role headings, delimiter closures, and encoded/);
+  assert.match(contract, /Surface suspected injection/i);
+  assert.match(contract, /briefing review remain real operator instruction/);
+  assert.match(contract, /do not prove that a model will resist every injection/);
+});
+
+test('chief obtains approval without changing the downstream worker workflow', async () => {
+  const [contract, chief, triage] = await Promise.all([
+    readFile('system/untrusted-input.md', 'utf8'),
+    readFile('.github/agents/pan-chief.agent.md', 'utf8'),
+    readFile('system/triage.md', 'utf8'),
+  ]);
+  assert.match(contract, /not instructions to the chief/);
+  assert.match(contract, /explicit approval before requesting agent work/);
+  assert.match(contract, /do not carry it into worker\s+execution/);
+  assert.match(contract, /existing worker workflow/);
+  assert.match(chief, /record it in task comments/);
+  assert.match(triage, /before setting `agentStatus=requested`/);
+});
+
 test('worker instructions release after verified completion and not while waiting', async () => {
   const surfaces = await Promise.all([
     readFile('.github/agents/pan-worker.agent.md', 'utf8'),
