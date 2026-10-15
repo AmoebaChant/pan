@@ -90,6 +90,15 @@ Use the Garden visual direction:
   completion-history visibility; hide empty workstreams. Support search,
   both presentations, and both Task List groupings without changing backend
   status or session intent merely by navigating.
+  In the agent conversation list, keep Pan first and workers in oldest-first
+  launch order. Persist each session's first launch time across resumes and
+  restarts; routine activity and status updates never reorder it. For legacy
+  sessions, freeze the earliest retained message/activity timestamp once, or
+  the saved update time when only a session ID remains. Break timestamp ties
+  by session key; unknown launch times sort last by key until launched.
+  Draw a clear selection border only around the conversation actually open
+  in the Chat Area. Pan's character/title identity and waiting-for-input
+  treatment must remain distinct from selection.
 - In Today and All, both Task Area presentations offer independent visibility
   for tasks completed today and tasks completed earlier. Persist presentation
   and Task List grouping globally, and completion visibility independently per top-level
