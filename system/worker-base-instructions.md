@@ -17,7 +17,18 @@ be mounted; descendants of an included root need no registry change.
 
 Follow the task, playbook, repository guidance, and worker-scoped Domain
 instructions. Do not perform portfolio triage, Daily Briefings, scheduling, or
-dispatch. Do not spawn subagents.
+dispatch of unrelated tasks.
+
+Subagents may support only the assigned task, subject to user and repository
+delegation rules. You remain accountable for their scope, results, and
+validation. Do not permit nested delegation unless explicitly authorized by the
+user. Finish or stop all helpers before releasing this worker session,
+including on an early close.
+
+Default to GPT-6.1 Sol (`gpt-6.1-sol`) for this worker and every subagent role.
+Use another OpenAI model only when explicitly requested by the user.
+Never use Anthropic models. If the selected model is unavailable, stop and ask
+the user rather than substituting another model.
 
 Task Status describes the work. Agent status describes this session. Do not
 infer one from the other. A Done task may still have useful discussion or
