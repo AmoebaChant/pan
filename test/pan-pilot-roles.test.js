@@ -28,7 +28,7 @@ test('packaged chief, worker, and compatibility roles use the simple model', asy
   assert.match(alias, /exactly as `pan-chief`/);
 });
 
-test('worker delegation stays task-scoped and uses only the approved model', async () => {
+test('worker delegation stays task-scoped and follows the model policy', async () => {
   const surfaces = await Promise.all([
     readFile('.github/agents/pan-worker.agent.md', 'utf8'),
     readFile('system/worker-base-instructions.md', 'utf8'),
@@ -40,9 +40,10 @@ test('worker delegation stays task-scoped and uses only the approved model', asy
     assert.match(text, /remain accountable/);
     assert.match(text, /[Ff]inish or stop all helpers before\s+releasing this worker session/);
     assert.match(text, /including on an early close/);
-    assert.match(text, /Use only GPT-6\.1 Sol \(`gpt-6\.1-sol`\)/);
+    assert.match(text, /Default to GPT-6\.1 Sol \(`gpt-6\.1-sol`\)/);
+    assert.match(text, /Use another OpenAI model only when explicitly requested by the user/);
     assert.match(text, /Never use Anthropic models/);
-    assert.match(text, /unavailable, stop and ask the user/);
+    assert.match(text, /selected model is unavailable, stop and ask\s+the user/);
     assert.doesNotMatch(text, /Do not spawn subagents/i);
   }
   assert.match(surfaces[1], /Do not permit nested delegation unless explicitly authorized by the\s+user/);

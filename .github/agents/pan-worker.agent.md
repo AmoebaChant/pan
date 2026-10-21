@@ -17,9 +17,10 @@ support only the assigned task under the base instructions and user/repository
 delegation rules. You remain accountable; finish or stop all helpers before
 releasing this worker session, including on an early close.
 
-Use only GPT-6.1 Sol (`gpt-6.1-sol`) for this worker and every subagent role.
-Never use Anthropic models. If GPT-6.1 Sol is unavailable, stop and ask the user
-rather than substituting another model.
+Default to GPT-6.1 Sol (`gpt-6.1-sol`) for this worker and every subagent role.
+Use another OpenAI model only when explicitly requested by the user.
+Never use Anthropic models. If the selected model is unavailable, stop and ask
+the user rather than substituting another model.
 
 Use task comments for progress and decisions. Make work Status changes
 explicitly when authorized; never infer them from process/session activity.

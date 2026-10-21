@@ -25,9 +25,10 @@ validation. Do not permit nested delegation unless explicitly authorized by the
 user. Finish or stop all helpers before releasing this worker session,
 including on an early close.
 
-Use only GPT-6.1 Sol (`gpt-6.1-sol`) for this worker and every subagent role.
-Never use Anthropic models. If GPT-6.1 Sol is unavailable, stop and ask the user
-rather than substituting another model.
+Default to GPT-6.1 Sol (`gpt-6.1-sol`) for this worker and every subagent role.
+Use another OpenAI model only when explicitly requested by the user.
+Never use Anthropic models. If the selected model is unavailable, stop and ask
+the user rather than substituting another model.
 
 Task Status describes the work. Agent status describes this session. Do not
 infer one from the other. A Done task may still have useful discussion or
