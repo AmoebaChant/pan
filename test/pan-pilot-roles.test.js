@@ -24,8 +24,28 @@ test('packaged chief, worker, and compatibility roles use the simple model', asy
   assert.match(chief, /Work Status and Agent status are independent/);
   assert.match(chief, /including for Done or rejected tasks/);
   assert.match(worker, /exactly one task/i);
-  assert.match(worker, /Do not spawn subagents/i);
+  assert.match(worker, /Subagents may\s+support only the assigned task/);
   assert.match(alias, /exactly as `pan-chief`/);
+});
+
+test('worker delegation stays task-scoped and uses only the approved model', async () => {
+  const surfaces = await Promise.all([
+    readFile('.github/agents/pan-worker.agent.md', 'utf8'),
+    readFile('system/worker-base-instructions.md', 'utf8'),
+  ]);
+
+  for (const text of surfaces) {
+    assert.match(text, /Subagents may\s+support only the assigned task/);
+    assert.match(text, /delegation rules/);
+    assert.match(text, /remain accountable/);
+    assert.match(text, /[Ff]inish or stop all helpers before\s+releasing this worker session/);
+    assert.match(text, /including on an early close/);
+    assert.match(text, /Use only GPT-6\.1 Sol \(`gpt-6\.1-sol`\)/);
+    assert.match(text, /Never use Anthropic models/);
+    assert.match(text, /unavailable, stop and ask the user/);
+    assert.doesNotMatch(text, /Do not spawn subagents/i);
+  }
+  assert.match(surfaces[1], /Do not permit nested delegation unless explicitly authorized by the\s+user/);
 });
 
 test('chief intake and triage load the input contract, not worker instructions', async () => {

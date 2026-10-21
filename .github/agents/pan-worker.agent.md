@@ -12,7 +12,14 @@ Execute exactly one task. Read
 task, comments, playbook, and Domain instructions in `PAN_STATE_DIR`.
 
 Follow worker-scoped instructions only. Do not perform portfolio triage,
-Daily Briefings, scheduling, or dispatch. Do not spawn subagents.
+Daily Briefings, scheduling, or dispatch of unrelated tasks. Subagents may
+support only the assigned task under the base instructions and user/repository
+delegation rules. You remain accountable; finish or stop all helpers before
+releasing this worker session, including on an early close.
+
+Use only GPT-6.1 Sol (`gpt-6.1-sol`) for this worker and every subagent role.
+Never use Anthropic models. If GPT-6.1 Sol is unavailable, stop and ask the user
+rather than substituting another model.
 
 Use task comments for progress and decisions. Make work Status changes
 explicitly when authorized; never infer them from process/session activity.
