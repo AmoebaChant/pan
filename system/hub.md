@@ -11,7 +11,27 @@ internal role.
 One user, one computer, one selected task backend, and local browser access.
 Hub may manage the complete eligible portfolio selected by that backend. This
 permission does not request every task or bypass task ownership rules. Private
-Tailscale access is deferred.
+Tailscale Serve may proxy the loopback service through an explicitly trusted
+HTTPS origin. Loopback-only remains the default.
+
+A temporary LAN demo may add a second listener on one explicitly configured,
+locally assigned private IPv4 address and port. Never bind a wildcard address
+or relax the normal loopback/Tailscale host and origin checks. Accept only that
+listener's exact HTTP origin; do not rewrite request origins or enable wildcard
+CORS. Require a separate random demo access code before exposing any Hub data
+or API, with an HttpOnly, SameSite cookie limited to the demo lifetime. Never
+reuse or expose backend, agent, or management credentials. Warn that demo
+clients receive full access to the real editable personal Hub and that HTTP
+is unencrypted; use only a trusted private network, without router forwarding
+or public internet exposure.
+
+The demo has an absolute expiry, at most two hours from configuration, which
+does not reset on Hub restart. At expiry close its listener and existing
+connections without interrupting normal Hub access or agents. Provide an
+immediate loopback-only stop operation and explicit config-removal instructions
+for rollback. An expired demo must not block normal Hub startup. Activation
+requires the operator's access-risk assessment and normal deployment authority;
+a worker may validate isolated fixtures but must not activate production access.
 
 Do not add a parallel task backend, audit subsystem, generic authorization
 engine, or distributed scheduler. Use the existing task and workstream
@@ -171,6 +191,14 @@ reconnect, return from the background, and network recovery, without allowing
 an older snapshot to overwrite newer streamed content. Display failures inline
 in the conversation and show current process/turn state for main Pan as well
 as workers. Tool activity includes readable input, output, title, and status.
+
+Opening a saved Daily Briefing is read-only: do not regenerate it, reinterpret
+feedback, or replay review effects on navigation. Backend due values may carry
+a local time; display their calendar date without altering the raw saved value
+used by review conflict checks. Preserve the plan, review evidence, session
+identities, and history. Invalid saved dates and fetch/render failures must be
+visible, with a way back to Today instead of an unhandled blank application.
+Repeated navigation must not grow retained history or cause backend writes.
 
 Task and workstream mutations use one ordered optimistic queue. Apply each
 change to the visible portfolio immediately, preserve undo and redo history,
