@@ -127,11 +127,15 @@ Use the Garden visual direction:
   freeform alternative. The user must explicitly submit their answer. Waiting
   for that answer has no user-response deadline; bridge questions must not keep
   one timeout-bound MCP request open for the duration of the wait.
-  Hide the ordinary message composer in both Main Pan and worker chats while
-  a question is unanswered or its answer is awaiting delivery, including a
-  failed delivery that needs retry. Keep the question's answer and retry
-  controls available. Restore the composer with its existing draft and
-  attachments once the agent receives the answer.
+  Hide the ordinary message composer in both Main Pan and worker chats only
+  while a question is unanswered. Immediately after submitting an answer,
+  restore the normal composer with its existing draft, attachments, and height.
+  Keep it editable during queued, sending, and failed answer delivery, with
+  separate visible delivery status and retry controls. A failed submission
+  that was not saved restores the question's answer draft and images.
+  Freeform elicitation answers accept text, images, or both, with previews and
+  removal and the same limits as ordinary chat: four PNG, JPEG, GIF, or WebP
+  images, no more than 8 MB total. Images never select or approve a permission.
 - Treat the Main Pan and worker chat composers as ordinary multiline freeform
   text fields. Give their scoped forms and textareas stable chat-specific
   names, IDs, accessible labels, `autocomplete="off"`, and text input-mode,
@@ -226,8 +230,22 @@ delivery confirmation, report that uncertainty rather than silently dropping
 the answer or claiming it was received. Reconnecting a waiting worker does not
 send a bootstrap prompt that repeats its question.
 If a preceding turn asks a question, an already-queued ordinary follow-up must
-not bypass it. Keep that message visible, report that it was not delivered,
-and ask the user to answer before resending it.
+not bypass it. Keep that message visibly queued until the user answers.
+
+Keep rapid ordinary submissions in a per-conversation ordered delivery outbox,
+separate from task work state. Save text and native image payloads before
+acknowledging acceptance; preserve them through delivery errors, reconnects,
+and restarts. The browser retains unconfirmed submissions and stable message
+IDs, and retries those IDs rather than creating duplicate messages or history.
+Deliver follow-ups after the entire answer/preceding turn finishes, not merely
+after its first output. A failed head blocks later delivery, never editing.
+Show queued, sending, and failed states with explicit retry. Reconnect to the
+same ACP session and reconcile accepted prompts against its saved history
+before resending an interrupted delivery. Retain image previews in history;
+never substitute inaccessible filesystem references for native image content.
+Native elicitation that cannot carry a freeform/image answer is cancelled and
+continued in a saved image-capable prompt to the same agent; permission
+outcomes retain their existing semantics.
 
 ## Main Pan and Domain instructions
 
