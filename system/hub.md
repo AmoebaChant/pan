@@ -267,9 +267,28 @@ and restarts. The browser retains unconfirmed submissions and stable message
 IDs, and retries those IDs rather than creating duplicate messages or history.
 Deliver follow-ups after the entire answer/preceding turn finishes, not merely
 after its first output. A failed head blocks later delivery, never editing.
-Show queued, sending, and failed states with explicit retry. Reconnect to the
-same ACP session and reconcile accepted prompts against its saved history
-before resending an interrupted delivery. Retain image previews in history;
+Distinguish queued/not delivered, sending/awaiting receipt, delivered/processing,
+and delivered/waiting for user input. Receiving a prompt does not complete its
+turn, release its successors, or imply queue health. Only an ACP prompt response
+settles that request; neither elapsed time nor final-looking prose is completion
+evidence. Retain completed, failed, and interrupted outcomes in message history.
+A post-receipt turn failure remains an explicit blocked head, not a successful
+delivery-and-completion fallback. Offer continuation of queued successors
+without replaying the received prompt. A preceding-turn failure must also be
+visible and require explicit recovery rather than silently draining follow-ups.
+Recheck queued work after a drain finishes so answer/turn settlement cannot lose
+a wake-up. Questions and permissions always retain their gates.
+
+Show explicit retry for unconfirmed deliveries. Reconnect to the same ACP
+session and reconcile accepted prompts against its saved history before
+resending an interrupted or failed delivery with uncertain receipt, including
+when its previous process is still connected. Never interrupt another active
+turn or pending question merely to perform that check. A confirmed receipt
+without settlement is an interrupted/unknown turn outcome, never a completed
+turn and never permission to replay the prompt. Correlate receipt and prompt
+start/stop/error evidence with stable message and turn IDs. Surface unresolved
+settlement and recovery errors; do not automatically declare success on a timer.
+Retain image previews in history;
 never substitute inaccessible filesystem references for native image content.
 Native elicitation that cannot carry a freeform/image answer is cancelled and
 continued in a saved image-capable prompt to the same agent; permission
