@@ -272,6 +272,17 @@ and delivered/waiting for user input. Receiving a prompt does not complete its
 turn, release its successors, or imply queue health. Only an ACP prompt response
 settles that request; neither elapsed time nor final-looking prose is completion
 evidence. Retain completed, failed, and interrupted outcomes in message history.
+Render each stable message ID's text and images once, in its original bubble.
+Show the truthful receipt **Delivered** in the bubble's top-right header/status
+area, alongside its timestamp and using the existing **Turn completed** visual
+treatment without implying completion. Do not repeat the message in a delivery
+panel above the composer. Queued, sending, failed and interrupted states,
+visible errors, and retry/continue controls stay attached to the same bubble;
+browser-only unconfirmed submissions remain visible until reconciled with saved
+history by ID. Apply the same presentation to main and worker chats, text and
+images, desktop and phone, through reload/reconnect. Announce concise status
+changes accessibly without re-announcing the full content, and allow the header
+to wrap cleanly without crowding the timestamp or overflowing the viewport.
 A post-receipt turn failure remains an explicit blocked head, not a successful
 delivery-and-completion fallback. Offer continuation of queued successors
 without replaying the received prompt. A preceding-turn failure must also be
