@@ -163,6 +163,13 @@ Use the Garden visual direction:
   identity, contact, and one-time-code terminology in composer metadata and
   placeholders, and add scoped password-manager ignore metadata where
   supported. Do not disable autofill on unrelated task forms or inputs.
+  Keep per-keystroke work independent of retained transcript Markdown:
+  typing and incoming delivery/status updates must not reparse unchanged
+  message text. Preserve the textarea's focus and selection through incoming
+  activity. Enter submits, Shift+Enter inserts a newline, and Enter used to
+  confirm an IME composition must not submit. Validate long-transcript typing
+  and concurrent streaming in mobile browser acceptance, recording measured
+  latency and any emulation or physical-device limitations.
 - Preserve authored line breaks when rendering conversation Markdown. Present
   streamed internal reasoning as subdued "Thinking" content that is visually
   distinct from the agent's response. Allow images pasted from the clipboard
