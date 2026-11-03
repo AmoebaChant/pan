@@ -185,6 +185,32 @@ Use the Garden visual direction:
 Operational attention is separate from task work status. A pending question
 does not change priority, work status, planned date, or task ownership.
 
+### Local worker terminal companion
+
+An existing worker chat may offer a **CLI** button beside its process controls.
+This explicitly opens a text companion to the same Hub-managed conversation,
+not another native Copilot process loading its session. Hub remains the single
+ACP host and owns the ordered delivery outbox, history, questions and permission
+gates. Both interfaces receive live conversation/tool updates and saved history
+catch-up after reconnect. Stable message IDs prevent replay after uncertain
+submission; show delivery errors and require explicit retry. The first saved
+answer wins; reject conflicting submissions from another view.
+
+The initial prototype supports macOS Terminal launched only by an explicit
+click through the exact local loopback browser origin. Reject unsupported
+platforms, LAN/remote-browser launches and desktop failures visibly. Confirm
+the companion actually connected before reporting success, coalesce repeated
+clicks, safely quote launch arguments, and keep connection/outbox files private
+without exposing backend or ACP credentials or adding network listeners.
+
+Closing a companion only detaches that display/input client. It never stops or
+releases the worker, changes task work status, or replaces its saved session ID.
+Existing Hub Stop and Resume retain their meanings. The companion is text-only:
+images, rich structured forms and native Copilot slash-command parity are not
+promised. Required deterministic/Playwright checks cover shared delivery,
+questions, reconnect and closure; actual Terminal creation and macOS Automation
+consent still require an explicit real-desktop check.
+
 Retain all recorded conversation messages and tool activity through Hub reload
 and restart; do not silently cap saved history. Refresh live state on browser
 reconnect, return from the background, and network recovery, without allowing
